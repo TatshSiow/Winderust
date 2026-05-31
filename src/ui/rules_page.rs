@@ -1,193 +1,148 @@
 use eframe::egui;
 
-use crate::config::ForegroundRules;
+use crate::{
+    config::{ForegroundRule, ForegroundRules},
+    power::PowerPlan,
+    ui::power_plan_page::{self, PowerPlanAction},
+};
 
 const APP_INPUT_WIDTH: f32 = 320.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuleAction {
     None,
+    RefreshPlans,
 }
 
 pub fn show(
     ui: &mut egui::Ui,
     rules: &mut ForegroundRules,
-    foreground_app: Option<&str>,
+    plans: &[PowerPlan],
+    current_plan: Option<&PowerPlan>,
     process_candidates: &[String],
-    whitelist_input: &mut String,
-    whitelist_picker_open: &mut bool,
-    whitelist_picker_highlighted: &mut Option<usize>,
-    force_input: &mut String,
-    force_picker_open: &mut bool,
-    force_picker_highlighted: &mut Option<usize>,
+    picker_open_rule: &mut Option<usize>,
+    picker_highlighted: &mut Option<usize>,
 ) -> RuleAction {
+    let mut action = RuleAction::None;
+
     ui.heading("Foreground Rules");
     ui.add_space(8.0);
-    ui.label(format!(
-        "Current foreground app: {}",
-        foreground_app.unwrap_or("Unknown")
-    ));
-    ui.add_space(14.0);
 
     ui.checkbox(&mut rules.enabled, "Enable foreground rules");
-    ui.label(
-        "When enabled, focused apps in these lists can override scheduler and activity decisions.",
-    );
+    ui.label("Change power plan based on custom foreground rules.");
     ui.add_space(14.0);
 
-    ui.add_enabled_ui(rules.enabled, |ui| {
-        ui.columns(2, |columns| {
-            rule_list(
-                &mut columns[0],
-                "Force Active Plan",
-                "Switch to the Active plan while these apps are focused.",
-                &mut rules.whitelist,
-                &rules.force_power_save,
-                whitelist_input,
-                "force_active_rule_input",
-                process_candidates,
-                whitelist_picker_open,
-                whitelist_picker_highlighted,
-            );
-
-            rule_list(
-                &mut columns[1],
-                "Force Idle Plan",
-                "Switch to the Idle plan while these apps are focused.",
-                &mut rules.force_power_save,
-                &rules.whitelist,
-                force_input,
-                "force_idle_rule_input",
-                process_candidates,
-                force_picker_open,
-                force_picker_highlighted,
-            );
-        });
-    });
-
-    let conflicts: Vec<_> = rules
-        .whitelist
-        .iter()
-        .filter(|entry| {
-            rules
-                .force_power_save
-                .iter()
-                .any(|force| force.eq_ignore_ascii_case(entry))
-        })
-        .cloned()
-        .collect();
-
-    if !conflicts.is_empty() {
-        ui.add_space(12.0);
-        ui.colored_label(
-            egui::Color32::from_rgb(190, 90, 40),
-            format!(
-                "Conflict: {:?} exists in both lists. Force Idle Plan wins.",
-                conflicts
-            ),
-        );
+    if show_power_plan_source(ui, plans, current_plan) == PowerPlanAction::Refresh {
+        action = RuleAction::RefreshPlans;
     }
+    ui.add_space(18.0);
 
-    RuleAction::None
-}
-
-fn rule_list(
-    ui: &mut egui::Ui,
-    title: &str,
-    hint: &str,
-    list: &mut Vec<String>,
-    other_list: &[String],
-    input: &mut String,
-    input_id_salt: &'static str,
-    process_candidates: &[String],
-    picker_open: &mut bool,
-    picker_highlighted: &mut Option<usize>,
-) {
-    ui.group(|ui| {
-        ui.heading(title);
-        ui.label(hint);
-        ui.add_space(8.0);
-
-        ui.horizontal(|ui| {
-            let add_button_width = 58.0;
-            let input_width =
-                (ui.available_width() - add_button_width - ui.spacing().item_spacing.x)
-                    .clamp(160.0, APP_INPUT_WIDTH);
-
-            if let Some(process) = searchable_rule_input(
-                ui,
-                input_id_salt,
-                process_candidates,
-                list,
-                other_list,
-                input,
-                picker_open,
-                picker_highlighted,
-                input_width,
-            ) {
-                *input = process;
-            }
-
-            let add_size = egui::vec2(add_button_width, ui.spacing().interact_size.y);
-            if ui
-                .add_enabled(
-                    can_add_process(list, other_list, input),
-                    egui::Button::new("Add").min_size(add_size),
-                )
-                .clicked()
-            {
-                add_process(list, other_list, input);
-                *picker_open = false;
-                *picker_highlighted = None;
-            }
-        });
-
-        ui.separator();
-
-        let mut remove_index = None;
-        for (index, item) in list.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let button_width = 74.0;
-                let label_width =
-                    (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(80.0);
-                ui.add_sized(
-                    [label_width, ui.spacing().interact_size.y],
-                    egui::Label::new(item).truncate(),
-                );
-                if ui
-                    .add_sized(
-                        [button_width, ui.spacing().interact_size.y],
-                        egui::Button::new("Remove"),
-                    )
-                    .clicked()
-                {
-                    remove_index = Some(index);
-                }
+    ui.add_enabled_ui(rules.enabled, |ui| {
+        if ui.button("Add foreground rule").clicked() {
+            rules.rules.push(ForegroundRule {
+                name: "New Foreground Rule".to_owned(),
+                process_name: String::new(),
+                power_plan_guid: current_plan.map(|plan| plan.guid.clone()),
             });
         }
 
+        ui.add_space(10.0);
+
+        let mut remove_index = None;
+        for index in 0..rules.rules.len() {
+            ui.group(|ui| {
+                let rule = &mut rules.rules[index];
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    ui.text_edit_singleline(&mut rule.name);
+                    if ui.button("Remove").clicked() {
+                        remove_index = Some(index);
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label("Focused app");
+                    let input_width = ui.available_width().clamp(160.0, APP_INPUT_WIDTH);
+                    if let Some(process) = searchable_rule_input(
+                        ui,
+                        index,
+                        process_candidates,
+                        &mut rule.process_name,
+                        picker_open_rule,
+                        picker_highlighted,
+                        input_width,
+                    ) {
+                        rule.process_name = process;
+                    }
+                });
+
+                power_plan_page::plan_combo_with_id(
+                    ui,
+                    "Target power plan",
+                    ("foreground_rule_target", index),
+                    &mut rule.power_plan_guid,
+                    plans,
+                );
+            });
+
+            ui.add_space(10.0);
+        }
+
         if let Some(index) = remove_index {
-            list.remove(index);
+            rules.rules.remove(index);
+            if picker_open_rule.is_some_and(|open_index| open_index == index) {
+                *picker_open_rule = None;
+                *picker_highlighted = None;
+            }
         }
     });
+
+    action
+}
+
+fn show_power_plan_source(
+    ui: &mut egui::Ui,
+    plans: &[PowerPlan],
+    current_plan: Option<&PowerPlan>,
+) -> PowerPlanAction {
+    let mut action = PowerPlanAction::None;
+
+    ui.group(|ui| {
+        ui.heading("Power Plans");
+        ui.label("Each foreground rule can switch to any Windows power plan.");
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("Refresh plans").clicked() {
+                action = PowerPlanAction::Refresh;
+            }
+            ui.label(format!(
+                "Current active plan: {}",
+                current_plan
+                    .map(|plan| plan.name.as_str())
+                    .unwrap_or("Unknown")
+            ));
+            ui.label(format!("Available plans: {}", plans.len()));
+        });
+    });
+
+    action
 }
 
 fn searchable_rule_input(
     ui: &mut egui::Ui,
-    id_salt: &'static str,
+    rule_index: usize,
     process_candidates: &[String],
-    current_list: &[String],
-    other_list: &[String],
     input: &mut String,
-    picker_open: &mut bool,
+    picker_open_rule: &mut Option<usize>,
     picker_highlighted: &mut Option<usize>,
     input_width: f32,
 ) -> Option<String> {
     const POPUP_WIDTH: f32 = 360.0;
     const LIST_HEIGHT: f32 = 240.0;
 
-    let input_id = ui.make_persistent_id((id_salt, "input"));
-    let popup_id = ui.make_persistent_id((id_salt, "popup"));
+    let input_id = ui.make_persistent_id(("foreground_rule_input", rule_index, "input"));
+    let popup_id = ui.make_persistent_id(("foreground_rule_input", rule_index, "popup"));
 
     let input_response = ui
         .add_sized(
@@ -204,22 +159,19 @@ fn searchable_rule_input(
     }
 
     if input_response.clicked() || input_response.gained_focus() || input_response.changed() {
-        *picker_open = true;
+        *picker_open_rule = Some(rule_index);
     }
 
+    let picker_is_open = picker_open_rule.is_some_and(|index| index == rule_index);
     let search = input.trim().to_ascii_lowercase();
     let filtered_processes: Vec<&String> = process_candidates
         .iter()
-        .filter(|process| {
-            (search.is_empty() || process.contains(&search))
-                && !contains_process(current_list, process)
-                && !contains_process(other_list, process)
-        })
+        .filter(|process| search.is_empty() || process.contains(&search))
         .collect();
 
     if filtered_processes.is_empty() {
         *picker_highlighted = None;
-    } else {
+    } else if picker_is_open {
         let highlighted = picker_highlighted
             .unwrap_or(0)
             .min(filtered_processes.len() - 1);
@@ -233,7 +185,7 @@ fn searchable_rule_input(
     let mut keyboard_navigated = false;
     let pointer_moved = ui.input(|input| input.pointer.delta() != egui::Vec2::ZERO);
 
-    if *picker_open && picker_has_keyboard {
+    if picker_is_open && picker_has_keyboard {
         if !filtered_processes.is_empty() {
             let last_index = filtered_processes.len() - 1;
             let highlighted = picker_highlighted.unwrap_or(0).min(last_index);
@@ -257,12 +209,12 @@ fn searchable_rule_input(
         let escape_pressed =
             ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         if escape_pressed {
-            *picker_open = false;
+            *picker_open_rule = None;
             return None;
         }
 
         if enter_pressed && !filtered_processes.is_empty() {
-            *picker_open = false;
+            *picker_open_rule = None;
             *picker_highlighted = None;
             let process = filtered_processes[picker_highlighted.unwrap_or(0)].clone();
             return Some(process);
@@ -270,9 +222,10 @@ fn searchable_rule_input(
     }
 
     let mut picked_process = None;
+    let mut popup_open = picker_is_open;
     let popup_response = egui::Popup::from_response(&input_response)
         .id(popup_id)
-        .open_bool(picker_open)
+        .open_bool(&mut popup_open)
         .kind(egui::PopupKind::Menu)
         .layout(egui::Layout::top_down_justified(egui::Align::Min))
         .width(POPUP_WIDTH)
@@ -319,7 +272,7 @@ fn searchable_rule_input(
         });
 
     if let Some(process) = picked_process {
-        *picker_open = false;
+        *picker_open_rule = None;
         *picker_highlighted = None;
         return Some(process);
     }
@@ -328,35 +281,14 @@ fn searchable_rule_input(
         .as_ref()
         .is_some_and(|response| response.response.clicked_elsewhere());
     if clicked_elsewhere && !input_response.clicked() && !input_response.gained_focus() {
-        *picker_open = false;
+        *picker_open_rule = None;
+    }
+
+    if !popup_open && picker_is_open {
+        *picker_open_rule = None;
     }
 
     None
-}
-
-fn add_process(list: &mut Vec<String>, other_list: &[String], input: &mut String) {
-    add_process_name(list, other_list, input);
-    input.clear();
-}
-
-fn add_process_name(list: &mut Vec<String>, other_list: &[String], process: &str) {
-    if !can_add_process(list, other_list, process) {
-        return;
-    }
-
-    list.push(process.trim().to_ascii_lowercase());
-}
-
-fn can_add_process(list: &[String], other_list: &[String], process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !contains_process(list, process)
-        && !contains_process(other_list, process)
-}
-
-fn contains_process(list: &[String], process: &str) -> bool {
-    list.iter()
-        .any(|item| item.trim().eq_ignore_ascii_case(process.trim()))
 }
 
 #[cfg(test)]
@@ -364,26 +296,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_process_rejects_duplicates_across_both_lists() {
-        let mut list = vec!["game.exe".to_owned()];
-        let other_list = vec!["backup.exe".to_owned()];
-        let mut input = "BACKUP.EXE".to_owned();
+    fn custom_foreground_rule_keeps_arbitrary_target_plan() {
+        let rule = ForegroundRule {
+            name: "Editor".to_owned(),
+            process_name: "editor.exe".to_owned(),
+            power_plan_guid: Some("custom-guid".to_owned()),
+        };
 
-        add_process(&mut list, &other_list, &mut input);
-
-        assert_eq!(list, vec!["game.exe"]);
-        assert!(input.is_empty());
-    }
-
-    #[test]
-    fn add_process_normalizes_manual_entry() {
-        let mut list = Vec::new();
-        let other_list = Vec::new();
-        let mut input = "  Editor.EXE  ".to_owned();
-
-        add_process(&mut list, &other_list, &mut input);
-
-        assert_eq!(list, vec!["editor.exe"]);
-        assert!(input.is_empty());
+        assert_eq!(rule.power_plan_guid.as_deref(), Some("custom-guid"));
     }
 }

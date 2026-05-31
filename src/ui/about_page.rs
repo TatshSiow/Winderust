@@ -13,6 +13,7 @@ pub fn show(ui: &mut egui::Ui) {
         .spacing([24.0, 12.0])
         .striped(true)
         .show(ui, |ui| {
+            row(ui, "Author", "Tatsh Siow");
             row(ui, "Version", env!("CARGO_PKG_VERSION"));
         });
 }

@@ -4,19 +4,19 @@ Make your Windows more eco-friendly.
 
 PowerLeaf is a Windows-only desktop app for automatically switching Windows power plans.
 
-It maps two logical modes, `Idle` and `Active`, to Windows power plans and switches between them using activity, schedule, and foreground-app rules.
+Power plan controls can use their own Windows power plan choices for activity, schedule, CPU usage, and foreground-app rules.
 
 ## Features
 
 - Detects and switches Windows power plans through Windows power APIs.
-- Maps global `Idle plan` and `Active plan` in Settings.
+- Lets each power-plan control choose its own `Idle plan` and `Active plan`.
 - Action Based Scheduler switches by keyboard/mouse activity and idle timeout.
 - Hybrid input detection uses Windows input hooks for faster active-resume checks, while polling still handles idle timeout.
 - Time Based Scheduler switches by day and time ranges.
-- CPU Usage Scheduler switches by custom CPU threshold rules.
+- CPU usage-based Scheduler switches by custom CPU threshold rules.
 - Efficiency Mode applies Windows EcoQoS to background user processes.
 - App Suspension can suspend selected background apps after a delay.
-- Foreground Rules can force Active or Idle plan for selected focused apps.
+- Foreground Rules can switch selected focused apps to any chosen Windows power plan.
 - Foreground rule inputs can search running apps with dropdown, arrow-key navigation, and Enter selection.
 - Optional hide-to-system-tray behavior.
 - Import and export settings as `.ini` files through native Windows file dialogs.
@@ -46,13 +46,12 @@ cargo build --release --target-dir target-next
 
 ## Basic Setup
 
-1. Open `Power Plan Mapping`.
-2. Click `Refresh plans`.
-3. Select an `Idle plan`.
-4. Select an `Active plan`.
-5. Open `Settings` and keep `Enable automation` turned on.
-6. Open `Action Based Scheduler` and choose the idle timeout you want.
-7. Click `Save` in the Unsaved changes popup.
+1. Open `Settings` and keep `Powerleaf master switch` turned on.
+2. Open `Action Based Scheduler`.
+3. In `Power Plans`, click `Refresh plans`.
+4. Select an `Idle plan` and an `Active plan`.
+5. Choose the idle timeout you want.
+6. Click `Save` in the Unsaved changes popup.
 
 Most changes take effect in the running app immediately. Efficiency Mode and App Suspension activation and target changes apply after `Save`. Use `Save` to keep changes for the next launch, or `Cancel` to restore the last saved settings.
 
@@ -62,11 +61,11 @@ For most users:
 
 - Use `Action Based Scheduler` for normal automatic switching.
 - Use `Time Based Scheduler` when you want fixed work or quiet hours.
-- Use `CPU Usage Scheduler` when CPU load should force Active or Idle mode.
+- Use `CPU usage-based Scheduler` when CPU load should force Active or Idle mode.
 - Use `Efficiency Mode` when background apps should run with Windows EcoQoS.
 - Use `App Suspension` only for apps you explicitly trust to pause while in the background.
-- Use `Foreground Rules` for apps that should always force Active or Idle mode while focused.
-- Keep plan selection in `Power Plan Mapping`; all schedulers use the same global Idle and Active plans.
+- Use `Foreground Rules` for apps that should always switch to a specific power plan while focused.
+- Set power plans inside each Power Plan Controls tab you enable. Foreground Rules can target any available plan per rule.
 
 ## Pages
 
@@ -75,25 +74,16 @@ For most users:
 Shows the current app state, current power plan, foreground app, activity state, Efficiency Mode state, App Suspension state, next schedule, and current decision reason.
 It also shows current total CPU usage after two CPU samples are collected.
 
-### Power Plan Mapping
-
-Controls the global Windows power plans used by PowerLeaf.
-
-- `Refresh plans`: reloads available Windows power plans.
-- `Idle plan`: the Windows power plan used when PowerLeaf decides the PC is idle.
-- `Active plan`: the Windows power plan used when PowerLeaf decides the PC is active.
-
-Action Based Scheduler, Time Based Scheduler, CPU Usage Scheduler, and Foreground Rules all use these same global plan mappings.
-
 ### Action Based Scheduler
 
 Controls activity-based switching.
 
-- `Enable action-based switching`: turns activity-based decisions on or off.
+- `Enable action-based scheduler`: turns activity-based decisions on or off.
 - `Keyboard input`: keyboard activity can trigger Active mode.
 - `Mouse input`: mouse activity can trigger Active mode.
 - `Idle timeout`: how long user input must be idle before switching to Idle.
 - `Check interval`: fallback polling interval for activity, foreground rules, and schedule checks.
+- `Power Plans`: selects the Idle and Active Windows power plans used by this tab.
 
 At least one input type remains enabled.
 
@@ -108,9 +98,9 @@ Each rule has:
 - Start time
 - End time
 
-Schedules use the global Idle/Active plans selected in Power Plan Mapping.
+`Power Plans` selects the Idle and Active Windows power plans used by this tab.
 
-### CPU Usage Scheduler
+### CPU usage-based Scheduler
 
 Controls CPU usage-based switching.
 
@@ -122,7 +112,7 @@ Each rule has:
 - Duration
 - Target plan role
 
-Rules use the global Idle/Active plans selected in Power Plan Mapping. Rules are checked in list order, and the first rule whose CPU condition has held for its configured duration wins.
+`Power Plans` selects the Idle and Active Windows power plans used by this tab. Rules are checked in list order, and the first rule whose CPU condition has held for its configured duration wins.
 
 ### Efficiency Mode
 
@@ -153,24 +143,23 @@ Suspended apps are resumed when they become foreground, leave the suspendable ap
 Controls focused-app overrides.
 
 - `Enable foreground rules`: turns foreground rules on or off.
-- `Force Active Plan`: apps that should force the Active plan when focused.
-- `Force Idle Plan`: apps that should force the Idle plan when focused.
+- `Add foreground rule`: creates a focused-app rule.
+- `Focused app`: the app process name to match.
+- `Target power plan`: the Windows power plan to activate while that app is focused.
 
-The app dropdowns list currently running processes. Apps already added to either list are hidden from both dropdowns to avoid duplicates.
-
-If an app somehow exists in both lists, Force Idle wins.
+The app dropdown lists currently running processes. Rules are checked in list order, and the first matching focused-app rule wins.
 
 ### Settings
 
-Controls global app settings.
+Controls app-level settings.
 
-- `Enable automation`: master switch for automatic power-plan changes.
+- `Powerleaf master switch`: master switch for automatic power-plan switching, Efficiency Mode, and App Suspension.
 - `Hide to system tray on close`: closing the window keeps PowerLeaf running in the tray.
 - `Settings Files`: export or import all settings as `.ini`.
 
 ### About
 
-Shows the PowerLeaf brand name, description, and version.
+Shows the PowerLeaf brand name, description, author, and version.
 
 ## Settings Files
 

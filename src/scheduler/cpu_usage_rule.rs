@@ -55,13 +55,14 @@ impl CpuUsageScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CpuUsageComparison, CpuUsageRule};
+    use crate::config::{CpuUsageComparison, CpuUsageRule, PowerPlanSettings};
 
     #[test]
     fn returns_matching_zero_duration_rule() {
         let mut scheduler = CpuUsageScheduler::default();
         let settings = CpuUsageModeSettings {
             enabled: true,
+            power_plans: PowerPlanSettings::default(),
             rules: vec![CpuUsageRule {
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
@@ -82,6 +83,7 @@ mod tests {
         let mut scheduler = CpuUsageScheduler::default();
         let settings = CpuUsageModeSettings {
             enabled: true,
+            power_plans: PowerPlanSettings::default(),
             rules: vec![CpuUsageRule {
                 name: "Low CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrBelow,

@@ -2,7 +2,7 @@ use chrono::Utc;
 
 use crate::{
     activity::ActivityState,
-    config::{CpuUsageTarget, ManualOverride, Settings},
+    config::{CpuUsageTarget, ManualOverride, PowerPlanSettings, Settings},
     scheduler::{CpuUsageDecision, ScheduleDecision},
 };
 
@@ -10,6 +10,7 @@ use crate::{
 pub enum DecisionState {
     Disabled,
     ManualOverride,
+    ForegroundRule,
     ForegroundForceActive,
     ForegroundForcePowerSave,
     ScheduledPowerSave,
@@ -62,9 +63,19 @@ impl DecisionEngine {
             .as_deref()
             .filter(|_| settings.foreground_rules.enabled)
         {
+            for rule in &settings.foreground_rules.rules {
+                if rule.process_name.trim().eq_ignore_ascii_case(app.trim()) {
+                    return DecisionOutcome::with_target(
+                        rule.power_plan_guid.clone(),
+                        DecisionState::ForegroundRule,
+                        format!("{app} matched foreground rule '{}'.", rule.name),
+                    );
+                }
+            }
+
             if contains_process(&settings.foreground_rules.force_power_save, app) {
                 return DecisionOutcome::with_target(
-                    settings.power_plans.power_save_guid.clone(),
+                    idle_plan(&settings.foreground_rules.power_plans, settings),
                     DecisionState::ForegroundForcePowerSave,
                     format!("{app} is configured to force the Idle plan."),
                 );
@@ -72,7 +83,7 @@ impl DecisionEngine {
 
             if contains_process(&settings.foreground_rules.whitelist, app) {
                 return DecisionOutcome::with_target(
-                    settings.power_plans.performance_guid.clone(),
+                    active_plan(&settings.foreground_rules.power_plans, settings),
                     DecisionState::ForegroundForceActive,
                     format!("{app} is configured to force the Active plan."),
                 );
@@ -82,14 +93,14 @@ impl DecisionEngine {
         if let Some(schedule) = input.schedule {
             if schedule.inside_power_save_period {
                 return DecisionOutcome::with_target(
-                    settings.power_plans.power_save_guid.clone(),
+                    idle_plan(&settings.schedule_mode.power_plans, settings),
                     DecisionState::ScheduledPowerSave,
                     format!("Schedule '{}' is in its Idle period.", schedule.rule_name),
                 );
             }
 
             return DecisionOutcome::with_target(
-                settings.power_plans.performance_guid.clone(),
+                active_plan(&settings.schedule_mode.power_plans, settings),
                 DecisionState::ScheduledPerformance,
                 "No schedule Idle period is active.",
             );
@@ -98,7 +109,7 @@ impl DecisionEngine {
         if let Some(cpu_usage) = input.cpu_usage {
             return match cpu_usage.target {
                 CpuUsageTarget::Idle => DecisionOutcome::with_target(
-                    settings.power_plans.power_save_guid.clone(),
+                    idle_plan(&settings.cpu_usage_mode.power_plans, settings),
                     DecisionState::CpuUsagePowerSave,
                     format!(
                         "CPU usage is {:.1}% and matched rule '{}'.",
@@ -106,7 +117,7 @@ impl DecisionEngine {
                     ),
                 ),
                 CpuUsageTarget::Active => DecisionOutcome::with_target(
-                    settings.power_plans.performance_guid.clone(),
+                    active_plan(&settings.cpu_usage_mode.power_plans, settings),
                     DecisionState::CpuUsagePerformance,
                     format!(
                         "CPU usage is {:.1}% and matched rule '{}'.",
@@ -119,7 +130,7 @@ impl DecisionEngine {
         if settings.activity_mode.enabled {
             return match input.activity_state {
                 ActivityState::Idle => DecisionOutcome::with_target(
-                    settings.power_plans.power_save_guid.clone(),
+                    idle_plan(&settings.activity_mode.power_plans, settings),
                     DecisionState::IdlePowerSave,
                     "User input has been idle past the configured timeout.",
                 ),
@@ -128,7 +139,7 @@ impl DecisionEngine {
                         && settings.activity_mode.input_detection.any_enabled() =>
                 {
                     DecisionOutcome::with_target(
-                        settings.power_plans.performance_guid.clone(),
+                        active_plan(&settings.activity_mode.power_plans, settings),
                         DecisionState::ActivePerformance,
                         "Recent user input detected; using the Active plan.",
                     )
@@ -151,7 +162,7 @@ impl DecisionEngine {
         }
 
         DecisionOutcome::with_target(
-            settings.power_plans.performance_guid.clone(),
+            active_plan(&settings.activity_mode.power_plans, settings),
             DecisionState::ActivePerformance,
             "Using the configured default Active plan.",
         )
@@ -194,6 +205,7 @@ impl DecisionState {
         match self {
             Self::Disabled => "Disabled",
             Self::ManualOverride => "Manual override",
+            Self::ForegroundRule => "Foreground rule",
             Self::ForegroundForceActive => "Foreground force Active plan",
             Self::ForegroundForcePowerSave => "Foreground force Idle plan",
             Self::ScheduledPowerSave => "Scheduled Idle plan",
@@ -212,6 +224,20 @@ fn contains_process(list: &[String], app: &str) -> bool {
         .any(|entry| entry.trim().eq_ignore_ascii_case(app.trim()))
 }
 
+fn idle_plan(power_plans: &PowerPlanSettings, settings: &Settings) -> Option<String> {
+    power_plans
+        .power_save_guid
+        .clone()
+        .or_else(|| settings.power_plans.power_save_guid.clone())
+}
+
+fn active_plan(power_plans: &PowerPlanSettings, settings: &Settings) -> Option<String> {
+    power_plans
+        .performance_guid
+        .clone()
+        .or_else(|| settings.power_plans.performance_guid.clone())
+}
+
 #[allow(dead_code)]
 fn _manual_override_is_used(override_state: &ManualOverride) -> bool {
     !matches!(override_state, ManualOverride::None)
@@ -222,7 +248,7 @@ mod tests {
     use super::*;
     use crate::{
         activity::ActivityState,
-        config::{CpuUsageTarget, ForegroundRules, Settings},
+        config::{CpuUsageTarget, ForegroundRule, ForegroundRules, PowerPlanSettings, Settings},
         scheduler::{CpuUsageDecision, ScheduleDecision},
     };
 
@@ -234,8 +260,10 @@ mod tests {
         settings.schedule_mode.rules.clear();
         settings.foreground_rules = ForegroundRules {
             enabled: true,
+            rules: Vec::new(),
             whitelist: vec!["game.exe".to_owned()],
             force_power_save: vec!["backup.exe".to_owned()],
+            power_plans: PowerPlanSettings::default(),
         };
         settings
     }
@@ -335,5 +363,105 @@ mod tests {
 
         assert_eq!(outcome.state, DecisionState::IdlePowerSave);
         assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
+    }
+
+    #[test]
+    fn decisions_use_their_own_power_plan_mappings() {
+        let mut settings = test_settings();
+        settings.activity_mode.power_plans = PowerPlanSettings {
+            power_save_guid: Some("activity-idle".to_owned()),
+            performance_guid: Some("activity-active".to_owned()),
+        };
+        settings.schedule_mode.power_plans = PowerPlanSettings {
+            power_save_guid: Some("schedule-idle".to_owned()),
+            performance_guid: Some("schedule-active".to_owned()),
+        };
+        settings.cpu_usage_mode.power_plans = PowerPlanSettings {
+            power_save_guid: Some("cpu-idle".to_owned()),
+            performance_guid: Some("cpu-active".to_owned()),
+        };
+        settings.foreground_rules.power_plans = PowerPlanSettings {
+            power_save_guid: Some("foreground-idle".to_owned()),
+            performance_guid: Some("foreground-active".to_owned()),
+        };
+        settings.foreground_rules.rules = vec![ForegroundRule {
+            name: "Game".to_owned(),
+            process_name: "game.exe".to_owned(),
+            power_plan_guid: Some("foreground-custom".to_owned()),
+        }];
+
+        let foreground = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Active,
+                foreground_app: Some("game.exe".to_owned()),
+                schedule: None,
+                cpu_usage: None,
+            },
+        );
+        assert_eq!(foreground.target_guid.as_deref(), Some("foreground-custom"));
+
+        let schedule = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Active,
+                foreground_app: None,
+                schedule: Some(ScheduleDecision {
+                    rule_name: "Quiet".to_owned(),
+                    inside_power_save_period: true,
+                }),
+                cpu_usage: None,
+            },
+        );
+        assert_eq!(schedule.target_guid.as_deref(), Some("schedule-idle"));
+
+        let cpu = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: None,
+                schedule: None,
+                cpu_usage: Some(CpuUsageDecision {
+                    rule_name: "High CPU".to_owned(),
+                    target: CpuUsageTarget::Active,
+                    usage_percent: 90.0,
+                }),
+            },
+        );
+        assert_eq!(cpu.target_guid.as_deref(), Some("cpu-active"));
+
+        let activity = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: None,
+                schedule: None,
+                cpu_usage: None,
+            },
+        );
+        assert_eq!(activity.target_guid.as_deref(), Some("activity-idle"));
+    }
+
+    #[test]
+    fn foreground_rule_can_target_any_power_plan() {
+        let mut settings = test_settings();
+        settings.foreground_rules.rules = vec![ForegroundRule {
+            name: "Editing".to_owned(),
+            process_name: "editor.exe".to_owned(),
+            power_plan_guid: Some("balanced-guid".to_owned()),
+        }];
+
+        let outcome = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: Some("editor.exe".to_owned()),
+                schedule: None,
+                cpu_usage: None,
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::ForegroundRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("balanced-guid"));
     }
 }

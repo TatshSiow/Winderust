@@ -1,18 +1,37 @@
 use eframe::egui;
 
-use crate::config::{CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, CpuUsageTarget};
+use crate::{
+    config::{CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, CpuUsageTarget},
+    power::PowerPlan,
+    ui::power_plan_page::{self, PowerPlanAction},
+};
 
-pub fn show(ui: &mut egui::Ui, cpu_usage: &mut CpuUsageModeSettings, current_usage: Option<f32>) {
-    ui.heading("CPU Usage Scheduler");
+pub fn show(
+    ui: &mut egui::Ui,
+    cpu_usage: &mut CpuUsageModeSettings,
+    plans: &[PowerPlan],
+    current_plan: Option<&PowerPlan>,
+) -> PowerPlanAction {
+    let mut action = PowerPlanAction::None;
+
+    ui.heading("CPU usage-based Scheduler");
     ui.add_space(8.0);
-    ui.checkbox(&mut cpu_usage.enabled, "Enable CPU usage-based switching");
-    ui.label(format!(
-        "Current CPU usage: {}",
-        current_usage
-            .map(|usage| format!("{usage:.1}%"))
-            .unwrap_or_else(|| "Collecting".to_owned())
-    ));
+    ui.checkbox(&mut cpu_usage.enabled, "Enable CPU usage-based Scheduler");
+    ui.label("Change power plan based on CPU usage level.");
     ui.add_space(14.0);
+
+    if power_plan_page::show_section(
+        ui,
+        "Power Plans",
+        "Used when this page switches based on CPU usage rules.",
+        &mut cpu_usage.power_plans,
+        plans,
+        current_plan,
+    ) == PowerPlanAction::Refresh
+    {
+        action = PowerPlanAction::Refresh;
+    }
+    ui.add_space(18.0);
 
     ui.add_enabled_ui(cpu_usage.enabled, |ui| {
         if ui.button("Add CPU usage rule").clicked() {
@@ -95,4 +114,6 @@ pub fn show(ui: &mut egui::Ui, cpu_usage: &mut CpuUsageModeSettings, current_usa
             cpu_usage.rules.remove(index);
         }
     });
+
+    action
 }

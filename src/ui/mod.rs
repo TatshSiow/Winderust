@@ -12,7 +12,6 @@ pub mod suspension_page;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Dashboard,
-    PowerPlanMapping,
     Activity,
     CpuUsage,
     EfficiencyMode,
@@ -29,8 +28,7 @@ pub struct PageSection {
 }
 
 const OVERVIEW_PAGES: [Page; 1] = [Page::Dashboard];
-const AUTOMATION_RULE_PAGES: [Page; 5] = [
-    Page::PowerPlanMapping,
+const AUTOMATION_RULE_PAGES: [Page; 4] = [
     Page::Activity,
     Page::CpuUsage,
     Page::Schedule,
@@ -61,9 +59,8 @@ impl Page {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Dashboard => "Dashboard",
-            Self::PowerPlanMapping => "Power Plan Mapping",
             Self::Activity => "Action Based Scheduler",
-            Self::CpuUsage => "CPU Usage Scheduler",
+            Self::CpuUsage => "CPU usage-based Scheduler",
             Self::EfficiencyMode => "Efficiency Mode",
             Self::AppSuspension => "App Suspension",
             Self::ForegroundRules => "Foreground Rules",

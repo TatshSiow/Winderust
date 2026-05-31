@@ -30,9 +30,8 @@ cargo build --release --target-dir target-next
 Navigation pages are defined in `src/ui/mod.rs`:
 
 - `Dashboard`
-- `Power Plan Mapping`
 - `Action Based Scheduler`
-- `CPU Usage Scheduler`
+- `CPU usage-based Scheduler`
 - `Efficiency Mode`
 - `App Suspension`
 - `Time Based Scheduler`
@@ -70,18 +69,20 @@ When adding settings fields:
 - Update INI export/import in `storage.rs`.
 - Update the INI round-trip test.
 
-## Power Plan Mapping
+## Power Plan Selection
 
-All Idle/Active plan mapping controls belong in the `Power Plan Mapping` page under `Power Plan Controls`.
+Idle/Active plan mapping controls belong inside Action, Time, and CPU power-plan control pages, not in a global page. Foreground Rules is different: each foreground rule can target any available Windows power plan directly.
 
 Current behavior:
 
-- `Power Plan Mapping` page renders `ui::power_plan_page::show(...)`.
+- `ui::power_plan_page::show_section(...)` renders the shared embedded plan selector.
+- Action Based Scheduler owns `settings.activity_mode.power_plans`.
+- Time Based Scheduler owns `settings.schedule_mode.power_plans`.
+- CPU usage-based Scheduler owns `settings.cpu_usage_mode.power_plans`.
+- Foreground Rules stores each custom target in `settings.foreground_rules.rules[*].power_plan_guid`.
 - Settings must not show power plan mapping controls.
-- Action Based Scheduler must not show plan mapping.
-- Time Based Scheduler must not show per-rule plan mapping.
-- CPU Usage Scheduler must not show per-rule plan mapping.
-- Schedule, CPU usage, activity, and foreground decisions use the global Idle/Active plan mappings from `Power Plan Mapping`.
+- There is no standalone global Power Plan Mapping page.
+- `settings.power_plans` remains for legacy config compatibility and fallback only.
 
 Do not reintroduce `Test Idle` / `Test Active`; those buttons were intentionally removed.
 
@@ -117,9 +118,9 @@ Current scheduler UI includes:
 - Days.
 - Start/end time.
 
-It intentionally does not expose Idle/Active plan selectors. Scheduler output maps to global plans from Power Plan Mapping.
+It exposes one shared Idle/Active plan selector for the Time Based Scheduler page. Do not add per-rule plan selectors unless explicitly requested.
 
-## CPU Usage Scheduler
+## CPU usage-based Scheduler
 
 `src/ui/cpu_usage_page.rs` owns CPU usage rule editing.
 
@@ -129,7 +130,7 @@ Current behavior:
 - Dashboard shows total CPU usage after the second sample.
 - Rules live in `settings.cpu_usage_mode.rules`.
 - Each rule has name, comparison, threshold percentage, duration, and target role.
-- Rule target roles map to the global Idle/Active plans from Power Plan Mapping.
+- Rule target roles map to `settings.cpu_usage_mode.power_plans`.
 - CPU usage rules are checked in list order. The first rule whose condition has held for its duration wins.
 
 ## Efficiency Mode
@@ -188,31 +189,32 @@ Current behavior:
 - Has an `Enable foreground rules` toggle.
 - When disabled, rule list controls are grayed out.
 - Decision engine ignores foreground rules when disabled.
-- Force Idle wins if an app appears in both lists, though the UI is designed to avoid adding duplicates across lists.
+- Custom rules live in `settings.foreground_rules.rules`.
+- Each foreground rule has a name, one process name, and one target power plan GUID.
+- Rules are checked in list order. The first focused-app match wins.
+- Legacy `whitelist` and `force_power_save` entries are migrated to custom rules by `Settings::fill_missing_power_plan_mappings()`.
 
 Terminology:
 
 - `whitelist` is still the internal config field for compatibility.
-- UI text says `Force Active Plan`.
-- `force_power_save` is the internal field for `Force Idle Plan`.
+- `force_power_save` is still the internal legacy field for compatibility.
+- UI text must describe custom foreground rules, not Force Active / Force Idle lists.
 
 Dropdown behavior:
 
-- Force Active and Force Idle inputs are searchable running-app dropdowns.
+- Foreground rule app inputs are searchable running-app dropdowns.
 - Running-app candidates refresh lazily while dropdowns are open, throttled by `PROCESS_REFRESH_INTERVAL` in `src/app.rs`.
 - Click/focus opens the dropdown.
 - Typing filters.
 - Up/Down navigates.
-- Enter or click fills the input with the highlighted app; Add commits it to the list.
+- Enter or click fills the rule's focused app input with the highlighted app.
 - Mouse hover only changes highlight when the pointer actually moves.
 - Hover must not scroll or make the dropdown slide around.
-- Running apps already added to either Force Active or Force Idle are hidden from both dropdowns.
-- Manual typed entries still go through duplicate protection.
 
 Layout expectations:
 
-- Remove buttons in both rule lists should align right.
-- List labels should truncate instead of pushing buttons.
+- Foreground rules should be rendered as compact rule cards, similar in spirit to Time Based Scheduler and CPU usage-based Scheduler.
+- The target plan selector should allow any available Windows power plan, not only Idle or Active.
 
 ## System Tray
 
@@ -261,7 +263,7 @@ Current priority:
 2. Manual override state if present in config/imported settings.
 3. Foreground rules, only when `foreground_rules.enabled`.
 4. Time scheduler.
-5. CPU usage scheduler.
+5. CPU usage-based Scheduler.
 6. Action/activity mode.
 7. Default Active plan.
 
@@ -270,7 +272,7 @@ The manual override sidebar UI was removed. The enum remains for backward compat
 ## UI Guidance For Future Edits
 
 - Keep operational controls in their relevant tabs.
-- Keep global plan mapping in Settings only.
+- Keep plan mapping inside each Power Plan Controls page.
 - Avoid reintroducing the removed Running Applications section.
 - Avoid reintroducing `Add current app`.
 - Avoid reintroducing manual pause controls in the sidebar.

@@ -47,6 +47,8 @@ pub struct ActivityModeSettings {
     pub switch_to_performance_on_resume: bool,
     #[serde(default)]
     pub input_detection: InputDetectionSettings,
+    #[serde(default)]
+    pub power_plans: PowerPlanSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,14 +61,32 @@ pub struct InputDetectionSettings {
 pub struct ForegroundRules {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<ForegroundRule>,
+    #[serde(default)]
     pub whitelist: Vec<String>,
+    #[serde(default)]
     pub force_power_save: Vec<String>,
+    #[serde(default)]
+    pub power_plans: PowerPlanSettings,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForegroundRule {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub process_name: String,
+    #[serde(default)]
+    pub power_plan_guid: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleModeSettings {
     pub enabled: bool,
     pub rules: Vec<ScheduleRule>,
+    #[serde(default)]
+    pub power_plans: PowerPlanSettings,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +103,8 @@ pub struct ScheduleRule {
 pub struct CpuUsageModeSettings {
     pub enabled: bool,
     pub rules: Vec<CpuUsageRule>,
+    #[serde(default)]
+    pub power_plans: PowerPlanSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,10 +178,12 @@ impl Default for Settings {
                 idle_timeout_seconds: 300,
                 switch_to_performance_on_resume: true,
                 input_detection: InputDetectionSettings::default(),
+                power_plans: PowerPlanSettings::default(),
             },
             foreground_rules: ForegroundRules::default(),
             schedule_mode: ScheduleModeSettings {
                 enabled: false,
+                power_plans: PowerPlanSettings::default(),
                 rules: vec![ScheduleRule {
                     name: "Night Idle Plan".to_owned(),
                     days: WeekdaySetting::all().to_vec(),
@@ -189,8 +213,10 @@ impl Default for ForegroundRules {
     fn default() -> Self {
         Self {
             enabled: true,
+            rules: Vec::new(),
             whitelist: Vec::new(),
             force_power_save: Vec::new(),
+            power_plans: PowerPlanSettings::default(),
         }
     }
 }
@@ -199,6 +225,7 @@ impl Default for CpuUsageModeSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            power_plans: PowerPlanSettings::default(),
             rules: vec![
                 CpuUsageRule {
                     name: "Low CPU Idle".to_owned(),
@@ -251,6 +278,76 @@ impl InputDetectionSettings {
     pub fn ensure_any_enabled(&mut self) {
         if !self.any_enabled() {
             self.keyboard = true;
+        }
+    }
+}
+
+impl Settings {
+    pub fn fill_missing_power_plan_mappings(&mut self) {
+        self.activity_mode
+            .power_plans
+            .fill_missing_from(&self.power_plans);
+        self.foreground_rules
+            .power_plans
+            .fill_missing_from(&self.power_plans);
+        self.schedule_mode
+            .power_plans
+            .fill_missing_from(&self.power_plans);
+        self.cpu_usage_mode
+            .power_plans
+            .fill_missing_from(&self.power_plans);
+
+        if let Some(rule) = self.schedule_mode.rules.first() {
+            let fallback = PowerPlanSettings {
+                power_save_guid: rule.power_save_guid.clone(),
+                performance_guid: rule.performance_guid.clone(),
+            };
+            self.schedule_mode.power_plans.fill_missing_from(&fallback);
+        }
+
+        self.migrate_legacy_foreground_rules();
+    }
+
+    fn migrate_legacy_foreground_rules(&mut self) {
+        if !self.foreground_rules.rules.is_empty() {
+            return;
+        }
+
+        for process in &self.foreground_rules.whitelist {
+            self.foreground_rules.rules.push(ForegroundRule {
+                name: process.clone(),
+                process_name: process.clone(),
+                power_plan_guid: self
+                    .foreground_rules
+                    .power_plans
+                    .performance_guid
+                    .clone()
+                    .or_else(|| self.power_plans.performance_guid.clone()),
+            });
+        }
+
+        for process in &self.foreground_rules.force_power_save {
+            self.foreground_rules.rules.push(ForegroundRule {
+                name: process.clone(),
+                process_name: process.clone(),
+                power_plan_guid: self
+                    .foreground_rules
+                    .power_plans
+                    .power_save_guid
+                    .clone()
+                    .or_else(|| self.power_plans.power_save_guid.clone()),
+            });
+        }
+    }
+}
+
+impl PowerPlanSettings {
+    pub fn fill_missing_from(&mut self, fallback: &Self) {
+        if self.power_save_guid.is_none() {
+            self.power_save_guid = fallback.power_save_guid.clone();
+        }
+        if self.performance_guid.is_none() {
+            self.performance_guid = fallback.performance_guid.clone();
         }
     }
 }

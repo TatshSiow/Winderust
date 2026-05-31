@@ -63,12 +63,8 @@ pub struct PowerLeafApp {
     tray_icon: Option<TrayIcon>,
     status_message: String,
     process_candidates: Vec<String>,
-    whitelist_input: String,
-    whitelist_picker_open: bool,
-    whitelist_picker_highlighted: Option<usize>,
-    force_input: String,
-    force_picker_open: bool,
-    force_picker_highlighted: Option<usize>,
+    foreground_rule_picker_open: Option<usize>,
+    foreground_rule_picker_highlighted: Option<usize>,
     eco_qos_exclusion_input: String,
     eco_qos_picker_open: bool,
     eco_qos_picker_highlighted: Option<usize>,
@@ -125,12 +121,8 @@ impl PowerLeafApp {
             tray_icon: None,
             status_message: "Ready".to_owned(),
             process_candidates: Vec::new(),
-            whitelist_input: String::new(),
-            whitelist_picker_open: false,
-            whitelist_picker_highlighted: None,
-            force_input: String::new(),
-            force_picker_open: false,
-            force_picker_highlighted: None,
+            foreground_rule_picker_open: None,
+            foreground_rule_picker_highlighted: None,
             eco_qos_exclusion_input: String::new(),
             eco_qos_picker_open: false,
             eco_qos_picker_highlighted: None,
@@ -465,10 +457,7 @@ impl eframe::App for PowerLeafApp {
                     }
                 }
                 Page::Activity => {
-                    show_activity_page(ui, &mut self.settings);
-                }
-                Page::PowerPlanMapping => {
-                    let action = ui::power_plan_page::show(
+                    let action = show_activity_page(
                         ui,
                         &mut self.settings,
                         &self.plans,
@@ -477,7 +466,7 @@ impl eframe::App for PowerLeafApp {
                     self.handle_power_plan_action(action);
                 }
                 Page::ForegroundRules => {
-                    if (self.whitelist_picker_open || self.force_picker_open)
+                    if self.foreground_rule_picker_open.is_some()
                         && Instant::now() >= self.next_process_refresh
                     {
                         self.refresh_process_candidates(false);
@@ -485,28 +474,34 @@ impl eframe::App for PowerLeafApp {
                     let action = ui::rules_page::show(
                         ui,
                         &mut self.settings.foreground_rules,
-                        self.foreground_app.as_deref(),
+                        &self.plans,
+                        self.current_plan.as_ref(),
                         &self.process_candidates,
-                        &mut self.whitelist_input,
-                        &mut self.whitelist_picker_open,
-                        &mut self.whitelist_picker_highlighted,
-                        &mut self.force_input,
-                        &mut self.force_picker_open,
-                        &mut self.force_picker_highlighted,
+                        &mut self.foreground_rule_picker_open,
+                        &mut self.foreground_rule_picker_highlighted,
                     );
                     match action {
                         ui::rules_page::RuleAction::None => {}
+                        ui::rules_page::RuleAction::RefreshPlans => self.refresh_power_plans(),
                     }
                 }
                 Page::Schedule => {
-                    ui::schedule_page::show(ui, &mut self.settings.schedule_mode);
+                    let action = ui::schedule_page::show(
+                        ui,
+                        &mut self.settings.schedule_mode,
+                        &self.plans,
+                        self.current_plan.as_ref(),
+                    );
+                    self.handle_power_plan_action(action);
                 }
                 Page::CpuUsage => {
-                    ui::cpu_usage_page::show(
+                    let action = ui::cpu_usage_page::show(
                         ui,
                         &mut self.settings.cpu_usage_mode,
-                        self.cpu_usage.percent,
+                        &self.plans,
+                        self.current_plan.as_ref(),
                     );
+                    self.handle_power_plan_action(action);
                 }
                 Page::EfficiencyMode => {
                     if self.eco_qos_picker_open && Instant::now() >= self.next_process_refresh {
@@ -587,8 +582,7 @@ impl PowerLeafApp {
     }
 
     fn next_repaint_after(&self) -> Duration {
-        if self.whitelist_picker_open
-            || self.force_picker_open
+        if self.foreground_rule_picker_open.is_some()
             || self.eco_qos_picker_open
             || self.suspension_picker_open
         {
@@ -627,13 +621,31 @@ fn configure_style(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
-fn show_activity_page(ui: &mut egui::Ui, settings: &mut Settings) {
+fn show_activity_page(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    plans: &[PowerPlan],
+    current_plan: Option<&PowerPlan>,
+) -> ui::power_plan_page::PowerPlanAction {
     ui.heading("Action Based Scheduler");
     ui.add_space(8.0);
     ui.checkbox(
         &mut settings.activity_mode.enabled,
-        "Enable action-based switching",
+        "Enable action-based scheduler",
     );
+    ui.label("Change power plan based on input detection.");
+    ui.add_space(14.0);
+
+    let action = ui::power_plan_page::show_section(
+        ui,
+        "Power Plans",
+        "Used when this page switches between idle and active states.",
+        &mut settings.activity_mode.power_plans,
+        plans,
+        current_plan,
+    );
+    ui.add_space(18.0);
+
     ui.add_enabled_ui(settings.activity_mode.enabled, |ui| {
         ui.strong("Input detection");
         ui.label("Selected input types can switch back to the Active plan.");
@@ -681,6 +693,8 @@ fn show_activity_page(ui: &mut egui::Ui, settings: &mut Settings) {
             );
         });
     });
+
+    action
 }
 
 fn show_settings_page(
@@ -692,15 +706,15 @@ fn show_settings_page(
     ui.heading("Settings");
     ui.add_space(8.0);
 
-    ui.checkbox(&mut settings.general.enabled, "Enable automation");
-    ui.label("This is the master switch for all automatic power-plan changes.");
+    ui.checkbox(&mut settings.general.enabled, "Powerleaf master switch");
+    ui.label("This control whether to enable or disable all PowerLeaf features on toggle.");
     ui.add_space(18.0);
 
     ui.checkbox(
         &mut settings.general.hide_to_tray,
         "Hide to system tray on close",
     );
-    ui.label("When enabled, closing the window keeps automation running in the tray.");
+    ui.label("Keep Powerleaf running in the tray when closed.");
     ui.add_space(18.0);
 
     ui.separator();

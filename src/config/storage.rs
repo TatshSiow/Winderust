@@ -6,7 +6,8 @@ use std::{
 use std::collections::BTreeMap;
 
 use super::{
-    CpuUsageComparison, CpuUsageRule, CpuUsageTarget, ManualOverride, Settings, WeekdaySetting,
+    CpuUsageComparison, CpuUsageRule, CpuUsageTarget, ForegroundRule, ManualOverride, Settings,
+    WeekdaySetting,
 };
 
 const CONFIG_FILE: &str = "settings.toml";
@@ -46,7 +47,10 @@ pub fn load() -> Result<Settings, String> {
 
     let raw = fs::read_to_string(&path)
         .map_err(|err| format!("Failed to read {}: {err}", path.display()))?;
-    toml::from_str(&raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
+    let mut settings: Settings =
+        toml::from_str(&raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))?;
+    settings.fill_missing_power_plan_mappings();
+    Ok(settings)
 }
 
 fn load_config_path() -> PathBuf {
@@ -153,9 +157,15 @@ fn settings_to_ini(settings: &Settings) -> String {
         "input_mouse",
         settings.activity_mode.input_detection.mouse,
     ));
+    push_power_plan_entries(&mut raw, &settings.activity_mode.power_plans);
 
     raw.push_str("\n[foreground_rules]\n");
     raw.push_str(&ini_entry("enabled", settings.foreground_rules.enabled));
+    push_power_plan_entries(&mut raw, &settings.foreground_rules.power_plans);
+    raw.push_str(&ini_entry(
+        "rule_count",
+        settings.foreground_rules.rules.len(),
+    ));
     raw.push_str(&ini_entry_raw(
         "force_active",
         join_escaped(&settings.foreground_rules.whitelist),
@@ -165,8 +175,19 @@ fn settings_to_ini(settings: &Settings) -> String {
         join_escaped(&settings.foreground_rules.force_power_save),
     ));
 
+    for (index, rule) in settings.foreground_rules.rules.iter().enumerate() {
+        raw.push_str(&format!("\n[foreground_rule.{index}]\n"));
+        raw.push_str(&ini_entry("name", &rule.name));
+        raw.push_str(&ini_entry("process_name", &rule.process_name));
+        raw.push_str(&ini_entry(
+            "power_plan_guid",
+            rule.power_plan_guid.as_deref().unwrap_or(""),
+        ));
+    }
+
     raw.push_str("\n[schedule_mode]\n");
     raw.push_str(&ini_entry("enabled", settings.schedule_mode.enabled));
+    push_power_plan_entries(&mut raw, &settings.schedule_mode.power_plans);
     raw.push_str(&ini_entry("rule_count", settings.schedule_mode.rules.len()));
 
     for (index, rule) in settings.schedule_mode.rules.iter().enumerate() {
@@ -196,6 +217,7 @@ fn settings_to_ini(settings: &Settings) -> String {
 
     raw.push_str("\n[cpu_usage_mode]\n");
     raw.push_str(&ini_entry("enabled", settings.cpu_usage_mode.enabled));
+    push_power_plan_entries(&mut raw, &settings.cpu_usage_mode.power_plans);
     raw.push_str(&ini_entry(
         "rule_count",
         settings.cpu_usage_mode.rules.len(),
@@ -293,20 +315,49 @@ fn settings_from_ini(raw: &str) -> Result<Settings, String> {
         settings.activity_mode.input_detection.ensure_any_enabled();
         settings.activity_mode.switch_to_performance_on_resume =
             settings.activity_mode.input_detection.any_enabled();
+        read_power_plan_entries(section, &mut settings.activity_mode.power_plans);
     }
 
     if let Some(section) = ini.get("foreground_rules") {
         read_bool(section, "enabled", &mut settings.foreground_rules.enabled)?;
+        read_power_plan_entries(section, &mut settings.foreground_rules.power_plans);
         if let Some(value) = section.get("force_active") {
             settings.foreground_rules.whitelist = split_escaped(value);
         }
         if let Some(value) = section.get("force_idle") {
             settings.foreground_rules.force_power_save = split_escaped(value);
         }
+        let rule_count = section
+            .get("rule_count")
+            .map(|value| parse_usize(value, "foreground_rules.rule_count"))
+            .transpose()?
+            .unwrap_or(0);
+
+        let mut rules = Vec::with_capacity(rule_count);
+        for index in 0..rule_count {
+            let section_name = format!("foreground_rule.{index}");
+            let Some(rule_section) = ini.get(&section_name) else {
+                continue;
+            };
+
+            let mut rule = ForegroundRule::default();
+            if let Some(value) = rule_section.get("name") {
+                rule.name = unescape_value(value);
+            }
+            if let Some(value) = rule_section.get("process_name") {
+                rule.process_name = unescape_value(value);
+            }
+            rule.power_plan_guid = read_optional_string(rule_section, "power_plan_guid");
+
+            rules.push(rule);
+        }
+
+        settings.foreground_rules.rules = rules;
     }
 
     if let Some(section) = ini.get("schedule_mode") {
         read_bool(section, "enabled", &mut settings.schedule_mode.enabled)?;
+        read_power_plan_entries(section, &mut settings.schedule_mode.power_plans);
         let rule_count = section
             .get("rule_count")
             .map(|value| parse_usize(value, "schedule_mode.rule_count"))
@@ -351,6 +402,7 @@ fn settings_from_ini(raw: &str) -> Result<Settings, String> {
 
     if let Some(section) = ini.get("cpu_usage_mode") {
         read_bool(section, "enabled", &mut settings.cpu_usage_mode.enabled)?;
+        read_power_plan_entries(section, &mut settings.cpu_usage_mode.power_plans);
         let rule_count = section
             .get("rule_count")
             .map(|value| parse_usize(value, "cpu_usage_mode.rule_count"))
@@ -434,7 +486,31 @@ fn settings_from_ini(raw: &str) -> Result<Settings, String> {
         }
     }
 
+    settings.fill_missing_power_plan_mappings();
     Ok(settings)
+}
+
+fn push_power_plan_entries(raw: &mut String, power_plans: &super::PowerPlanSettings) {
+    raw.push_str(&ini_entry(
+        "power_save_guid",
+        power_plans.power_save_guid.as_deref().unwrap_or(""),
+    ));
+    raw.push_str(&ini_entry(
+        "performance_guid",
+        power_plans.performance_guid.as_deref().unwrap_or(""),
+    ));
+}
+
+fn read_power_plan_entries(
+    section: &BTreeMap<String, String>,
+    power_plans: &mut super::PowerPlanSettings,
+) {
+    if section.contains_key("power_save_guid") {
+        power_plans.power_save_guid = read_optional_string(section, "power_save_guid");
+    }
+    if section.contains_key("performance_guid") {
+        power_plans.performance_guid = read_optional_string(section, "performance_guid");
+    }
 }
 
 fn parse_ini(raw: &str) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
@@ -664,8 +740,8 @@ mod tests {
     use super::*;
     use crate::config::{
         ActivityModeSettings, AppSuspensionSettings, CpuUsageModeSettings, EcoQosSettings,
-        ForegroundRules, GeneralSettings, InputDetectionSettings, PowerPlanSettings,
-        ScheduleModeSettings, ScheduleRule,
+        ForegroundRule, ForegroundRules, GeneralSettings, InputDetectionSettings,
+        PowerPlanSettings, ScheduleModeSettings, ScheduleRule,
     };
 
     #[test]
@@ -690,14 +766,38 @@ mod tests {
                     keyboard: true,
                     mouse: false,
                 },
+                power_plans: PowerPlanSettings {
+                    power_save_guid: Some("activity-idle-guid".to_owned()),
+                    performance_guid: Some("activity-active-guid".to_owned()),
+                },
             },
             foreground_rules: ForegroundRules {
                 enabled: true,
+                rules: vec![
+                    ForegroundRule {
+                        name: "Game plan".to_owned(),
+                        process_name: "game.exe".to_owned(),
+                        power_plan_guid: Some("gaming-guid".to_owned()),
+                    },
+                    ForegroundRule {
+                        name: "Backup plan".to_owned(),
+                        process_name: "backup\\tool.exe".to_owned(),
+                        power_plan_guid: Some("backup-guid".to_owned()),
+                    },
+                ],
                 whitelist: vec!["game.exe".to_owned(), "comma,app.exe".to_owned()],
                 force_power_save: vec!["backup\\tool.exe".to_owned()],
+                power_plans: PowerPlanSettings {
+                    power_save_guid: Some("foreground-idle-guid".to_owned()),
+                    performance_guid: Some("foreground-active-guid".to_owned()),
+                },
             },
             schedule_mode: ScheduleModeSettings {
                 enabled: true,
+                power_plans: PowerPlanSettings {
+                    power_save_guid: Some("schedule-idle-guid".to_owned()),
+                    performance_guid: Some("schedule-active-guid".to_owned()),
+                },
                 rules: vec![ScheduleRule {
                     name: "Work hours".to_owned(),
                     days: vec![WeekdaySetting::Mon, WeekdaySetting::Fri],
@@ -709,6 +809,10 @@ mod tests {
             },
             cpu_usage_mode: CpuUsageModeSettings {
                 enabled: true,
+                power_plans: PowerPlanSettings {
+                    power_save_guid: Some("cpu-idle-guid".to_owned()),
+                    performance_guid: Some("cpu-active-guid".to_owned()),
+                },
                 rules: vec![CpuUsageRule {
                     name: "Low CPU".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,

@@ -1,12 +1,37 @@
 use eframe::egui;
 
-use crate::config::{ScheduleModeSettings, ScheduleRule, WeekdaySetting};
+use crate::{
+    config::{ScheduleModeSettings, ScheduleRule, WeekdaySetting},
+    power::PowerPlan,
+    ui::power_plan_page::{self, PowerPlanAction},
+};
 
-pub fn show(ui: &mut egui::Ui, schedule: &mut ScheduleModeSettings) {
+pub fn show(
+    ui: &mut egui::Ui,
+    schedule: &mut ScheduleModeSettings,
+    plans: &[PowerPlan],
+    current_plan: Option<&PowerPlan>,
+) -> PowerPlanAction {
+    let mut action = PowerPlanAction::None;
+
     ui.heading("Time Based Scheduler");
     ui.add_space(8.0);
-    ui.checkbox(&mut schedule.enabled, "Enable time-based switching");
+    ui.checkbox(&mut schedule.enabled, "Enable Time Based Scheduler");
+    ui.label("Change power plan based on scheduled time.");
     ui.add_space(14.0);
+
+    if power_plan_page::show_section(
+        ui,
+        "Power Plans",
+        "Used when this page switches between idle and active periods.",
+        &mut schedule.power_plans,
+        plans,
+        current_plan,
+    ) == PowerPlanAction::Refresh
+    {
+        action = PowerPlanAction::Refresh;
+    }
+    ui.add_space(18.0);
 
     ui.add_enabled_ui(schedule.enabled, |ui| {
         if ui.button("Add schedule rule").clicked() {
@@ -65,4 +90,6 @@ pub fn show(ui: &mut egui::Ui, schedule: &mut ScheduleModeSettings) {
             schedule.rules.remove(index);
         }
     });
+
+    action
 }
