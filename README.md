@@ -1,6 +1,7 @@
 # PowerLeaf
 
-PowerLeaf is a Windows app designed to make your device more eco-friendly.
+PowerLeaf is a rust based Windows app designed to make your device more eco-friendly.
+
 It aims to reduce power usage and carbon emissions.
 
 ## Features
