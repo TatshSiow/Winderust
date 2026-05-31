@@ -154,6 +154,7 @@ The app dropdown lists currently running processes. Rules are checked in list or
 Controls app-level settings.
 
 - `Powerleaf master switch`: master switch for automatic power-plan switching, Efficiency Mode, and App Suspension.
+- `Stop power plan scheduler on A/C`: stops Action, CPU, Time, and Foreground Rules from changing the Windows power plan on AC power.
 - `Hide to system tray on close`: closing the window keeps PowerLeaf running in the tray.
 - `Settings Files`: export or import all settings as `.ini`.
 

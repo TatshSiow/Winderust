@@ -11,6 +11,7 @@ mod cpu;
 mod ecoqos;
 mod foreground;
 mod power;
+mod power_source;
 mod rules;
 mod scheduler;
 mod suspension;

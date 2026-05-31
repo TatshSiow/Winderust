@@ -113,6 +113,10 @@ fn settings_to_ini(settings: &Settings) -> String {
     ));
     raw.push_str(&ini_entry("hide_to_tray", settings.general.hide_to_tray));
     raw.push_str(&ini_entry(
+        "pause_power_plan_switching_while_plugged_in",
+        settings.general.pause_power_plan_switching_while_plugged_in,
+    ));
+    raw.push_str(&ini_entry(
         "check_interval_ms",
         settings.general.check_interval_ms,
     ));
@@ -275,6 +279,11 @@ fn settings_from_ini(raw: &str) -> Result<Settings, String> {
             &mut settings.general.startup_with_windows,
         )?;
         read_bool(section, "hide_to_tray", &mut settings.general.hide_to_tray)?;
+        read_bool(
+            section,
+            "pause_power_plan_switching_while_plugged_in",
+            &mut settings.general.pause_power_plan_switching_while_plugged_in,
+        )?;
         read_u64(
             section,
             "check_interval_ms",
@@ -751,6 +760,7 @@ mod tests {
                 enabled: false,
                 startup_with_windows: true,
                 hide_to_tray: true,
+                pause_power_plan_switching_while_plugged_in: true,
                 check_interval_ms: 2_500,
                 manual_override: ManualOverride::UntilEpochSeconds(42),
             },

@@ -15,6 +15,7 @@ use crate::{
     ecoqos::EcoQosSnapshot,
     foreground::{list_process_names, ForegroundDetector},
     power::{PowerPlan, PowerPlanManager},
+    power_source,
     rules::{DecisionEngine, DecisionInput, DecisionOutcome, DecisionState},
     scheduler::{CpuUsageScheduler, Scheduler},
     suspension::AppSuspensionSnapshot,
@@ -201,6 +202,7 @@ impl PowerLeafApp {
             DecisionInput {
                 activity_state: self.activity.state,
                 foreground_app: self.foreground_app.clone(),
+                plugged_in: power_source::is_plugged_in(),
                 schedule,
                 cpu_usage,
             },
@@ -708,6 +710,15 @@ fn show_settings_page(
 
     ui.checkbox(&mut settings.general.enabled, "Powerleaf master switch");
     ui.label("This control whether to enable or disable all PowerLeaf features on toggle.");
+    ui.add_space(18.0);
+
+    ui.checkbox(
+        &mut settings.general.pause_power_plan_switching_while_plugged_in,
+        "Stop power plan scheduler on A/C",
+    );
+    ui.label(
+        "Stop power plan switching while on A/C Power.",
+    );
     ui.add_space(18.0);
 
     ui.checkbox(

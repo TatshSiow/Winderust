@@ -22,6 +22,8 @@ pub struct GeneralSettings {
     pub startup_with_windows: bool,
     #[serde(default)]
     pub hide_to_tray: bool,
+    #[serde(default)]
+    pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
     pub manual_override: ManualOverride,
 }
@@ -169,6 +171,7 @@ impl Default for Settings {
                 enabled: true,
                 startup_with_windows: false,
                 hide_to_tray: false,
+                pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
                 manual_override: ManualOverride::None,
             },

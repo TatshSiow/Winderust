@@ -11,6 +11,7 @@ use crate::{
     ecoqos::{EcoQosManager, EcoQosSnapshot},
     foreground::ForegroundDetector,
     power::PowerPlanManager,
+    power_source,
     rules::{DecisionEngine, DecisionInput, DecisionOutcome},
     scheduler::{CpuUsageScheduler, Scheduler},
     suspension::{AppSuspensionManager, AppSuspensionSnapshot},
@@ -276,6 +277,7 @@ impl HiddenAutomationRunner {
             DecisionInput {
                 activity_state: activity.state,
                 foreground_app,
+                plugged_in: power_source::is_plugged_in(),
                 schedule,
                 cpu_usage: cpu_usage_decision,
             },

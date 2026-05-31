@@ -52,6 +52,7 @@ Primary settings storage:
 - Load/save helpers: `config::storage::load()` and `config::storage::save()`.
 - `load()` falls back to the legacy `PowerSwitcher` config folder when no `PowerLeaf` settings file exists.
 - Runtime settings take effect immediately. Unsaved settings show a global bottom popup with Save and Cancel actions; disk persistence happens through Save or INI import.
+- `settings.general.pause_power_plan_switching_while_plugged_in` only pauses power-plan switching when Windows reports AC power. It does not pause Efficiency Mode or App Suspension.
 - Exception: EcoQoS and App Suspension activation and target changes are save-gated. `PowerLeafApp::background_settings()` sends the last saved EcoQoS/App Suspension settings to `BackgroundAutomation` while the current edited settings remain enabled but unsaved. Disabling either feature is allowed to take effect immediately.
 
 INI import/export:
@@ -261,11 +262,12 @@ Current priority:
 
 1. Automation disabled.
 2. Manual override state if present in config/imported settings.
-3. Foreground rules, only when `foreground_rules.enabled`.
-4. Time scheduler.
-5. CPU usage-based Scheduler.
-6. Action/activity mode.
-7. Default Active plan.
+3. Plugged-in power-plan pause, only when enabled and Windows reports AC power.
+4. Foreground rules, only when `foreground_rules.enabled`.
+5. Time scheduler.
+6. CPU usage-based Scheduler.
+7. Action/activity mode.
+8. Default Active plan.
 
 The manual override sidebar UI was removed. The enum remains for backward compatibility with existing settings and INI/TOML imports.
 

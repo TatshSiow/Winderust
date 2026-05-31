@@ -10,6 +10,7 @@ use crate::{
 pub enum DecisionState {
     Disabled,
     ManualOverride,
+    PluggedInPause,
     ForegroundRule,
     ForegroundForceActive,
     ForegroundForcePowerSave,
@@ -26,6 +27,7 @@ pub enum DecisionState {
 pub struct DecisionInput {
     pub activity_state: ActivityState,
     pub foreground_app: Option<String>,
+    pub plugged_in: Option<bool>,
     pub schedule: Option<ScheduleDecision>,
     pub cpu_usage: Option<CpuUsageDecision>,
 }
@@ -54,6 +56,15 @@ impl DecisionEngine {
             return DecisionOutcome::without_target(
                 DecisionState::ManualOverride,
                 "Manual override is active.",
+            );
+        }
+
+        if settings.general.pause_power_plan_switching_while_plugged_in
+            && input.plugged_in == Some(true)
+        {
+            return DecisionOutcome::without_target(
+                DecisionState::PluggedInPause,
+                "Power-plan switching is paused while plugged in.",
             );
         }
 
@@ -205,6 +216,7 @@ impl DecisionState {
         match self {
             Self::Disabled => "Disabled",
             Self::ManualOverride => "Manual override",
+            Self::PluggedInPause => "Plugged in",
             Self::ForegroundRule => "Foreground rule",
             Self::ForegroundForceActive => "Foreground force Active plan",
             Self::ForegroundForcePowerSave => "Foreground force Idle plan",
@@ -275,6 +287,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Active,
                 foreground_app: Some("backup.exe".to_owned()),
+                plugged_in: None,
                 schedule: Some(ScheduleDecision {
                     rule_name: "Work hours".to_owned(),
                     inside_power_save_period: false,
@@ -294,6 +307,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
+                plugged_in: None,
                 schedule: Some(ScheduleDecision {
                     rule_name: "Outside schedule".to_owned(),
                     inside_power_save_period: false,
@@ -317,6 +331,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
+                plugged_in: None,
                 schedule: None,
                 cpu_usage: Some(CpuUsageDecision {
                     rule_name: "High CPU".to_owned(),
@@ -337,6 +352,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
+                plugged_in: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -356,6 +372,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Idle,
                 foreground_app: Some("backup.exe".to_owned()),
+                plugged_in: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -363,6 +380,26 @@ mod tests {
 
         assert_eq!(outcome.state, DecisionState::IdlePowerSave);
         assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
+    }
+
+    #[test]
+    fn plugged_in_pause_prevents_power_plan_target() {
+        let mut settings = test_settings();
+        settings.general.pause_power_plan_switching_while_plugged_in = true;
+
+        let outcome = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: None,
+                plugged_in: Some(true),
+                schedule: None,
+                cpu_usage: None,
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::PluggedInPause);
+        assert_eq!(outcome.target_guid, None);
     }
 
     #[test]
@@ -395,6 +432,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Active,
                 foreground_app: Some("game.exe".to_owned()),
+                plugged_in: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -406,6 +444,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Active,
                 foreground_app: None,
+                plugged_in: None,
                 schedule: Some(ScheduleDecision {
                     rule_name: "Quiet".to_owned(),
                     inside_power_save_period: true,
@@ -420,6 +459,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
+                plugged_in: None,
                 schedule: None,
                 cpu_usage: Some(CpuUsageDecision {
                     rule_name: "High CPU".to_owned(),
@@ -435,6 +475,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
+                plugged_in: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -456,6 +497,7 @@ mod tests {
             DecisionInput {
                 activity_state: ActivityState::Idle,
                 foreground_app: Some("editor.exe".to_owned()),
+                plugged_in: None,
                 schedule: None,
                 cpu_usage: None,
             },
