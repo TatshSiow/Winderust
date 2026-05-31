@@ -5,6 +5,8 @@ use std::{
 
 use std::collections::BTreeMap;
 
+use chrono::Local;
+
 use super::{
     CpuUsageComparison, CpuUsageRule, CpuUsageTarget, ForegroundRule, ManualOverride, Settings,
     WeekdaySetting,
@@ -21,6 +23,22 @@ pub fn config_path() -> PathBuf {
 
 pub fn ini_path() -> PathBuf {
     config_dir().join(INI_FILE)
+}
+
+pub fn default_export_ini_path() -> PathBuf {
+    config_dir().join(default_export_ini_filename())
+}
+
+fn default_export_ini_filename() -> String {
+    format!(
+        "powerleaf_{}_{}.ini",
+        env!("CARGO_PKG_VERSION"),
+        export_date()
+    )
+}
+
+fn export_date() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
 }
 
 fn config_dir() -> PathBuf {
@@ -104,6 +122,10 @@ fn write_ini_settings(path: &Path, settings: &Settings) -> io::Result<()> {
 
 fn settings_to_ini(settings: &Settings) -> String {
     let mut raw = String::new();
+
+    raw.push_str("# PowerLeaf settings export\n");
+    raw.push_str(&format!("# Version: {}\n", env!("CARGO_PKG_VERSION")));
+    raw.push_str(&format!("# Export date: {}\n\n", export_date()));
 
     raw.push_str("[general]\n");
     raw.push_str(&ini_entry("enabled", settings.general.enabled));
@@ -847,5 +869,17 @@ mod tests {
         let parsed = settings_from_ini(&raw).expect("INI should parse");
 
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn ini_export_includes_reference_metadata_and_default_name() {
+        let raw = settings_to_ini(&Settings::default());
+        let filename = default_export_ini_filename();
+
+        assert!(raw.starts_with("# PowerLeaf settings export\n"));
+        assert!(raw.contains(&format!("# Version: {}\n", env!("CARGO_PKG_VERSION"))));
+        assert!(raw.contains("# Export date: "));
+        assert!(filename.starts_with(&format!("powerleaf_{}_", env!("CARGO_PKG_VERSION"))));
+        assert!(filename.ends_with(".ini"));
     }
 }

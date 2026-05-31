@@ -443,7 +443,7 @@ impl eframe::App for PowerLeafApp {
             ui.add_space(8.0);
             match self.page {
                 Page::Dashboard => {
-                    if ui::dashboard::show(
+                    ui::dashboard::show(
                         ui,
                         &self.settings,
                         self.current_plan.as_ref(),
@@ -454,9 +454,7 @@ impl eframe::App for PowerLeafApp {
                         &self.app_suspension_status,
                         &self.decision,
                         &self.next_schedule,
-                    ) {
-                        self.run_check();
-                    }
+                    );
                 }
                 Page::Activity => {
                     let action = show_activity_page(
@@ -716,9 +714,7 @@ fn show_settings_page(
         &mut settings.general.pause_power_plan_switching_while_plugged_in,
         "Stop power plan scheduler on A/C",
     );
-    ui.label(
-        "Stop power plan switching while on A/C Power.",
-    );
+    ui.label("Stop power plan switching while on A/C Power.");
     ui.add_space(18.0);
 
     ui.checkbox(
@@ -792,7 +788,11 @@ fn show_unsaved_settings_popup(ctx: &egui::Context, settings_dirty: bool) -> Uns
 fn choose_ini_file(hwnd: Option<HWND>, mode: FileDialogMode) -> Result<Option<PathBuf>, String> {
     const FILE_BUFFER_LEN: usize = 4096;
 
-    let mut file_buffer = path_to_wide_buffer(&config::storage::ini_path(), FILE_BUFFER_LEN);
+    let default_path = match mode {
+        FileDialogMode::Open => config::storage::ini_path(),
+        FileDialogMode::Save => config::storage::default_export_ini_path(),
+    };
+    let mut file_buffer = path_to_wide_buffer(&default_path, FILE_BUFFER_LEN);
     let filter = wide_nulls("INI settings (*.ini)\0*.ini\0All files (*.*)\0*.*\0");
     let default_extension = wide_null("ini");
     let title = match mode {

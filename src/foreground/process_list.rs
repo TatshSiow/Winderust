@@ -65,5 +65,45 @@ fn process_name_from_entry(entry: &PROCESSENTRY32W) -> Option<String> {
         return None;
     }
 
-    Some(String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase())
+    let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_ascii_lowercase();
+    (!is_system_process_name(&name)).then_some(name)
+}
+
+fn is_system_process_name(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case("[system process]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_name_from_entry_ignores_system_process() {
+        let entry = process_entry("[System Process]");
+
+        assert_eq!(process_name_from_entry(&entry), None);
+    }
+
+    #[test]
+    fn process_name_from_entry_keeps_normal_processes_lowercase() {
+        let entry = process_entry("Explorer.EXE");
+
+        assert_eq!(
+            process_name_from_entry(&entry).as_deref(),
+            Some("explorer.exe")
+        );
+    }
+
+    fn process_entry(name: &str) -> PROCESSENTRY32W {
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+
+        for (index, code) in name.encode_utf16().enumerate() {
+            entry.szExeFile[index] = code;
+        }
+
+        entry
+    }
 }

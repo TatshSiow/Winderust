@@ -17,15 +17,8 @@ pub fn show(
     app_suspension: &AppSuspensionSnapshot,
     decision: &DecisionOutcome,
     next_schedule: &str,
-) -> bool {
-    let mut check_now = false;
-
+) {
     ui.heading("Dashboard");
-    ui.horizontal(|ui| {
-        if ui.button("Check now").clicked() {
-            check_now = true;
-        }
-    });
     ui.add_space(12.0);
 
     egui::Grid::new("dashboard_grid")
@@ -66,8 +59,6 @@ pub fn show(
             row(ui, "Next scheduled switch", next_schedule);
             row(ui, "Decision reason", &decision.reason);
         });
-
-    check_now
 }
 
 fn row(ui: &mut egui::Ui, label: &str, value: &str) {

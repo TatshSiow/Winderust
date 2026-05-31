@@ -61,6 +61,7 @@ INI import/export:
 - Export uses `export_ini_to(path, settings)`.
 - Import uses `import_ini_from(path)`.
 - Settings tab invokes native Windows open/save file dialogs through Win32 common dialog APIs in `src/app.rs`.
+- Export defaults to `powerleaf_{version}_{date}.ini` and writes comment metadata for version and export date before `[general]`.
 - INI round-trip coverage exists in `config::storage::tests::ini_round_trip_preserves_settings`.
 
 When adding settings fields:

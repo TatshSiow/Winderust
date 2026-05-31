@@ -172,6 +172,8 @@ The Settings tab can also:
 - Export settings to a chosen `.ini` file.
 - Import settings from a chosen `.ini` file.
 
+Exported INI files use `powerleaf_{version}_{date}.ini` as the default filename and include the PowerLeaf version plus export date at the top of the file.
+
 Imported settings are applied immediately and saved to the normal app config.
 
 ## System Tray
