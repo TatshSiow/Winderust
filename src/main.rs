@@ -8,6 +8,7 @@ mod app;
 mod automation;
 mod config;
 mod cpu;
+mod ecoqos;
 mod foreground;
 mod power;
 mod rules;

@@ -216,6 +216,17 @@ fn settings_to_ini(settings: &Settings) -> String {
         raw.push_str(&ini_entry("target", cpu_usage_target_to_ini(rule.target)));
     }
 
+    raw.push_str("\n[eco_qos]\n");
+    raw.push_str(&ini_entry("enabled", settings.eco_qos.enabled));
+    raw.push_str(&ini_entry(
+        "exclude_foreground_app",
+        settings.eco_qos.exclude_foreground_app,
+    ));
+    raw.push_str(&ini_entry_raw(
+        "efficiency_whitelist",
+        join_escaped(&settings.eco_qos.efficiency_whitelist),
+    ));
+
     raw
 }
 
@@ -372,6 +383,29 @@ fn settings_from_ini(raw: &str) -> Result<Settings, String> {
         }
 
         settings.cpu_usage_mode.rules = rules;
+    }
+
+    if let Some(section) = ini.get("eco_qos") {
+        read_bool(section, "enabled", &mut settings.eco_qos.enabled)?;
+        if section.contains_key("exclude_foreground_app") {
+            read_bool(
+                section,
+                "exclude_foreground_app",
+                &mut settings.eco_qos.exclude_foreground_app,
+            )?;
+        } else {
+            read_bool(
+                section,
+                "ignore_foreground_app",
+                &mut settings.eco_qos.exclude_foreground_app,
+            )?;
+        }
+        if let Some(value) = section
+            .get("efficiency_whitelist")
+            .or_else(|| section.get("excluded_processes"))
+        {
+            settings.eco_qos.efficiency_whitelist = split_escaped(value);
+        }
     }
 
     Ok(settings)
@@ -603,8 +637,9 @@ fn unescape_value(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        ActivityModeSettings, CpuUsageModeSettings, ForegroundRules, GeneralSettings,
-        InputDetectionSettings, PowerPlanSettings, ScheduleModeSettings, ScheduleRule,
+        ActivityModeSettings, CpuUsageModeSettings, EcoQosSettings, ForegroundRules,
+        GeneralSettings, InputDetectionSettings, PowerPlanSettings, ScheduleModeSettings,
+        ScheduleRule,
     };
 
     #[test]
@@ -655,6 +690,11 @@ mod tests {
                     duration_seconds: 45,
                     target: CpuUsageTarget::Idle,
                 }],
+            },
+            eco_qos: EcoQosSettings {
+                enabled: true,
+                exclude_foreground_app: false,
+                efficiency_whitelist: vec!["mouse.exe".to_owned(), "comma,app.exe".to_owned()],
             },
         };
 

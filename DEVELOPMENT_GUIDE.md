@@ -32,6 +32,7 @@ Navigation pages are defined in `src/ui/mod.rs`:
 - `Dashboard`
 - `Action Based Scheduler`
 - `CPU Usage Scheduler`
+- `Efficiency Mode`
 - `Time Based Scheduler`
 - `Foreground Rules`
 - `Settings`
@@ -127,6 +128,28 @@ Current behavior:
 - Rule target roles map to the global Idle/Active plans from Settings.
 - CPU usage rules are checked in list order. The first rule whose condition has held for its duration wins.
 
+## Efficiency Mode
+
+`src/ecoqos/mod.rs` owns Windows EcoQoS application and restore behavior.
+`src/ui/efficiency_page.rs` owns the settings page.
+
+Current behavior:
+
+- Settings live in `settings.eco_qos`.
+- The feature is disabled by default.
+- `BackgroundAutomation` runs the `EcoQosManager` every five seconds while the app is visible or hidden to tray.
+- The manager applies Task Manager-style Efficiency Mode: `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` plus `IDLE_PRIORITY_CLASS`.
+- The manager preserves each process's previous `PROCESS_POWER_THROTTLING_STATE` and priority class when possible, then restores those values when the process is no longer targeted.
+- `exclude_foreground_app` defaults to true. When enabled, foreground detection failure pauses and clears throttling; same-name processes as the foreground app are skipped too. When disabled, foreground detection is not required.
+- It pauses and clears throttling if automation is disabled, Efficiency Mode is disabled, or the current Windows session cannot be identified.
+- It only targets processes in the current user session.
+- It never targets the PowerLeaf process. It only skips the current foreground process when `exclude_foreground_app` is enabled.
+- Built-in exclusions cover Windows shell/input processes such as `explorer.exe`, `dwm.exe`, and `textinputhost.exe`.
+- Access-denied process opens are counted as skipped, not failed. This is expected for protected/elevated Windows processes.
+- The Efficiency Whitelist is edited in the Efficiency Mode page with the same searchable running-app dropdown pattern as Foreground Rules and is persisted to TOML/INI.
+
+Avoid copying EnergyStarX code into this project. If EcoQoS behavior needs to change, implement against Microsoft Win32 documentation directly.
+
 ## Foreground Rules
 
 `src/ui/rules_page.rs` owns this page.
@@ -186,6 +209,13 @@ Foreground app detection:
 
 - Active foreground process: `src/foreground/active_window.rs`.
 - Running process list for dropdowns: `src/foreground/process_list.rs`.
+
+EcoQoS:
+
+- `src/ecoqos/mod.rs`.
+- Uses `GetProcessInformation` / `SetProcessInformation` with `ProcessPowerThrottling`.
+- Uses `SetPriorityClass(IDLE_PRIORITY_CLASS)` while a process is throttled and restores the previous priority or `NORMAL_PRIORITY_CLASS`.
+- Uses `ProcessIdToSessionId` to avoid targeting system-session processes.
 
 Input detection:
 

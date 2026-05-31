@@ -10,6 +10,8 @@ pub struct Settings {
     pub schedule_mode: ScheduleModeSettings,
     #[serde(default)]
     pub cpu_usage_mode: CpuUsageModeSettings,
+    #[serde(default)]
+    pub eco_qos: EcoQosSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +84,18 @@ pub struct CpuUsageModeSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EcoQosSettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub exclude_foreground_app: bool,
+    #[serde(default, alias = "excluded_processes")]
+    pub efficiency_whitelist: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuUsageRule {
     pub name: String,
     pub comparison: CpuUsageComparison,
@@ -146,6 +160,7 @@ impl Default for Settings {
                 }],
             },
             cpu_usage_mode: CpuUsageModeSettings::default(),
+            eco_qos: EcoQosSettings::default(),
         }
     }
 }
@@ -191,6 +206,20 @@ impl Default for CpuUsageModeSettings {
             ],
         }
     }
+}
+
+impl Default for EcoQosSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exclude_foreground_app: default_exclude_foreground_app(),
+            efficiency_whitelist: Vec::new(),
+        }
+    }
+}
+
+const fn default_exclude_foreground_app() -> bool {
+    true
 }
 
 impl InputDetectionSettings {

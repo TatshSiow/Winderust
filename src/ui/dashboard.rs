@@ -1,8 +1,8 @@
 use eframe::egui;
 
 use crate::{
-    activity::ActivitySnapshot, config::Settings, cpu::CpuUsageSnapshot, power::PowerPlan,
-    rules::DecisionOutcome, ui::duration_label,
+    activity::ActivitySnapshot, config::Settings, cpu::CpuUsageSnapshot, ecoqos::EcoQosSnapshot,
+    power::PowerPlan, rules::DecisionOutcome, ui::duration_label,
 };
 
 pub fn show(
@@ -12,6 +12,7 @@ pub fn show(
     foreground_app: Option<&str>,
     activity: &ActivitySnapshot,
     cpu_usage: &CpuUsageSnapshot,
+    eco_qos: &EcoQosSnapshot,
     decision: &DecisionOutcome,
     next_schedule: &str,
 ) -> bool {
@@ -50,6 +51,7 @@ pub fn show(
             row(ui, "Foreground app", foreground_app.unwrap_or("Unknown"));
             row(ui, "Activity state", &format!("{:?}", activity.state));
             row(ui, "CPU usage", &cpu_usage_label(cpu_usage.percent));
+            row(ui, "Efficiency Mode", &eco_qos_label(eco_qos));
             row(
                 ui,
                 "Idle time",
@@ -75,4 +77,15 @@ fn cpu_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
         .unwrap_or_else(|| "Collecting".to_owned())
+}
+
+fn eco_qos_label(status: &EcoQosSnapshot) -> String {
+    if status.enabled {
+        format!(
+            "{} ({} throttled)",
+            status.message, status.throttled_processes
+        )
+    } else {
+        status.message.clone()
+    }
 }

@@ -12,6 +12,7 @@ use crate::{
     automation::BackgroundAutomation,
     config::{self, Settings},
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
+    ecoqos::EcoQosSnapshot,
     foreground::{list_process_names, ForegroundDetector},
     power::{PowerPlan, PowerPlanManager},
     rules::{DecisionEngine, DecisionInput, DecisionOutcome, DecisionState},
@@ -38,6 +39,7 @@ pub struct PowerLeafApp {
     current_plan: Option<PowerPlan>,
     activity: ActivitySnapshot,
     cpu_usage: CpuUsageSnapshot,
+    eco_qos_status: EcoQosSnapshot,
     foreground_app: Option<String>,
     decision: DecisionOutcome,
     next_schedule: String,
@@ -65,6 +67,9 @@ pub struct PowerLeafApp {
     force_input: String,
     force_picker_open: bool,
     force_picker_highlighted: Option<usize>,
+    eco_qos_exclusion_input: String,
+    eco_qos_picker_open: bool,
+    eco_qos_picker_highlighted: Option<usize>,
 }
 
 impl PowerLeafApp {
@@ -88,6 +93,7 @@ impl PowerLeafApp {
                 idle_for: None,
             },
             cpu_usage: CpuUsageSnapshot::default(),
+            eco_qos_status: EcoQosSnapshot::default(),
             foreground_app: None,
             decision: DecisionOutcome {
                 target_guid: None,
@@ -119,6 +125,9 @@ impl PowerLeafApp {
             force_input: String::new(),
             force_picker_open: false,
             force_picker_highlighted: None,
+            eco_qos_exclusion_input: String::new(),
+            eco_qos_picker_open: false,
+            eco_qos_picker_highlighted: None,
         };
 
         app.sync_tray_icon();
@@ -371,6 +380,7 @@ impl eframe::App for PowerLeafApp {
             self.background_automation.update_settings(&self.settings);
             return;
         }
+        self.eco_qos_status = self.background_automation.eco_qos_status();
 
         let input_events = self
             .input_hook
@@ -421,6 +431,7 @@ impl eframe::App for PowerLeafApp {
                         self.foreground_app.as_deref(),
                         &self.activity,
                         &self.cpu_usage,
+                        &self.eco_qos_status,
                         &self.decision,
                         &self.next_schedule,
                     ) {
@@ -460,6 +471,20 @@ impl eframe::App for PowerLeafApp {
                         ui,
                         &mut self.settings.cpu_usage_mode,
                         self.cpu_usage.percent,
+                    );
+                }
+                Page::EfficiencyMode => {
+                    if self.eco_qos_picker_open && Instant::now() >= self.next_process_refresh {
+                        self.refresh_process_candidates(false);
+                    }
+                    ui::efficiency_page::show(
+                        ui,
+                        &mut self.settings.eco_qos,
+                        &self.eco_qos_status,
+                        &self.process_candidates,
+                        &mut self.eco_qos_exclusion_input,
+                        &mut self.eco_qos_picker_open,
+                        &mut self.eco_qos_picker_highlighted,
                     );
                 }
                 Page::Settings => {
@@ -515,7 +540,7 @@ impl PowerLeafApp {
     }
 
     fn next_repaint_after(&self) -> Duration {
-        if self.whitelist_picker_open || self.force_picker_open {
+        if self.whitelist_picker_open || self.force_picker_open || self.eco_qos_picker_open {
             return Duration::from_millis(250);
         }
         if self.settings != self.saved_settings {

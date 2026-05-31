@@ -8,6 +8,7 @@ use crate::{
     activity::{input_hook, IdleDetector, InputHookEvents},
     config::Settings,
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
+    ecoqos::{EcoQosManager, EcoQosSnapshot},
     foreground::ForegroundDetector,
     power::PowerPlanManager,
     rules::{DecisionEngine, DecisionInput, DecisionOutcome},
@@ -17,6 +18,7 @@ use crate::{
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const ECO_QOS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -32,6 +34,7 @@ struct SharedAutomationState {
 
 struct AutomationWorkerState {
     settings: Settings,
+    eco_qos_status: EcoQosSnapshot,
     stop_requested: bool,
 }
 
@@ -40,6 +43,7 @@ impl BackgroundAutomation {
         let shared = Arc::new(SharedAutomationState {
             state: Mutex::new(AutomationWorkerState {
                 settings: settings.clone(),
+                eco_qos_status: EcoQosSnapshot::default(),
                 stop_requested: false,
             }),
             changed: Condvar::new(),
@@ -55,9 +59,20 @@ impl BackgroundAutomation {
 
     pub fn update_settings(&self, settings: &Settings) {
         if let Ok(mut state) = self.shared.state.lock() {
+            if state.settings == *settings {
+                return;
+            }
             state.settings = settings.clone();
             self.shared.changed.notify_one();
         }
+    }
+
+    pub fn eco_qos_status(&self) -> EcoQosSnapshot {
+        self.shared
+            .state
+            .lock()
+            .map(|state| state.eco_qos_status.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -77,12 +92,19 @@ impl Drop for BackgroundAutomation {
 fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut runner = HiddenAutomationRunner::default();
     let mut next_check = Instant::now();
+    let mut next_eco_qos_refresh = Instant::now();
 
     loop {
         let settings = match settings_snapshot(&shared) {
             Some(settings) => settings,
             None => break,
         };
+
+        if Instant::now() >= next_eco_qos_refresh {
+            let eco_qos_status = runner.run_eco_qos_update(&settings);
+            update_eco_qos_status(&shared, eco_qos_status);
+            next_eco_qos_refresh = Instant::now() + ECO_QOS_REFRESH_INTERVAL;
+        }
 
         let wait_for = if tray::is_hidden_to_tray() {
             let input_events = input_hook::take_pending_events();
@@ -98,13 +120,21 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_check
                 .saturating_duration_since(Instant::now())
                 .min(HIDDEN_POLL_INTERVAL)
+                .min(next_eco_qos_refresh.saturating_duration_since(Instant::now()))
         } else {
             next_check = Instant::now();
-            HIDDEN_POLL_INTERVAL
+            next_eco_qos_refresh
+                .saturating_duration_since(Instant::now())
+                .min(ECO_QOS_REFRESH_INTERVAL)
         };
 
-        if wait_or_stop(&shared, wait_for) {
-            break;
+        match wait_for_wake(&shared, wait_for) {
+            WorkerWake::Stop => break,
+            WorkerWake::SettingsChanged => {
+                next_check = Instant::now();
+                next_eco_qos_refresh = Instant::now();
+            }
+            WorkerWake::Timeout => {}
         }
     }
 }
@@ -117,17 +147,32 @@ fn settings_snapshot(shared: &SharedAutomationState) -> Option<Settings> {
         .and_then(|state| (!state.stop_requested).then(|| state.settings.clone()))
 }
 
-fn wait_or_stop(shared: &SharedAutomationState, wait_for: Duration) -> bool {
+fn update_eco_qos_status(shared: &SharedAutomationState, status: EcoQosSnapshot) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.eco_qos_status = status;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerWake {
+    Stop,
+    SettingsChanged,
+    Timeout,
+}
+
+fn wait_for_wake(shared: &SharedAutomationState, wait_for: Duration) -> WorkerWake {
     let Ok(state) = shared.state.lock() else {
-        return true;
+        return WorkerWake::Stop;
     };
     if state.stop_requested {
-        return true;
+        return WorkerWake::Stop;
     }
 
     match shared.changed.wait_timeout(state, wait_for) {
-        Ok((state, _)) => state.stop_requested,
-        Err(_) => true,
+        Ok((state, _)) if state.stop_requested => WorkerWake::Stop,
+        Ok((_state, timeout)) if timeout.timed_out() => WorkerWake::Timeout,
+        Ok((_state, _)) => WorkerWake::SettingsChanged,
+        Err(_) => WorkerWake::Stop,
     }
 }
 
@@ -152,9 +197,19 @@ struct HiddenAutomationRunner {
     scheduler: Scheduler,
     cpu_usage_scheduler: CpuUsageScheduler,
     decision_engine: DecisionEngine,
+    eco_qos_manager: EcoQosManager,
 }
 
 impl HiddenAutomationRunner {
+    fn run_eco_qos_update(&mut self, settings: &Settings) -> EcoQosSnapshot {
+        let foreground_process_id = self.foreground_detector.process_id();
+        self.eco_qos_manager.update(
+            &settings.eco_qos,
+            settings.general.enabled,
+            foreground_process_id,
+        )
+    }
+
     fn run_check(&mut self, settings: &Settings) {
         let should_refresh_active_plan = self
             .next_active_plan_refresh

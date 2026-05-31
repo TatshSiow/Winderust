@@ -1,0 +1,518 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ffi::c_void,
+};
+
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE},
+    System::{
+        RemoteDesktop::ProcessIdToSessionId,
+        Threading::{
+            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess,
+            ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS,
+            NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+            PROCESS_SET_LIMITED_INFORMATION,
+        },
+    },
+};
+
+use crate::{config::EcoQosSettings, foreground::list_processes};
+
+const BUILT_IN_EXCLUSIONS: &[&str] = &[
+    "audiodg.exe",
+    "conhost.exe",
+    "csrss.exe",
+    "ctfmon.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "fontdrvhost.exe",
+    "lsaiso.exe",
+    "lsass.exe",
+    "registry",
+    "searchhost.exe",
+    "securityhealthservice.exe",
+    "securityhealthsystray.exe",
+    "services.exe",
+    "shellexperiencehost.exe",
+    "sihost.exe",
+    "smss.exe",
+    "startmenuexperiencehost.exe",
+    "system",
+    "taskmgr.exe",
+    "textinputhost.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "wudfhost.exe",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EcoQosSnapshot {
+    pub enabled: bool,
+    pub scanned_processes: usize,
+    pub throttled_processes: usize,
+    pub skipped_processes: usize,
+    pub failed_processes: usize,
+    pub message: String,
+    pub last_error: Option<String>,
+}
+
+#[derive(Default)]
+pub struct EcoQosManager {
+    throttled: BTreeMap<u32, ThrottledProcess>,
+}
+
+#[derive(Clone, Copy)]
+struct ThrottledProcess {
+    previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
+    previous_priority: Option<u32>,
+}
+
+impl EcoQosManager {
+    pub fn update(
+        &mut self,
+        settings: &EcoQosSettings,
+        automation_enabled: bool,
+        foreground_process_id: Option<u32>,
+    ) -> EcoQosSnapshot {
+        if !automation_enabled {
+            let failed = self.clear_all();
+            return EcoQosSnapshot {
+                enabled: false,
+                failed_processes: failed,
+                message: "Automation disabled.".to_owned(),
+                ..Default::default()
+            };
+        }
+
+        if !settings.enabled {
+            let failed = self.clear_all();
+            return EcoQosSnapshot {
+                enabled: false,
+                failed_processes: failed,
+                message: "Efficiency Mode disabled.".to_owned(),
+                ..Default::default()
+            };
+        }
+
+        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+            let failed = self.clear_all();
+            return EcoQosSnapshot {
+                enabled: true,
+                failed_processes: failed,
+                message: "Paused: foreground app is unknown.".to_owned(),
+                ..Default::default()
+            };
+        }
+
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let Some(current_session_id) = process_session_id(current_process_id) else {
+            let failed = self.clear_all();
+            return EcoQosSnapshot {
+                enabled: true,
+                failed_processes: failed,
+                message: "Paused: current Windows session is unknown.".to_owned(),
+                ..Default::default()
+            };
+        };
+
+        let processes = match list_processes() {
+            Ok(processes) => processes,
+            Err(err) => {
+                let failed = self.clear_all();
+                return EcoQosSnapshot {
+                    enabled: true,
+                    failed_processes: failed,
+                    message: err,
+                    ..Default::default()
+                };
+            }
+        };
+
+        let scanned_processes = processes.len();
+        let foreground_process_name = if settings.exclude_foreground_app {
+            foreground_process_id.and_then(|id| {
+                processes
+                    .iter()
+                    .find(|process| process.id == id)
+                    .map(|process| process.name.clone())
+            })
+        } else {
+            None
+        };
+        let mut target_processes = BTreeMap::new();
+        for process in processes {
+            if process.id == 0
+                || process.id == current_process_id
+                || should_ignore_foreground_process(
+                    settings,
+                    process.id,
+                    &process.name,
+                    foreground_process_id,
+                    foreground_process_name.as_deref(),
+                )
+                || is_process_excluded(&process.name, settings)
+            {
+                continue;
+            }
+
+            if process_session_id(process.id) != Some(current_session_id) {
+                continue;
+            }
+
+            target_processes.insert(process.id, process.name);
+        }
+
+        let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        let mut failed_processes = self.release_non_targets(&target_ids);
+        let mut skipped_processes = 0;
+        let mut last_error = None;
+
+        for (process_id, _name) in target_processes {
+            if self.throttled.contains_key(&process_id) {
+                continue;
+            }
+
+            match enable_efficiency_mode(process_id) {
+                Ok(process) => {
+                    self.throttled.insert(process_id, process);
+                }
+                Err(EcoQosError::AccessDenied) => {
+                    skipped_processes += 1;
+                }
+                Err(EcoQosError::Failed(err)) => {
+                    failed_processes += 1;
+                    if last_error.is_none() {
+                        last_error = Some(err);
+                    }
+                }
+            }
+        }
+
+        EcoQosSnapshot {
+            enabled: true,
+            scanned_processes,
+            throttled_processes: self.throttled.len(),
+            skipped_processes,
+            failed_processes,
+            message: "Efficiency Mode active.".to_owned(),
+            last_error,
+        }
+    }
+
+    fn release_non_targets(&mut self, target_ids: &BTreeSet<u32>) -> usize {
+        let process_ids = self
+            .throttled
+            .keys()
+            .copied()
+            .filter(|process_id| !target_ids.contains(process_id))
+            .collect::<Vec<_>>();
+
+        self.release_processes(&process_ids)
+    }
+
+    fn clear_all(&mut self) -> usize {
+        let process_ids = self.throttled.keys().copied().collect::<Vec<_>>();
+        self.release_processes(&process_ids)
+    }
+
+    fn release_processes(&mut self, process_ids: &[u32]) -> usize {
+        let mut failed = 0;
+        for process_id in process_ids {
+            if let Some(process) = self.throttled.remove(process_id) {
+                if restore_efficiency_mode(*process_id, process).is_err() {
+                    failed += 1;
+                }
+            }
+        }
+        failed
+    }
+}
+
+fn should_ignore_foreground_process(
+    settings: &EcoQosSettings,
+    process_id: u32,
+    process_name: &str,
+    foreground_process_id: Option<u32>,
+    foreground_process_name: Option<&str>,
+) -> bool {
+    settings.exclude_foreground_app
+        && (foreground_process_id.is_some_and(|id| id == process_id)
+            || foreground_process_name
+                .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
+}
+
+impl Drop for EcoQosManager {
+    fn drop(&mut self) {
+        self.clear_all();
+    }
+}
+
+impl Default for EcoQosSnapshot {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scanned_processes: 0,
+            throttled_processes: 0,
+            skipped_processes: 0,
+            failed_processes: 0,
+            message: "Efficiency Mode disabled.".to_owned(),
+            last_error: None,
+        }
+    }
+}
+
+pub fn is_process_excluded(process_name: &str, settings: &EcoQosSettings) -> bool {
+    let process_name = process_name.trim();
+    BUILT_IN_EXCLUSIONS
+        .iter()
+        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+        || settings
+            .efficiency_whitelist
+            .iter()
+            .any(|excluded| excluded.trim().eq_ignore_ascii_case(process_name))
+}
+
+fn process_session_id(process_id: u32) -> Option<u32> {
+    let mut session_id = 0;
+    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
+    (ok != 0).then_some(session_id)
+}
+
+enum EcoQosError {
+    AccessDenied,
+    Failed(String),
+}
+
+fn enable_efficiency_mode(process_id: u32) -> Result<ThrottledProcess, EcoQosError> {
+    let process = ProcessHandle::open(process_id)?;
+    let previous_state = process.power_throttling_state().ok();
+    let previous_priority = process.priority_class().ok();
+
+    let mut next_state = previous_state.unwrap_or_default();
+    next_state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    next_state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    next_state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    process.set_power_throttling_state(next_state)?;
+    if let Err(err) = process.set_priority_class(IDLE_PRIORITY_CLASS) {
+        let _ = process.set_power_throttling_state(
+            previous_state.unwrap_or_else(power_throttling_disabled_state),
+        );
+        return Err(err);
+    }
+
+    Ok(ThrottledProcess {
+        previous_state,
+        previous_priority,
+    })
+}
+
+fn restore_efficiency_mode(
+    process_id: u32,
+    process_state: ThrottledProcess,
+) -> Result<(), EcoQosError> {
+    let process = ProcessHandle::open(process_id)?;
+    let mut last_error = None;
+
+    if let Err(err) = process.set_power_throttling_state(
+        process_state
+            .previous_state
+            .unwrap_or_else(power_throttling_disabled_state),
+    ) {
+        last_error = Some(err);
+    }
+
+    if let Err(err) = process.set_priority_class(
+        process_state
+            .previous_priority
+            .unwrap_or(NORMAL_PRIORITY_CLASS),
+    ) {
+        last_error = Some(err);
+    }
+
+    match last_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
+}
+
+fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
+    PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: 0,
+    }
+}
+
+struct ProcessHandle(HANDLE);
+
+impl ProcessHandle {
+    fn open(process_id: u32) -> Result<Self, EcoQosError> {
+        let access_masks = [
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_LIMITED_INFORMATION,
+        ];
+
+        let mut last_open_error = 0;
+        for access in access_masks {
+            let handle = unsafe { OpenProcess(access, 0, process_id) };
+            if !handle.is_null() {
+                return Ok(Self(handle));
+            }
+            last_open_error = last_error();
+        }
+
+        if last_open_error == ERROR_ACCESS_DENIED {
+            Err(EcoQosError::AccessDenied)
+        } else {
+            Err(EcoQosError::Failed(format!(
+                "OpenProcess({process_id}) failed with error {last_open_error}."
+            )))
+        }
+    }
+
+    fn power_throttling_state(&self) -> Result<PROCESS_POWER_THROTTLING_STATE, EcoQosError> {
+        let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+        let ok = unsafe {
+            GetProcessInformation(
+                self.0,
+                ProcessPowerThrottling,
+                &mut state as *mut _ as *mut c_void,
+                std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            )
+        };
+        if ok == 0 {
+            Err(EcoQosError::Failed(format!(
+                "GetProcessInformation failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(state)
+        }
+    }
+
+    fn priority_class(&self) -> Result<u32, EcoQosError> {
+        let priority = unsafe { GetPriorityClass(self.0) };
+        if priority == 0 {
+            Err(EcoQosError::Failed(format!(
+                "GetPriorityClass failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(priority)
+        }
+    }
+
+    fn set_power_throttling_state(
+        &self,
+        state: PROCESS_POWER_THROTTLING_STATE,
+    ) -> Result<(), EcoQosError> {
+        let ok = unsafe {
+            SetProcessInformation(
+                self.0,
+                ProcessPowerThrottling,
+                &state as *const _ as *const c_void,
+                std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            )
+        };
+        if ok == 0 {
+            Err(EcoQosError::Failed(format!(
+                "SetProcessInformation failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_priority_class(&self, priority_class: u32) -> Result<(), EcoQosError> {
+        let ok = unsafe { SetPriorityClass(self.0, priority_class) };
+        if ok == 0 {
+            Err(EcoQosError::Failed(format!(
+                "SetPriorityClass failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+fn last_error() -> u32 {
+    unsafe { GetLastError() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exclusions_include_builtin_and_user_entries() {
+        let settings = EcoQosSettings {
+            enabled: true,
+            exclude_foreground_app: true,
+            efficiency_whitelist: vec!["mouse.exe".to_owned()],
+        };
+
+        assert!(is_process_excluded("EXPLORER.EXE", &settings));
+        assert!(is_process_excluded("csrss.exe", &settings));
+        assert!(is_process_excluded("winlogon.exe", &settings));
+        assert!(is_process_excluded("Mouse.exe", &settings));
+        assert!(!is_process_excluded("browser.exe", &settings));
+    }
+
+    #[test]
+    fn disabled_state_clears_execution_speed_control() {
+        let state = power_throttling_disabled_state();
+
+        assert_eq!(state.Version, PROCESS_POWER_THROTTLING_CURRENT_VERSION);
+        assert_eq!(state.ControlMask, PROCESS_POWER_THROTTLING_EXECUTION_SPEED);
+        assert_eq!(state.StateMask, 0);
+    }
+
+    #[test]
+    fn foreground_ignore_matches_pid_or_process_name() {
+        let mut settings = EcoQosSettings::default();
+        settings.exclude_foreground_app = true;
+
+        assert!(should_ignore_foreground_process(
+            &settings,
+            42,
+            "helper.exe",
+            Some(42),
+            Some("app.exe"),
+        ));
+        assert!(should_ignore_foreground_process(
+            &settings,
+            99,
+            "APP.EXE",
+            Some(42),
+            Some("app.exe"),
+        ));
+        assert!(!should_ignore_foreground_process(
+            &settings,
+            99,
+            "other.exe",
+            Some(42),
+            Some("app.exe"),
+        ));
+
+        settings.exclude_foreground_app = false;
+        assert!(!should_ignore_foreground_process(
+            &settings,
+            42,
+            "app.exe",
+            Some(42),
+            Some("app.exe"),
+        ));
+    }
+}

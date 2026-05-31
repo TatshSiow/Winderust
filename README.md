@@ -14,6 +14,7 @@ It maps two logical modes, `Idle` and `Active`, to Windows power plans and switc
 - Hybrid input detection uses Windows input hooks for faster active-resume checks, while polling still handles idle timeout.
 - Time Based Scheduler switches by day and time ranges.
 - CPU Usage Scheduler switches by custom CPU threshold rules.
+- Efficiency Mode applies Windows EcoQoS to background user processes.
 - Foreground Rules can force Active or Idle plan for selected focused apps.
 - Foreground rule inputs can search running apps with dropdown, arrow-key navigation, and Enter selection.
 - Optional hide-to-system-tray behavior.
@@ -61,6 +62,7 @@ For most users:
 - Use `Action Based Scheduler` for normal automatic switching.
 - Use `Time Based Scheduler` when you want fixed work or quiet hours.
 - Use `CPU Usage Scheduler` when CPU load should force Active or Idle mode.
+- Use `Efficiency Mode` when background apps should run with Windows EcoQoS.
 - Use `Foreground Rules` for apps that should always force Active or Idle mode while focused.
 - Keep plan selection in `Settings`; all schedulers use the same global Idle and Active plans.
 
@@ -68,7 +70,7 @@ For most users:
 
 ### Dashboard
 
-Shows the current app state, current power plan, foreground app, activity state, next schedule, and current decision reason.
+Shows the current app state, current power plan, foreground app, activity state, Efficiency Mode state, next schedule, and current decision reason.
 It also shows current total CPU usage after two CPU samples are collected.
 
 ### Action Based Scheduler
@@ -109,6 +111,17 @@ Each rule has:
 - Target plan role
 
 Rules use the global Idle/Active plans selected in Settings. Rules are checked in list order, and the first rule whose CPU condition has held for its configured duration wins.
+
+### Efficiency Mode
+
+Controls Windows EcoQoS for background user processes.
+
+- `Enable Windows EcoQoS`: applies EcoQoS to background processes in the current user session.
+- `Exclude foreground app`: keeps the currently focused app, and matching same-name app processes, out of Efficiency Mode.
+- PowerLeaf, protected/elevated processes, system-session processes, and built-in Windows shell/input processes are not throttled.
+- `Efficiency Whitelist`: apps that should never be throttled by PowerLeaf.
+
+PowerLeaf applies the same two-part behavior used by Windows Task Manager Efficiency Mode: EcoQoS plus idle process priority. It preserves each process's previous power-throttling state and priority when possible, then restores them when the process is no longer a target, when Efficiency Mode is disabled, or when PowerLeaf exits.
 
 ### Foreground Rules
 
@@ -158,5 +171,6 @@ When `Hide to system tray on close` is enabled:
 ## Notes
 
 - This app is Windows-only.
+- EcoQoS works best on Windows 11 and supported CPU platforms.
 - The app runs without a console window.
 - Some security tools may treat global input hooks cautiously. PowerLeaf uses them only to wake the app for activity checks; idle timeout still uses Windows idle-time polling.

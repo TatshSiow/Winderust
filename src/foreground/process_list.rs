@@ -8,7 +8,23 @@ use windows_sys::Win32::{
     },
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessInfo {
+    pub id: u32,
+    pub name: String,
+}
+
 pub fn list_process_names() -> Result<Vec<String>, String> {
+    let processes = list_processes()?;
+    let names = processes
+        .into_iter()
+        .map(|process| process.name)
+        .collect::<BTreeSet<_>>();
+
+    Ok(names.into_iter().collect())
+}
+
+pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Err("Failed to read running process list.".to_owned());
@@ -18,12 +34,15 @@ pub fn list_process_names() -> Result<Vec<String>, String> {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut names = BTreeSet::new();
+    let mut processes = Vec::new();
 
     let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) != 0 };
     while has_entry {
         if let Some(name) = process_name_from_entry(&entry) {
-            names.insert(name);
+            processes.push(ProcessInfo {
+                id: entry.th32ProcessID,
+                name,
+            });
         }
 
         has_entry = unsafe { Process32NextW(snapshot, &mut entry) != 0 };
@@ -33,7 +52,7 @@ pub fn list_process_names() -> Result<Vec<String>, String> {
         CloseHandle(snapshot);
     }
 
-    Ok(names.into_iter().collect())
+    Ok(processes)
 }
 
 fn process_name_from_entry(entry: &PROCESSENTRY32W) -> Option<String> {
