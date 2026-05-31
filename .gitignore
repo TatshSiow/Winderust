@@ -1,0 +1,14 @@
+/target/
+/target-next/
+
+# Local runtime/config artifacts
+*.log
+*.tmp
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,28 @@
+[package]
+name = "powerleaf"
+version = "0.1.0"
+edition = "2021"
+description = "Make your Windows more eco-friendly"
+license = "MIT"
+
+[dependencies]
+chrono = { version = "0.4.44", features = ["serde"] }
+dirs = "5.0.1"
+eframe = { version = "0.33", default-features = true }
+raw-window-handle = "0.6.2"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "0.8.23"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
