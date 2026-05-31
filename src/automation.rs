@@ -13,12 +13,14 @@ use crate::{
     power::PowerPlanManager,
     rules::{DecisionEngine, DecisionInput, DecisionOutcome},
     scheduler::{CpuUsageScheduler, Scheduler},
+    suspension::{AppSuspensionManager, AppSuspensionSnapshot},
     tray,
 };
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ECO_QOS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -35,6 +37,7 @@ struct SharedAutomationState {
 struct AutomationWorkerState {
     settings: Settings,
     eco_qos_status: EcoQosSnapshot,
+    app_suspension_status: AppSuspensionSnapshot,
     stop_requested: bool,
 }
 
@@ -44,6 +47,7 @@ impl BackgroundAutomation {
             state: Mutex::new(AutomationWorkerState {
                 settings: settings.clone(),
                 eco_qos_status: EcoQosSnapshot::default(),
+                app_suspension_status: AppSuspensionSnapshot::default(),
                 stop_requested: false,
             }),
             changed: Condvar::new(),
@@ -74,6 +78,14 @@ impl BackgroundAutomation {
             .map(|state| state.eco_qos_status.clone())
             .unwrap_or_default()
     }
+
+    pub fn app_suspension_status(&self) -> AppSuspensionSnapshot {
+        self.shared
+            .state
+            .lock()
+            .map(|state| state.app_suspension_status.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl Drop for BackgroundAutomation {
@@ -93,6 +105,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut runner = HiddenAutomationRunner::default();
     let mut next_check = Instant::now();
     let mut next_eco_qos_refresh = Instant::now();
+    let mut next_app_suspension_refresh = Instant::now();
 
     loop {
         let settings = match settings_snapshot(&shared) {
@@ -104,6 +117,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             let eco_qos_status = runner.run_eco_qos_update(&settings);
             update_eco_qos_status(&shared, eco_qos_status);
             next_eco_qos_refresh = Instant::now() + ECO_QOS_REFRESH_INTERVAL;
+        }
+        if Instant::now() >= next_app_suspension_refresh {
+            let app_suspension_status = runner.run_app_suspension_update(&settings);
+            update_app_suspension_status(&shared, app_suspension_status);
+            next_app_suspension_refresh = Instant::now() + APP_SUSPENSION_REFRESH_INTERVAL;
         }
 
         let wait_for = if tray::is_hidden_to_tray() {
@@ -121,11 +139,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 .saturating_duration_since(Instant::now())
                 .min(HIDDEN_POLL_INTERVAL)
                 .min(next_eco_qos_refresh.saturating_duration_since(Instant::now()))
+                .min(next_app_suspension_refresh.saturating_duration_since(Instant::now()))
         } else {
             next_check = Instant::now();
             next_eco_qos_refresh
                 .saturating_duration_since(Instant::now())
                 .min(ECO_QOS_REFRESH_INTERVAL)
+                .min(next_app_suspension_refresh.saturating_duration_since(Instant::now()))
+                .min(APP_SUSPENSION_REFRESH_INTERVAL)
         };
 
         match wait_for_wake(&shared, wait_for) {
@@ -133,6 +154,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             WorkerWake::SettingsChanged => {
                 next_check = Instant::now();
                 next_eco_qos_refresh = Instant::now();
+                next_app_suspension_refresh = Instant::now();
             }
             WorkerWake::Timeout => {}
         }
@@ -150,6 +172,12 @@ fn settings_snapshot(shared: &SharedAutomationState) -> Option<Settings> {
 fn update_eco_qos_status(shared: &SharedAutomationState, status: EcoQosSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
         state.eco_qos_status = status;
+    }
+}
+
+fn update_app_suspension_status(shared: &SharedAutomationState, status: AppSuspensionSnapshot) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.app_suspension_status = status;
     }
 }
 
@@ -198,6 +226,7 @@ struct HiddenAutomationRunner {
     cpu_usage_scheduler: CpuUsageScheduler,
     decision_engine: DecisionEngine,
     eco_qos_manager: EcoQosManager,
+    app_suspension_manager: AppSuspensionManager,
 }
 
 impl HiddenAutomationRunner {
@@ -205,6 +234,15 @@ impl HiddenAutomationRunner {
         let foreground_process_id = self.foreground_detector.process_id();
         self.eco_qos_manager.update(
             &settings.eco_qos,
+            settings.general.enabled,
+            foreground_process_id,
+        )
+    }
+
+    fn run_app_suspension_update(&mut self, settings: &Settings) -> AppSuspensionSnapshot {
+        let foreground_process_id = self.foreground_detector.process_id();
+        self.app_suspension_manager.update(
+            &settings.app_suspension,
             settings.general.enabled,
             foreground_process_id,
         )

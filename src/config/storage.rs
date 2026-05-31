@@ -227,6 +227,17 @@ fn settings_to_ini(settings: &Settings) -> String {
         join_escaped(&settings.eco_qos.efficiency_whitelist),
     ));
 
+    raw.push_str("\n[app_suspension]\n");
+    raw.push_str(&ini_entry("enabled", settings.app_suspension.enabled));
+    raw.push_str(&ini_entry(
+        "background_delay_seconds",
+        settings.app_suspension.background_delay_seconds,
+    ));
+    raw.push_str(&ini_entry_raw(
+        "suspendable_apps",
+        join_escaped(&settings.app_suspension.suspendable_apps),
+    ));
+
     raw
 }
 
@@ -405,6 +416,21 @@ fn settings_from_ini(raw: &str) -> Result<Settings, String> {
             .or_else(|| section.get("excluded_processes"))
         {
             settings.eco_qos.efficiency_whitelist = split_escaped(value);
+        }
+    }
+
+    if let Some(section) = ini.get("app_suspension") {
+        read_bool(section, "enabled", &mut settings.app_suspension.enabled)?;
+        read_u64(
+            section,
+            "background_delay_seconds",
+            &mut settings.app_suspension.background_delay_seconds,
+        )?;
+        if let Some(value) = section
+            .get("suspendable_apps")
+            .or_else(|| section.get("suspend_whitelist"))
+        {
+            settings.app_suspension.suspendable_apps = split_escaped(value);
         }
     }
 
@@ -637,9 +663,9 @@ fn unescape_value(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{
-        ActivityModeSettings, CpuUsageModeSettings, EcoQosSettings, ForegroundRules,
-        GeneralSettings, InputDetectionSettings, PowerPlanSettings, ScheduleModeSettings,
-        ScheduleRule,
+        ActivityModeSettings, AppSuspensionSettings, CpuUsageModeSettings, EcoQosSettings,
+        ForegroundRules, GeneralSettings, InputDetectionSettings, PowerPlanSettings,
+        ScheduleModeSettings, ScheduleRule,
     };
 
     #[test]
@@ -695,6 +721,11 @@ mod tests {
                 enabled: true,
                 exclude_foreground_app: false,
                 efficiency_whitelist: vec!["mouse.exe".to_owned(), "comma,app.exe".to_owned()],
+            },
+            app_suspension: AppSuspensionSettings {
+                enabled: true,
+                background_delay_seconds: 120,
+                suspendable_apps: vec!["chat.exe".to_owned(), "comma,app.exe".to_owned()],
             },
         };
 

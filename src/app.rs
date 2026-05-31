@@ -17,6 +17,7 @@ use crate::{
     power::{PowerPlan, PowerPlanManager},
     rules::{DecisionEngine, DecisionInput, DecisionOutcome, DecisionState},
     scheduler::{CpuUsageScheduler, Scheduler},
+    suspension::AppSuspensionSnapshot,
     tray::{self, TrayIcon},
     ui::{self, Page},
 };
@@ -40,6 +41,7 @@ pub struct PowerLeafApp {
     activity: ActivitySnapshot,
     cpu_usage: CpuUsageSnapshot,
     eco_qos_status: EcoQosSnapshot,
+    app_suspension_status: AppSuspensionSnapshot,
     foreground_app: Option<String>,
     decision: DecisionOutcome,
     next_schedule: String,
@@ -70,6 +72,9 @@ pub struct PowerLeafApp {
     eco_qos_exclusion_input: String,
     eco_qos_picker_open: bool,
     eco_qos_picker_highlighted: Option<usize>,
+    suspension_input: String,
+    suspension_picker_open: bool,
+    suspension_picker_highlighted: Option<usize>,
 }
 
 impl PowerLeafApp {
@@ -94,6 +99,7 @@ impl PowerLeafApp {
             },
             cpu_usage: CpuUsageSnapshot::default(),
             eco_qos_status: EcoQosSnapshot::default(),
+            app_suspension_status: AppSuspensionSnapshot::default(),
             foreground_app: None,
             decision: DecisionOutcome {
                 target_guid: None,
@@ -128,6 +134,9 @@ impl PowerLeafApp {
             eco_qos_exclusion_input: String::new(),
             eco_qos_picker_open: false,
             eco_qos_picker_highlighted: None,
+            suspension_input: String::new(),
+            suspension_picker_open: false,
+            suspension_picker_highlighted: None,
         };
 
         app.sync_tray_icon();
@@ -377,10 +386,12 @@ impl eframe::App for PowerLeafApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_close_request(ctx);
         if tray::is_hidden_to_tray() {
-            self.background_automation.update_settings(&self.settings);
+            self.background_automation
+                .update_settings(&self.background_settings());
             return;
         }
         self.eco_qos_status = self.background_automation.eco_qos_status();
+        self.app_suspension_status = self.background_automation.app_suspension_status();
 
         let input_events = self
             .input_hook
@@ -410,12 +421,26 @@ impl eframe::App for PowerLeafApp {
             .exact_width(190.0)
             .show(ctx, |ui| {
                 ui.add_space(8.0);
-                for page in Page::all() {
-                    if ui
-                        .selectable_label(self.page == page, page.label())
-                        .clicked()
-                    {
-                        self.page = page;
+                for (section_index, section) in Page::sections().iter().enumerate() {
+                    if section_index > 0 {
+                        ui.add_space(10.0);
+                    }
+
+                    ui.label(
+                        egui::RichText::new(section.label)
+                            .small()
+                            .strong()
+                            .color(ui.visuals().weak_text_color()),
+                    );
+                    ui.add_space(2.0);
+
+                    for page in section.pages {
+                        if ui
+                            .selectable_label(self.page == *page, page.label())
+                            .clicked()
+                        {
+                            self.page = *page;
+                        }
                     }
                 }
             });
@@ -432,6 +457,7 @@ impl eframe::App for PowerLeafApp {
                         &self.activity,
                         &self.cpu_usage,
                         &self.eco_qos_status,
+                        &self.app_suspension_status,
                         &self.decision,
                         &self.next_schedule,
                     ) {
@@ -440,6 +466,15 @@ impl eframe::App for PowerLeafApp {
                 }
                 Page::Activity => {
                     show_activity_page(ui, &mut self.settings);
+                }
+                Page::PowerPlanMapping => {
+                    let action = ui::power_plan_page::show(
+                        ui,
+                        &mut self.settings,
+                        &self.plans,
+                        self.current_plan.as_ref(),
+                    );
+                    self.handle_power_plan_action(action);
                 }
                 Page::ForegroundRules => {
                     if (self.whitelist_picker_open || self.force_picker_open)
@@ -487,16 +522,27 @@ impl eframe::App for PowerLeafApp {
                         &mut self.eco_qos_picker_highlighted,
                     );
                 }
+                Page::AppSuspension => {
+                    if self.suspension_picker_open && Instant::now() >= self.next_process_refresh {
+                        self.refresh_process_candidates(false);
+                    }
+                    ui::suspension_page::show(
+                        ui,
+                        &mut self.settings.app_suspension,
+                        &self.app_suspension_status,
+                        &self.process_candidates,
+                        &mut self.suspension_input,
+                        &mut self.suspension_picker_open,
+                        &mut self.suspension_picker_highlighted,
+                    );
+                }
                 Page::Settings => {
-                    let action = show_settings_page(
+                    show_settings_page(
                         ui,
                         &mut self.settings,
-                        &self.plans,
-                        self.current_plan.as_ref(),
                         &mut export_ini_requested,
                         &mut import_ini_requested,
                     );
-                    self.handle_power_plan_action(action);
                 }
                 Page::About => {
                     ui::about_page::show(ui);
@@ -525,7 +571,8 @@ impl eframe::App for PowerLeafApp {
             self.import_settings_ini();
         }
         self.sync_tray_icon();
-        self.background_automation.update_settings(&self.settings);
+        self.background_automation
+            .update_settings(&self.background_settings());
 
         ctx.request_repaint_after(self.next_repaint_after());
     }
@@ -540,7 +587,11 @@ impl PowerLeafApp {
     }
 
     fn next_repaint_after(&self) -> Duration {
-        if self.whitelist_picker_open || self.force_picker_open || self.eco_qos_picker_open {
+        if self.whitelist_picker_open
+            || self.force_picker_open
+            || self.eco_qos_picker_open
+            || self.suspension_picker_open
+        {
             return Duration::from_millis(250);
         }
         if self.settings != self.saved_settings {
@@ -556,6 +607,17 @@ impl PowerLeafApp {
     fn cancel_settings_changes(&mut self) {
         self.settings = self.saved_settings.clone();
         self.status_message = "Unsaved settings changes canceled.".to_owned();
+    }
+
+    fn background_settings(&self) -> Settings {
+        let mut settings = self.settings.clone();
+        if self.settings.eco_qos.enabled {
+            settings.eco_qos = self.saved_settings.eco_qos.clone();
+        }
+        if self.settings.app_suspension.enabled {
+            settings.app_suspension = self.saved_settings.app_suspension.clone();
+        }
+        settings
     }
 }
 
@@ -624,11 +686,9 @@ fn show_activity_page(ui: &mut egui::Ui, settings: &mut Settings) {
 fn show_settings_page(
     ui: &mut egui::Ui,
     settings: &mut Settings,
-    plans: &[PowerPlan],
-    current_plan: Option<&PowerPlan>,
     export_ini_requested: &mut bool,
     import_ini_requested: &mut bool,
-) -> ui::power_plan_page::PowerPlanAction {
+) {
     ui.heading("Settings");
     ui.add_space(8.0);
 
@@ -644,10 +704,6 @@ fn show_settings_page(
     ui.add_space(18.0);
 
     ui.separator();
-    let action = ui::power_plan_page::show(ui, settings, plans, current_plan);
-    ui.add_space(18.0);
-
-    ui.separator();
     ui.heading("Settings Files");
     ui.add_space(8.0);
     ui.label("Export or import all app settings as an INI file.");
@@ -659,8 +715,6 @@ fn show_settings_page(
             *import_ini_requested = true;
         }
     });
-
-    action
 }
 
 #[derive(Debug, Clone, Copy)]

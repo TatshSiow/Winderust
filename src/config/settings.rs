@@ -12,6 +12,8 @@ pub struct Settings {
     pub cpu_usage_mode: CpuUsageModeSettings,
     #[serde(default)]
     pub eco_qos: EcoQosSettings,
+    #[serde(default)]
+    pub app_suspension: AppSuspensionSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +98,14 @@ pub struct EcoQosSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppSuspensionSettings {
+    pub enabled: bool,
+    pub background_delay_seconds: u64,
+    #[serde(default, alias = "suspend_whitelist")]
+    pub suspendable_apps: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuUsageRule {
     pub name: String,
     pub comparison: CpuUsageComparison,
@@ -161,6 +171,7 @@ impl Default for Settings {
             },
             cpu_usage_mode: CpuUsageModeSettings::default(),
             eco_qos: EcoQosSettings::default(),
+            app_suspension: AppSuspensionSettings::default(),
         }
     }
 }
@@ -220,6 +231,16 @@ impl Default for EcoQosSettings {
 
 const fn default_exclude_foreground_app() -> bool {
     true
+}
+
+impl Default for AppSuspensionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            background_delay_seconds: 300,
+            suspendable_apps: Vec::new(),
+        }
+    }
 }
 
 impl InputDetectionSettings {

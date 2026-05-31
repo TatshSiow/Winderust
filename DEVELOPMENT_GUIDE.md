@@ -30,9 +30,11 @@ cargo build --release --target-dir target-next
 Navigation pages are defined in `src/ui/mod.rs`:
 
 - `Dashboard`
+- `Power Plan Mapping`
 - `Action Based Scheduler`
 - `CPU Usage Scheduler`
 - `Efficiency Mode`
+- `App Suspension`
 - `Time Based Scheduler`
 - `Foreground Rules`
 - `Settings`
@@ -51,6 +53,7 @@ Primary settings storage:
 - Load/save helpers: `config::storage::load()` and `config::storage::save()`.
 - `load()` falls back to the legacy `PowerSwitcher` config folder when no `PowerLeaf` settings file exists.
 - Runtime settings take effect immediately. Unsaved settings show a global bottom popup with Save and Cancel actions; disk persistence happens through Save or INI import.
+- Exception: EcoQoS and App Suspension activation and target changes are save-gated. `PowerLeafApp::background_settings()` sends the last saved EcoQoS/App Suspension settings to `BackgroundAutomation` while the current edited settings remain enabled but unsaved. Disabling either feature is allowed to take effect immediately.
 
 INI import/export:
 
@@ -69,15 +72,16 @@ When adding settings fields:
 
 ## Power Plan Mapping
 
-All Idle/Active plan mapping controls belong in the Settings tab.
+All Idle/Active plan mapping controls belong in the `Power Plan Mapping` page under `Power Plan Controls`.
 
 Current behavior:
 
-- `Settings` page renders `ui::power_plan_page::show(...)`.
+- `Power Plan Mapping` page renders `ui::power_plan_page::show(...)`.
+- Settings must not show power plan mapping controls.
 - Action Based Scheduler must not show plan mapping.
 - Time Based Scheduler must not show per-rule plan mapping.
 - CPU Usage Scheduler must not show per-rule plan mapping.
-- Schedule decisions use the global Idle/Active plan mappings from Settings.
+- Schedule, CPU usage, activity, and foreground decisions use the global Idle/Active plan mappings from `Power Plan Mapping`.
 
 Do not reintroduce `Test Idle` / `Test Active`; those buttons were intentionally removed.
 
@@ -113,7 +117,7 @@ Current scheduler UI includes:
 - Days.
 - Start/end time.
 
-It intentionally does not expose Idle/Active plan selectors. Scheduler output maps to global plans in Settings.
+It intentionally does not expose Idle/Active plan selectors. Scheduler output maps to global plans from Power Plan Mapping.
 
 ## CPU Usage Scheduler
 
@@ -125,7 +129,7 @@ Current behavior:
 - Dashboard shows total CPU usage after the second sample.
 - Rules live in `settings.cpu_usage_mode.rules`.
 - Each rule has name, comparison, threshold percentage, duration, and target role.
-- Rule target roles map to the global Idle/Active plans from Settings.
+- Rule target roles map to the global Idle/Active plans from Power Plan Mapping.
 - CPU usage rules are checked in list order. The first rule whose condition has held for its duration wins.
 
 ## Efficiency Mode
@@ -137,7 +141,8 @@ Current behavior:
 
 - Settings live in `settings.eco_qos`.
 - The feature is disabled by default.
-- `BackgroundAutomation` runs the `EcoQosManager` every five seconds while the app is visible or hidden to tray.
+- EcoQoS activation and target changes apply only after Save; disabling EcoQoS takes effect immediately.
+- `BackgroundAutomation` runs the `EcoQosManager` every second while the app is visible or hidden to tray.
 - The manager applies Task Manager-style Efficiency Mode: `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` plus `IDLE_PRIORITY_CLASS`.
 - The manager preserves each process's previous `PROCESS_POWER_THROTTLING_STATE` and priority class when possible, then restores those values when the process is no longer targeted.
 - `exclude_foreground_app` defaults to true. When enabled, foreground detection failure pauses and clears throttling; same-name processes as the foreground app are skipped too. When disabled, foreground detection is not required.
@@ -149,6 +154,30 @@ Current behavior:
 - The Efficiency Whitelist is edited in the Efficiency Mode page with the same searchable running-app dropdown pattern as Foreground Rules and is persisted to TOML/INI.
 
 Avoid copying EnergyStarX code into this project. If EcoQoS behavior needs to change, implement against Microsoft Win32 documentation directly.
+
+## App Suspension
+
+`src/suspension/mod.rs` owns optional process suspension.
+`src/ui/suspension_page.rs` owns the settings page.
+
+Current behavior:
+
+- Settings live in `settings.app_suspension`.
+- The feature is disabled by default.
+- App Suspension activation and target changes apply only after Save; disabling App Suspension takes effect immediately.
+- `BackgroundAutomation` runs the `AppSuspensionManager` every second while the app is visible or hidden to tray.
+- Only apps in `suspendable_apps` are candidates.
+- A candidate must stay in the background for `background_delay_seconds` before suspension.
+- The manager suspends individual process threads with `SuspendThread` and resumes those same threads with `ResumeThread`.
+- It resumes suspended processes when they become foreground, leave the suspendable app list, App Suspension is disabled, automation is disabled, or PowerLeaf exits.
+- It pauses and clears suspension if the foreground app or current Windows session cannot be identified.
+- It only targets processes in the current user session.
+- It never targets the PowerLeaf process, foreground process, or same-name foreground app processes.
+- Built-in exclusions cover Windows shell/input processes such as `explorer.exe`, `dwm.exe`, and `textinputhost.exe`.
+- Access-denied thread opens are counted as skipped, not failed. This is expected for protected/elevated Windows processes.
+- Suspendable Apps are edited with the same searchable running-app dropdown pattern as Foreground Rules and are persisted to TOML/INI.
+
+Keep this feature opt-in and narrow. Do not add broad "suspend all background apps" behavior without explicit user direction and additional safeguards.
 
 ## Foreground Rules
 

@@ -13,6 +13,7 @@ mod foreground;
 mod power;
 mod rules;
 mod scheduler;
+mod suspension;
 mod tray;
 mod ui;
 

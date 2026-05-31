@@ -1,15 +1,19 @@
 use eframe::egui;
 
-use crate::{config::EcoQosSettings, ecoqos, ui::help_popup_label};
+use crate::{
+    config::AppSuspensionSettings,
+    suspension::{self, AppSuspensionSnapshot},
+    ui::help_popup_label,
+};
 
 const APP_INPUT_WIDTH: f32 = 320.0;
 
 pub fn show(
     ui: &mut egui::Ui,
-    settings: &mut EcoQosSettings,
-    status: &ecoqos::EcoQosSnapshot,
+    settings: &mut AppSuspensionSettings,
+    status: &AppSuspensionSnapshot,
     process_candidates: &[String],
-    exclusion_input: &mut String,
+    suspend_input: &mut String,
     picker_open: &mut bool,
     picker_highlighted: &mut Option<usize>,
 ) {
@@ -18,15 +22,22 @@ pub fn show(
     });
     ui.add_space(8.0);
 
-    ui.checkbox(&mut settings.enabled, "Enable Windows EcoQoS");
-    ui.label("Set app to efficiency mode and lower the process priority.");
-    ui.checkbox(
-        &mut settings.exclude_foreground_app,
-        "Exclude foreground app",
-    );
+    ui.checkbox(&mut settings.enabled, "Enable app suspension");
+    ui.label("Completely suspend an app after a delay.");
+    ui.add_enabled_ui(settings.enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Background delay");
+            ui.add(
+                egui::DragValue::new(&mut settings.background_delay_seconds)
+                    .speed(1.0)
+                    .range(1..=86_400)
+                    .suffix(" sec"),
+            );
+        });
+    });
     ui.add_space(12.0);
 
-    egui::Grid::new("eco_qos_status_grid")
+    egui::Grid::new("app_suspension_status_grid")
         .num_columns(2)
         .spacing([24.0, 10.0])
         .striped(true)
@@ -34,20 +45,20 @@ pub fn show(
             row(ui, "Status", &status.message);
             row(
                 ui,
-                "Throttled processes",
-                &status.throttled_processes.to_string(),
+                "Tracked processes",
+                &status.tracked_processes.to_string(),
             );
             row(
                 ui,
-                "Scanned processes",
-                &status.scanned_processes.to_string(),
+                "Suspended processes",
+                &status.suspended_processes.to_string(),
             );
             row(
                 ui,
                 "Skipped processes",
                 &status.skipped_processes.to_string(),
             );
-            row(ui, "Failed actions", &status.failed_processes.to_string());
+            row(ui, "Failed actions", &status.failed_actions.to_string());
             row(
                 ui,
                 "Last failure",
@@ -61,8 +72,8 @@ pub fn show(
 
     ui.add_enabled_ui(settings.enabled, |ui| {
         ui.group(|ui| {
-            ui.heading("Efficiency Whitelist");
-            ui.label("Apps in this whitelist will never be put into Efficiency Mode.");
+            ui.heading("Suspendable Apps");
+            ui.label("Only apps in this list can be suspended after the background delay.");
             ui.add_space(8.0);
 
             ui.horizontal(|ui| {
@@ -71,34 +82,34 @@ pub fn show(
                     (ui.available_width() - add_button_width - ui.spacing().item_spacing.x)
                         .clamp(160.0, APP_INPUT_WIDTH);
 
-                if let Some(process) = searchable_exclusion_input(
+                if let Some(process) = searchable_suspend_input(
                     ui,
                     process_candidates,
                     settings,
-                    exclusion_input,
+                    suspend_input,
                     picker_open,
                     picker_highlighted,
                     input_width,
                 ) {
-                    *exclusion_input = process;
+                    *suspend_input = process;
                 }
 
                 let add_size = egui::vec2(add_button_width, ui.spacing().interact_size.y);
                 if ui
                     .add_enabled(
-                        can_add_process(settings, exclusion_input),
+                        can_add_process(settings, suspend_input),
                         egui::Button::new("Add").min_size(add_size),
                     )
                     .clicked()
                 {
-                    add_process(settings, exclusion_input);
+                    add_process(settings, suspend_input);
                     *picker_open = false;
                     *picker_highlighted = None;
                 }
             });
 
             ui.separator();
-            show_efficiency_whitelist(ui, settings);
+            show_suspendable_apps(ui, settings);
         });
     });
 }
@@ -106,20 +117,20 @@ pub fn show(
 fn help_marker(ui: &mut egui::Ui) {
     help_popup_label(
         ui,
-        "Efficiency Mode",
-        "efficiency_mode_help_popup",
+        "App Suspension",
+        "app_suspension_help_popup",
         help_contents,
     );
 }
 
 fn help_contents(ui: &mut egui::Ui) {
     ui.set_max_width(360.0);
-    ui.label("Efficiency Mode applies Windows EcoQoS to background apps to reduce CPU power use.");
+    ui.label("App Suspension pauses selected background apps after a delay to reduce CPU usage.");
     ui.label(
-        "PowerLeaf also lowers the target app's process priority while Efficiency Mode is active, then restores the previous state when the app is no longer targeted.",
+        "Suspended apps are resumed automatically when you switch back to them, remove them from Suspendable Apps, disable App Suspension, or quit PowerLeaf.",
     );
     ui.label(
-        "This is safer than App Suspension because apps keep running, but Windows may schedule them more efficiently.",
+        "This is more aggressive than Efficiency Mode. Use it only for apps that are safe to pause in the background.",
     );
 }
 
@@ -129,9 +140,9 @@ fn row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.end_row();
 }
 
-fn show_efficiency_whitelist(ui: &mut egui::Ui, settings: &mut EcoQosSettings) {
+fn show_suspendable_apps(ui: &mut egui::Ui, settings: &mut AppSuspensionSettings) {
     let mut remove_index = None;
-    for (index, process) in settings.efficiency_whitelist.iter().enumerate() {
+    for (index, process) in settings.suspendable_apps.iter().enumerate() {
         ui.horizontal(|ui| {
             let button_width = 74.0;
             let label_width =
@@ -153,14 +164,14 @@ fn show_efficiency_whitelist(ui: &mut egui::Ui, settings: &mut EcoQosSettings) {
     }
 
     if let Some(index) = remove_index {
-        settings.efficiency_whitelist.remove(index);
+        settings.suspendable_apps.remove(index);
     }
 }
 
-fn searchable_exclusion_input(
+fn searchable_suspend_input(
     ui: &mut egui::Ui,
     process_candidates: &[String],
-    settings: &EcoQosSettings,
+    settings: &AppSuspensionSettings,
     input: &mut String,
     picker_open: &mut bool,
     picker_highlighted: &mut Option<usize>,
@@ -169,8 +180,8 @@ fn searchable_exclusion_input(
     const POPUP_WIDTH: f32 = 360.0;
     const LIST_HEIGHT: f32 = 240.0;
 
-    let input_id = ui.make_persistent_id(("eco_qos_exclusion_input", "input"));
-    let popup_id = ui.make_persistent_id(("eco_qos_exclusion_input", "popup"));
+    let input_id = ui.make_persistent_id(("app_suspension_input", "input"));
+    let popup_id = ui.make_persistent_id(("app_suspension_input", "popup"));
 
     let input_response = ui
         .add_sized(
@@ -195,7 +206,8 @@ fn searchable_exclusion_input(
         .iter()
         .filter(|process| {
             (search.is_empty() || process.contains(&search))
-                && !ecoqos::is_process_excluded(process, settings)
+                && !suspension::contains_process(&settings.suspendable_apps, process)
+                && !suspension::is_builtin_excluded(process)
         })
         .collect();
 
@@ -316,22 +328,24 @@ fn searchable_exclusion_input(
     None
 }
 
-fn add_process(settings: &mut EcoQosSettings, input: &mut String) {
+fn add_process(settings: &mut AppSuspensionSettings, input: &mut String) {
     add_process_name(settings, input);
     input.clear();
 }
 
-fn add_process_name(settings: &mut EcoQosSettings, process: &str) {
+fn add_process_name(settings: &mut AppSuspensionSettings, process: &str) {
     if can_add_process(settings, process) {
         settings
-            .efficiency_whitelist
+            .suspendable_apps
             .push(process.trim().to_ascii_lowercase());
     }
 }
 
-fn can_add_process(settings: &EcoQosSettings, process: &str) -> bool {
+fn can_add_process(settings: &AppSuspensionSettings, process: &str) -> bool {
     let process = process.trim();
-    !process.is_empty() && !ecoqos::is_process_excluded(process, settings)
+    !process.is_empty()
+        && !suspension::contains_process(&settings.suspendable_apps, process)
+        && !suspension::is_builtin_excluded(process)
 }
 
 #[cfg(test)]
@@ -340,19 +354,16 @@ mod tests {
 
     #[test]
     fn add_process_rejects_builtin_and_duplicate_entries() {
-        let mut settings = EcoQosSettings {
+        let mut settings = AppSuspensionSettings {
             enabled: true,
-            exclude_foreground_app: true,
-            efficiency_whitelist: vec!["mouse.exe".to_owned()],
+            background_delay_seconds: 60,
+            suspendable_apps: vec!["chat.exe".to_owned()],
         };
 
         add_process_name(&mut settings, "explorer.exe");
-        add_process_name(&mut settings, "MOUSE.EXE");
+        add_process_name(&mut settings, "CHAT.EXE");
         add_process_name(&mut settings, "browser.exe");
 
-        assert_eq!(
-            settings.efficiency_whitelist,
-            vec!["mouse.exe", "browser.exe"]
-        );
+        assert_eq!(settings.suspendable_apps, vec!["chat.exe", "browser.exe"]);
     }
 }

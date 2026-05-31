@@ -2,7 +2,8 @@ use eframe::egui;
 
 use crate::{
     activity::ActivitySnapshot, config::Settings, cpu::CpuUsageSnapshot, ecoqos::EcoQosSnapshot,
-    power::PowerPlan, rules::DecisionOutcome, ui::duration_label,
+    power::PowerPlan, rules::DecisionOutcome, suspension::AppSuspensionSnapshot,
+    ui::duration_label,
 };
 
 pub fn show(
@@ -13,6 +14,7 @@ pub fn show(
     activity: &ActivitySnapshot,
     cpu_usage: &CpuUsageSnapshot,
     eco_qos: &EcoQosSnapshot,
+    app_suspension: &AppSuspensionSnapshot,
     decision: &DecisionOutcome,
     next_schedule: &str,
 ) -> bool {
@@ -52,6 +54,7 @@ pub fn show(
             row(ui, "Activity state", &format!("{:?}", activity.state));
             row(ui, "CPU usage", &cpu_usage_label(cpu_usage.percent));
             row(ui, "Efficiency Mode", &eco_qos_label(eco_qos));
+            row(ui, "App Suspension", &app_suspension_label(app_suspension));
             row(
                 ui,
                 "Idle time",
@@ -84,6 +87,17 @@ fn eco_qos_label(status: &EcoQosSnapshot) -> String {
         format!(
             "{} ({} throttled)",
             status.message, status.throttled_processes
+        )
+    } else {
+        status.message.clone()
+    }
+}
+
+fn app_suspension_label(status: &AppSuspensionSnapshot) -> String {
+    if status.enabled {
+        format!(
+            "{} ({} suspended)",
+            status.message, status.suspended_processes
         )
     } else {
         status.message.clone()
