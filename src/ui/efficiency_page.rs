@@ -20,15 +20,13 @@ pub fn show(
 
     ui.checkbox(&mut settings.enabled, "Enable Windows EcoQoS");
     ui.label("Set app to efficiency mode and lower the process priority.");
-    ui.checkbox(
-        &mut settings.exclude_foreground_app,
-        "Exclude foreground app",
-    );
+    ui.checkbox(&mut settings.exclude_foreground_app, "App focus detection");
+    ui.label("Skip focused window efficiency control.");
     ui.checkbox(
         &mut settings.exclude_suspended_processes,
-        "Exclude Windows-suspended apps",
+        "Windows-suspended detection",
     );
-    ui.label("Skip apps that Windows already reports as suspended.");
+    ui.label("Skip windows-suspended process efficiency control.");
     ui.add_space(12.0);
 
     egui::Grid::new("eco_qos_status_grid")

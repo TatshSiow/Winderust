@@ -64,7 +64,7 @@ impl Page {
             Self::EfficiencyMode => "Efficiency Mode",
             Self::AppSuspension => "App Suspension",
             Self::ForegroundRules => "Foreground Rules",
-            Self::Schedule => "Time Based Scheduler",
+            Self::Schedule => "Time Rules",
             Self::Settings => "Settings",
             Self::About => "About",
         }

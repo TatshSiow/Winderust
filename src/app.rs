@@ -105,7 +105,7 @@ impl PowerLeafApp {
                 state: DecisionState::NoTargetPlan,
                 reason: "Waiting for first check.".to_owned(),
             },
-            next_schedule: "No active schedule".to_owned(),
+            next_schedule: "No active time rules".to_owned(),
             next_check: Instant::now(),
             next_active_plan_refresh: Instant::now(),
             next_cpu_usage_refresh: Instant::now(),

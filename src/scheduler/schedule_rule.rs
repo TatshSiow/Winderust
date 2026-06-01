@@ -5,7 +5,7 @@ use crate::config::{ScheduleModeSettings, ScheduleRule, WeekdaySetting};
 #[derive(Debug, Clone)]
 pub struct ScheduleDecision {
     pub rule_name: String,
-    pub inside_power_save_period: bool,
+    pub power_plan_guid: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -21,18 +21,7 @@ impl Scheduler {
         if let Some(rule) = settings.rules.iter().find(|rule| rule_applies(rule, now)) {
             return Some(ScheduleDecision {
                 rule_name: rule.name.clone(),
-                inside_power_save_period: true,
-            });
-        }
-
-        if settings
-            .rules
-            .iter()
-            .any(|rule| rule.parsed_times().is_some() && !rule.days.is_empty())
-        {
-            return Some(ScheduleDecision {
-                rule_name: "Outside schedule".to_owned(),
-                inside_power_save_period: false,
+                power_plan_guid: rule.power_plan_guid.clone(),
             });
         }
 
@@ -41,10 +30,10 @@ impl Scheduler {
 
     pub fn next_switch_label(&self, settings: &ScheduleModeSettings) -> String {
         if !settings.enabled || settings.rules.is_empty() {
-            return "No active schedule".to_owned();
+            return "No active time rules".to_owned();
         }
 
-        "Configured schedule active".to_owned()
+        "Configured time rules active".to_owned()
     }
 }
 
@@ -82,6 +71,7 @@ mod tests {
             days: vec![WeekdaySetting::Fri],
             start_time: "22:00".to_owned(),
             end_time: "08:00".to_owned(),
+            power_plan_guid: None,
             power_save_guid: None,
             performance_guid: None,
         };

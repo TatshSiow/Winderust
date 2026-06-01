@@ -89,7 +89,7 @@ pub struct ForegroundRule {
 pub struct ScheduleModeSettings {
     pub enabled: bool,
     pub rules: Vec<ScheduleRule>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "PowerPlanSettings::is_empty")]
     pub power_plans: PowerPlanSettings,
 }
 
@@ -99,7 +99,11 @@ pub struct ScheduleRule {
     pub days: Vec<WeekdaySetting>,
     pub start_time: String,
     pub end_time: String,
+    #[serde(default)]
+    pub power_plan_guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_save_guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub performance_guid: Option<String>,
 }
 
@@ -197,6 +201,7 @@ impl Default for Settings {
                     days: WeekdaySetting::all().to_vec(),
                     start_time: "22:00".to_owned(),
                     end_time: "08:00".to_owned(),
+                    power_plan_guid: None,
                     power_save_guid: None,
                     performance_guid: None,
                 }],
@@ -299,22 +304,32 @@ impl Settings {
         self.foreground_rules
             .power_plans
             .fill_missing_from(&self.power_plans);
-        self.schedule_mode
-            .power_plans
-            .fill_missing_from(&self.power_plans);
         self.cpu_usage_mode
             .power_plans
             .fill_missing_from(&self.power_plans);
 
-        if let Some(rule) = self.schedule_mode.rules.first() {
-            let fallback = PowerPlanSettings {
-                power_save_guid: rule.power_save_guid.clone(),
-                performance_guid: rule.performance_guid.clone(),
-            };
-            self.schedule_mode.power_plans.fill_missing_from(&fallback);
+        self.migrate_legacy_schedule_rules();
+        self.migrate_legacy_foreground_rules();
+    }
+
+    fn migrate_legacy_schedule_rules(&mut self) {
+        let schedule_power_save_guid = self.schedule_mode.power_plans.power_save_guid.clone();
+        let fallback_power_save_guid = self.power_plans.power_save_guid.clone();
+
+        for rule in &mut self.schedule_mode.rules {
+            if rule.power_plan_guid.is_none() {
+                rule.power_plan_guid = rule
+                    .power_save_guid
+                    .clone()
+                    .or_else(|| schedule_power_save_guid.clone())
+                    .or_else(|| fallback_power_save_guid.clone());
+            }
+
+            rule.power_save_guid = None;
+            rule.performance_guid = None;
         }
 
-        self.migrate_legacy_foreground_rules();
+        self.schedule_mode.power_plans = PowerPlanSettings::default();
     }
 
     fn migrate_legacy_foreground_rules(&mut self) {
@@ -351,6 +366,10 @@ impl Settings {
 }
 
 impl PowerPlanSettings {
+    pub fn is_empty(&self) -> bool {
+        self.power_save_guid.is_none() && self.performance_guid.is_none()
+    }
+
     pub fn fill_missing_from(&mut self, fallback: &Self) {
         if self.power_save_guid.is_none() {
             self.power_save_guid = fallback.power_save_guid.clone();

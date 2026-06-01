@@ -56,7 +56,7 @@ pub fn show(
                     .map(|duration| duration_label(duration.as_secs()))
                     .unwrap_or_else(|| "Unknown".to_owned()),
             );
-            row(ui, "Next scheduled switch", next_schedule);
+            row(ui, "Time rules", next_schedule);
             row(ui, "Decision reason", &decision.reason);
         });
 }

@@ -172,17 +172,15 @@ mod tests {
             },
             schedule_mode: ScheduleModeSettings {
                 enabled: true,
-                power_plans: PowerPlanSettings {
-                    power_save_guid: Some("schedule-idle-guid".to_owned()),
-                    performance_guid: Some("schedule-active-guid".to_owned()),
-                },
+                power_plans: PowerPlanSettings::default(),
                 rules: vec![ScheduleRule {
                     name: "Work hours".to_owned(),
                     days: vec![WeekdaySetting::Mon, WeekdaySetting::Fri],
                     start_time: "09:00".to_owned(),
                     end_time: "17:30".to_owned(),
-                    power_save_guid: Some("idle-guid".to_owned()),
-                    performance_guid: Some("active-guid".to_owned()),
+                    power_plan_guid: Some("work-hours-guid".to_owned()),
+                    power_save_guid: None,
+                    performance_guid: None,
                 }],
             },
             cpu_usage_mode: CpuUsageModeSettings {
@@ -224,5 +222,52 @@ mod tests {
 
         assert!(filename.starts_with(&format!("powerleaf_{}_", env!("CARGO_PKG_VERSION"))));
         assert!(filename.ends_with(".toml"));
+    }
+
+    #[test]
+    fn legacy_schedule_rule_idle_plan_migrates_to_rule_target() {
+        let raw = r#"
+[general]
+enabled = true
+startup_with_windows = false
+start_minimized = false
+hide_to_tray = false
+pause_power_plan_switching_while_plugged_in = false
+check_interval_ms = 1000
+manual_override = "None"
+
+[power_plans]
+power_save_guid = "global-idle"
+performance_guid = "global-active"
+
+[activity_mode]
+enabled = false
+idle_timeout_seconds = 300
+switch_to_performance_on_resume = true
+
+[foreground_rules]
+enabled = true
+
+[schedule_mode]
+enabled = true
+
+[schedule_mode.power_plans]
+power_save_guid = "schedule-idle"
+performance_guid = "schedule-active"
+
+[[schedule_mode.rules]]
+name = "Night"
+days = ["mon"]
+start_time = "22:00"
+end_time = "08:00"
+"#;
+
+        let mut settings = toml_to_settings(raw).expect("legacy TOML should parse");
+        settings.fill_missing_power_plan_mappings();
+        let rule = settings.schedule_mode.rules.first().unwrap();
+
+        assert_eq!(rule.power_plan_guid.as_deref(), Some("schedule-idle"));
+        assert_eq!(rule.power_save_guid, None);
+        assert_eq!(rule.performance_guid, None);
     }
 }

@@ -14,8 +14,7 @@ pub enum DecisionState {
     ForegroundRule,
     ForegroundForceActive,
     ForegroundForcePowerSave,
-    ScheduledPowerSave,
-    ScheduledPerformance,
+    ScheduledRule,
     CpuUsagePowerSave,
     CpuUsagePerformance,
     IdlePowerSave,
@@ -102,18 +101,10 @@ impl DecisionEngine {
         }
 
         if let Some(schedule) = input.schedule {
-            if schedule.inside_power_save_period {
-                return DecisionOutcome::with_target(
-                    idle_plan(&settings.schedule_mode.power_plans, settings),
-                    DecisionState::ScheduledPowerSave,
-                    format!("Schedule '{}' is in its Idle period.", schedule.rule_name),
-                );
-            }
-
             return DecisionOutcome::with_target(
-                active_plan(&settings.schedule_mode.power_plans, settings),
-                DecisionState::ScheduledPerformance,
-                "No schedule Idle period is active.",
+                schedule.power_plan_guid,
+                DecisionState::ScheduledRule,
+                format!("Time rule '{}' is active.", schedule.rule_name),
             );
         }
 
@@ -220,8 +211,7 @@ impl DecisionState {
             Self::ForegroundRule => "Foreground rule",
             Self::ForegroundForceActive => "Foreground force Active plan",
             Self::ForegroundForcePowerSave => "Foreground force Idle plan",
-            Self::ScheduledPowerSave => "Scheduled Idle plan",
-            Self::ScheduledPerformance => "Scheduled Active plan",
+            Self::ScheduledRule => "Time rule",
             Self::CpuUsagePowerSave => "CPU usage Idle plan",
             Self::CpuUsagePerformance => "CPU usage Active plan",
             Self::IdlePowerSave => "Idle plan",
@@ -290,7 +280,7 @@ mod tests {
                 plugged_in: None,
                 schedule: Some(ScheduleDecision {
                     rule_name: "Work hours".to_owned(),
-                    inside_power_save_period: false,
+                    power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
                 cpu_usage: None,
             },
@@ -301,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    fn schedule_overrides_activity() {
+    fn schedule_rule_overrides_cpu_and_activity() {
         let outcome = DecisionEngine.decide(
             &test_settings(),
             DecisionInput {
@@ -309,8 +299,8 @@ mod tests {
                 foreground_app: None,
                 plugged_in: None,
                 schedule: Some(ScheduleDecision {
-                    rule_name: "Outside schedule".to_owned(),
-                    inside_power_save_period: false,
+                    rule_name: "Work hours".to_owned(),
+                    power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
                 cpu_usage: Some(CpuUsageDecision {
                     rule_name: "Low CPU".to_owned(),
@@ -320,8 +310,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::ScheduledPerformance);
-        assert_eq!(outcome.target_guid.as_deref(), Some("active-guid"));
+        assert_eq!(outcome.state, DecisionState::ScheduledRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("schedule-custom"));
     }
 
     #[test]
@@ -409,10 +399,6 @@ mod tests {
             power_save_guid: Some("activity-idle".to_owned()),
             performance_guid: Some("activity-active".to_owned()),
         };
-        settings.schedule_mode.power_plans = PowerPlanSettings {
-            power_save_guid: Some("schedule-idle".to_owned()),
-            performance_guid: Some("schedule-active".to_owned()),
-        };
         settings.cpu_usage_mode.power_plans = PowerPlanSettings {
             power_save_guid: Some("cpu-idle".to_owned()),
             performance_guid: Some("cpu-active".to_owned()),
@@ -447,12 +433,12 @@ mod tests {
                 plugged_in: None,
                 schedule: Some(ScheduleDecision {
                     rule_name: "Quiet".to_owned(),
-                    inside_power_save_period: true,
+                    power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
                 cpu_usage: None,
             },
         );
-        assert_eq!(schedule.target_guid.as_deref(), Some("schedule-idle"));
+        assert_eq!(schedule.target_guid.as_deref(), Some("schedule-custom"));
 
         let cpu = DecisionEngine.decide(
             &settings,

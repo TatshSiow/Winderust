@@ -7,7 +7,7 @@ It aims to reduce power usage and carbon emissions.
 ## Features
 
 ### Power Plan scheduler adjust power plan based on
-- Scheduled time
+- Time rules
 - Input event triggers
 - CPU load
 
@@ -24,7 +24,7 @@ It aims to reduce power usage and carbon emissions.
 - `Action Based Scheduler`
     - For normal automatic switching.
 
-- `Time Based Scheduler`
+- `Time Rules`
     - For working and sleep hours.
 
 - `CPU usage-based Scheduler`
@@ -56,4 +56,4 @@ target\release\powerleaf.exe
 ## Notes
 
 - EcoQoS works best on Windows 11 and supported CPU platforms.
-- Foreground rules have the highest scheduler priority and override other power plan schedulers.
+- Foreground rules have the highest scheduler priority and override other power plan rules.
