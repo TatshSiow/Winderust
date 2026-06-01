@@ -109,7 +109,7 @@ pub fn show(
             });
 
             ui.separator();
-            show_suspendable_apps(ui, settings);
+            show_suspendable_apps(ui, settings, status);
         });
     });
 }
@@ -140,13 +140,32 @@ fn row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.end_row();
 }
 
-fn show_suspendable_apps(ui: &mut egui::Ui, settings: &mut AppSuspensionSettings) {
+fn show_suspendable_apps(
+    ui: &mut egui::Ui,
+    settings: &mut AppSuspensionSettings,
+    status: &AppSuspensionSnapshot,
+) {
     let mut remove_index = None;
     for (index, process) in settings.suspendable_apps.iter().enumerate() {
         ui.horizontal(|ui| {
+            let indicator_width = 108.0;
             let button_width = 74.0;
-            let label_width =
-                (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(80.0);
+            let label_width = (ui.available_width()
+                - indicator_width
+                - button_width
+                - (ui.spacing().item_spacing.x * 2.0))
+                .max(80.0);
+            let indicator = suspension_indicator(status, process);
+            ui.add_sized(
+                [indicator_width, ui.spacing().interact_size.y],
+                egui::Label::new(
+                    egui::RichText::new(indicator.label)
+                        .color(indicator.color)
+                        .strong(),
+                )
+                .truncate(),
+            )
+            .on_hover_text(indicator.hover);
             ui.add_sized(
                 [label_width, ui.spacing().interact_size.y],
                 egui::Label::new(process).truncate(),
@@ -165,6 +184,46 @@ fn show_suspendable_apps(ui: &mut egui::Ui, settings: &mut AppSuspensionSettings
 
     if let Some(index) = remove_index {
         settings.suspendable_apps.remove(index);
+    }
+}
+
+struct SuspensionIndicator {
+    label: &'static str,
+    color: egui::Color32,
+    hover: &'static str,
+}
+
+fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> SuspensionIndicator {
+    if suspension::is_builtin_excluded(process) {
+        SuspensionIndicator {
+            label: "Protected",
+            color: egui::Color32::from_rgb(80, 135, 190),
+            hover: "PowerLeaf does not suspend this app because it can fail to restore correctly.",
+        }
+    } else if suspension::contains_process(&status.suspended_apps, process) {
+        SuspensionIndicator {
+            label: "Frozen",
+            color: egui::Color32::from_rgb(75, 155, 90),
+            hover: "PowerLeaf has frozen this app with Windows Job Object freeze.",
+        }
+    } else if suspension::contains_process(&status.tracked_apps, process) {
+        SuspensionIndicator {
+            label: "Waiting",
+            color: egui::Color32::from_rgb(190, 140, 40),
+            hover: "This app is in the background and waiting for the delay.",
+        }
+    } else if status.enabled {
+        SuspensionIndicator {
+            label: "Not suspended",
+            color: egui::Color32::from_gray(130),
+            hover: "PowerLeaf is not currently suspending this app.",
+        }
+    } else {
+        SuspensionIndicator {
+            label: "Off",
+            color: egui::Color32::from_gray(120),
+            hover: "App Suspension is disabled.",
+        }
     }
 }
 

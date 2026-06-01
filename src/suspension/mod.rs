@@ -1,18 +1,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::c_void,
+    ptr::null,
     time::{Duration, Instant},
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE},
     System::{
-        Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
-        },
+        JobObjects::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject},
         RemoteDesktop::ProcessIdToSessionId,
-        Threading::{
-            GetCurrentProcessId, OpenThread, ResumeThread, SuspendThread, THREAD_SUSPEND_RESUME,
-        },
+        Threading::{GetCurrentProcessId, OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE},
     },
 };
 
@@ -44,12 +42,13 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSuspensionSnapshot {
     pub enabled: bool,
     pub tracked_processes: usize,
     pub suspended_processes: usize,
+    pub tracked_apps: Vec<String>,
+    pub suspended_apps: Vec<String>,
     pub skipped_processes: usize,
     pub failed_actions: usize,
     pub message: String,
@@ -63,11 +62,13 @@ pub struct AppSuspensionManager {
 }
 
 struct TrackedProcess {
+    process_name: String,
     background_since: Instant,
 }
 
 struct SuspendedProcess {
-    suspended_threads: Vec<u32>,
+    process_name: String,
+    freezer: ProcessFreezer,
 }
 
 impl AppSuspensionManager {
@@ -77,6 +78,8 @@ impl AppSuspensionManager {
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
     ) -> AppSuspensionSnapshot {
+        let now = Instant::now();
+
         if !automation_enabled {
             let failed = self.clear_all();
             return AppSuspensionSnapshot {
@@ -97,11 +100,13 @@ impl AppSuspensionManager {
             };
         }
 
+        let mut failed_actions = 0;
+
         let Some(foreground_process_id) = foreground_process_id else {
-            let failed = self.clear_all();
+            failed_actions += self.clear_all();
             return AppSuspensionSnapshot {
                 enabled: true,
-                failed_actions: failed,
+                failed_actions,
                 message: "Paused: foreground app is unknown.".to_owned(),
                 ..Default::default()
             };
@@ -109,10 +114,10 @@ impl AppSuspensionManager {
 
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failed = self.clear_all();
+            failed_actions += self.clear_all();
             return AppSuspensionSnapshot {
                 enabled: true,
-                failed_actions: failed,
+                failed_actions,
                 message: "Paused: current Windows session is unknown.".to_owned(),
                 ..Default::default()
             };
@@ -121,10 +126,10 @@ impl AppSuspensionManager {
         let processes = match list_processes() {
             Ok(processes) => processes,
             Err(err) => {
-                let failed = self.clear_all();
+                failed_actions += self.clear_all();
                 return AppSuspensionSnapshot {
                     enabled: true,
-                    failed_actions: failed,
+                    failed_actions,
                     message: err,
                     ..Default::default()
                 };
@@ -136,7 +141,7 @@ impl AppSuspensionManager {
             .find(|process| process.id == foreground_process_id)
             .map(|process| process.name.clone());
         let delay = Duration::from_secs(settings.background_delay_seconds);
-        let mut target_ids = BTreeSet::new();
+        let mut target_processes = BTreeMap::new();
 
         for process in processes {
             if process.id == 0
@@ -157,18 +162,18 @@ impl AppSuspensionManager {
                 continue;
             }
 
-            target_ids.insert(process.id);
+            target_processes.insert(process.id, process.name);
         }
 
-        let mut failed_actions = self.release_non_targets(&target_ids);
+        let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        failed_actions += self.release_non_targets(&target_ids);
         self.tracked
             .retain(|process_id, _process| target_ids.contains(process_id));
 
         let mut skipped_processes = 0;
         let mut last_error = None;
-        let now = Instant::now();
 
-        for process_id in target_ids {
+        for (process_id, process_name) in target_processes {
             if self.suspended.contains_key(&process_id) {
                 continue;
             }
@@ -177,13 +182,15 @@ impl AppSuspensionManager {
                 .tracked
                 .entry(process_id)
                 .or_insert_with(|| TrackedProcess {
+                    process_name: process_name.clone(),
                     background_since: now,
                 });
+            tracked.process_name = process_name.clone();
             if tracked.background_since.elapsed() < delay {
                 continue;
             }
 
-            match suspend_process(process_id) {
+            match suspend_process(process_id, process_name) {
                 Ok(suspended_process) => {
                     self.tracked.remove(&process_id);
                     self.suspended.insert(process_id, suspended_process);
@@ -204,6 +211,16 @@ impl AppSuspensionManager {
             enabled: true,
             tracked_processes: self.tracked.len(),
             suspended_processes: self.suspended.len(),
+            tracked_apps: unique_app_names(
+                self.tracked
+                    .values()
+                    .map(|process| process.process_name.as_str()),
+            ),
+            suspended_apps: unique_app_names(
+                self.suspended
+                    .values()
+                    .map(|process| process.process_name.as_str()),
+            ),
             skipped_processes,
             failed_actions,
             message: "App Suspension active.".to_owned(),
@@ -253,6 +270,8 @@ impl Default for AppSuspensionSnapshot {
             enabled: false,
             tracked_processes: 0,
             suspended_processes: 0,
+            tracked_apps: Vec::new(),
+            suspended_apps: Vec::new(),
             skipped_processes: 0,
             failed_actions: 0,
             message: "App Suspension disabled.".to_owned(),
@@ -270,6 +289,20 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 pub fn contains_process(list: &[String], process_name: &str) -> bool {
     list.iter()
         .any(|process| process.trim().eq_ignore_ascii_case(process_name.trim()))
+}
+
+fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut unique = BTreeMap::new();
+    for name in names {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            unique
+                .entry(trimmed.to_ascii_lowercase())
+                .or_insert_with(|| trimmed.to_owned());
+        }
+    }
+
+    unique.into_values().collect()
 }
 
 fn should_skip_foreground_process(
@@ -294,142 +327,147 @@ enum SuspensionError {
     Failed(String),
 }
 
-fn suspend_process(process_id: u32) -> Result<SuspendedProcess, SuspensionError> {
-    let thread_ids = process_thread_ids(process_id)?;
-    if thread_ids.is_empty() {
-        return Err(SuspensionError::Failed(format!(
-            "Process {process_id} has no suspendable threads."
-        )));
+const JOB_OBJECT_FREEZE_INFORMATION_CLASS: i32 = 18;
+
+#[repr(C)]
+struct JobObjectFreezeInformation {
+    flags: u32,
+    freeze: u8,
+    swap: u8,
+    spare: u16,
+    wake_filter_high: u32,
+    wake_filter_low: u32,
+}
+
+struct ProcessFreezer {
+    job_handle: HANDLE,
+}
+
+impl ProcessFreezer {
+    fn freeze(process_id: u32) -> Result<Self, SuspensionError> {
+        let process_handle =
+            unsafe { OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, process_id) };
+        if process_handle.is_null() {
+            return Err(open_process_error(process_id));
+        }
+
+        let job_handle = unsafe { CreateJobObjectW(null(), null()) };
+        if job_handle.is_null() {
+            let error = last_error();
+            unsafe {
+                CloseHandle(process_handle);
+            }
+            return Err(SuspensionError::Failed(format!(
+                "CreateJobObjectW failed with error {error}."
+            )));
+        }
+
+        let assigned = unsafe { AssignProcessToJobObject(job_handle, process_handle) != 0 };
+        unsafe {
+            CloseHandle(process_handle);
+        }
+        if !assigned {
+            let error = last_error();
+            unsafe {
+                CloseHandle(job_handle);
+            }
+            return Err(SuspensionError::Failed(format!(
+                "AssignProcessToJobObject({process_id}) failed with error {error}."
+            )));
+        }
+
+        let freezer = Self { job_handle };
+        if let Err(err) = freezer.set_frozen(true) {
+            drop(freezer);
+            return Err(err);
+        }
+
+        Ok(freezer)
     }
 
-    let mut suspended_threads = Vec::new();
-    for thread_id in thread_ids {
-        match ThreadHandle::open(thread_id) {
-            Ok(thread) => match thread.suspend() {
-                Ok(()) => suspended_threads.push(thread_id),
-                Err(err) => {
-                    resume_threads(&suspended_threads);
-                    return Err(err);
-                }
-            },
-            Err(SuspensionError::AccessDenied) => {
-                resume_threads(&suspended_threads);
-                return Err(SuspensionError::AccessDenied);
-            }
-            Err(err) => {
-                resume_threads(&suspended_threads);
-                return Err(err);
-            }
+    fn thaw(mut self) -> Result<(), SuspensionError> {
+        let result = self.set_frozen(false);
+        self.close();
+        result
+    }
+
+    fn set_frozen(&self, frozen: bool) -> Result<(), SuspensionError> {
+        let mut info = JobObjectFreezeInformation {
+            flags: 1,
+            freeze: u8::from(frozen),
+            swap: 0,
+            spare: 0,
+            wake_filter_high: 0,
+            wake_filter_low: 0,
+        };
+
+        let ok = unsafe {
+            SetInformationJobObject(
+                self.job_handle,
+                JOB_OBJECT_FREEZE_INFORMATION_CLASS,
+                &mut info as *mut _ as *mut c_void,
+                std::mem::size_of::<JobObjectFreezeInformation>() as u32,
+            )
+        };
+
+        if ok == 0 {
+            Err(SuspensionError::Failed(format!(
+                "SetInformationJobObject freeze={} failed with error {}.",
+                frozen,
+                last_error()
+            )))
+        } else {
+            Ok(())
         }
     }
 
-    Ok(SuspendedProcess { suspended_threads })
+    fn close(&mut self) {
+        if !self.job_handle.is_null() {
+            unsafe {
+                CloseHandle(self.job_handle);
+            }
+            self.job_handle = null_mut_handle();
+        }
+    }
+}
+
+impl Drop for ProcessFreezer {
+    fn drop(&mut self) {
+        if !self.job_handle.is_null() {
+            let _ = self.set_frozen(false);
+            self.close();
+        }
+    }
+}
+
+fn null_mut_handle() -> HANDLE {
+    std::ptr::null_mut()
+}
+
+fn open_process_error(process_id: u32) -> SuspensionError {
+    let error = last_error();
+    if error == ERROR_ACCESS_DENIED {
+        SuspensionError::AccessDenied
+    } else {
+        SuspensionError::Failed(format!(
+            "OpenProcess({process_id}) failed with error {error}."
+        ))
+    }
+}
+
+fn suspend_process(
+    process_id: u32,
+    process_name: String,
+) -> Result<SuspendedProcess, SuspensionError> {
+    let freezer = ProcessFreezer::freeze(process_id)?;
+    Ok(SuspendedProcess {
+        process_name,
+        freezer,
+    })
 }
 
 fn resume_process(process: SuspendedProcess) -> Result<(), SuspensionError> {
-    let mut last_error = None;
-    for thread_id in process.suspended_threads {
-        match ThreadHandle::open(thread_id).and_then(|thread| thread.resume()) {
-            Ok(()) | Err(SuspensionError::AccessDenied) => {}
-            Err(err) => last_error = Some(err),
-        }
-    }
-
-    match last_error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
-}
-
-fn resume_threads(thread_ids: &[u32]) {
-    for thread_id in thread_ids {
-        if let Ok(thread) = ThreadHandle::open(*thread_id) {
-            let _ = thread.resume();
-        }
-    }
-}
-
-fn process_thread_ids(process_id: u32) -> Result<Vec<u32>, SuspensionError> {
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snapshot == INVALID_HANDLE_VALUE {
-        return Err(SuspensionError::Failed(format!(
-            "Failed to read thread list with error {}.",
-            last_error()
-        )));
-    }
-
-    let mut entry = THREADENTRY32 {
-        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-        ..Default::default()
-    };
-    let mut thread_ids = Vec::new();
-
-    let mut has_entry = unsafe { Thread32First(snapshot, &mut entry) != 0 };
-    while has_entry {
-        if entry.th32OwnerProcessID == process_id {
-            thread_ids.push(entry.th32ThreadID);
-        }
-
-        has_entry = unsafe { Thread32Next(snapshot, &mut entry) != 0 };
-    }
-
-    unsafe {
-        CloseHandle(snapshot);
-    }
-
-    Ok(thread_ids)
-}
-
-struct ThreadHandle(HANDLE);
-
-impl ThreadHandle {
-    fn open(thread_id: u32) -> Result<Self, SuspensionError> {
-        let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, thread_id) };
-        if handle.is_null() {
-            let error = last_error();
-            if error == ERROR_ACCESS_DENIED {
-                Err(SuspensionError::AccessDenied)
-            } else {
-                Err(SuspensionError::Failed(format!(
-                    "OpenThread({thread_id}) failed with error {error}."
-                )))
-            }
-        } else {
-            Ok(Self(handle))
-        }
-    }
-
-    fn suspend(&self) -> Result<(), SuspensionError> {
-        let previous_count = unsafe { SuspendThread(self.0) };
-        if previous_count == u32::MAX {
-            Err(SuspensionError::Failed(format!(
-                "SuspendThread failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn resume(&self) -> Result<(), SuspensionError> {
-        let previous_count = unsafe { ResumeThread(self.0) };
-        if previous_count == u32::MAX {
-            Err(SuspensionError::Failed(format!(
-                "ResumeThread failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl Drop for ThreadHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
+    process.freezer.thaw()
 }
 
 fn last_error() -> u32 {
@@ -475,5 +513,6 @@ mod tests {
         assert!(is_builtin_excluded("csrss.exe"));
         assert!(is_builtin_excluded("winlogon.exe"));
         assert!(!is_builtin_excluded("browser.exe"));
+        assert!(!is_builtin_excluded("ms-teams.exe"));
     }
 }
