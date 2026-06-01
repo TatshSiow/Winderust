@@ -78,7 +78,10 @@ pub fn show(
                 ui.label("quiet");
             });
         });
-        ui.checkbox(&mut settings.network_wake_enabled, "Network intent detection");
+        ui.checkbox(
+            &mut settings.network_wake_enabled,
+            "Network intent detection",
+        );
         ui.add_enabled_ui(settings.network_wake_enabled, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Refreeze after");

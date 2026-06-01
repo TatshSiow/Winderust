@@ -9,7 +9,7 @@ pub mod rules_page;
 pub mod schedule_page;
 pub mod suspension_page;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
     Dashboard,
     Activity,

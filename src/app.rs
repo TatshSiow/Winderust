@@ -484,118 +484,132 @@ impl eframe::App for PowerLeafApp {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.add_space(8.0);
-            match self.page {
-                Page::Dashboard => {
-                    let dashboard_settings = self.runtime_settings();
-                    ui::dashboard::show(
-                        ui,
-                        &dashboard_settings,
-                        self.current_plan.as_ref(),
-                        self.foreground_app.as_deref(),
-                        &self.activity,
-                        &self.cpu_usage,
-                        &self.eco_qos_status,
-                        &self.app_suspension_status,
-                        &self.decision,
-                        &self.next_schedule,
-                    );
-                }
-                Page::Activity => {
-                    let action = show_activity_page(
-                        ui,
-                        &mut self.settings,
-                        &self.plans,
-                        self.current_plan.as_ref(),
-                    );
-                    self.handle_power_plan_action(action);
-                }
-                Page::ForegroundRules => {
-                    if self.foreground_rule_picker_open.is_some()
-                        && Instant::now() >= self.next_process_refresh
-                    {
-                        self.refresh_process_candidates(false);
-                    }
-                    let action = ui::rules_page::show(
-                        ui,
-                        &mut self.settings.foreground_rules,
-                        &self.plans,
-                        self.current_plan.as_ref(),
-                        &self.process_candidates,
-                        &mut self.foreground_rule_picker_open,
-                        &mut self.foreground_rule_picker_highlighted,
-                    );
-                    match action {
-                        ui::rules_page::RuleAction::None => {}
-                        ui::rules_page::RuleAction::RefreshPlans => self.refresh_power_plans(),
-                    }
-                }
-                Page::Schedule => {
-                    let action = ui::schedule_page::show(
-                        ui,
-                        &mut self.settings.schedule_mode,
-                        &self.plans,
-                        self.current_plan.as_ref(),
-                    );
-                    self.handle_power_plan_action(action);
-                }
-                Page::CpuUsage => {
-                    let action = ui::cpu_usage_page::show(
-                        ui,
-                        &mut self.settings.cpu_usage_mode,
-                        &self.plans,
-                        self.current_plan.as_ref(),
-                    );
-                    self.handle_power_plan_action(action);
-                }
-                Page::EfficiencyMode => {
-                    if self.eco_qos_picker_open && Instant::now() >= self.next_process_refresh {
-                        self.refresh_process_candidates(false);
-                    }
-                    ui::efficiency_page::show(
-                        ui,
-                        &mut self.settings.eco_qos,
-                        &self.eco_qos_status,
-                        &self.process_candidates,
-                        &mut self.eco_qos_exclusion_input,
-                        &mut self.eco_qos_picker_open,
-                        &mut self.eco_qos_picker_highlighted,
-                    );
-                }
-                Page::AppSuspension => {
-                    if self.suspension_picker_open && Instant::now() >= self.next_process_refresh {
-                        self.refresh_process_candidates(false);
-                    }
-                    match ui::suspension_page::show(
-                        ui,
-                        &mut self.settings.app_suspension,
-                        &self.app_suspension_status,
-                        &self.process_candidates,
-                        &mut self.suspension_input,
-                        &mut self.suspension_picker_open,
-                        &mut self.suspension_picker_highlighted,
-                    ) {
-                        ui::suspension_page::SuspensionPageAction::None => {}
-                        ui::suspension_page::SuspensionPageAction::ManualFreeze(process_name) => {
-                            self.background_automation
-                                .request_app_suspension_freeze(&process_name);
-                            self.status_message =
-                                format!("Manual freeze requested for {process_name}.");
+            egui::ScrollArea::vertical()
+                .id_salt(("page_scroll", self.page))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(8.0);
+                    match self.page {
+                        Page::Dashboard => {
+                            let dashboard_settings = self.runtime_settings();
+                            ui::dashboard::show(
+                                ui,
+                                &dashboard_settings,
+                                self.current_plan.as_ref(),
+                                self.foreground_app.as_deref(),
+                                &self.activity,
+                                &self.cpu_usage,
+                                &self.eco_qos_status,
+                                &self.app_suspension_status,
+                                &self.decision,
+                                &self.next_schedule,
+                            );
+                        }
+                        Page::Activity => {
+                            let action = show_activity_page(
+                                ui,
+                                &mut self.settings,
+                                &self.plans,
+                                self.current_plan.as_ref(),
+                            );
+                            self.handle_power_plan_action(action);
+                        }
+                        Page::ForegroundRules => {
+                            if self.foreground_rule_picker_open.is_some()
+                                && Instant::now() >= self.next_process_refresh
+                            {
+                                self.refresh_process_candidates(false);
+                            }
+                            let action = ui::rules_page::show(
+                                ui,
+                                &mut self.settings.foreground_rules,
+                                &self.plans,
+                                self.current_plan.as_ref(),
+                                &self.process_candidates,
+                                &mut self.foreground_rule_picker_open,
+                                &mut self.foreground_rule_picker_highlighted,
+                            );
+                            match action {
+                                ui::rules_page::RuleAction::None => {}
+                                ui::rules_page::RuleAction::RefreshPlans => {
+                                    self.refresh_power_plans()
+                                }
+                            }
+                        }
+                        Page::Schedule => {
+                            let action = ui::schedule_page::show(
+                                ui,
+                                &mut self.settings.schedule_mode,
+                                &self.plans,
+                                self.current_plan.as_ref(),
+                            );
+                            self.handle_power_plan_action(action);
+                        }
+                        Page::CpuUsage => {
+                            let action = ui::cpu_usage_page::show(
+                                ui,
+                                &mut self.settings.cpu_usage_mode,
+                                &self.plans,
+                                self.current_plan.as_ref(),
+                            );
+                            self.handle_power_plan_action(action);
+                        }
+                        Page::EfficiencyMode => {
+                            if self.eco_qos_picker_open
+                                && Instant::now() >= self.next_process_refresh
+                            {
+                                self.refresh_process_candidates(false);
+                            }
+                            ui::efficiency_page::show(
+                                ui,
+                                &mut self.settings.eco_qos,
+                                &self.eco_qos_status,
+                                &self.process_candidates,
+                                &mut self.eco_qos_exclusion_input,
+                                &mut self.eco_qos_picker_open,
+                                &mut self.eco_qos_picker_highlighted,
+                            );
+                        }
+                        Page::AppSuspension => {
+                            if self.suspension_picker_open
+                                && Instant::now() >= self.next_process_refresh
+                            {
+                                self.refresh_process_candidates(false);
+                            }
+                            match ui::suspension_page::show(
+                                ui,
+                                &mut self.settings.app_suspension,
+                                &self.app_suspension_status,
+                                &self.process_candidates,
+                                &mut self.suspension_input,
+                                &mut self.suspension_picker_open,
+                                &mut self.suspension_picker_highlighted,
+                            ) {
+                                ui::suspension_page::SuspensionPageAction::None => {}
+                                ui::suspension_page::SuspensionPageAction::ManualFreeze(
+                                    process_name,
+                                ) => {
+                                    self.background_automation
+                                        .request_app_suspension_freeze(&process_name);
+                                    self.status_message =
+                                        format!("Manual freeze requested for {process_name}.");
+                                }
+                            }
+                        }
+                        Page::Settings => {
+                            show_settings_page(
+                                ui,
+                                &mut self.settings,
+                                &mut export_toml_requested,
+                                &mut import_toml_requested,
+                            );
+                        }
+                        Page::About => {
+                            ui::about_page::show(ui);
                         }
                     }
-                }
-                Page::Settings => {
-                    show_settings_page(
-                        ui,
-                        &mut self.settings,
-                        &mut export_toml_requested,
-                        &mut import_toml_requested,
-                    );
-                }
-                Page::About => {
-                    ui::about_page::show(ui);
-                }
-            }
+                    ui.add_space(16.0);
+                });
         });
 
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
