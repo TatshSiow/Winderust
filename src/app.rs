@@ -566,7 +566,7 @@ impl eframe::App for PowerLeafApp {
                     if self.suspension_picker_open && Instant::now() >= self.next_process_refresh {
                         self.refresh_process_candidates(false);
                     }
-                    ui::suspension_page::show(
+                    match ui::suspension_page::show(
                         ui,
                         &mut self.settings.app_suspension,
                         &self.app_suspension_status,
@@ -574,7 +574,15 @@ impl eframe::App for PowerLeafApp {
                         &mut self.suspension_input,
                         &mut self.suspension_picker_open,
                         &mut self.suspension_picker_highlighted,
-                    );
+                    ) {
+                        ui::suspension_page::SuspensionPageAction::None => {}
+                        ui::suspension_page::SuspensionPageAction::ManualFreeze(process_name) => {
+                            self.background_automation
+                                .request_app_suspension_freeze(&process_name);
+                            self.status_message =
+                                format!("Manual freeze requested for {process_name}.");
+                        }
+                    }
                 }
                 Page::Settings => {
                     show_settings_page(

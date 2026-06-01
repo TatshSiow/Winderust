@@ -1,12 +1,19 @@
 use eframe::egui;
 
 use crate::{
-    config::AppSuspensionSettings,
+    config::{AppSuspensionRule, AppSuspensionSettings, NetworkThresholdUnit},
     suspension::{self, AppSuspensionSnapshot},
     ui::help_popup_label,
 };
 
 const APP_INPUT_WIDTH: f32 = 320.0;
+const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuspensionPageAction {
+    None,
+    ManualFreeze(String),
+}
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -16,7 +23,9 @@ pub fn show(
     suspend_input: &mut String,
     picker_open: &mut bool,
     picker_highlighted: &mut Option<usize>,
-) {
+) -> SuspensionPageAction {
+    let mut action = SuspensionPageAction::None;
+
     ui.horizontal(|ui| {
         help_marker(ui);
     });
@@ -59,13 +68,14 @@ pub fn show(
         ui.checkbox(&mut settings.network_wake_enabled, "Network wake watcher");
         ui.add_enabled_ui(settings.network_wake_enabled, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Wake for");
+                ui.label("Refreeze after");
                 ui.add(
                     egui::DragValue::new(&mut settings.network_wake_duration_seconds)
                         .speed(1.0)
                         .range(1..=3_600)
                         .suffix(" sec"),
                 );
+                ui.label("quiet");
             });
         });
     });
@@ -153,9 +163,13 @@ pub fn show(
             });
 
             ui.separator();
-            show_suspendable_apps(ui, settings, status);
+            if let Some(process_name) = show_suspendable_apps(ui, settings, status) {
+                action = SuspensionPageAction::ManualFreeze(process_name);
+            }
         });
     });
+
+    action
 }
 
 fn help_marker(ui: &mut egui::Ui) {
@@ -188,47 +202,84 @@ fn show_suspendable_apps(
     ui: &mut egui::Ui,
     settings: &mut AppSuspensionSettings,
     status: &AppSuspensionSnapshot,
-) {
+) -> Option<String> {
     let mut remove_index = None;
-    for (index, process) in settings.suspendable_apps.iter().enumerate() {
-        ui.horizontal(|ui| {
-            let indicator_width = 108.0;
-            let button_width = 74.0;
-            let label_width = (ui.available_width()
-                - indicator_width
-                - button_width
-                - (ui.spacing().item_spacing.x * 2.0))
-                .max(80.0);
-            let indicator = suspension_indicator(status, process);
-            ui.add_sized(
-                [indicator_width, ui.spacing().interact_size.y],
-                egui::Label::new(
-                    egui::RichText::new(indicator.label)
-                        .color(indicator.color)
-                        .strong(),
+    let mut manual_freeze = None;
+
+    egui::Grid::new("app_suspension_rules_grid")
+        .num_columns(7)
+        .spacing([12.0, 8.0])
+        .striped(true)
+        .show(ui, |ui| {
+            ui.strong("State");
+            ui.strong("Process");
+            ui.strong("Network Intent Detection");
+            ui.strong("Download Threshold");
+            ui.strong("Upload Threshold");
+            ui.strong("Manual Freeze");
+            ui.strong("Remove");
+            ui.end_row();
+
+            for (index, rule) in settings.suspendable_apps.iter_mut().enumerate() {
+                let process = rule.process_name.clone();
+                let indicator = suspension_indicator(status, &process);
+
+                ui.add_sized(
+                    [108.0, ui.spacing().interact_size.y],
+                    egui::Label::new(
+                        egui::RichText::new(indicator.label)
+                            .color(indicator.color)
+                            .strong(),
+                    )
+                    .truncate(),
                 )
-                .truncate(),
-            )
-            .on_hover_text(indicator.hover);
-            ui.add_sized(
-                [label_width, ui.spacing().interact_size.y],
-                egui::Label::new(process).truncate(),
-            );
-            if ui
-                .add_sized(
-                    [button_width, ui.spacing().interact_size.y],
-                    egui::Button::new("Remove"),
+                .on_hover_text(indicator.hover);
+                ui.add_sized(
+                    [220.0, ui.spacing().interact_size.y],
+                    egui::Label::new(process.as_str()).truncate(),
+                );
+                ui.add(egui::Checkbox::without_text(&mut rule.network_wake_enabled))
+                    .on_hover_text(
+                        "Allow inbound network activity to temporarily thaw this app when the watcher is enabled.",
+                    );
+                network_threshold_editor(
+                    ui,
+                    rule.network_wake_enabled,
+                    ("download_threshold", index),
+                    &mut rule.network_download_threshold_bytes,
+                    &mut rule.network_download_threshold_unit,
                 )
-                .clicked()
-            {
-                remove_index = Some(index);
+                .on_hover_text("Wake when downloaded traffic since the previous watcher tick meets this threshold. Unlimited disables download detection.");
+                network_threshold_editor(
+                    ui,
+                    rule.network_wake_enabled,
+                    ("upload_threshold", index),
+                    &mut rule.network_upload_threshold_bytes,
+                    &mut rule.network_upload_threshold_unit,
+                )
+                .on_hover_text("Wake when uploaded traffic since the previous watcher tick meets this threshold. Unlimited disables upload detection.");
+                if ui
+                    .add_enabled(
+                        can_manual_freeze(status, &process),
+                        egui::Button::new("Freeze"),
+                    )
+                    .on_hover_text("Freeze this app now if it is running in the background.")
+                    .clicked()
+                {
+                    manual_freeze = Some(process.clone());
+                }
+                if ui.button("Remove").clicked() {
+                    remove_index = Some(index);
+                }
+                ui.end_row();
             }
         });
-    }
 
     if let Some(index) = remove_index {
         settings.suspendable_apps.remove(index);
     }
+
+    manual_freeze
 }
 
 struct SuspensionIndicator {
@@ -284,6 +335,87 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
     }
 }
 
+fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
+    status.enabled && !suspension::contains_process(&status.suspended_apps, process)
+}
+
+fn network_threshold_editor(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    id_salt: impl std::hash::Hash,
+    threshold_bytes: &mut u64,
+    unit: &mut NetworkThresholdUnit,
+) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+
+            let mut threshold_value = (*unit).threshold_value_from_bytes(*threshold_bytes);
+            let max_threshold_value = (*unit)
+                .threshold_value_from_bytes(MAX_NETWORK_THRESHOLD_BYTES)
+                .max(1.0);
+
+            if ui
+                .add_sized(
+                    [74.0, ui.spacing().interact_size.y],
+                    egui::DragValue::new(&mut threshold_value)
+                        .speed(network_threshold_drag_speed(*unit))
+                        .range(0.0..=max_threshold_value)
+                        .max_decimals(3)
+                        .custom_formatter(network_threshold_formatter)
+                        .custom_parser(network_threshold_parser),
+                )
+                .changed()
+            {
+                *threshold_bytes = (*unit)
+                    .threshold_bytes_from_value(threshold_value)
+                    .min(MAX_NETWORK_THRESHOLD_BYTES);
+            }
+
+            egui::ComboBox::from_id_salt(id_salt)
+                .selected_text(unit.label())
+                .width(54.0)
+                .show_ui(ui, |ui| {
+                    for option in NetworkThresholdUnit::ALL {
+                        ui.selectable_value(unit, option, option.label());
+                    }
+                });
+        });
+    })
+    .response
+}
+
+fn network_threshold_formatter(value: f64, decimals: std::ops::RangeInclusive<usize>) -> String {
+    if value <= 0.0 {
+        "Unlimited".to_owned()
+    } else {
+        let max_decimals = *decimals.end();
+        format!("{value:.max_decimals$}")
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_owned()
+    }
+}
+
+fn network_threshold_parser(value: &str) -> Option<f64> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("unlimited") {
+        Some(0.0)
+    } else {
+        value.parse().ok()
+    }
+}
+
+fn network_threshold_drag_speed(unit: NetworkThresholdUnit) -> f64 {
+    match unit {
+        NetworkThresholdUnit::Bytes => 64.0,
+        NetworkThresholdUnit::Kilobytes | NetworkThresholdUnit::Kilobits => 1.0,
+        NetworkThresholdUnit::Megabytes | NetworkThresholdUnit::Megabits => 0.1,
+        NetworkThresholdUnit::Gigabytes | NetworkThresholdUnit::Gigabits => 0.01,
+        NetworkThresholdUnit::Bits => 512.0,
+    }
+}
+
 fn searchable_suspend_input(
     ui: &mut egui::Ui,
     process_candidates: &[String],
@@ -322,7 +454,7 @@ fn searchable_suspend_input(
         .iter()
         .filter(|process| {
             (search.is_empty() || process.contains(&search))
-                && !suspension::contains_process(&settings.suspendable_apps, process)
+                && !settings.contains_suspendable_app(process)
                 && !suspension::is_builtin_excluded(process)
         })
         .collect();
@@ -451,16 +583,21 @@ fn add_process(settings: &mut AppSuspensionSettings, input: &mut String) {
 
 fn add_process_name(settings: &mut AppSuspensionSettings, process: &str) {
     if can_add_process(settings, process) {
-        settings
-            .suspendable_apps
-            .push(process.trim().to_ascii_lowercase());
+        settings.suspendable_apps.push(AppSuspensionRule {
+            process_name: process.trim().to_ascii_lowercase(),
+            network_wake_enabled: true,
+            network_download_threshold_bytes: 1,
+            network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+            network_upload_threshold_bytes: 0,
+            network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+        });
     }
 }
 
 fn can_add_process(settings: &AppSuspensionSettings, process: &str) -> bool {
     let process = process.trim();
     !process.is_empty()
-        && !suspension::contains_process(&settings.suspendable_apps, process)
+        && !settings.contains_suspendable_app(process)
         && !suspension::is_builtin_excluded(process)
 }
 
@@ -478,13 +615,47 @@ mod tests {
             temporary_thaw_duration_seconds: 20,
             network_wake_enabled: false,
             network_wake_duration_seconds: 30,
-            suspendable_apps: vec!["chat.exe".to_owned()],
+            suspendable_apps: vec![AppSuspensionRule {
+                process_name: "chat.exe".to_owned(),
+                network_wake_enabled: true,
+                network_download_threshold_bytes: 1,
+                network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                network_upload_threshold_bytes: 0,
+                network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+            }],
         };
 
         add_process_name(&mut settings, "explorer.exe");
         add_process_name(&mut settings, "CHAT.EXE");
         add_process_name(&mut settings, "browser.exe");
 
-        assert_eq!(settings.suspendable_apps, vec!["chat.exe", "browser.exe"]);
+        assert_eq!(
+            settings.suspendable_apps,
+            vec![
+                AppSuspensionRule {
+                    process_name: "chat.exe".to_owned(),
+                    network_wake_enabled: true,
+                    network_download_threshold_bytes: 1,
+                    network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                    network_upload_threshold_bytes: 0,
+                    network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+                },
+                AppSuspensionRule {
+                    process_name: "browser.exe".to_owned(),
+                    network_wake_enabled: true,
+                    network_download_threshold_bytes: 1,
+                    network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                    network_upload_threshold_bytes: 0,
+                    network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn network_threshold_zero_formats_as_unlimited() {
+        assert_eq!(network_threshold_formatter(0.0, 0..=3), "Unlimited");
+        assert_eq!(network_threshold_parser("Unlimited"), Some(0.0));
+        assert_eq!(network_threshold_parser("12.5"), Some(12.5));
     }
 }

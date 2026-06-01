@@ -147,8 +147,40 @@ pub struct AppSuspensionSettings {
     pub network_wake_enabled: bool,
     #[serde(default = "default_network_wake_duration_seconds")]
     pub network_wake_duration_seconds: u64,
-    #[serde(default, alias = "suspend_whitelist")]
-    pub suspendable_apps: Vec<String>,
+    #[serde(
+        default,
+        alias = "suspend_whitelist",
+        deserialize_with = "deserialize_app_suspension_rules"
+    )]
+    pub suspendable_apps: Vec<AppSuspensionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppSuspensionRule {
+    pub process_name: String,
+    #[serde(default = "default_rule_network_wake_enabled")]
+    pub network_wake_enabled: bool,
+    #[serde(default = "default_rule_network_download_threshold_bytes")]
+    pub network_download_threshold_bytes: u64,
+    #[serde(default)]
+    pub network_download_threshold_unit: NetworkThresholdUnit,
+    #[serde(default)]
+    pub network_upload_threshold_bytes: u64,
+    #[serde(default)]
+    pub network_upload_threshold_unit: NetworkThresholdUnit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkThresholdUnit {
+    Bytes,
+    Kilobytes,
+    Megabytes,
+    Gigabytes,
+    Bits,
+    Kilobits,
+    Megabits,
+    Gigabits,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -328,6 +360,83 @@ const fn default_network_wake_duration_seconds() -> u64 {
     30
 }
 
+const fn default_rule_network_wake_enabled() -> bool {
+    true
+}
+
+const fn default_rule_network_download_threshold_bytes() -> u64 {
+    1
+}
+
+impl Default for NetworkThresholdUnit {
+    fn default() -> Self {
+        Self::Bytes
+    }
+}
+
+impl NetworkThresholdUnit {
+    pub const ALL: [Self; 8] = [
+        Self::Bytes,
+        Self::Kilobytes,
+        Self::Megabytes,
+        Self::Gigabytes,
+        Self::Bits,
+        Self::Kilobits,
+        Self::Megabits,
+        Self::Gigabits,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Bytes => "B",
+            Self::Kilobytes => "KB",
+            Self::Megabytes => "MB",
+            Self::Gigabytes => "GB",
+            Self::Bits => "b",
+            Self::Kilobits => "kb",
+            Self::Megabits => "mb",
+            Self::Gigabits => "gb",
+        }
+    }
+
+    pub fn threshold_value_from_bytes(self, bytes: u64) -> f64 {
+        let bytes = bytes as f64;
+        match self {
+            Self::Bytes => bytes,
+            Self::Kilobytes => bytes / 1_000.0,
+            Self::Megabytes => bytes / 1_000_000.0,
+            Self::Gigabytes => bytes / 1_000_000_000.0,
+            Self::Bits => bytes * 8.0,
+            Self::Kilobits => bytes * 8.0 / 1_000.0,
+            Self::Megabits => bytes * 8.0 / 1_000_000.0,
+            Self::Gigabits => bytes * 8.0 / 1_000_000_000.0,
+        }
+    }
+
+    pub fn threshold_bytes_from_value(self, value: f64) -> u64 {
+        if !value.is_finite() || value <= 0.0 {
+            return 0;
+        }
+
+        let bytes = match self {
+            Self::Bytes => value,
+            Self::Kilobytes => value * 1_000.0,
+            Self::Megabytes => value * 1_000_000.0,
+            Self::Gigabytes => value * 1_000_000_000.0,
+            Self::Bits => value / 8.0,
+            Self::Kilobits => value * 1_000.0 / 8.0,
+            Self::Megabits => value * 1_000_000.0 / 8.0,
+            Self::Gigabits => value * 1_000_000_000.0 / 8.0,
+        };
+
+        if bytes >= u64::MAX as f64 {
+            u64::MAX
+        } else {
+            bytes.ceil() as u64
+        }
+    }
+}
+
 impl Default for AppSuspensionSettings {
     fn default() -> Self {
         Self {
@@ -341,6 +450,79 @@ impl Default for AppSuspensionSettings {
             suspendable_apps: Vec::new(),
         }
     }
+}
+
+impl AppSuspensionSettings {
+    pub fn contains_suspendable_app(&self, process_name: &str) -> bool {
+        self.suspendable_apps.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+
+    pub fn network_wake_enabled_for(&self, process_name: &str) -> bool {
+        self.network_wake_enabled
+            && self.suspendable_apps.iter().any(|rule| {
+                rule.network_wake_enabled
+                    && rule
+                        .process_name
+                        .trim()
+                        .eq_ignore_ascii_case(process_name.trim())
+            })
+    }
+
+    pub fn network_wake_thresholds_for(&self, process_name: &str) -> Option<(u64, u64)> {
+        self.network_wake_enabled.then_some(())?;
+        self.suspendable_apps.iter().find_map(|rule| {
+            (rule.network_wake_enabled
+                && rule
+                    .process_name
+                    .trim()
+                    .eq_ignore_ascii_case(process_name.trim()))
+            .then_some((
+                rule.network_download_threshold_bytes,
+                rule.network_upload_threshold_bytes,
+            ))
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AppSuspensionRuleInput {
+    ProcessName(String),
+    Rule(AppSuspensionRule),
+}
+
+fn deserialize_app_suspension_rules<'de, D>(
+    deserializer: D,
+) -> Result<Vec<AppSuspensionRule>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let rules = Vec::<AppSuspensionRuleInput>::deserialize(deserializer)?;
+    Ok(rules
+        .into_iter()
+        .filter_map(|rule| match rule {
+            AppSuspensionRuleInput::ProcessName(process_name) => {
+                let process_name = process_name.trim().to_ascii_lowercase();
+                let download_threshold = default_rule_network_download_threshold_bytes();
+                (!process_name.is_empty()).then_some(AppSuspensionRule {
+                    process_name,
+                    network_wake_enabled: true,
+                    network_download_threshold_bytes: download_threshold,
+                    network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                    network_upload_threshold_bytes: 0,
+                    network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+                })
+            }
+            AppSuspensionRuleInput::Rule(mut rule) => {
+                rule.process_name = rule.process_name.trim().to_ascii_lowercase();
+                (!rule.process_name.is_empty()).then_some(rule)
+            }
+        })
+        .collect())
 }
 
 impl InputDetectionSettings {
@@ -555,5 +737,38 @@ impl CpuUsageComparison {
             Self::Between => "between",
             Self::Else => "else",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_threshold_units_convert_to_canonical_bytes() {
+        assert_eq!(
+            NetworkThresholdUnit::Bytes.threshold_bytes_from_value(42.0),
+            42
+        );
+        assert_eq!(
+            NetworkThresholdUnit::Kilobytes.threshold_bytes_from_value(1.5),
+            1_500
+        );
+        assert_eq!(
+            NetworkThresholdUnit::Megabytes.threshold_bytes_from_value(1.25),
+            1_250_000
+        );
+        assert_eq!(
+            NetworkThresholdUnit::Bits.threshold_bytes_from_value(9.0),
+            2
+        );
+        assert_eq!(
+            NetworkThresholdUnit::Kilobits.threshold_bytes_from_value(1.0),
+            125
+        );
+        assert_eq!(
+            NetworkThresholdUnit::Megabits.threshold_value_from_bytes(125_000),
+            1.0
+        );
     }
 }

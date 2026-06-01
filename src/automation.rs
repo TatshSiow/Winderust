@@ -39,6 +39,7 @@ struct AutomationWorkerState {
     settings: Settings,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
+    app_suspension_freeze_requests: Vec<String>,
     stop_requested: bool,
 }
 
@@ -49,6 +50,7 @@ impl BackgroundAutomation {
                 settings: settings.clone(),
                 eco_qos_status: EcoQosSnapshot::default(),
                 app_suspension_status: AppSuspensionSnapshot::default(),
+                app_suspension_freeze_requests: Vec::new(),
                 stop_requested: false,
             }),
             changed: Condvar::new(),
@@ -87,6 +89,18 @@ impl BackgroundAutomation {
             .map(|state| state.app_suspension_status.clone())
             .unwrap_or_default()
     }
+
+    pub fn request_app_suspension_freeze(&self, process_name: &str) {
+        let process_name = process_name.trim().to_ascii_lowercase();
+        if process_name.is_empty() {
+            return;
+        }
+
+        if let Ok(mut state) = self.shared.state.lock() {
+            state.app_suspension_freeze_requests.push(process_name);
+            self.shared.changed.notify_one();
+        }
+    }
 }
 
 impl Drop for BackgroundAutomation {
@@ -109,10 +123,15 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_app_suspension_refresh = Instant::now();
 
     loop {
-        let settings = match settings_snapshot(&shared) {
-            Some(settings) => settings,
+        let snapshot = match automation_snapshot(&shared) {
+            Some(snapshot) => snapshot,
             None => break,
         };
+        let settings = snapshot.settings;
+        let app_suspension_freeze_requests = snapshot.app_suspension_freeze_requests;
+        if !app_suspension_freeze_requests.is_empty() {
+            next_app_suspension_refresh = Instant::now();
+        }
 
         if Instant::now() >= next_eco_qos_refresh {
             let eco_qos_status = runner.run_eco_qos_update(&settings);
@@ -120,7 +139,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_eco_qos_refresh = Instant::now() + ECO_QOS_REFRESH_INTERVAL;
         }
         if Instant::now() >= next_app_suspension_refresh {
-            let app_suspension_status = runner.run_app_suspension_update(&settings);
+            let app_suspension_status =
+                runner.run_app_suspension_update(&settings, &app_suspension_freeze_requests);
             update_app_suspension_status(&shared, app_suspension_status);
             next_app_suspension_refresh = Instant::now() + APP_SUSPENSION_REFRESH_INTERVAL;
         }
@@ -162,12 +182,20 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     }
 }
 
-fn settings_snapshot(shared: &SharedAutomationState) -> Option<Settings> {
-    shared
-        .state
-        .lock()
-        .ok()
-        .and_then(|state| (!state.stop_requested).then(|| state.settings.clone()))
+struct AutomationSnapshot {
+    settings: Settings,
+    app_suspension_freeze_requests: Vec<String>,
+}
+
+fn automation_snapshot(shared: &SharedAutomationState) -> Option<AutomationSnapshot> {
+    shared.state.lock().ok().and_then(|mut state| {
+        (!state.stop_requested).then(|| AutomationSnapshot {
+            settings: state.settings.clone(),
+            app_suspension_freeze_requests: std::mem::take(
+                &mut state.app_suspension_freeze_requests,
+            ),
+        })
+    })
 }
 
 fn update_eco_qos_status(shared: &SharedAutomationState, status: EcoQosSnapshot) {
@@ -240,12 +268,17 @@ impl HiddenAutomationRunner {
         )
     }
 
-    fn run_app_suspension_update(&mut self, settings: &Settings) -> AppSuspensionSnapshot {
+    fn run_app_suspension_update(
+        &mut self,
+        settings: &Settings,
+        manual_freeze_processes: &[String],
+    ) -> AppSuspensionSnapshot {
         let foreground_process_id = self.foreground_detector.process_id();
         self.app_suspension_manager.update(
             &settings.app_suspension,
             settings.general.enabled,
             foreground_process_id,
+            manual_freeze_processes,
         )
     }
 

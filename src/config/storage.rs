@@ -114,10 +114,10 @@ fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
 mod tests {
     use super::*;
     use crate::config::{
-        ActivityModeSettings, AppSuspensionSettings, CpuUsageComparison, CpuUsageModeSettings,
-        CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules, GeneralSettings,
-        InputDetectionSettings, ManualOverride, PowerPlanSettings, ScheduleModeSettings,
-        ScheduleRule, WeekdaySetting,
+        ActivityModeSettings, AppSuspensionRule, AppSuspensionSettings, CpuUsageComparison,
+        CpuUsageModeSettings, CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules,
+        GeneralSettings, InputDetectionSettings, ManualOverride, NetworkThresholdUnit,
+        PowerPlanSettings, ScheduleModeSettings, ScheduleRule, WeekdaySetting,
     };
 
     #[test]
@@ -216,7 +216,24 @@ mod tests {
                 temporary_thaw_duration_seconds: 15,
                 network_wake_enabled: true,
                 network_wake_duration_seconds: 20,
-                suspendable_apps: vec!["chat.exe".to_owned(), "comma,app.exe".to_owned()],
+                suspendable_apps: vec![
+                    AppSuspensionRule {
+                        process_name: "chat.exe".to_owned(),
+                        network_wake_enabled: true,
+                        network_download_threshold_bytes: 1,
+                        network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                        network_upload_threshold_bytes: 0,
+                        network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+                    },
+                    AppSuspensionRule {
+                        process_name: "comma,app.exe".to_owned(),
+                        network_wake_enabled: false,
+                        network_download_threshold_bytes: 1,
+                        network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                        network_upload_threshold_bytes: 0,
+                        network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+                    },
+                ],
             },
         };
 
@@ -232,6 +249,78 @@ mod tests {
 
         assert!(filename.starts_with(&format!("powerleaf_{}_", env!("CARGO_PKG_VERSION"))));
         assert!(filename.ends_with(".toml"));
+    }
+
+    #[test]
+    fn legacy_suspendable_app_strings_migrate_to_rules() {
+        let raw = r#"
+[general]
+enabled = true
+startup_with_windows = false
+start_minimized = false
+hide_to_tray = false
+pause_power_plan_switching_while_plugged_in = false
+check_interval_ms = 1000
+manual_override = "None"
+
+[power_plans]
+
+[activity_mode]
+enabled = false
+idle_timeout_seconds = 300
+switch_to_performance_on_resume = true
+
+[foreground_rules]
+enabled = true
+
+[schedule_mode]
+enabled = false
+rules = []
+
+[cpu_usage_mode]
+enabled = false
+rules = []
+
+[eco_qos]
+enabled = false
+exclude_foreground_app = true
+exclude_suspended_processes = false
+efficiency_whitelist = []
+
+[app_suspension]
+enabled = true
+background_delay_seconds = 120
+temporary_thaw_enabled = false
+temporary_thaw_interval_seconds = 900
+temporary_thaw_duration_seconds = 20
+network_wake_enabled = true
+network_wake_duration_seconds = 30
+suspendable_apps = ["CHAT.EXE", "browser.exe"]
+"#;
+
+        let settings = toml_to_settings(raw).expect("legacy settings should parse");
+
+        assert_eq!(
+            settings.app_suspension.suspendable_apps,
+            vec![
+                AppSuspensionRule {
+                    process_name: "chat.exe".to_owned(),
+                    network_wake_enabled: true,
+                    network_download_threshold_bytes: 1,
+                    network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                    network_upload_threshold_bytes: 0,
+                    network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+                },
+                AppSuspensionRule {
+                    process_name: "browser.exe".to_owned(),
+                    network_wake_enabled: true,
+                    network_download_threshold_bytes: 1,
+                    network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                    network_upload_threshold_bytes: 0,
+                    network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+                }
+            ]
+        );
     }
 
     #[test]

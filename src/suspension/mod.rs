@@ -8,14 +8,18 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, HANDLE, NO_ERROR,
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER,
+        ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR,
     },
     NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
+        GetExtendedTcpTable, GetExtendedUdpTable, GetPerTcp6ConnectionEStats,
+        GetPerTcpConnectionEStats, SetPerTcp6ConnectionEStats, SetPerTcpConnectionEStats,
+        TCP_ESTATS_DATA_ROD_v0, TCP_ESTATS_DATA_RW_v0, TcpConnectionEstatsData, MIB_TCP6ROW,
+        MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_LH, MIB_TCPROW_LH_0, MIB_TCPROW_OWNER_PID,
         MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
         UDP_TABLE_OWNER_PID,
     },
-    Networking::WinSock::{AF_INET, AF_INET6},
+    Networking::WinSock::{AF_INET, AF_INET6, IN6_ADDR, IN6_ADDR_0},
     System::{
         JobObjects::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject},
         RemoteDesktop::ProcessIdToSessionId,
@@ -77,13 +81,45 @@ pub struct AppSuspensionManager {
     network_wake_windows: BTreeMap<String, NetworkWakeWindow>,
 }
 
-type NetworkConnectionSnapshot = BTreeMap<String, BTreeSet<String>>;
-type NetworkConnectionsByProcess = BTreeMap<u32, BTreeSet<String>>;
+type NetworkConnectionSnapshot = BTreeMap<String, NetworkConnections>;
+type NetworkConnections = BTreeMap<String, Option<NetworkActivityCounters>>;
+type NetworkConnectionsByProcess = BTreeMap<u32, NetworkConnections>;
+type NetworkActivityThresholdsByProcess = BTreeMap<String, NetworkActivityThresholds>;
+
+const TCP_STATE_SYN_SENT: u32 = 3;
+const TCP_STATE_SYN_RECEIVED: u32 = 4;
+const TCP_STATE_ESTABLISHED: u32 = 5;
 
 #[derive(Debug, Clone, Copy)]
 struct NetworkWakeWindow {
     wake_until: Instant,
-    cooldown_until: Instant,
+    max_until: Instant,
+    suppress_until: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NetworkActivityCounters {
+    bytes_in: u64,
+    bytes_out: u64,
+}
+
+impl NetworkActivityCounters {
+    fn exceeds_threshold_since(
+        self,
+        previous: Self,
+        thresholds: NetworkActivityThresholds,
+    ) -> bool {
+        let bytes_in = self.bytes_in.saturating_sub(previous.bytes_in);
+        let bytes_out = self.bytes_out.saturating_sub(previous.bytes_out);
+        (thresholds.bytes_in > 0 && bytes_in >= thresholds.bytes_in)
+            || (thresholds.bytes_out > 0 && bytes_out >= thresholds.bytes_out)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NetworkActivityThresholds {
+    bytes_in: u64,
+    bytes_out: u64,
 }
 
 struct TrackedProcess {
@@ -122,6 +158,7 @@ impl AppSuspensionManager {
         settings: &AppSuspensionSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
+        manual_freeze_processes: &[String],
     ) -> AppSuspensionSnapshot {
         let now = Instant::now();
 
@@ -192,7 +229,7 @@ impl AppSuspensionManager {
             if process.id == 0
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
-                || !contains_process(&settings.suspendable_apps, &process.name)
+                || !settings.contains_suspendable_app(&process.name)
                 || should_skip_foreground_process(
                     process.id,
                     &process.name,
@@ -216,22 +253,53 @@ impl AppSuspensionManager {
             .retain(|process_id, _process| target_ids.contains(process_id));
         self.temporary_thawed
             .retain(|process_id, _process| target_ids.contains(process_id));
-        let target_process_names = target_processes
+        let network_target_processes = target_processes
+            .iter()
+            .filter(|(_process_id, process_name)| settings.network_wake_enabled_for(process_name))
+            .map(|(process_id, process_name)| (*process_id, process_name.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let network_thresholds = network_activity_thresholds(settings, &network_target_processes);
+        let network_target_process_names = network_target_processes
             .values()
             .map(|process_name| process_name_key(process_name))
             .collect::<BTreeSet<_>>();
-        self.prune_network_wake_windows(&target_process_names, now);
+        let manual_freeze_names = manual_freeze_processes
+            .iter()
+            .map(|process_name| process_name_key(process_name))
+            .collect::<BTreeSet<_>>();
+        for process_name in &manual_freeze_names {
+            self.network_wake_windows.remove(process_name);
+        }
+        if settings.network_wake_enabled {
+            self.prune_network_wake_windows(&network_target_process_names, now);
+        } else {
+            self.network_wake_windows.clear();
+        }
 
         let mut skipped_processes = 0;
         let mut last_error = None;
+        let suspended_process_names = self
+            .suspended
+            .values()
+            .map(|process| process_name_key(&process.process_name))
+            .collect::<BTreeSet<_>>();
+        let active_network_wake_names = self.active_network_wake_names(now);
         let (network_snapshot, network_event_names) = if settings.network_wake_enabled {
-            match network_connection_snapshot(&target_processes) {
+            match network_connection_snapshot(&network_target_processes) {
                 Ok(snapshot) => {
-                    let wake_names = network_process_names_with_new_connections(
+                    let wake_names = network_process_names_with_activity(
                         &self.network_snapshot,
                         &snapshot,
+                        &network_thresholds,
                     );
-                    (snapshot, wake_names)
+                    (
+                        snapshot,
+                        eligible_network_wake_names(
+                            &wake_names,
+                            &suspended_process_names,
+                            &active_network_wake_names,
+                        ),
+                    )
                 }
                 Err(err) => {
                     failed_actions += 1;
@@ -240,11 +308,10 @@ impl AppSuspensionManager {
                 }
             }
         } else {
-            self.network_wake_windows.clear();
             (BTreeMap::new(), BTreeSet::new())
         };
         if settings.network_wake_enabled {
-            self.start_network_wake_windows(settings, &network_event_names, now);
+            self.extend_network_wake_windows(settings, &network_event_names, now);
         }
         let network_wake_names = self.active_network_wake_names(now);
         failed_actions += self.apply_network_wake(&target_processes, &network_wake_names, now);
@@ -256,12 +323,19 @@ impl AppSuspensionManager {
                 continue;
             }
 
+            let manual_freeze = manual_freeze_names.contains(&process_name_key(&process_name));
+            if manual_freeze {
+                self.temporary_thawed.remove(&process_id);
+                self.tracked.remove(&process_id);
+            }
+
             match self.temporary_thaw_state(process_id, &process_name, now) {
-                TemporaryThawState::Active => continue,
+                TemporaryThawState::Active if !manual_freeze => continue,
+                TemporaryThawState::Active => {}
                 TemporaryThawState::Expired => {
                     self.tracked.remove(&process_id);
                 }
-                TemporaryThawState::None => {
+                TemporaryThawState::None if !manual_freeze => {
                     let tracked =
                         self.tracked
                             .entry(process_id)
@@ -274,6 +348,7 @@ impl AppSuspensionManager {
                         continue;
                     }
                 }
+                TemporaryThawState::None => {}
             }
 
             match suspend_process(process_id, process_name, now) {
@@ -281,7 +356,7 @@ impl AppSuspensionManager {
                     self.tracked.remove(&process_id);
                     self.suspended.insert(process_id, suspended_process);
                 }
-                Err(SuspensionError::AccessDenied) => {
+                Err(SuspensionError::AccessDenied | SuspensionError::NotSupported) => {
                     skipped_processes += 1;
                 }
                 Err(SuspensionError::Failed(err)) => {
@@ -474,7 +549,7 @@ impl AppSuspensionManager {
         }
     }
 
-    fn start_network_wake_windows(
+    fn extend_network_wake_windows(
         &mut self,
         settings: &AppSuspensionSettings,
         network_process_names: &BTreeSet<String>,
@@ -485,21 +560,21 @@ impl AppSuspensionManager {
         };
 
         for process_name in network_process_names {
-            if self
-                .network_wake_windows
-                .get(process_name)
-                .is_some_and(|window| now < window.cooldown_until)
-            {
-                continue;
-            }
-
-            self.network_wake_windows.insert(
-                process_name.clone(),
-                NetworkWakeWindow {
-                    wake_until: now + duration,
-                    cooldown_until: now + duration + duration,
-                },
-            );
+            let wake_until = now + duration;
+            let max_until = now + duration.saturating_mul(2);
+            let suppress_until = now + duration.saturating_mul(3);
+            self.network_wake_windows
+                .entry(process_name.clone())
+                .and_modify(|window| {
+                    if now < window.max_until {
+                        window.wake_until = window.wake_until.max(wake_until.min(window.max_until));
+                    }
+                })
+                .or_insert(NetworkWakeWindow {
+                    wake_until,
+                    max_until,
+                    suppress_until,
+                });
         }
     }
 
@@ -509,7 +584,7 @@ impl AppSuspensionManager {
         now: Instant,
     ) {
         self.network_wake_windows.retain(|process_name, window| {
-            target_process_names.contains(process_name) && now < window.cooldown_until
+            target_process_names.contains(process_name) && now < window.suppress_until
         });
     }
 
@@ -608,7 +683,10 @@ fn network_connection_snapshot(
     add_udp_connections(&mut connections_by_pid, &target_ids, AF_INET as u32)?;
     add_udp_connections(&mut connections_by_pid, &target_ids, AF_INET6 as u32)?;
 
-    let mut snapshot = BTreeMap::new();
+    let mut snapshot = target_processes
+        .values()
+        .map(|process_name| (process_name_key(process_name), BTreeMap::new()))
+        .collect::<NetworkConnectionSnapshot>();
     for (process_id, connections) in connections_by_pid {
         let Some(process_name) = target_processes.get(&process_id) else {
             continue;
@@ -616,29 +694,73 @@ fn network_connection_snapshot(
 
         snapshot
             .entry(process_name_key(process_name))
-            .or_insert_with(BTreeSet::new)
+            .or_insert_with(BTreeMap::new)
             .extend(connections);
     }
 
     Ok(snapshot)
 }
 
-fn network_process_names_with_new_connections(
+fn network_process_names_with_activity(
     previous: &NetworkConnectionSnapshot,
     current: &NetworkConnectionSnapshot,
+    thresholds_by_process: &NetworkActivityThresholdsByProcess,
 ) -> BTreeSet<String> {
     current
         .iter()
         .filter(|(process_name, connections)| {
+            let Some(thresholds) = thresholds_by_process.get(*process_name) else {
+                return false;
+            };
             previous
                 .get(*process_name)
-                .is_none_or(|previous_connections| {
-                    connections
-                        .iter()
-                        .any(|connection| !previous_connections.contains(connection))
+                .is_some_and(|previous_connections| {
+                    connections.iter().any(|(connection, activity)| {
+                        match previous_connections.get(connection) {
+                            Some(Some(previous_activity)) => activity.is_some_and(|activity| {
+                                activity.exceeds_threshold_since(*previous_activity, *thresholds)
+                            }),
+                            Some(None) => false,
+                            None => false,
+                        }
+                    })
                 })
         })
         .map(|(process_name, _connections)| process_name.clone())
+        .collect()
+}
+
+fn network_activity_thresholds(
+    settings: &AppSuspensionSettings,
+    target_processes: &BTreeMap<u32, String>,
+) -> NetworkActivityThresholdsByProcess {
+    target_processes
+        .values()
+        .filter_map(|process_name| {
+            let (bytes_in, bytes_out) = settings.network_wake_thresholds_for(process_name)?;
+            Some((
+                process_name_key(process_name),
+                NetworkActivityThresholds {
+                    bytes_in,
+                    bytes_out,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn eligible_network_wake_names(
+    network_process_names: &BTreeSet<String>,
+    suspended_process_names: &BTreeSet<String>,
+    active_network_wake_names: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    network_process_names
+        .iter()
+        .filter(|process_name| {
+            suspended_process_names.contains(*process_name)
+                || active_network_wake_names.contains(*process_name)
+        })
+        .cloned()
         .collect()
 }
 
@@ -665,40 +787,180 @@ fn add_tcp_connections(
     if address_family == AF_INET as u32 {
         for row in table_rows::<MIB_TCPROW_OWNER_PID>(&buffer) {
             if target_ids.contains(&row.dwOwningPid) {
+                let Some(connection) = tcp4_connection_key(&row) else {
+                    continue;
+                };
+                let activity = tcp4_connection_activity(&row);
+
                 connections_by_pid
                     .entry(row.dwOwningPid)
                     .or_default()
-                    .insert(format!(
-                        "tcp4:{}:{}:{}:{}:{}",
-                        row.dwState,
-                        row.dwLocalAddr,
-                        row.dwLocalPort,
-                        row.dwRemoteAddr,
-                        row.dwRemotePort
-                    ));
+                    .insert(connection, activity);
             }
         }
     } else {
         for row in table_rows::<MIB_TCP6ROW_OWNER_PID>(&buffer) {
             if target_ids.contains(&row.dwOwningPid) {
+                let Some(connection) = tcp6_connection_key(&row) else {
+                    continue;
+                };
+                let activity = tcp6_connection_activity(&row);
+
                 connections_by_pid
                     .entry(row.dwOwningPid)
                     .or_default()
-                    .insert(format!(
-                        "tcp6:{}:{:?}:{}:{:?}:{}:{}:{}",
-                        row.dwState,
-                        row.ucLocalAddr,
-                        row.dwLocalScopeId,
-                        row.ucRemoteAddr,
-                        row.dwRemoteScopeId,
-                        row.dwLocalPort,
-                        row.dwRemotePort
-                    ));
+                    .insert(connection, activity);
             }
         }
     }
 
     Ok(())
+}
+
+fn tcp4_connection_key(row: &MIB_TCPROW_OWNER_PID) -> Option<String> {
+    is_network_intent_tcp_state(row.dwState).then(|| {
+        format!(
+            "tcp4:{}:{}:{}:{}",
+            row.dwLocalAddr, row.dwLocalPort, row.dwRemoteAddr, row.dwRemotePort
+        )
+    })
+}
+
+fn tcp6_connection_key(row: &MIB_TCP6ROW_OWNER_PID) -> Option<String> {
+    is_network_intent_tcp_state(row.dwState).then(|| {
+        format!(
+            "tcp6:{:?}:{}:{:?}:{}:{}:{}",
+            row.ucLocalAddr,
+            row.dwLocalScopeId,
+            row.ucRemoteAddr,
+            row.dwRemoteScopeId,
+            row.dwLocalPort,
+            row.dwRemotePort
+        )
+    })
+}
+
+fn tcp4_connection_activity(row: &MIB_TCPROW_OWNER_PID) -> Option<NetworkActivityCounters> {
+    let tcp_row = MIB_TCPROW_LH {
+        Anonymous: MIB_TCPROW_LH_0 {
+            dwState: row.dwState,
+        },
+        dwLocalAddr: row.dwLocalAddr,
+        dwLocalPort: row.dwLocalPort,
+        dwRemoteAddr: row.dwRemoteAddr,
+        dwRemotePort: row.dwRemotePort,
+    };
+    enable_tcp4_data_stats(&tcp_row);
+    tcp4_data_stats(&tcp_row)
+}
+
+fn tcp6_connection_activity(row: &MIB_TCP6ROW_OWNER_PID) -> Option<NetworkActivityCounters> {
+    let tcp_row = MIB_TCP6ROW {
+        State: row.dwState as i32,
+        LocalAddr: IN6_ADDR {
+            u: IN6_ADDR_0 {
+                Byte: row.ucLocalAddr,
+            },
+        },
+        dwLocalScopeId: row.dwLocalScopeId,
+        dwLocalPort: row.dwLocalPort,
+        RemoteAddr: IN6_ADDR {
+            u: IN6_ADDR_0 {
+                Byte: row.ucRemoteAddr,
+            },
+        },
+        dwRemoteScopeId: row.dwRemoteScopeId,
+        dwRemotePort: row.dwRemotePort,
+    };
+    enable_tcp6_data_stats(&tcp_row);
+    tcp6_data_stats(&tcp_row)
+}
+
+fn enable_tcp4_data_stats(row: &MIB_TCPROW_LH) {
+    let rw = TCP_ESTATS_DATA_RW_v0 {
+        EnableCollection: true,
+    };
+    unsafe {
+        SetPerTcpConnectionEStats(
+            row,
+            TcpConnectionEstatsData,
+            &rw as *const _ as *const u8,
+            0,
+            mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
+            0,
+        );
+    }
+}
+
+fn enable_tcp6_data_stats(row: &MIB_TCP6ROW) {
+    let rw = TCP_ESTATS_DATA_RW_v0 {
+        EnableCollection: true,
+    };
+    unsafe {
+        SetPerTcp6ConnectionEStats(
+            row,
+            TcpConnectionEstatsData,
+            &rw as *const _ as *const u8,
+            0,
+            mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
+            0,
+        );
+    }
+}
+
+fn tcp4_data_stats(row: &MIB_TCPROW_LH) -> Option<NetworkActivityCounters> {
+    let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
+    let status = unsafe {
+        GetPerTcpConnectionEStats(
+            row,
+            TcpConnectionEstatsData,
+            null_mut(),
+            0,
+            0,
+            null_mut(),
+            0,
+            0,
+            &mut rod as *mut _ as *mut u8,
+            0,
+            mem::size_of::<TCP_ESTATS_DATA_ROD_v0>() as u32,
+        )
+    };
+
+    (status == NO_ERROR).then(|| NetworkActivityCounters {
+        bytes_in: rod.DataBytesIn,
+        bytes_out: rod.DataBytesOut,
+    })
+}
+
+fn tcp6_data_stats(row: &MIB_TCP6ROW) -> Option<NetworkActivityCounters> {
+    let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
+    let status = unsafe {
+        GetPerTcp6ConnectionEStats(
+            row,
+            TcpConnectionEstatsData,
+            null_mut(),
+            0,
+            0,
+            null_mut(),
+            0,
+            0,
+            &mut rod as *mut _ as *mut u8,
+            0,
+            mem::size_of::<TCP_ESTATS_DATA_ROD_v0>() as u32,
+        )
+    };
+
+    (status == NO_ERROR).then(|| NetworkActivityCounters {
+        bytes_in: rod.DataBytesIn,
+        bytes_out: rod.DataBytesOut,
+    })
+}
+
+fn is_network_intent_tcp_state(state: u32) -> bool {
+    matches!(
+        state,
+        TCP_STATE_SYN_SENT | TCP_STATE_SYN_RECEIVED | TCP_STATE_ESTABLISHED
+    )
 }
 
 fn add_udp_connections(
@@ -716,7 +978,10 @@ fn add_udp_connections(
                 connections_by_pid
                     .entry(row.dwOwningPid)
                     .or_default()
-                    .insert(format!("udp4:{}:{}", row.dwLocalAddr, row.dwLocalPort));
+                    .insert(
+                        format!("udp4:{}:{}", row.dwLocalAddr, row.dwLocalPort),
+                        None,
+                    );
             }
         }
     } else {
@@ -725,10 +990,13 @@ fn add_udp_connections(
                 connections_by_pid
                     .entry(row.dwOwningPid)
                     .or_default()
-                    .insert(format!(
-                        "udp6:{:?}:{}:{}",
-                        row.ucLocalAddr, row.dwLocalScopeId, row.dwLocalPort
-                    ));
+                    .insert(
+                        format!(
+                            "udp6:{:?}:{}:{}",
+                            row.ucLocalAddr, row.dwLocalScopeId, row.dwLocalPort
+                        ),
+                        None,
+                    );
             }
         }
     }
@@ -815,8 +1083,10 @@ fn process_session_id(process_id: u32) -> Option<u32> {
     (ok != 0).then_some(session_id)
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum SuspensionError {
     AccessDenied,
+    NotSupported,
     Failed(String),
 }
 
@@ -864,9 +1134,7 @@ impl ProcessFreezer {
             unsafe {
                 CloseHandle(job_handle);
             }
-            return Err(SuspensionError::Failed(format!(
-                "AssignProcessToJobObject({process_id}) failed with error {error}."
-            )));
+            return Err(assign_process_to_job_error(process_id, error));
         }
 
         let freezer = Self { job_handle };
@@ -939,12 +1207,22 @@ fn null_mut_handle() -> HANDLE {
 
 fn open_process_error(process_id: u32) -> SuspensionError {
     let error = last_error();
-    if error == ERROR_ACCESS_DENIED {
-        SuspensionError::AccessDenied
-    } else {
-        SuspensionError::Failed(format!(
+    match error {
+        ERROR_ACCESS_DENIED => SuspensionError::AccessDenied,
+        ERROR_NOT_SUPPORTED => SuspensionError::NotSupported,
+        _ => SuspensionError::Failed(format!(
             "OpenProcess({process_id}) failed with error {error}."
-        ))
+        )),
+    }
+}
+
+fn assign_process_to_job_error(process_id: u32, error: u32) -> SuspensionError {
+    match error {
+        ERROR_ACCESS_DENIED => SuspensionError::AccessDenied,
+        ERROR_NOT_SUPPORTED => SuspensionError::NotSupported,
+        _ => SuspensionError::Failed(format!(
+            "AssignProcessToJobObject({process_id}) failed with error {error}."
+        )),
     }
 }
 
@@ -972,6 +1250,33 @@ fn last_error() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn network_snapshot(
+        process_name: &str,
+        connections: &[(&str, Option<NetworkActivityCounters>)],
+    ) -> NetworkConnectionSnapshot {
+        BTreeMap::from([(
+            process_name.to_owned(),
+            connections
+                .iter()
+                .map(|(connection, activity)| ((*connection).to_owned(), *activity))
+                .collect(),
+        )])
+    }
+
+    fn network_thresholds(
+        process_name: &str,
+        bytes_in: u64,
+        bytes_out: u64,
+    ) -> NetworkActivityThresholdsByProcess {
+        BTreeMap::from([(
+            process_name.to_owned(),
+            NetworkActivityThresholds {
+                bytes_in,
+                bytes_out,
+            },
+        )])
+    }
 
     #[test]
     fn suspendable_app_match_is_case_insensitive() {
@@ -1042,6 +1347,14 @@ mod tests {
     }
 
     #[test]
+    fn assign_process_error_50_is_skipped_not_failed() {
+        assert_eq!(
+            assign_process_to_job_error(3252, ERROR_NOT_SUPPORTED),
+            SuspensionError::NotSupported
+        );
+    }
+
+    #[test]
     fn network_wake_duration_requires_toggle_and_positive_duration() {
         let mut settings = AppSuspensionSettings::default();
 
@@ -1059,36 +1372,219 @@ mod tests {
     }
 
     #[test]
-    fn network_process_names_with_new_connections_ignores_steady_sockets() {
-        let previous = BTreeMap::from([(
-            "chrome.exe".to_owned(),
-            BTreeSet::from(["tcp4:5:1:2:3:4".to_owned()]),
-        )]);
+    fn network_process_names_with_activity_ignores_steady_sockets() {
+        let previous = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", None)]);
         let current = previous.clone();
+        let thresholds = network_thresholds("chrome.exe", 1, 0);
 
-        let names = network_process_names_with_new_connections(&previous, &current);
+        let names = network_process_names_with_activity(&previous, &current, &thresholds);
 
         assert!(names.is_empty());
     }
 
     #[test]
-    fn network_process_names_with_new_connections_detects_added_socket() {
-        let previous = BTreeMap::from([(
-            "chrome.exe".to_owned(),
-            BTreeSet::from(["tcp4:5:1:2:3:4".to_owned()]),
-        )]);
-        let current = BTreeMap::from([(
-            "chrome.exe".to_owned(),
-            BTreeSet::from(["tcp4:5:1:2:3:4".to_owned(), "tcp4:5:1:6:7:8".to_owned()]),
-        )]);
+    fn network_process_names_with_activity_ignores_socket_presence_without_payload() {
+        let previous = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", None)]);
+        let current = network_snapshot(
+            "chrome.exe",
+            &[("tcp4:1:2:3:4", None), ("tcp4:1:6:7:8", None)],
+        );
+        let thresholds = network_thresholds("chrome.exe", 1, 0);
 
-        let names = network_process_names_with_new_connections(&previous, &current);
+        let names = network_process_names_with_activity(&previous, &current, &thresholds);
+
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn network_process_names_with_activity_uses_first_seen_process_as_baseline() {
+        let previous = BTreeMap::new();
+        let current = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", None)]);
+        let thresholds = network_thresholds("chrome.exe", 1, 0);
+
+        let names = network_process_names_with_activity(&previous, &current, &thresholds);
+
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn network_process_names_with_activity_ignores_first_socket_after_baseline() {
+        let previous = network_snapshot("chrome.exe", &[]);
+        let current = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", None)]);
+        let thresholds = network_thresholds("chrome.exe", 1, 0);
+
+        let names = network_process_names_with_activity(&previous, &current, &thresholds);
+
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn network_process_names_with_activity_detects_tcp_byte_counter_increase() {
+        let previous = network_snapshot(
+            "chrome.exe",
+            &[(
+                "tcp4:1:2:3:4",
+                Some(NetworkActivityCounters {
+                    bytes_in: 10,
+                    bytes_out: 5,
+                }),
+            )],
+        );
+        let current = network_snapshot(
+            "chrome.exe",
+            &[(
+                "tcp4:1:2:3:4",
+                Some(NetworkActivityCounters {
+                    bytes_in: 11,
+                    bytes_out: 5,
+                }),
+            )],
+        );
+        let thresholds = network_thresholds("chrome.exe", 1, 0);
+
+        let names = network_process_names_with_activity(&previous, &current, &thresholds);
 
         assert_eq!(names, BTreeSet::from(["chrome.exe".to_owned()]));
     }
 
     #[test]
-    fn network_wake_window_does_not_extend_during_cooldown() {
+    fn network_process_names_with_activity_respects_download_threshold() {
+        let previous = network_snapshot(
+            "chrome.exe",
+            &[(
+                "tcp4:1:2:3:4",
+                Some(NetworkActivityCounters {
+                    bytes_in: 10,
+                    bytes_out: 5,
+                }),
+            )],
+        );
+        let current = network_snapshot(
+            "chrome.exe",
+            &[(
+                "tcp4:1:2:3:4",
+                Some(NetworkActivityCounters {
+                    bytes_in: 14,
+                    bytes_out: 5,
+                }),
+            )],
+        );
+        let thresholds = network_thresholds("chrome.exe", 5, 0);
+
+        let names = network_process_names_with_activity(&previous, &current, &thresholds);
+
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn network_process_names_with_activity_ignores_outbound_only_counter_increase() {
+        let previous = network_snapshot(
+            "chrome.exe",
+            &[(
+                "tcp4:1:2:3:4",
+                Some(NetworkActivityCounters {
+                    bytes_in: 10,
+                    bytes_out: 5,
+                }),
+            )],
+        );
+        let current = network_snapshot(
+            "chrome.exe",
+            &[(
+                "tcp4:1:2:3:4",
+                Some(NetworkActivityCounters {
+                    bytes_in: 10,
+                    bytes_out: 6,
+                }),
+            )],
+        );
+        let thresholds = network_thresholds("chrome.exe", 1, 0);
+
+        let names = network_process_names_with_activity(&previous, &current, &thresholds);
+
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn network_process_names_with_activity_detects_upload_when_threshold_enabled() {
+        let previous = network_snapshot(
+            "chrome.exe",
+            &[(
+                "tcp4:1:2:3:4",
+                Some(NetworkActivityCounters {
+                    bytes_in: 10,
+                    bytes_out: 5,
+                }),
+            )],
+        );
+        let current = network_snapshot(
+            "chrome.exe",
+            &[(
+                "tcp4:1:2:3:4",
+                Some(NetworkActivityCounters {
+                    bytes_in: 10,
+                    bytes_out: 9,
+                }),
+            )],
+        );
+        let thresholds = network_thresholds("chrome.exe", 0, 4);
+
+        let names = network_process_names_with_activity(&previous, &current, &thresholds);
+
+        assert_eq!(names, BTreeSet::from(["chrome.exe".to_owned()]));
+    }
+
+    #[test]
+    fn eligible_network_wake_names_require_suspended_or_active_wake_process() {
+        let network_names = BTreeSet::from([
+            "chat.exe".to_owned(),
+            "mail.exe".to_owned(),
+            "browser.exe".to_owned(),
+        ]);
+        let suspended_names = BTreeSet::from(["chat.exe".to_owned()]);
+        let active_wake_names = BTreeSet::from(["mail.exe".to_owned()]);
+
+        let names =
+            eligible_network_wake_names(&network_names, &suspended_names, &active_wake_names);
+
+        assert_eq!(
+            names,
+            BTreeSet::from(["chat.exe".to_owned(), "mail.exe".to_owned()])
+        );
+    }
+
+    #[test]
+    fn tcp_connection_key_ignores_state_transitions_and_listeners() {
+        let established = MIB_TCPROW_OWNER_PID {
+            dwState: TCP_STATE_ESTABLISHED,
+            dwLocalAddr: 1,
+            dwLocalPort: 2,
+            dwRemoteAddr: 3,
+            dwRemotePort: 4,
+            dwOwningPid: 42,
+        };
+        let syn_sent = MIB_TCPROW_OWNER_PID {
+            dwState: TCP_STATE_SYN_SENT,
+            ..established
+        };
+        let listener = MIB_TCPROW_OWNER_PID {
+            dwState: 2,
+            ..established
+        };
+
+        assert_eq!(
+            tcp4_connection_key(&established),
+            Some("tcp4:1:2:3:4".to_owned())
+        );
+        assert_eq!(
+            tcp4_connection_key(&syn_sent),
+            tcp4_connection_key(&established)
+        );
+        assert_eq!(tcp4_connection_key(&listener), None);
+    }
+
+    #[test]
+    fn network_wake_window_extends_until_quiet_or_cycle_cap() {
         let mut manager = AppSuspensionManager::default();
         let mut settings = AppSuspensionSettings::default();
         settings.network_wake_enabled = true;
@@ -1096,18 +1592,34 @@ mod tests {
         let now = Instant::now();
         let names = BTreeSet::from(["chrome.exe".to_owned()]);
 
-        manager.start_network_wake_windows(&settings, &names, now);
+        manager.extend_network_wake_windows(&settings, &names, now);
         let first_window = manager.network_wake_windows["chrome.exe"];
-        manager.start_network_wake_windows(&settings, &names, now + Duration::from_secs(5));
+        manager.extend_network_wake_windows(&settings, &names, now + Duration::from_secs(5));
         let second_window = manager.network_wake_windows["chrome.exe"];
 
-        assert_eq!(first_window.wake_until, second_window.wake_until);
-        assert_eq!(first_window.cooldown_until, second_window.cooldown_until);
+        assert_eq!(first_window.wake_until, now + Duration::from_secs(10));
+        assert_eq!(second_window.wake_until, now + Duration::from_secs(15));
+        assert_eq!(
+            manager.active_network_wake_names(now + Duration::from_secs(14)),
+            names
+        );
 
-        manager.start_network_wake_windows(&settings, &names, now + Duration::from_secs(21));
-        let third_window = manager.network_wake_windows["chrome.exe"];
+        manager.extend_network_wake_windows(&settings, &names, now + Duration::from_secs(18));
+        let capped_window = manager.network_wake_windows["chrome.exe"];
+        assert_eq!(capped_window.wake_until, now + Duration::from_secs(20));
 
-        assert!(third_window.wake_until > second_window.wake_until);
+        manager.extend_network_wake_windows(&settings, &names, now + Duration::from_secs(21));
+        let suppressed_window = manager.network_wake_windows["chrome.exe"];
+        assert_eq!(suppressed_window.wake_until, now + Duration::from_secs(20));
+        assert!(manager
+            .active_network_wake_names(now + Duration::from_secs(21))
+            .is_empty());
+
+        manager.prune_network_wake_windows(&names, now + Duration::from_secs(29));
+        assert!(manager.network_wake_windows.contains_key("chrome.exe"));
+
+        manager.prune_network_wake_windows(&names, now + Duration::from_secs(30));
+        assert!(manager.network_wake_windows.is_empty());
     }
 
     #[test]
