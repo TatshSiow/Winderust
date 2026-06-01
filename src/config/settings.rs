@@ -143,6 +143,10 @@ pub struct AppSuspensionSettings {
     pub temporary_thaw_interval_seconds: u64,
     #[serde(default = "default_temporary_thaw_duration_seconds")]
     pub temporary_thaw_duration_seconds: u64,
+    #[serde(default)]
+    pub network_wake_enabled: bool,
+    #[serde(default = "default_network_wake_duration_seconds")]
+    pub network_wake_duration_seconds: u64,
     #[serde(default, alias = "suspend_whitelist")]
     pub suspendable_apps: Vec<String>,
 }
@@ -320,6 +324,10 @@ const fn default_temporary_thaw_duration_seconds() -> u64 {
     20
 }
 
+const fn default_network_wake_duration_seconds() -> u64 {
+    30
+}
+
 impl Default for AppSuspensionSettings {
     fn default() -> Self {
         Self {
@@ -328,6 +336,8 @@ impl Default for AppSuspensionSettings {
             temporary_thaw_enabled: false,
             temporary_thaw_interval_seconds: default_temporary_thaw_interval_seconds(),
             temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),
+            network_wake_enabled: false,
+            network_wake_duration_seconds: default_network_wake_duration_seconds(),
             suspendable_apps: Vec::new(),
         }
     }

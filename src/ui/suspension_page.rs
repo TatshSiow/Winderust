@@ -56,6 +56,18 @@ pub fn show(
                 );
             });
         });
+        ui.checkbox(&mut settings.network_wake_enabled, "Network wake watcher");
+        ui.add_enabled_ui(settings.network_wake_enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Wake for");
+                ui.add(
+                    egui::DragValue::new(&mut settings.network_wake_duration_seconds)
+                        .speed(1.0)
+                        .range(1..=3_600)
+                        .suffix(" sec"),
+                );
+            });
+        });
     });
     ui.add_space(12.0);
 
@@ -79,6 +91,11 @@ pub fn show(
                 ui,
                 "Temporary thawed",
                 &status.temporary_thawed_processes.to_string(),
+            );
+            row(
+                ui,
+                "Network wake",
+                &status.network_wake_processes.to_string(),
             );
             row(
                 ui,
@@ -226,6 +243,13 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
             label: "Protected",
             color: egui::Color32::from_rgb(80, 135, 190),
             hover: "PowerLeaf does not suspend this app because it can fail to restore correctly.",
+        }
+    } else if suspension::contains_process(&status.network_wake_apps, process) {
+        SuspensionIndicator {
+            label: "Network",
+            color: egui::Color32::from_rgb(80, 135, 190),
+            hover:
+                "PowerLeaf has thawed or kept this app awake because it owns network connections.",
         }
     } else if suspension::contains_process(&status.suspended_apps, process) {
         SuspensionIndicator {
@@ -452,6 +476,8 @@ mod tests {
             temporary_thaw_enabled: false,
             temporary_thaw_interval_seconds: 900,
             temporary_thaw_duration_seconds: 20,
+            network_wake_enabled: false,
+            network_wake_duration_seconds: 30,
             suspendable_apps: vec!["chat.exe".to_owned()],
         };
 

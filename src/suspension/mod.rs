@@ -1,12 +1,21 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
-    ptr::null,
+    mem, ptr,
+    ptr::{null, null_mut},
     time::{Duration, Instant},
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE},
+    Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, HANDLE, NO_ERROR,
+    },
+    NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCPROW_OWNER_PID,
+        MIB_UDP6ROW_OWNER_PID, MIB_UDPROW_OWNER_PID, TCP_TABLE_OWNER_PID_CONNECTIONS,
+        UDP_TABLE_OWNER_PID,
+    },
+    Networking::WinSock::{AF_INET, AF_INET6},
     System::{
         JobObjects::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject},
         RemoteDesktop::ProcessIdToSessionId,
@@ -48,9 +57,11 @@ pub struct AppSuspensionSnapshot {
     pub tracked_processes: usize,
     pub suspended_processes: usize,
     pub temporary_thawed_processes: usize,
+    pub network_wake_processes: usize,
     pub tracked_apps: Vec<String>,
     pub suspended_apps: Vec<String>,
     pub temporary_thawed_apps: Vec<String>,
+    pub network_wake_apps: Vec<String>,
     pub skipped_processes: usize,
     pub failed_actions: usize,
     pub message: String,
@@ -62,6 +73,17 @@ pub struct AppSuspensionManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     suspended: BTreeMap<u32, SuspendedProcess>,
     temporary_thawed: BTreeMap<u32, TemporaryThaw>,
+    network_snapshot: NetworkConnectionSnapshot,
+    network_wake_windows: BTreeMap<String, NetworkWakeWindow>,
+}
+
+type NetworkConnectionSnapshot = BTreeMap<String, BTreeSet<String>>;
+type NetworkConnectionsByProcess = BTreeMap<u32, BTreeSet<String>>;
+
+#[derive(Debug, Clone, Copy)]
+struct NetworkWakeWindow {
+    wake_until: Instant,
+    cooldown_until: Instant,
 }
 
 struct TrackedProcess {
@@ -78,6 +100,13 @@ struct SuspendedProcess {
 struct TemporaryThaw {
     process_name: String,
     thaw_until: Instant,
+    reason: TemporaryThawReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemporaryThawReason {
+    Fallback,
+    NetworkWake,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,10 +216,40 @@ impl AppSuspensionManager {
             .retain(|process_id, _process| target_ids.contains(process_id));
         self.temporary_thawed
             .retain(|process_id, _process| target_ids.contains(process_id));
-        failed_actions += self.release_for_temporary_thaw(settings, &target_ids, now);
+        let target_process_names = target_processes
+            .values()
+            .map(|process_name| process_name_key(process_name))
+            .collect::<BTreeSet<_>>();
+        self.prune_network_wake_windows(&target_process_names, now);
 
         let mut skipped_processes = 0;
         let mut last_error = None;
+        let (network_snapshot, network_event_names) = if settings.network_wake_enabled {
+            match network_connection_snapshot(&target_processes) {
+                Ok(snapshot) => {
+                    let wake_names = network_process_names_with_new_connections(
+                        &self.network_snapshot,
+                        &snapshot,
+                    );
+                    (snapshot, wake_names)
+                }
+                Err(err) => {
+                    failed_actions += 1;
+                    last_error = Some(err);
+                    (self.network_snapshot.clone(), BTreeSet::new())
+                }
+            }
+        } else {
+            self.network_wake_windows.clear();
+            (BTreeMap::new(), BTreeSet::new())
+        };
+        if settings.network_wake_enabled {
+            self.start_network_wake_windows(settings, &network_event_names, now);
+        }
+        let network_wake_names = self.active_network_wake_names(now);
+        failed_actions += self.apply_network_wake(&target_processes, &network_wake_names, now);
+        self.network_snapshot = network_snapshot;
+        failed_actions += self.release_for_temporary_thaw(settings, &target_ids, now);
 
         for (process_id, process_name) in target_processes {
             if self.suspended.contains_key(&process_id) {
@@ -239,6 +298,7 @@ impl AppSuspensionManager {
             tracked_processes: self.tracked.len(),
             suspended_processes: self.suspended.len(),
             temporary_thawed_processes: self.temporary_thawed.len(),
+            network_wake_processes: self.network_wake_process_count(),
             tracked_apps: unique_app_names(
                 self.tracked
                     .values()
@@ -252,6 +312,12 @@ impl AppSuspensionManager {
             temporary_thawed_apps: unique_app_names(
                 self.temporary_thawed
                     .values()
+                    .map(|process| process.process_name.as_str()),
+            ),
+            network_wake_apps: unique_app_names(
+                self.temporary_thawed
+                    .values()
+                    .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
                     .map(|process| process.process_name.as_str()),
             ),
             skipped_processes,
@@ -275,6 +341,8 @@ impl AppSuspensionManager {
     fn clear_all(&mut self) -> usize {
         self.tracked.clear();
         self.temporary_thawed.clear();
+        self.network_snapshot.clear();
+        self.network_wake_windows.clear();
         let process_ids = self.suspended.keys().copied().collect::<Vec<_>>();
         self.release_processes(&process_ids)
     }
@@ -328,6 +396,7 @@ impl AppSuspensionManager {
                         TemporaryThaw {
                             process_name,
                             thaw_until: now + duration,
+                            reason: TemporaryThawReason::Fallback,
                         },
                     );
                 }
@@ -335,6 +404,135 @@ impl AppSuspensionManager {
         }
 
         failed
+    }
+
+    fn apply_network_wake(
+        &mut self,
+        target_processes: &BTreeMap<u32, String>,
+        network_process_names: &BTreeSet<String>,
+        now: Instant,
+    ) -> usize {
+        let process_ids = target_processes
+            .iter()
+            .filter(|(_process_id, process_name)| {
+                network_process_names.contains(&process_name_key(process_name))
+            })
+            .map(|(process_id, process_name)| (*process_id, process_name.clone()))
+            .collect::<Vec<_>>();
+
+        let mut failed = 0;
+        for (process_id, process_name) in process_ids {
+            let Some(thaw_until) = self.active_network_wake_until(&process_name, now) else {
+                continue;
+            };
+
+            if let Some(process) = self.suspended.remove(&process_id) {
+                if resume_process(process).is_err() {
+                    failed += 1;
+                    continue;
+                }
+            }
+
+            self.tracked.remove(&process_id);
+            self.set_temporary_thaw(
+                process_id,
+                process_name,
+                thaw_until,
+                TemporaryThawReason::NetworkWake,
+            );
+        }
+
+        failed
+    }
+
+    fn set_temporary_thaw(
+        &mut self,
+        process_id: u32,
+        process_name: String,
+        thaw_until: Instant,
+        reason: TemporaryThawReason,
+    ) {
+        match self.temporary_thawed.get_mut(&process_id) {
+            Some(existing) if existing.thaw_until >= thaw_until => {
+                existing.process_name = process_name;
+            }
+            Some(existing) => {
+                existing.process_name = process_name;
+                existing.thaw_until = thaw_until;
+                existing.reason = reason;
+            }
+            None => {
+                self.temporary_thawed.insert(
+                    process_id,
+                    TemporaryThaw {
+                        process_name,
+                        thaw_until,
+                        reason,
+                    },
+                );
+            }
+        }
+    }
+
+    fn start_network_wake_windows(
+        &mut self,
+        settings: &AppSuspensionSettings,
+        network_process_names: &BTreeSet<String>,
+        now: Instant,
+    ) {
+        let Some(duration) = network_wake_duration(settings) else {
+            return;
+        };
+
+        for process_name in network_process_names {
+            if self
+                .network_wake_windows
+                .get(process_name)
+                .is_some_and(|window| now < window.cooldown_until)
+            {
+                continue;
+            }
+
+            self.network_wake_windows.insert(
+                process_name.clone(),
+                NetworkWakeWindow {
+                    wake_until: now + duration,
+                    cooldown_until: now + duration + duration,
+                },
+            );
+        }
+    }
+
+    fn prune_network_wake_windows(
+        &mut self,
+        target_process_names: &BTreeSet<String>,
+        now: Instant,
+    ) {
+        self.network_wake_windows.retain(|process_name, window| {
+            target_process_names.contains(process_name) && now < window.cooldown_until
+        });
+    }
+
+    fn active_network_wake_names(&self, now: Instant) -> BTreeSet<String> {
+        self.network_wake_windows
+            .iter()
+            .filter(|(_process_name, window)| now < window.wake_until)
+            .map(|(process_name, _window)| process_name.clone())
+            .collect()
+    }
+
+    fn active_network_wake_until(&self, process_name: &str, now: Instant) -> Option<Instant> {
+        let window = self
+            .network_wake_windows
+            .get(&process_name_key(process_name))?;
+        (now < window.wake_until).then_some(window.wake_until)
+    }
+
+    fn network_wake_process_count(&self) -> usize {
+        self.temporary_thawed
+            .values()
+            .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
+            .count()
     }
 
     fn temporary_thaw_state(
@@ -370,9 +568,11 @@ impl Default for AppSuspensionSnapshot {
             tracked_processes: 0,
             suspended_processes: 0,
             temporary_thawed_processes: 0,
+            network_wake_processes: 0,
             tracked_apps: Vec::new(),
             suspended_apps: Vec::new(),
             temporary_thawed_apps: Vec::new(),
+            network_wake_apps: Vec::new(),
             skipped_processes: 0,
             failed_actions: 0,
             message: "App Suspension disabled.".to_owned(),
@@ -390,6 +590,198 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 pub fn contains_process(list: &[String], process_name: &str) -> bool {
     list.iter()
         .any(|process| process.trim().eq_ignore_ascii_case(process_name.trim()))
+}
+
+fn network_wake_duration(settings: &AppSuspensionSettings) -> Option<Duration> {
+    (settings.network_wake_enabled && settings.network_wake_duration_seconds > 0)
+        .then(|| Duration::from_secs(settings.network_wake_duration_seconds))
+}
+
+fn network_connection_snapshot(
+    target_processes: &BTreeMap<u32, String>,
+) -> Result<NetworkConnectionSnapshot, String> {
+    let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+    let mut connections_by_pid: NetworkConnectionsByProcess = BTreeMap::new();
+
+    add_tcp_connections(&mut connections_by_pid, &target_ids, AF_INET as u32)?;
+    add_tcp_connections(&mut connections_by_pid, &target_ids, AF_INET6 as u32)?;
+    add_udp_connections(&mut connections_by_pid, &target_ids, AF_INET as u32)?;
+    add_udp_connections(&mut connections_by_pid, &target_ids, AF_INET6 as u32)?;
+
+    let mut snapshot = BTreeMap::new();
+    for (process_id, connections) in connections_by_pid {
+        let Some(process_name) = target_processes.get(&process_id) else {
+            continue;
+        };
+
+        snapshot
+            .entry(process_name_key(process_name))
+            .or_insert_with(BTreeSet::new)
+            .extend(connections);
+    }
+
+    Ok(snapshot)
+}
+
+fn network_process_names_with_new_connections(
+    previous: &NetworkConnectionSnapshot,
+    current: &NetworkConnectionSnapshot,
+) -> BTreeSet<String> {
+    current
+        .iter()
+        .filter(|(process_name, connections)| {
+            previous
+                .get(*process_name)
+                .is_none_or(|previous_connections| {
+                    connections
+                        .iter()
+                        .any(|connection| !previous_connections.contains(connection))
+                })
+        })
+        .map(|(process_name, _connections)| process_name.clone())
+        .collect()
+}
+
+fn process_name_key(process_name: &str) -> String {
+    process_name.trim().to_ascii_lowercase()
+}
+
+fn add_tcp_connections(
+    connections_by_pid: &mut NetworkConnectionsByProcess,
+    target_ids: &BTreeSet<u32>,
+    address_family: u32,
+) -> Result<(), String> {
+    let buffer = query_ip_helper_table(|table, size| unsafe {
+        GetExtendedTcpTable(
+            table,
+            size,
+            0,
+            address_family,
+            TCP_TABLE_OWNER_PID_CONNECTIONS,
+            0,
+        )
+    })?;
+
+    if address_family == AF_INET as u32 {
+        for row in table_rows::<MIB_TCPROW_OWNER_PID>(&buffer) {
+            if target_ids.contains(&row.dwOwningPid) {
+                connections_by_pid
+                    .entry(row.dwOwningPid)
+                    .or_default()
+                    .insert(format!(
+                        "tcp4:{}:{}:{}:{}:{}",
+                        row.dwState,
+                        row.dwLocalAddr,
+                        row.dwLocalPort,
+                        row.dwRemoteAddr,
+                        row.dwRemotePort
+                    ));
+            }
+        }
+    } else {
+        for row in table_rows::<MIB_TCP6ROW_OWNER_PID>(&buffer) {
+            if target_ids.contains(&row.dwOwningPid) {
+                connections_by_pid
+                    .entry(row.dwOwningPid)
+                    .or_default()
+                    .insert(format!(
+                        "tcp6:{}:{:?}:{}:{:?}:{}:{}:{}",
+                        row.dwState,
+                        row.ucLocalAddr,
+                        row.dwLocalScopeId,
+                        row.ucRemoteAddr,
+                        row.dwRemoteScopeId,
+                        row.dwLocalPort,
+                        row.dwRemotePort
+                    ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn add_udp_connections(
+    connections_by_pid: &mut NetworkConnectionsByProcess,
+    target_ids: &BTreeSet<u32>,
+    address_family: u32,
+) -> Result<(), String> {
+    let buffer = query_ip_helper_table(|table, size| unsafe {
+        GetExtendedUdpTable(table, size, 0, address_family, UDP_TABLE_OWNER_PID, 0)
+    })?;
+
+    if address_family == AF_INET as u32 {
+        for row in table_rows::<MIB_UDPROW_OWNER_PID>(&buffer) {
+            if target_ids.contains(&row.dwOwningPid) {
+                connections_by_pid
+                    .entry(row.dwOwningPid)
+                    .or_default()
+                    .insert(format!("udp4:{}:{}", row.dwLocalAddr, row.dwLocalPort));
+            }
+        }
+    } else {
+        for row in table_rows::<MIB_UDP6ROW_OWNER_PID>(&buffer) {
+            if target_ids.contains(&row.dwOwningPid) {
+                connections_by_pid
+                    .entry(row.dwOwningPid)
+                    .or_default()
+                    .insert(format!(
+                        "udp6:{:?}:{}:{}",
+                        row.ucLocalAddr, row.dwLocalScopeId, row.dwLocalPort
+                    ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn query_ip_helper_table(
+    mut query: impl FnMut(*mut c_void, *mut u32) -> u32,
+) -> Result<Vec<u8>, String> {
+    let mut size = 0;
+    let first_status = query(null_mut(), &mut size);
+    if first_status != ERROR_INSUFFICIENT_BUFFER && first_status != NO_ERROR {
+        return Err(format!(
+            "Network wake watcher failed to size IP Helper table with error {first_status}."
+        ));
+    }
+
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut buffer = vec![0u8; size as usize];
+    let status = query(buffer.as_mut_ptr() as *mut c_void, &mut size);
+    if status != NO_ERROR {
+        return Err(format!(
+            "Network wake watcher failed to read IP Helper table with error {status}."
+        ));
+    }
+
+    Ok(buffer)
+}
+
+fn table_rows<T: Copy>(buffer: &[u8]) -> Vec<T> {
+    if buffer.len() < mem::size_of::<u32>() {
+        return Vec::new();
+    }
+
+    let count = unsafe { ptr::read_unaligned(buffer.as_ptr() as *const u32) as usize };
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let rows_offset = mem::size_of::<u32>();
+    let row_size = mem::size_of::<T>();
+    if row_size == 0 || buffer.len() < rows_offset + (count * row_size) {
+        return Vec::new();
+    }
+
+    let rows_ptr = unsafe { buffer.as_ptr().add(rows_offset) as *const T };
+    (0..count)
+        .map(|index| unsafe { ptr::read_unaligned(rows_ptr.add(index)) })
+        .collect()
 }
 
 fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
@@ -620,6 +1012,7 @@ mod tests {
             TemporaryThaw {
                 process_name: "chat.exe".to_owned(),
                 thaw_until: now + Duration::from_secs(5),
+                reason: TemporaryThawReason::Fallback,
             },
         );
 
@@ -646,6 +1039,113 @@ mod tests {
             manager.temporary_thaw_state(99, "chat.exe", Instant::now()),
             TemporaryThawState::None
         );
+    }
+
+    #[test]
+    fn network_wake_duration_requires_toggle_and_positive_duration() {
+        let mut settings = AppSuspensionSettings::default();
+
+        assert_eq!(network_wake_duration(&settings), None);
+
+        settings.network_wake_enabled = true;
+        settings.network_wake_duration_seconds = 30;
+        assert_eq!(
+            network_wake_duration(&settings),
+            Some(Duration::from_secs(30))
+        );
+
+        settings.network_wake_duration_seconds = 0;
+        assert_eq!(network_wake_duration(&settings), None);
+    }
+
+    #[test]
+    fn network_process_names_with_new_connections_ignores_steady_sockets() {
+        let previous = BTreeMap::from([(
+            "chrome.exe".to_owned(),
+            BTreeSet::from(["tcp4:5:1:2:3:4".to_owned()]),
+        )]);
+        let current = previous.clone();
+
+        let names = network_process_names_with_new_connections(&previous, &current);
+
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn network_process_names_with_new_connections_detects_added_socket() {
+        let previous = BTreeMap::from([(
+            "chrome.exe".to_owned(),
+            BTreeSet::from(["tcp4:5:1:2:3:4".to_owned()]),
+        )]);
+        let current = BTreeMap::from([(
+            "chrome.exe".to_owned(),
+            BTreeSet::from(["tcp4:5:1:2:3:4".to_owned(), "tcp4:5:1:6:7:8".to_owned()]),
+        )]);
+
+        let names = network_process_names_with_new_connections(&previous, &current);
+
+        assert_eq!(names, BTreeSet::from(["chrome.exe".to_owned()]));
+    }
+
+    #[test]
+    fn network_wake_window_does_not_extend_during_cooldown() {
+        let mut manager = AppSuspensionManager::default();
+        let mut settings = AppSuspensionSettings::default();
+        settings.network_wake_enabled = true;
+        settings.network_wake_duration_seconds = 10;
+        let now = Instant::now();
+        let names = BTreeSet::from(["chrome.exe".to_owned()]);
+
+        manager.start_network_wake_windows(&settings, &names, now);
+        let first_window = manager.network_wake_windows["chrome.exe"];
+        manager.start_network_wake_windows(&settings, &names, now + Duration::from_secs(5));
+        let second_window = manager.network_wake_windows["chrome.exe"];
+
+        assert_eq!(first_window.wake_until, second_window.wake_until);
+        assert_eq!(first_window.cooldown_until, second_window.cooldown_until);
+
+        manager.start_network_wake_windows(&settings, &names, now + Duration::from_secs(21));
+        let third_window = manager.network_wake_windows["chrome.exe"];
+
+        assert!(third_window.wake_until > second_window.wake_until);
+    }
+
+    #[test]
+    fn process_name_key_trims_and_lowercases() {
+        assert_eq!(process_name_key(" Chrome.EXE "), "chrome.exe");
+    }
+
+    #[test]
+    fn table_rows_reads_owner_pid_rows() {
+        let rows = [
+            MIB_UDPROW_OWNER_PID {
+                dwLocalAddr: 1,
+                dwLocalPort: 2,
+                dwOwningPid: 42,
+            },
+            MIB_UDPROW_OWNER_PID {
+                dwLocalAddr: 3,
+                dwLocalPort: 4,
+                dwOwningPid: 99,
+            },
+        ];
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&(rows.len() as u32).to_ne_bytes());
+        for row in rows {
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    &row as *const MIB_UDPROW_OWNER_PID as *const u8,
+                    mem::size_of::<MIB_UDPROW_OWNER_PID>(),
+                )
+            };
+            buffer.extend_from_slice(bytes);
+        }
+
+        let parsed = table_rows::<MIB_UDPROW_OWNER_PID>(&buffer);
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].dwOwningPid, 42);
+        assert_eq!(parsed[1].dwOwningPid, 99);
     }
 
     #[test]

@@ -214,6 +214,8 @@ mod tests {
                 temporary_thaw_enabled: true,
                 temporary_thaw_interval_seconds: 600,
                 temporary_thaw_duration_seconds: 15,
+                network_wake_enabled: true,
+                network_wake_duration_seconds: 20,
                 suspendable_apps: vec!["chat.exe".to_owned(), "comma,app.exe".to_owned()],
             },
         };
