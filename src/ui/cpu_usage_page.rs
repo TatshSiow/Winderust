@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use crate::{
-    config::{CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, CpuUsageTarget},
+    config::{CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule},
     power::PowerPlan,
     ui::power_plan_page::{self, PowerPlanAction},
 };
@@ -14,33 +14,29 @@ pub fn show(
 ) -> PowerPlanAction {
     let mut action = PowerPlanAction::None;
 
-    ui.heading("CPU usage-based Scheduler");
+    ui.heading("CPU Load Rules");
     ui.add_space(8.0);
-    ui.checkbox(&mut cpu_usage.enabled, "Enable CPU usage-based Scheduler");
-    ui.label("Change power plan based on CPU usage level.");
+    ui.checkbox(&mut cpu_usage.enabled, "Enable CPU load rules");
+    ui.label("Change power plan when a CPU load rule is active.");
     ui.add_space(14.0);
 
-    if power_plan_page::show_section(
-        ui,
-        "Power Plans",
-        "Used when this page switches based on CPU usage rules.",
-        &mut cpu_usage.power_plans,
-        plans,
-        current_plan,
-    ) == PowerPlanAction::Refresh
-    {
+    if show_power_plan_source(ui, plans, current_plan) == PowerPlanAction::Refresh {
         action = PowerPlanAction::Refresh;
     }
     ui.add_space(18.0);
 
     ui.add_enabled_ui(cpu_usage.enabled, |ui| {
-        if ui.button("Add CPU usage rule").clicked() {
+        if ui.button("Add CPU load rule").clicked() {
             cpu_usage.rules.push(CpuUsageRule {
-                name: "New CPU Rule".to_owned(),
+                name: "New CPU Load Rule".to_owned(),
                 comparison: CpuUsageComparison::AtOrBelow,
                 threshold_percent: 20,
+                upper_threshold_percent: None,
                 duration_seconds: 30,
-                target: CpuUsageTarget::Idle,
+                power_plan_guid: current_plan.map(|plan| plan.guid.clone()),
+                else_enabled: false,
+                else_power_plan_guid: current_plan.map(|plan| plan.guid.clone()),
+                target: None,
             });
         }
 
@@ -58,7 +54,7 @@ pub fn show(
                 });
 
                 ui.horizontal(|ui| {
-                    ui.label("When CPU is");
+                    ui.label("When CPU load");
                     egui::ComboBox::from_id_salt(("cpu_comparison", index))
                         .selected_text(rule.comparison.label())
                         .show_ui(ui, |ui| {
@@ -72,38 +68,47 @@ pub fn show(
                                 CpuUsageComparison::AtOrAbove,
                                 CpuUsageComparison::AtOrAbove.label(),
                             );
+                            ui.selectable_value(
+                                &mut rule.comparison,
+                                CpuUsageComparison::Between,
+                                CpuUsageComparison::Between.label(),
+                            );
                         });
-                    ui.add(
-                        egui::DragValue::new(&mut rule.threshold_percent)
-                            .speed(1.0)
-                            .range(0..=100)
-                            .suffix("%"),
-                    );
-                });
-
-                ui.horizontal(|ui| {
-                    ui.label("For");
+                    show_cpu_condition_inputs(ui, rule);
+                    ui.label("for");
                     ui.add(
                         egui::DragValue::new(&mut rule.duration_seconds)
                             .speed(1.0)
                             .range(0..=86_400)
                             .suffix(" sec"),
                     );
-                    ui.label("switch to");
-                    egui::ComboBox::from_id_salt(("cpu_target", index))
-                        .selected_text(rule.target.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut rule.target,
-                                CpuUsageTarget::Idle,
-                                CpuUsageTarget::Idle.label(),
-                            );
-                            ui.selectable_value(
-                                &mut rule.target,
-                                CpuUsageTarget::Active,
-                                CpuUsageTarget::Active.label(),
-                            );
-                        });
+                });
+
+                power_plan_page::plan_combo_with_id(
+                    ui,
+                    "Use",
+                    ("cpu_load_rule_target", index),
+                    &mut rule.power_plan_guid,
+                    plans,
+                );
+
+                ui.horizontal(|ui| {
+                    if ui.checkbox(&mut rule.else_enabled, "Else").changed()
+                        && rule.else_enabled
+                        && rule.else_power_plan_guid.is_none()
+                    {
+                        rule.else_power_plan_guid = current_plan.map(|plan| plan.guid.clone());
+                    }
+
+                    ui.add_enabled_ui(rule.else_enabled, |ui| {
+                        power_plan_page::plan_combo_with_id(
+                            ui,
+                            "Use",
+                            ("cpu_load_rule_else_target", index),
+                            &mut rule.else_power_plan_guid,
+                            plans,
+                        );
+                    });
                 });
             });
 
@@ -113,6 +118,66 @@ pub fn show(
         if let Some(index) = remove_index {
             cpu_usage.rules.remove(index);
         }
+    });
+
+    action
+}
+
+fn show_cpu_condition_inputs(ui: &mut egui::Ui, rule: &mut CpuUsageRule) {
+    match rule.comparison {
+        CpuUsageComparison::AtOrBelow => {
+            percent_input(ui, &mut rule.threshold_percent);
+        }
+        CpuUsageComparison::AtOrAbove => {
+            percent_input(ui, &mut rule.threshold_percent);
+        }
+        CpuUsageComparison::Between => {
+            rule.upper_threshold_percent.get_or_insert(100);
+            percent_input(ui, &mut rule.threshold_percent);
+            ui.label("and");
+            if let Some(upper) = &mut rule.upper_threshold_percent {
+                percent_input(ui, upper);
+            }
+        }
+        CpuUsageComparison::Else => {
+            percent_input(ui, &mut rule.threshold_percent);
+        }
+    }
+}
+
+fn percent_input(ui: &mut egui::Ui, value: &mut u8) {
+    ui.add(
+        egui::DragValue::new(value)
+            .speed(1.0)
+            .range(0..=100)
+            .suffix("%"),
+    );
+}
+
+fn show_power_plan_source(
+    ui: &mut egui::Ui,
+    plans: &[PowerPlan],
+    current_plan: Option<&PowerPlan>,
+) -> PowerPlanAction {
+    let mut action = PowerPlanAction::None;
+
+    ui.group(|ui| {
+        ui.heading("Power Plans");
+        ui.label("Each CPU load rule can switch to any Windows power plan.");
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            if ui.button("Refresh plans").clicked() {
+                action = PowerPlanAction::Refresh;
+            }
+            ui.label(format!(
+                "Current active plan: {}",
+                current_plan
+                    .map(|plan| plan.name.as_str())
+                    .unwrap_or("Unknown")
+            ));
+            ui.label(format!("Available plans: {}", plans.len()));
+        });
     });
 
     action

@@ -111,7 +111,7 @@ pub struct ScheduleRule {
 pub struct CpuUsageModeSettings {
     pub enabled: bool,
     pub rules: Vec<CpuUsageRule>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "PowerPlanSettings::is_empty")]
     pub power_plans: PowerPlanSettings,
 }
 
@@ -142,8 +142,17 @@ pub struct CpuUsageRule {
     pub name: String,
     pub comparison: CpuUsageComparison,
     pub threshold_percent: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upper_threshold_percent: Option<u8>,
     pub duration_seconds: u64,
-    pub target: CpuUsageTarget,
+    #[serde(default)]
+    pub power_plan_guid: Option<String>,
+    #[serde(default)]
+    pub else_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub else_power_plan_guid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<CpuUsageTarget>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,6 +160,8 @@ pub struct CpuUsageRule {
 pub enum CpuUsageComparison {
     AtOrAbove,
     AtOrBelow,
+    Between,
+    Else,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,15 +255,23 @@ impl Default for CpuUsageModeSettings {
                     name: "Low CPU Idle".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,
                     threshold_percent: 15,
+                    upper_threshold_percent: None,
                     duration_seconds: 60,
-                    target: CpuUsageTarget::Idle,
+                    power_plan_guid: None,
+                    else_enabled: false,
+                    else_power_plan_guid: None,
+                    target: None,
                 },
                 CpuUsageRule {
                     name: "High CPU Active".to_owned(),
                     comparison: CpuUsageComparison::AtOrAbove,
                     threshold_percent: 50,
+                    upper_threshold_percent: None,
                     duration_seconds: 10,
-                    target: CpuUsageTarget::Active,
+                    power_plan_guid: None,
+                    else_enabled: false,
+                    else_power_plan_guid: None,
+                    target: None,
                 },
             ],
         }
@@ -309,6 +328,7 @@ impl Settings {
             .fill_missing_from(&self.power_plans);
 
         self.migrate_legacy_schedule_rules();
+        self.migrate_legacy_cpu_usage_rules();
         self.migrate_legacy_foreground_rules();
     }
 
@@ -330,6 +350,34 @@ impl Settings {
         }
 
         self.schedule_mode.power_plans = PowerPlanSettings::default();
+    }
+
+    fn migrate_legacy_cpu_usage_rules(&mut self) {
+        let idle_guid = self.cpu_usage_mode.power_plans.power_save_guid.clone();
+        let active_guid = self.cpu_usage_mode.power_plans.performance_guid.clone();
+
+        for rule in &mut self.cpu_usage_mode.rules {
+            if rule.power_plan_guid.is_none() {
+                rule.power_plan_guid = match rule.target {
+                    Some(CpuUsageTarget::Idle) => idle_guid.clone(),
+                    Some(CpuUsageTarget::Active) => active_guid.clone(),
+                    None => None,
+                };
+            }
+
+            if rule.is_else() {
+                rule.else_enabled = true;
+                if rule.else_power_plan_guid.is_none() {
+                    rule.else_power_plan_guid = rule.power_plan_guid.clone();
+                }
+                rule.power_plan_guid = None;
+                rule.comparison = CpuUsageComparison::AtOrBelow;
+            }
+
+            rule.target = None;
+        }
+
+        self.cpu_usage_mode.power_plans = PowerPlanSettings::default();
     }
 
     fn migrate_legacy_foreground_rules(&mut self) {
@@ -442,24 +490,28 @@ impl CpuUsageRule {
         match self.comparison {
             CpuUsageComparison::AtOrAbove => cpu_usage_percent >= threshold,
             CpuUsageComparison::AtOrBelow => cpu_usage_percent <= threshold,
+            CpuUsageComparison::Between => {
+                let upper = f32::from(self.upper_threshold_percent.unwrap_or(100).min(100));
+                let lower = threshold.min(upper);
+                let upper = threshold.max(upper);
+                cpu_usage_percent >= lower && cpu_usage_percent <= upper
+            }
+            CpuUsageComparison::Else => false,
         }
+    }
+
+    pub const fn is_else(&self) -> bool {
+        matches!(self.comparison, CpuUsageComparison::Else)
     }
 }
 
 impl CpuUsageComparison {
     pub const fn label(self) -> &'static str {
         match self {
-            Self::AtOrAbove => "At or above",
-            Self::AtOrBelow => "At or below",
-        }
-    }
-}
-
-impl CpuUsageTarget {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Active => "Active plan",
-            Self::Idle => "Idle plan",
+            Self::AtOrAbove => ">= greater than or equal to",
+            Self::AtOrBelow => "<= less than or equal to",
+            Self::Between => "between",
+            Self::Else => "else",
         }
     }
 }

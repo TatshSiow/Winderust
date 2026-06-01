@@ -27,7 +27,7 @@ It aims to reduce power usage and carbon emissions.
 - `Time Rules`
     - For working and sleep hours.
 
-- `CPU usage-based Scheduler`
+- `CPU Load Rules`
     - For detecting heavy or light workloads.
  
 ### Process Controls

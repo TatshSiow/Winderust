@@ -115,9 +115,9 @@ mod tests {
     use super::*;
     use crate::config::{
         ActivityModeSettings, AppSuspensionSettings, CpuUsageComparison, CpuUsageModeSettings,
-        CpuUsageRule, CpuUsageTarget, EcoQosSettings, ForegroundRule, ForegroundRules,
-        GeneralSettings, InputDetectionSettings, ManualOverride, PowerPlanSettings,
-        ScheduleModeSettings, ScheduleRule, WeekdaySetting,
+        CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules, GeneralSettings,
+        InputDetectionSettings, ManualOverride, PowerPlanSettings, ScheduleModeSettings,
+        ScheduleRule, WeekdaySetting,
     };
 
     #[test]
@@ -185,16 +185,17 @@ mod tests {
             },
             cpu_usage_mode: CpuUsageModeSettings {
                 enabled: true,
-                power_plans: PowerPlanSettings {
-                    power_save_guid: Some("cpu-idle-guid".to_owned()),
-                    performance_guid: Some("cpu-active-guid".to_owned()),
-                },
+                power_plans: PowerPlanSettings::default(),
                 rules: vec![CpuUsageRule {
                     name: "Low CPU".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,
                     threshold_percent: 18,
+                    upper_threshold_percent: None,
                     duration_seconds: 45,
-                    target: CpuUsageTarget::Idle,
+                    power_plan_guid: Some("low-cpu-guid".to_owned()),
+                    else_enabled: true,
+                    else_power_plan_guid: Some("normal-cpu-guid".to_owned()),
+                    target: None,
                 }],
             },
             eco_qos: EcoQosSettings {
@@ -269,5 +270,73 @@ end_time = "08:00"
         assert_eq!(rule.power_plan_guid.as_deref(), Some("schedule-idle"));
         assert_eq!(rule.power_save_guid, None);
         assert_eq!(rule.performance_guid, None);
+    }
+
+    #[test]
+    fn legacy_cpu_usage_rule_target_migrates_to_rule_target_plan() {
+        let raw = r#"
+[general]
+enabled = true
+startup_with_windows = false
+start_minimized = false
+hide_to_tray = false
+pause_power_plan_switching_while_plugged_in = false
+check_interval_ms = 1000
+manual_override = "None"
+
+[power_plans]
+power_save_guid = "global-idle"
+performance_guid = "global-active"
+
+[activity_mode]
+enabled = false
+idle_timeout_seconds = 300
+switch_to_performance_on_resume = true
+
+[foreground_rules]
+enabled = true
+
+[schedule_mode]
+enabled = false
+rules = []
+
+[cpu_usage_mode]
+enabled = true
+
+[cpu_usage_mode.power_plans]
+power_save_guid = "cpu-idle"
+performance_guid = "cpu-active"
+
+[[cpu_usage_mode.rules]]
+name = "High CPU"
+comparison = "at_or_above"
+threshold_percent = 75
+duration_seconds = 10
+target = "active"
+
+[[cpu_usage_mode.rules]]
+name = "Fallback"
+comparison = "else"
+threshold_percent = 0
+duration_seconds = 0
+power_plan_guid = "fallback-guid"
+"#;
+
+        let mut settings = toml_to_settings(raw).expect("legacy TOML should parse");
+        settings.fill_missing_power_plan_mappings();
+        let rule = settings.cpu_usage_mode.rules.first().unwrap();
+
+        assert_eq!(rule.power_plan_guid.as_deref(), Some("cpu-active"));
+        assert_eq!(rule.target, None);
+        assert!(settings.cpu_usage_mode.power_plans.is_empty());
+
+        let fallback_rule = &settings.cpu_usage_mode.rules[1];
+        assert_eq!(fallback_rule.comparison, CpuUsageComparison::AtOrBelow);
+        assert_eq!(fallback_rule.power_plan_guid, None);
+        assert!(fallback_rule.else_enabled);
+        assert_eq!(
+            fallback_rule.else_power_plan_guid.as_deref(),
+            Some("fallback-guid")
+        );
     }
 }

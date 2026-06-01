@@ -2,7 +2,7 @@ use chrono::Utc;
 
 use crate::{
     activity::ActivityState,
-    config::{CpuUsageTarget, ManualOverride, PowerPlanSettings, Settings},
+    config::{ManualOverride, PowerPlanSettings, Settings},
     scheduler::{CpuUsageDecision, ScheduleDecision},
 };
 
@@ -15,8 +15,7 @@ pub enum DecisionState {
     ForegroundForceActive,
     ForegroundForcePowerSave,
     ScheduledRule,
-    CpuUsagePowerSave,
-    CpuUsagePerformance,
+    CpuLoadRule,
     IdlePowerSave,
     ActivePerformance,
     NoTargetPlan,
@@ -109,24 +108,14 @@ impl DecisionEngine {
         }
 
         if let Some(cpu_usage) = input.cpu_usage {
-            return match cpu_usage.target {
-                CpuUsageTarget::Idle => DecisionOutcome::with_target(
-                    idle_plan(&settings.cpu_usage_mode.power_plans, settings),
-                    DecisionState::CpuUsagePowerSave,
-                    format!(
-                        "CPU usage is {:.1}% and matched rule '{}'.",
-                        cpu_usage.usage_percent, cpu_usage.rule_name
-                    ),
+            return DecisionOutcome::with_target(
+                cpu_usage.power_plan_guid,
+                DecisionState::CpuLoadRule,
+                format!(
+                    "CPU load is {:.1}% and matched rule '{}'.",
+                    cpu_usage.usage_percent, cpu_usage.rule_name
                 ),
-                CpuUsageTarget::Active => DecisionOutcome::with_target(
-                    active_plan(&settings.cpu_usage_mode.power_plans, settings),
-                    DecisionState::CpuUsagePerformance,
-                    format!(
-                        "CPU usage is {:.1}% and matched rule '{}'.",
-                        cpu_usage.usage_percent, cpu_usage.rule_name
-                    ),
-                ),
-            };
+            );
         }
 
         if settings.activity_mode.enabled {
@@ -212,8 +201,7 @@ impl DecisionState {
             Self::ForegroundForceActive => "Foreground force Active plan",
             Self::ForegroundForcePowerSave => "Foreground force Idle plan",
             Self::ScheduledRule => "Time rule",
-            Self::CpuUsagePowerSave => "CPU usage Idle plan",
-            Self::CpuUsagePerformance => "CPU usage Active plan",
+            Self::CpuLoadRule => "CPU load rule",
             Self::IdlePowerSave => "Idle plan",
             Self::ActivePerformance => "Active plan",
             Self::NoTargetPlan => "Needs setup",
@@ -250,7 +238,7 @@ mod tests {
     use super::*;
     use crate::{
         activity::ActivityState,
-        config::{CpuUsageTarget, ForegroundRule, ForegroundRules, PowerPlanSettings, Settings},
+        config::{ForegroundRule, ForegroundRules, PowerPlanSettings, Settings},
         scheduler::{CpuUsageDecision, ScheduleDecision},
     };
 
@@ -304,7 +292,7 @@ mod tests {
                 }),
                 cpu_usage: Some(CpuUsageDecision {
                     rule_name: "Low CPU".to_owned(),
-                    target: CpuUsageTarget::Idle,
+                    power_plan_guid: Some("cpu-low-guid".to_owned()),
                     usage_percent: 10.0,
                 }),
             },
@@ -325,14 +313,14 @@ mod tests {
                 schedule: None,
                 cpu_usage: Some(CpuUsageDecision {
                     rule_name: "High CPU".to_owned(),
-                    target: CpuUsageTarget::Active,
+                    power_plan_guid: Some("cpu-high-guid".to_owned()),
                     usage_percent: 90.0,
                 }),
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::CpuUsagePerformance);
-        assert_eq!(outcome.target_guid.as_deref(), Some("active-guid"));
+        assert_eq!(outcome.state, DecisionState::CpuLoadRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("cpu-high-guid"));
     }
 
     #[test]
@@ -399,10 +387,6 @@ mod tests {
             power_save_guid: Some("activity-idle".to_owned()),
             performance_guid: Some("activity-active".to_owned()),
         };
-        settings.cpu_usage_mode.power_plans = PowerPlanSettings {
-            power_save_guid: Some("cpu-idle".to_owned()),
-            performance_guid: Some("cpu-active".to_owned()),
-        };
         settings.foreground_rules.power_plans = PowerPlanSettings {
             power_save_guid: Some("foreground-idle".to_owned()),
             performance_guid: Some("foreground-active".to_owned()),
@@ -449,12 +433,12 @@ mod tests {
                 schedule: None,
                 cpu_usage: Some(CpuUsageDecision {
                     rule_name: "High CPU".to_owned(),
-                    target: CpuUsageTarget::Active,
+                    power_plan_guid: Some("cpu-custom".to_owned()),
                     usage_percent: 90.0,
                 }),
             },
         );
-        assert_eq!(cpu.target_guid.as_deref(), Some("cpu-active"));
+        assert_eq!(cpu.target_guid.as_deref(), Some("cpu-custom"));
 
         let activity = DecisionEngine.decide(
             &settings,

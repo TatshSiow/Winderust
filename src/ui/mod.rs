@@ -60,7 +60,7 @@ impl Page {
         match self {
             Self::Dashboard => "Dashboard",
             Self::Activity => "Action Based Scheduler",
-            Self::CpuUsage => "CPU usage-based Scheduler",
+            Self::CpuUsage => "CPU Load Rules",
             Self::EfficiencyMode => "Efficiency Mode",
             Self::AppSuspension => "App Suspension",
             Self::ForegroundRules => "Foreground Rules",
