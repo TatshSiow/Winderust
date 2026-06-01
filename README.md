@@ -6,29 +6,38 @@ It aims to reduce power usage and carbon emissions.
 
 ## Features
 
-- Power plan scheduling based on:
-    - Scheduled time
-    - Input event triggers
-    - CPU load
+### Power Plan scheduler adjust power plan based on
+- Scheduled time
+- Input event triggers
+- CPU load
 
-- Efficiency Mode:
-    - Applies Windows EcoQoS to background user processes.
-    - Automatically detects the foreground app and treats it differently.
+### Efficiency Mode
+- Applies Windows EcoQoS to background user processes.
+- Automatically detects the foreground app and treats it differently.
 
-- App Suspension:
-    - Freezes selected background processes to 0% CPU usage while keeping them resumable when focused.
+### App Suspension
+- Freezes selected background processes to 0% CPU usage while keeping them resumable when focused.
 
-## Recommended Use
+## Recommended Usage Scenario
 
-For most users:
+### Power plan controls
+- `Action Based Scheduler`
+    - For normal automatic switching.
 
-- Use `Action Based Scheduler` for normal automatic switching.
-- Use `Time Based Scheduler` when you want fixed work hours or quiet hours.
-- Use `CPU usage-based Scheduler` when CPU load should force the Active or Idle plan.
-- Use `Efficiency Mode` when background apps should run with Windows EcoQoS.
-- Use `App Suspension` only for apps you explicitly trust to pause while in the background.
-- Use `Foreground Rules` for apps that should always switch to a specific power plan while focused.
-- Set power plans inside each Power Plan Controls tab you enable. Foreground Rules can target any available plan per rule.
+- `Time Based Scheduler`
+    - For working and sleep hours.
+
+- `CPU usage-based Scheduler`
+    - For detecting heavy or light workloads.
+ 
+### Process Controls
+
+- `Efficiency Mode`
+    - You want to save a little battery but don't want to hurt daily use case.
+    - **ONLY** For Windows EcoQoS supported system.
+    
+- `App Suspension`
+    - Freeze background app to squeeze the performance and battery.
 
 ## Build
 
