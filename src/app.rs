@@ -274,9 +274,9 @@ impl PowerLeafApp {
         }
     }
 
-    fn export_settings_ini(&mut self) {
-        match choose_ini_file(self.hwnd, FileDialogMode::Save) {
-            Ok(Some(path)) => match config::storage::export_ini_to(&path, &self.settings) {
+    fn export_settings_toml(&mut self) {
+        match choose_settings_file(self.hwnd, FileDialogMode::Save) {
+            Ok(Some(path)) => match config::storage::export_toml_to(&path, &self.settings) {
                 Ok(()) => {
                     self.status_message = format!("Exported settings to {}", path.display());
                 }
@@ -289,9 +289,9 @@ impl PowerLeafApp {
         }
     }
 
-    fn import_settings_ini(&mut self) {
-        match choose_ini_file(self.hwnd, FileDialogMode::Open) {
-            Ok(Some(path)) => match config::storage::import_ini_from(&path) {
+    fn import_settings_toml(&mut self) {
+        match choose_settings_file(self.hwnd, FileDialogMode::Open) {
+            Ok(Some(path)) => match config::storage::import_toml_from(&path) {
                 Ok(settings) => {
                     self.settings = settings;
                     match config::storage::save(&self.settings) {
@@ -401,8 +401,8 @@ impl eframe::App for PowerLeafApp {
                 + Duration::from_millis(self.settings.general.check_interval_ms.max(250));
         }
 
-        let mut export_ini_requested = false;
-        let mut import_ini_requested = false;
+        let mut export_toml_requested = false;
+        let mut import_toml_requested = false;
 
         egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -535,8 +535,8 @@ impl eframe::App for PowerLeafApp {
                     show_settings_page(
                         ui,
                         &mut self.settings,
-                        &mut export_ini_requested,
-                        &mut import_ini_requested,
+                        &mut export_toml_requested,
+                        &mut import_toml_requested,
                     );
                 }
                 Page::About => {
@@ -559,11 +559,11 @@ impl eframe::App for PowerLeafApp {
             UnsavedSettingsAction::Cancel => self.cancel_settings_changes(),
         }
 
-        if export_ini_requested {
-            self.export_settings_ini();
+        if export_toml_requested {
+            self.export_settings_toml();
         }
-        if import_ini_requested {
-            self.import_settings_ini();
+        if import_toml_requested {
+            self.import_settings_toml();
         }
         self.sync_tray_icon();
         self.background_automation
@@ -605,12 +605,8 @@ impl PowerLeafApp {
 
     fn background_settings(&self) -> Settings {
         let mut settings = self.settings.clone();
-        if self.settings.eco_qos.enabled {
-            settings.eco_qos = self.saved_settings.eco_qos.clone();
-        }
-        if self.settings.app_suspension.enabled {
-            settings.app_suspension = self.saved_settings.app_suspension.clone();
-        }
+        settings.eco_qos = self.saved_settings.eco_qos.clone();
+        settings.app_suspension = self.saved_settings.app_suspension.clone();
         settings
     }
 }
@@ -700,8 +696,8 @@ fn show_activity_page(
 fn show_settings_page(
     ui: &mut egui::Ui,
     settings: &mut Settings,
-    export_ini_requested: &mut bool,
-    import_ini_requested: &mut bool,
+    export_toml_requested: &mut bool,
+    import_toml_requested: &mut bool,
 ) {
     ui.heading("Settings");
     ui.add_space(8.0);
@@ -727,13 +723,13 @@ fn show_settings_page(
     ui.separator();
     ui.heading("Settings Files");
     ui.add_space(8.0);
-    ui.label("Export or import all app settings as an INI file.");
+    ui.label("Export or import all app settings as a TOML file.");
     ui.horizontal(|ui| {
-        if ui.button("Export settings (.ini)").clicked() {
-            *export_ini_requested = true;
+        if ui.button("Export settings (.toml)").clicked() {
+            *export_toml_requested = true;
         }
-        if ui.button("Import settings (.ini)").clicked() {
-            *import_ini_requested = true;
+        if ui.button("Import settings (.toml)").clicked() {
+            *import_toml_requested = true;
         }
     });
 }
@@ -785,16 +781,19 @@ fn show_unsaved_settings_popup(ctx: &egui::Context, settings_dirty: bool) -> Uns
     action
 }
 
-fn choose_ini_file(hwnd: Option<HWND>, mode: FileDialogMode) -> Result<Option<PathBuf>, String> {
+fn choose_settings_file(
+    hwnd: Option<HWND>,
+    mode: FileDialogMode,
+) -> Result<Option<PathBuf>, String> {
     const FILE_BUFFER_LEN: usize = 4096;
 
     let default_path = match mode {
-        FileDialogMode::Open => config::storage::ini_path(),
-        FileDialogMode::Save => config::storage::default_export_ini_path(),
+        FileDialogMode::Open => config::storage::config_path(),
+        FileDialogMode::Save => config::storage::default_export_toml_path(),
     };
     let mut file_buffer = path_to_wide_buffer(&default_path, FILE_BUFFER_LEN);
-    let filter = wide_nulls("INI settings (*.ini)\0*.ini\0All files (*.*)\0*.*\0");
-    let default_extension = wide_null("ini");
+    let filter = wide_nulls("TOML settings (*.toml)\0*.toml\0All files (*.*)\0*.*\0");
+    let default_extension = wide_null("toml");
     let title = match mode {
         FileDialogMode::Open => wide_null("Import settings"),
         FileDialogMode::Save => wide_null("Export settings"),
