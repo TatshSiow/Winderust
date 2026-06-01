@@ -22,11 +22,6 @@ pub fn show(
     ui.label("Set app to efficiency mode and lower the process priority.");
     ui.checkbox(&mut settings.exclude_foreground_app, "App focus detection");
     ui.label("Skip focused window efficiency control.");
-    ui.checkbox(
-        &mut settings.exclude_suspended_processes,
-        "Windows-suspended detection",
-    );
-    ui.label("Skip windows-suspended process efficiency control.");
     ui.add_space(12.0);
 
     egui::Grid::new("eco_qos_status_grid")
@@ -346,7 +341,6 @@ mod tests {
         let mut settings = EcoQosSettings {
             enabled: true,
             exclude_foreground_app: true,
-            exclude_suspended_processes: false,
             efficiency_whitelist: vec!["mouse.exe".to_owned()],
         };
 

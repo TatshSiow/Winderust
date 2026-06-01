@@ -1,31 +1,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
-    ptr::null_mut,
 };
 
-use windows_sys::Wdk::System::{
-    SystemServices::PROCESS_EXTENDED_BASIC_INFORMATION,
-    Threading::{
-        NtQueryInformationProcess, NtQueryInformationThread, ProcessBasicInformation,
-        ThreadSuspendCount,
-    },
-};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE, INVALID_HANDLE_VALUE},
+    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE},
     System::{
-        Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
-        },
         RemoteDesktop::ProcessIdToSessionId,
         Threading::{
-            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess, OpenThread,
+            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess,
             ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS,
             NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-            PROCESS_SET_LIMITED_INFORMATION, THREAD_QUERY_INFORMATION,
-            THREAD_QUERY_LIMITED_INFORMATION,
+            PROCESS_SET_LIMITED_INFORMATION,
         },
     },
 };
@@ -58,8 +46,6 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const PROCESS_EXTENDED_BASIC_INFORMATION_IS_FROZEN: u32 = 0x10;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EcoQosSnapshot {
     pub enabled: bool,
@@ -172,13 +158,6 @@ impl EcoQosManager {
             }
 
             if process_session_id(process.id) != Some(current_session_id) {
-                continue;
-            }
-
-            if settings.exclude_suspended_processes
-                && process_is_windows_suspended(process.id).unwrap_or(false)
-            {
-                skipped_processes += 1;
                 continue;
             }
 
@@ -300,69 +279,6 @@ fn process_session_id(process_id: u32) -> Option<u32> {
     (ok != 0).then_some(session_id)
 }
 
-fn process_is_windows_suspended(process_id: u32) -> Result<bool, EcoQosError> {
-    let frozen = ProcessHandle::open_query(process_id)
-        .and_then(|process| process.windows_suspended())
-        .unwrap_or(false);
-
-    if frozen {
-        return Ok(true);
-    }
-
-    process_threads_are_suspended(process_id)
-}
-
-fn process_frozen_from_flags(flags: u32) -> bool {
-    flags & PROCESS_EXTENDED_BASIC_INFORMATION_IS_FROZEN != 0
-}
-
-fn process_threads_are_suspended(process_id: u32) -> Result<bool, EcoQosError> {
-    let thread_ids = process_thread_ids(process_id)?;
-    let mut suspend_counts = Vec::with_capacity(thread_ids.len());
-
-    for thread_id in thread_ids {
-        let thread = ThreadHandle::open_query(thread_id)?;
-        suspend_counts.push(thread.suspend_count()?);
-    }
-
-    Ok(suspend_counts_indicate_suspended(&suspend_counts))
-}
-
-fn suspend_counts_indicate_suspended(suspend_counts: &[u32]) -> bool {
-    !suspend_counts.is_empty() && suspend_counts.iter().all(|count| *count > 0)
-}
-
-fn process_thread_ids(process_id: u32) -> Result<Vec<u32>, EcoQosError> {
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    if snapshot == INVALID_HANDLE_VALUE {
-        return Err(EcoQosError::Failed(format!(
-            "Failed to read thread list with error {}.",
-            last_error()
-        )));
-    }
-
-    let mut entry = THREADENTRY32 {
-        dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-        ..Default::default()
-    };
-    let mut thread_ids = Vec::new();
-
-    let mut has_entry = unsafe { Thread32First(snapshot, &mut entry) != 0 };
-    while has_entry {
-        if entry.th32OwnerProcessID == process_id {
-            thread_ids.push(entry.th32ThreadID);
-        }
-
-        has_entry = unsafe { Thread32Next(snapshot, &mut entry) != 0 };
-    }
-
-    unsafe {
-        CloseHandle(snapshot);
-    }
-
-    Ok(thread_ids)
-}
-
 enum EcoQosError {
     AccessDenied,
     Failed(String),
@@ -429,25 +345,8 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
 }
 
 struct ProcessHandle(HANDLE);
-struct ThreadHandle(HANDLE);
 
 impl ProcessHandle {
-    fn open_query(process_id: u32) -> Result<Self, EcoQosError> {
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
-        if !handle.is_null() {
-            return Ok(Self(handle));
-        }
-
-        let error = last_error();
-        if error == ERROR_ACCESS_DENIED {
-            Err(EcoQosError::AccessDenied)
-        } else {
-            Err(EcoQosError::Failed(format!(
-                "OpenProcess({process_id}) failed with error {error}."
-            )))
-        }
-    }
-
     fn open(process_id: u32) -> Result<Self, EcoQosError> {
         let access_masks = [
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -490,31 +389,6 @@ impl ProcessHandle {
         } else {
             Ok(state)
         }
-    }
-
-    fn windows_suspended(&self) -> Result<bool, EcoQosError> {
-        let mut info = PROCESS_EXTENDED_BASIC_INFORMATION {
-            Size: std::mem::size_of::<PROCESS_EXTENDED_BASIC_INFORMATION>(),
-            ..Default::default()
-        };
-        let status = unsafe {
-            NtQueryInformationProcess(
-                self.0,
-                ProcessBasicInformation,
-                &mut info as *mut _ as *mut c_void,
-                std::mem::size_of::<PROCESS_EXTENDED_BASIC_INFORMATION>() as u32,
-                null_mut(),
-            )
-        };
-
-        if status < 0 {
-            return Err(EcoQosError::Failed(format!(
-                "NtQueryInformationProcess failed with status 0x{:08X}.",
-                status as u32
-            )));
-        }
-
-        Ok(process_frozen_from_flags(unsafe { info.Anonymous.Flags }))
     }
 
     fn priority_class(&self) -> Result<u32, EcoQosError> {
@@ -572,59 +446,6 @@ impl Drop for ProcessHandle {
     }
 }
 
-impl ThreadHandle {
-    fn open_query(thread_id: u32) -> Result<Self, EcoQosError> {
-        let access_masks = [THREAD_QUERY_INFORMATION, THREAD_QUERY_LIMITED_INFORMATION];
-
-        let mut last_open_error = 0;
-        for access in access_masks {
-            let handle = unsafe { OpenThread(access, 0, thread_id) };
-            if !handle.is_null() {
-                return Ok(Self(handle));
-            }
-            last_open_error = last_error();
-        }
-
-        if last_open_error == ERROR_ACCESS_DENIED {
-            Err(EcoQosError::AccessDenied)
-        } else {
-            Err(EcoQosError::Failed(format!(
-                "OpenThread({thread_id}) failed with error {last_open_error}."
-            )))
-        }
-    }
-
-    fn suspend_count(&self) -> Result<u32, EcoQosError> {
-        let mut suspend_count = 0u32;
-        let status = unsafe {
-            NtQueryInformationThread(
-                self.0,
-                ThreadSuspendCount,
-                &mut suspend_count as *mut _ as *mut c_void,
-                std::mem::size_of::<u32>() as u32,
-                null_mut(),
-            )
-        };
-
-        if status < 0 {
-            return Err(EcoQosError::Failed(format!(
-                "NtQueryInformationThread failed with status 0x{:08X}.",
-                status as u32
-            )));
-        }
-
-        Ok(suspend_count)
-    }
-}
-
-impl Drop for ThreadHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
-}
-
 fn last_error() -> u32 {
     unsafe { GetLastError() }
 }
@@ -638,7 +459,6 @@ mod tests {
         let settings = EcoQosSettings {
             enabled: true,
             exclude_foreground_app: true,
-            exclude_suspended_processes: false,
             efficiency_whitelist: vec!["mouse.exe".to_owned()],
         };
 
@@ -656,23 +476,6 @@ mod tests {
         assert_eq!(state.Version, PROCESS_POWER_THROTTLING_CURRENT_VERSION);
         assert_eq!(state.ControlMask, PROCESS_POWER_THROTTLING_EXECUTION_SPEED);
         assert_eq!(state.StateMask, 0);
-    }
-
-    #[test]
-    fn frozen_process_flag_matches_windows_is_frozen_bit() {
-        assert!(process_frozen_from_flags(
-            PROCESS_EXTENDED_BASIC_INFORMATION_IS_FROZEN
-        ));
-        assert!(!process_frozen_from_flags(0));
-    }
-
-    #[test]
-    fn suspend_counts_require_every_thread_to_be_suspended() {
-        assert!(suspend_counts_indicate_suspended(&[1]));
-        assert!(suspend_counts_indicate_suspended(&[2, 1]));
-        assert!(!suspend_counts_indicate_suspended(&[]));
-        assert!(!suspend_counts_indicate_suspended(&[1, 0]));
-        assert!(!suspend_counts_indicate_suspended(&[0]));
     }
 
     #[test]

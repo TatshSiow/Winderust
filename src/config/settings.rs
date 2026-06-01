@@ -127,8 +127,6 @@ pub struct EcoQosSettings {
         alias = "ignore_foreground_app"
     )]
     pub exclude_foreground_app: bool,
-    #[serde(default)]
-    pub exclude_suspended_processes: bool,
     #[serde(default, alias = "excluded_processes")]
     pub efficiency_whitelist: Vec<String>,
 }
@@ -334,7 +332,6 @@ impl Default for EcoQosSettings {
         Self {
             enabled: false,
             exclude_foreground_app: default_exclude_foreground_app(),
-            exclude_suspended_processes: false,
             efficiency_whitelist: Vec::new(),
         }
     }
