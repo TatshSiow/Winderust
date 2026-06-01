@@ -211,6 +211,9 @@ mod tests {
             app_suspension: AppSuspensionSettings {
                 enabled: true,
                 background_delay_seconds: 120,
+                temporary_thaw_enabled: true,
+                temporary_thaw_interval_seconds: 600,
+                temporary_thaw_duration_seconds: 15,
                 suspendable_apps: vec!["chat.exe".to_owned(), "comma,app.exe".to_owned()],
             },
         };

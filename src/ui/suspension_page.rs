@@ -34,6 +34,28 @@ pub fn show(
                     .suffix(" sec"),
             );
         });
+        ui.checkbox(
+            &mut settings.temporary_thaw_enabled,
+            "Temporary thaw fallback",
+        );
+        ui.add_enabled_ui(settings.temporary_thaw_enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Thaw every");
+                ui.add(
+                    egui::DragValue::new(&mut settings.temporary_thaw_interval_seconds)
+                        .speed(1.0)
+                        .range(1..=86_400)
+                        .suffix(" sec"),
+                );
+                ui.label("for");
+                ui.add(
+                    egui::DragValue::new(&mut settings.temporary_thaw_duration_seconds)
+                        .speed(1.0)
+                        .range(1..=3_600)
+                        .suffix(" sec"),
+                );
+            });
+        });
     });
     ui.add_space(12.0);
 
@@ -52,6 +74,11 @@ pub fn show(
                 ui,
                 "Suspended processes",
                 &status.suspended_processes.to_string(),
+            );
+            row(
+                ui,
+                "Temporary thawed",
+                &status.temporary_thawed_processes.to_string(),
             );
             row(
                 ui,
@@ -205,6 +232,12 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
             label: "Frozen",
             color: egui::Color32::from_rgb(75, 155, 90),
             hover: "PowerLeaf has frozen this app with Windows Job Object freeze.",
+        }
+    } else if suspension::contains_process(&status.temporary_thawed_apps, process) {
+        SuspensionIndicator {
+            label: "Thawed",
+            color: egui::Color32::from_rgb(80, 135, 190),
+            hover: "PowerLeaf has temporarily thawed this app before freezing it again.",
         }
     } else if suspension::contains_process(&status.tracked_apps, process) {
         SuspensionIndicator {
@@ -416,6 +449,9 @@ mod tests {
         let mut settings = AppSuspensionSettings {
             enabled: true,
             background_delay_seconds: 60,
+            temporary_thaw_enabled: false,
+            temporary_thaw_interval_seconds: 900,
+            temporary_thaw_duration_seconds: 20,
             suspendable_apps: vec!["chat.exe".to_owned()],
         };
 

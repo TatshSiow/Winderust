@@ -137,6 +137,12 @@ pub struct EcoQosSettings {
 pub struct AppSuspensionSettings {
     pub enabled: bool,
     pub background_delay_seconds: u64,
+    #[serde(default)]
+    pub temporary_thaw_enabled: bool,
+    #[serde(default = "default_temporary_thaw_interval_seconds")]
+    pub temporary_thaw_interval_seconds: u64,
+    #[serde(default = "default_temporary_thaw_duration_seconds")]
+    pub temporary_thaw_duration_seconds: u64,
     #[serde(default, alias = "suspend_whitelist")]
     pub suspendable_apps: Vec<String>,
 }
@@ -306,11 +312,22 @@ const fn default_rule_enabled() -> bool {
     true
 }
 
+const fn default_temporary_thaw_interval_seconds() -> u64 {
+    900
+}
+
+const fn default_temporary_thaw_duration_seconds() -> u64 {
+    20
+}
+
 impl Default for AppSuspensionSettings {
     fn default() -> Self {
         Self {
             enabled: false,
             background_delay_seconds: 300,
+            temporary_thaw_enabled: false,
+            temporary_thaw_interval_seconds: default_temporary_thaw_interval_seconds(),
+            temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),
             suspendable_apps: Vec::new(),
         }
     }

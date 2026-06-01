@@ -47,8 +47,10 @@ pub struct AppSuspensionSnapshot {
     pub enabled: bool,
     pub tracked_processes: usize,
     pub suspended_processes: usize,
+    pub temporary_thawed_processes: usize,
     pub tracked_apps: Vec<String>,
     pub suspended_apps: Vec<String>,
+    pub temporary_thawed_apps: Vec<String>,
     pub skipped_processes: usize,
     pub failed_actions: usize,
     pub message: String,
@@ -59,6 +61,7 @@ pub struct AppSuspensionSnapshot {
 pub struct AppSuspensionManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     suspended: BTreeMap<u32, SuspendedProcess>,
+    temporary_thawed: BTreeMap<u32, TemporaryThaw>,
 }
 
 struct TrackedProcess {
@@ -69,6 +72,19 @@ struct TrackedProcess {
 struct SuspendedProcess {
     process_name: String,
     freezer: ProcessFreezer,
+    suspended_since: Instant,
+}
+
+struct TemporaryThaw {
+    process_name: String,
+    thaw_until: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemporaryThawState {
+    None,
+    Active,
+    Expired,
 }
 
 impl AppSuspensionManager {
@@ -169,6 +185,9 @@ impl AppSuspensionManager {
         failed_actions += self.release_non_targets(&target_ids);
         self.tracked
             .retain(|process_id, _process| target_ids.contains(process_id));
+        self.temporary_thawed
+            .retain(|process_id, _process| target_ids.contains(process_id));
+        failed_actions += self.release_for_temporary_thaw(settings, &target_ids, now);
 
         let mut skipped_processes = 0;
         let mut last_error = None;
@@ -178,19 +197,27 @@ impl AppSuspensionManager {
                 continue;
             }
 
-            let tracked = self
-                .tracked
-                .entry(process_id)
-                .or_insert_with(|| TrackedProcess {
-                    process_name: process_name.clone(),
-                    background_since: now,
-                });
-            tracked.process_name = process_name.clone();
-            if tracked.background_since.elapsed() < delay {
-                continue;
+            match self.temporary_thaw_state(process_id, &process_name, now) {
+                TemporaryThawState::Active => continue,
+                TemporaryThawState::Expired => {
+                    self.tracked.remove(&process_id);
+                }
+                TemporaryThawState::None => {
+                    let tracked =
+                        self.tracked
+                            .entry(process_id)
+                            .or_insert_with(|| TrackedProcess {
+                                process_name: process_name.clone(),
+                                background_since: now,
+                            });
+                    tracked.process_name = process_name.clone();
+                    if tracked.background_since.elapsed() < delay {
+                        continue;
+                    }
+                }
             }
 
-            match suspend_process(process_id, process_name) {
+            match suspend_process(process_id, process_name, now) {
                 Ok(suspended_process) => {
                     self.tracked.remove(&process_id);
                     self.suspended.insert(process_id, suspended_process);
@@ -211,6 +238,7 @@ impl AppSuspensionManager {
             enabled: true,
             tracked_processes: self.tracked.len(),
             suspended_processes: self.suspended.len(),
+            temporary_thawed_processes: self.temporary_thawed.len(),
             tracked_apps: unique_app_names(
                 self.tracked
                     .values()
@@ -218,6 +246,11 @@ impl AppSuspensionManager {
             ),
             suspended_apps: unique_app_names(
                 self.suspended
+                    .values()
+                    .map(|process| process.process_name.as_str()),
+            ),
+            temporary_thawed_apps: unique_app_names(
+                self.temporary_thawed
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
@@ -241,6 +274,7 @@ impl AppSuspensionManager {
 
     fn clear_all(&mut self) -> usize {
         self.tracked.clear();
+        self.temporary_thawed.clear();
         let process_ids = self.suspended.keys().copied().collect::<Vec<_>>();
         self.release_processes(&process_ids)
     }
@@ -256,6 +290,71 @@ impl AppSuspensionManager {
         }
         failed
     }
+
+    fn release_for_temporary_thaw(
+        &mut self,
+        settings: &AppSuspensionSettings,
+        target_ids: &BTreeSet<u32>,
+        now: Instant,
+    ) -> usize {
+        if !settings.temporary_thaw_enabled
+            || settings.temporary_thaw_interval_seconds == 0
+            || settings.temporary_thaw_duration_seconds == 0
+        {
+            return 0;
+        }
+
+        let interval = Duration::from_secs(settings.temporary_thaw_interval_seconds);
+        let duration = Duration::from_secs(settings.temporary_thaw_duration_seconds);
+        let process_ids = self
+            .suspended
+            .iter()
+            .filter(|(process_id, process)| {
+                target_ids.contains(process_id)
+                    && now.duration_since(process.suspended_since) >= interval
+            })
+            .map(|(process_id, _process)| *process_id)
+            .collect::<Vec<_>>();
+
+        let mut failed = 0;
+        for process_id in process_ids {
+            if let Some(process) = self.suspended.remove(&process_id) {
+                let process_name = process.process_name.clone();
+                if resume_process(process).is_err() {
+                    failed += 1;
+                } else {
+                    self.temporary_thawed.insert(
+                        process_id,
+                        TemporaryThaw {
+                            process_name,
+                            thaw_until: now + duration,
+                        },
+                    );
+                }
+            }
+        }
+
+        failed
+    }
+
+    fn temporary_thaw_state(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        now: Instant,
+    ) -> TemporaryThawState {
+        let Some(thaw) = self.temporary_thawed.get_mut(&process_id) else {
+            return TemporaryThawState::None;
+        };
+
+        if now < thaw.thaw_until {
+            thaw.process_name = process_name.to_owned();
+            TemporaryThawState::Active
+        } else {
+            self.temporary_thawed.remove(&process_id);
+            TemporaryThawState::Expired
+        }
+    }
 }
 
 impl Drop for AppSuspensionManager {
@@ -270,8 +369,10 @@ impl Default for AppSuspensionSnapshot {
             enabled: false,
             tracked_processes: 0,
             suspended_processes: 0,
+            temporary_thawed_processes: 0,
             tracked_apps: Vec::new(),
             suspended_apps: Vec::new(),
+            temporary_thawed_apps: Vec::new(),
             skipped_processes: 0,
             failed_actions: 0,
             message: "App Suspension disabled.".to_owned(),
@@ -458,11 +559,13 @@ fn open_process_error(process_id: u32) -> SuspensionError {
 fn suspend_process(
     process_id: u32,
     process_name: String,
+    suspended_since: Instant,
 ) -> Result<SuspendedProcess, SuspensionError> {
     let freezer = ProcessFreezer::freeze(process_id)?;
     Ok(SuspendedProcess {
         process_name,
         freezer,
+        suspended_since,
     })
 }
 
@@ -506,6 +609,43 @@ mod tests {
             42,
             Some("app.exe"),
         ));
+    }
+
+    #[test]
+    fn temporary_thaw_state_blocks_until_window_expires() {
+        let mut manager = AppSuspensionManager::default();
+        let now = Instant::now();
+        manager.temporary_thawed.insert(
+            7,
+            TemporaryThaw {
+                process_name: "chat.exe".to_owned(),
+                thaw_until: now + Duration::from_secs(5),
+            },
+        );
+
+        assert_eq!(
+            manager.temporary_thaw_state(7, "CHAT.EXE", now),
+            TemporaryThawState::Active
+        );
+        assert_eq!(
+            manager.temporary_thawed.get(&7).unwrap().process_name,
+            "CHAT.EXE"
+        );
+        assert_eq!(
+            manager.temporary_thaw_state(7, "chat.exe", now + Duration::from_secs(6)),
+            TemporaryThawState::Expired
+        );
+        assert!(!manager.temporary_thawed.contains_key(&7));
+    }
+
+    #[test]
+    fn temporary_thaw_state_reports_none_without_entry() {
+        let mut manager = AppSuspensionManager::default();
+
+        assert_eq!(
+            manager.temporary_thaw_state(99, "chat.exe", Instant::now()),
+            TemporaryThawState::None
+        );
     }
 
     #[test]
