@@ -13,9 +13,10 @@ use windows_sys::Win32::{
         },
         WindowsAndMessaging::{
             AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW,
-            SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TrackPopupMenu, GWLP_WNDPROC,
-            IDI_APPLICATION, MF_STRING, SW_HIDE, SW_RESTORE, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-            WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WNDPROC,
+            PostMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TrackPopupMenu,
+            GWLP_WNDPROC, IDI_APPLICATION, MF_STRING, SW_HIDE, SW_RESTORE, SW_SHOWNA,
+            TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+            WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
         },
     },
 };
@@ -137,6 +138,11 @@ unsafe extern "system" fn tray_wnd_proc(
         return 0;
     }
 
+    if message == WM_SHOWWINDOW && wparam != 0 && HIDDEN_TO_TRAY.load(Ordering::SeqCst) {
+        ShowWindow(hwnd, SW_HIDE);
+        return 0;
+    }
+
     if message == WM_TRAYICON && wparam as u32 == TRAY_UID {
         match lparam as u32 {
             WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
@@ -201,13 +207,11 @@ unsafe fn show_tray_menu(hwnd: HWND) {
     }
 }
 
-unsafe fn quit_window(hwnd: HWND) -> ! {
+unsafe fn quit_window(hwnd: HWND) {
     HIDE_ON_CLOSE.store(false, Ordering::SeqCst);
     HIDDEN_TO_TRAY.store(false, Ordering::SeqCst);
     QUIT_REQUESTED.store(true, Ordering::SeqCst);
 
-    let data = notify_data(hwnd);
-    Shell_NotifyIconW(NIM_DELETE, &data);
-
-    std::process::exit(0);
+    ShowWindow(hwnd, SW_SHOWNA);
+    PostMessageW(hwnd, WM_CLOSE, 0, 0);
 }

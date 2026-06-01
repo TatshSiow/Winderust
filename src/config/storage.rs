@@ -126,6 +126,7 @@ mod tests {
             general: GeneralSettings {
                 enabled: false,
                 startup_with_windows: true,
+                start_minimized: true,
                 hide_to_tray: true,
                 pause_power_plan_switching_while_plugged_in: true,
                 check_interval_ms: 2_500,

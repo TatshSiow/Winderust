@@ -14,6 +14,7 @@ mod power;
 mod power_source;
 mod rules;
 mod scheduler;
+mod startup;
 mod suspension;
 mod tray;
 mod ui;

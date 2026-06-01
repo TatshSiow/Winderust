@@ -18,6 +18,7 @@ use crate::{
     power_source,
     rules::{DecisionEngine, DecisionInput, DecisionOutcome, DecisionState},
     scheduler::{CpuUsageScheduler, Scheduler},
+    startup,
     suspension::AppSuspensionSnapshot,
     tray::{self, TrayIcon},
     ui::{self, Page},
@@ -72,6 +73,7 @@ pub struct PowerLeafApp {
     suspension_input: String,
     suspension_picker_open: bool,
     suspension_picker_highlighted: Option<usize>,
+    start_minimized_applied: bool,
 }
 
 impl PowerLeafApp {
@@ -130,6 +132,7 @@ impl PowerLeafApp {
             suspension_input: String::new(),
             suspension_picker_open: false,
             suspension_picker_highlighted: None,
+            start_minimized_applied: false,
         };
 
         app.sync_tray_icon();
@@ -266,10 +269,15 @@ impl PowerLeafApp {
         match config::storage::save(&self.settings) {
             Ok(()) => {
                 self.saved_settings = self.settings.clone();
-                self.status_message = format!(
-                    "Saved settings to {}",
-                    config::storage::config_path().display()
-                )
+                self.status_message = match startup::set_startup_with_windows(
+                    self.saved_settings.general.startup_with_windows,
+                ) {
+                    Ok(()) => format!(
+                        "Saved settings to {}",
+                        config::storage::config_path().display()
+                    ),
+                    Err(err) => format!("Saved settings, but {err}."),
+                };
             }
             Err(err) => self.status_message = err,
         }
@@ -298,8 +306,12 @@ impl PowerLeafApp {
                     match config::storage::save(&self.settings) {
                         Ok(()) => {
                             self.saved_settings = self.settings.clone();
-                            self.status_message =
-                                format!("Imported settings from {}", path.display());
+                            self.status_message = match startup::set_startup_with_windows(
+                                self.saved_settings.general.startup_with_windows,
+                            ) {
+                                Ok(()) => format!("Imported settings from {}", path.display()),
+                                Err(err) => format!("Imported settings, but {err}."),
+                            };
                         }
                         Err(err) => self.status_message = err,
                     }
@@ -330,7 +342,10 @@ impl PowerLeafApp {
     }
 
     fn sync_tray_icon(&mut self) {
-        if self.settings.general.hide_to_tray {
+        let tray_required =
+            self.settings.general.hide_to_tray || self.saved_settings.general.start_minimized;
+
+        if tray_required {
             if self.tray_icon.is_none() {
                 let Some(hwnd) = self.hwnd else {
                     tray::set_hide_on_close(false);
@@ -346,7 +361,7 @@ impl PowerLeafApp {
                     Err(err) => self.status_message = err,
                 }
             }
-            tray::set_hide_on_close(self.tray_icon.is_some());
+            tray::set_hide_on_close(self.settings.general.hide_to_tray && self.tray_icon.is_some());
         } else if self.tray_icon.take().is_some() {
             tray::set_hide_on_close(false);
             self.status_message = "System tray icon disabled.".to_owned();
@@ -355,12 +370,12 @@ impl PowerLeafApp {
         }
     }
 
-    fn handle_close_request(&mut self, ctx: &egui::Context) {
+    fn handle_close_request(&mut self, ctx: &egui::Context) -> bool {
         if tray::take_quit_requested() {
             tray::set_hide_on_close(false);
             self.tray_icon = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            return;
+            return true;
         }
 
         let close_requested = ctx.input(|input| input.viewport().close_requested());
@@ -374,12 +389,40 @@ impl PowerLeafApp {
             self.status_message =
                 "Hidden to system tray. Use the tray icon to show or quit.".to_owned();
         }
+
+        false
+    }
+
+    fn apply_start_minimized(&mut self, ctx: &egui::Context) {
+        if self.start_minimized_applied {
+            return;
+        }
+        self.start_minimized_applied = true;
+
+        if !self.saved_settings.general.start_minimized {
+            return;
+        }
+
+        if self.tray_icon.is_some() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            if let Some(hwnd) = self.hwnd {
+                tray::hide_window(hwnd);
+                self.status_message = "Started in system tray.".to_owned();
+                return;
+            }
+        }
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        self.status_message = "Started minimized.".to_owned();
     }
 }
 
 impl eframe::App for PowerLeafApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.handle_close_request(ctx);
+        if self.handle_close_request(ctx) {
+            return;
+        }
+        self.apply_start_minimized(ctx);
         if tray::is_hidden_to_tray() {
             self.background_automation
                 .update_settings(&self.background_settings());
@@ -711,6 +754,20 @@ fn show_settings_page(
 
     ui.checkbox(&mut settings.general.enabled, "Powerleaf master switch");
     ui.label("Enable or disable all PowerLeaf features after saving.");
+    ui.add_space(18.0);
+
+    ui.checkbox(
+        &mut settings.general.startup_with_windows,
+        "Start PowerLeaf when Windows starts",
+    );
+    ui.label("Register PowerLeaf to start when you sign in after saving.");
+    ui.add_space(18.0);
+
+    ui.checkbox(
+        &mut settings.general.start_minimized,
+        "Start in system tray",
+    );
+    ui.label("Hide PowerLeaf in the system tray on launch.");
     ui.add_space(18.0);
 
     ui.checkbox(
