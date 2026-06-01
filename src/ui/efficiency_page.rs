@@ -24,6 +24,11 @@ pub fn show(
         &mut settings.exclude_foreground_app,
         "Exclude foreground app",
     );
+    ui.checkbox(
+        &mut settings.exclude_suspended_processes,
+        "Exclude Windows-suspended apps",
+    );
+    ui.label("Skip apps that Windows already reports as suspended.");
     ui.add_space(12.0);
 
     egui::Grid::new("eco_qos_status_grid")
@@ -343,6 +348,7 @@ mod tests {
         let mut settings = EcoQosSettings {
             enabled: true,
             exclude_foreground_app: true,
+            exclude_suspended_processes: false,
             efficiency_whitelist: vec!["mouse.exe".to_owned()],
         };
 
