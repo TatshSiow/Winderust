@@ -34,6 +34,11 @@ impl CpuUsageScheduler {
         let mut else_decision = None;
 
         for (index, rule) in settings.rules.iter().enumerate() {
+            if !rule.enabled {
+                self.matched_since[index] = None;
+                continue;
+            }
+
             if else_decision.is_none() {
                 else_decision = else_decision_for_rule(rule);
             }
@@ -93,6 +98,7 @@ mod tests {
             enabled: true,
             power_plans: PowerPlanSettings::default(),
             rules: vec![CpuUsageRule {
+                enabled: true,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
                 threshold_percent: 75,
@@ -118,6 +124,7 @@ mod tests {
             enabled: true,
             power_plans: PowerPlanSettings::default(),
             rules: vec![CpuUsageRule {
+                enabled: true,
                 name: "Low CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrBelow,
                 threshold_percent: 20,
@@ -140,6 +147,7 @@ mod tests {
             enabled: true,
             power_plans: PowerPlanSettings::default(),
             rules: vec![CpuUsageRule {
+                enabled: true,
                 name: "Medium CPU".to_owned(),
                 comparison: CpuUsageComparison::Between,
                 threshold_percent: 30,
@@ -165,6 +173,7 @@ mod tests {
             enabled: true,
             power_plans: PowerPlanSettings::default(),
             rules: vec![CpuUsageRule {
+                enabled: true,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
                 threshold_percent: 75,
@@ -187,5 +196,29 @@ mod tests {
 
         assert_eq!(decision.rule_name, "High CPU else");
         assert_eq!(decision.power_plan_guid.as_deref(), Some("else-guid"));
+    }
+
+    #[test]
+    fn disabled_rule_is_ignored() {
+        let mut scheduler = CpuUsageScheduler::default();
+        let settings = CpuUsageModeSettings {
+            enabled: true,
+            power_plans: PowerPlanSettings::default(),
+            rules: vec![CpuUsageRule {
+                enabled: false,
+                name: "High CPU".to_owned(),
+                comparison: CpuUsageComparison::AtOrAbove,
+                threshold_percent: 75,
+                upper_threshold_percent: None,
+                duration_seconds: 0,
+                power_plan_guid: Some("high-cpu-guid".to_owned()),
+                else_enabled: true,
+                else_power_plan_guid: Some("else-guid".to_owned()),
+                target: None,
+            }],
+        };
+
+        assert!(scheduler.current_decision(&settings, Some(90.0)).is_none());
+        assert!(scheduler.current_decision(&settings, Some(10.0)).is_none());
     }
 }

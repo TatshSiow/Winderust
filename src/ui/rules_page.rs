@@ -40,6 +40,7 @@ pub fn show(
     ui.add_enabled_ui(rules.enabled, |ui| {
         if ui.button("Add foreground rule").clicked() {
             rules.rules.push(ForegroundRule {
+                enabled: true,
                 name: "New Foreground Rule".to_owned(),
                 process_name: String::new(),
                 power_plan_guid: current_plan.map(|plan| plan.guid.clone()),
@@ -53,36 +54,41 @@ pub fn show(
             ui.group(|ui| {
                 let rule = &mut rules.rules[index];
                 ui.horizontal(|ui| {
+                    ui.checkbox(&mut rule.enabled, "Enable");
                     ui.label("Name");
-                    ui.text_edit_singleline(&mut rule.name);
+                    ui.add_enabled_ui(rule.enabled, |ui| {
+                        ui.text_edit_singleline(&mut rule.name);
+                    });
                     if ui.button("Remove").clicked() {
                         remove_index = Some(index);
                     }
                 });
 
-                ui.horizontal(|ui| {
-                    ui.label("Focused app");
-                    let input_width = ui.available_width().clamp(160.0, APP_INPUT_WIDTH);
-                    if let Some(process) = searchable_rule_input(
-                        ui,
-                        index,
-                        process_candidates,
-                        &mut rule.process_name,
-                        picker_open_rule,
-                        picker_highlighted,
-                        input_width,
-                    ) {
-                        rule.process_name = process;
-                    }
-                });
+                ui.add_enabled_ui(rule.enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Focused app");
+                        let input_width = ui.available_width().clamp(160.0, APP_INPUT_WIDTH);
+                        if let Some(process) = searchable_rule_input(
+                            ui,
+                            index,
+                            process_candidates,
+                            &mut rule.process_name,
+                            picker_open_rule,
+                            picker_highlighted,
+                            input_width,
+                        ) {
+                            rule.process_name = process;
+                        }
+                    });
 
-                power_plan_page::plan_combo_with_id(
-                    ui,
-                    "Target power plan",
-                    ("foreground_rule_target", index),
-                    &mut rule.power_plan_guid,
-                    plans,
-                );
+                    power_plan_page::plan_combo_with_id(
+                        ui,
+                        "Target power plan",
+                        ("foreground_rule_target", index),
+                        &mut rule.power_plan_guid,
+                        plans,
+                    );
+                });
             });
 
             ui.add_space(10.0);
@@ -298,6 +304,7 @@ mod tests {
     #[test]
     fn custom_foreground_rule_keeps_arbitrary_target_plan() {
         let rule = ForegroundRule {
+            enabled: true,
             name: "Editor".to_owned(),
             process_name: "editor.exe".to_owned(),
             power_plan_guid: Some("custom-guid".to_owned()),

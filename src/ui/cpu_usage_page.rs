@@ -28,6 +28,7 @@ pub fn show(
     ui.add_enabled_ui(cpu_usage.enabled, |ui| {
         if ui.button("Add CPU load rule").clicked() {
             cpu_usage.rules.push(CpuUsageRule {
+                enabled: true,
                 name: "New CPU Load Rule".to_owned(),
                 comparison: CpuUsageComparison::AtOrBelow,
                 threshold_percent: 20,
@@ -46,68 +47,73 @@ pub fn show(
         for (index, rule) in cpu_usage.rules.iter_mut().enumerate() {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
+                    ui.checkbox(&mut rule.enabled, "Enable");
                     ui.label("Name");
-                    ui.text_edit_singleline(&mut rule.name);
+                    ui.add_enabled_ui(rule.enabled, |ui| {
+                        ui.text_edit_singleline(&mut rule.name);
+                    });
                     if ui.button("Remove").clicked() {
                         remove_index = Some(index);
                     }
                 });
 
-                ui.horizontal(|ui| {
-                    ui.label("When CPU load");
-                    egui::ComboBox::from_id_salt(("cpu_comparison", index))
-                        .selected_text(rule.comparison.label())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut rule.comparison,
-                                CpuUsageComparison::AtOrBelow,
-                                CpuUsageComparison::AtOrBelow.label(),
-                            );
-                            ui.selectable_value(
-                                &mut rule.comparison,
-                                CpuUsageComparison::AtOrAbove,
-                                CpuUsageComparison::AtOrAbove.label(),
-                            );
-                            ui.selectable_value(
-                                &mut rule.comparison,
-                                CpuUsageComparison::Between,
-                                CpuUsageComparison::Between.label(),
+                ui.add_enabled_ui(rule.enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("When CPU load");
+                        egui::ComboBox::from_id_salt(("cpu_comparison", index))
+                            .selected_text(rule.comparison.label())
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut rule.comparison,
+                                    CpuUsageComparison::AtOrBelow,
+                                    CpuUsageComparison::AtOrBelow.label(),
+                                );
+                                ui.selectable_value(
+                                    &mut rule.comparison,
+                                    CpuUsageComparison::AtOrAbove,
+                                    CpuUsageComparison::AtOrAbove.label(),
+                                );
+                                ui.selectable_value(
+                                    &mut rule.comparison,
+                                    CpuUsageComparison::Between,
+                                    CpuUsageComparison::Between.label(),
+                                );
+                            });
+                        show_cpu_condition_inputs(ui, rule);
+                        ui.label("for");
+                        ui.add(
+                            egui::DragValue::new(&mut rule.duration_seconds)
+                                .speed(1.0)
+                                .range(0..=86_400)
+                                .suffix(" sec"),
+                        );
+                    });
+
+                    power_plan_page::plan_combo_with_id(
+                        ui,
+                        "Use",
+                        ("cpu_load_rule_target", index),
+                        &mut rule.power_plan_guid,
+                        plans,
+                    );
+
+                    ui.horizontal(|ui| {
+                        if ui.checkbox(&mut rule.else_enabled, "Else").changed()
+                            && rule.else_enabled
+                            && rule.else_power_plan_guid.is_none()
+                        {
+                            rule.else_power_plan_guid = current_plan.map(|plan| plan.guid.clone());
+                        }
+
+                        ui.add_enabled_ui(rule.else_enabled, |ui| {
+                            power_plan_page::plan_combo_with_id(
+                                ui,
+                                "Use",
+                                ("cpu_load_rule_else_target", index),
+                                &mut rule.else_power_plan_guid,
+                                plans,
                             );
                         });
-                    show_cpu_condition_inputs(ui, rule);
-                    ui.label("for");
-                    ui.add(
-                        egui::DragValue::new(&mut rule.duration_seconds)
-                            .speed(1.0)
-                            .range(0..=86_400)
-                            .suffix(" sec"),
-                    );
-                });
-
-                power_plan_page::plan_combo_with_id(
-                    ui,
-                    "Use",
-                    ("cpu_load_rule_target", index),
-                    &mut rule.power_plan_guid,
-                    plans,
-                );
-
-                ui.horizontal(|ui| {
-                    if ui.checkbox(&mut rule.else_enabled, "Else").changed()
-                        && rule.else_enabled
-                        && rule.else_power_plan_guid.is_none()
-                    {
-                        rule.else_power_plan_guid = current_plan.map(|plan| plan.guid.clone());
-                    }
-
-                    ui.add_enabled_ui(rule.else_enabled, |ui| {
-                        power_plan_page::plan_combo_with_id(
-                            ui,
-                            "Use",
-                            ("cpu_load_rule_else_target", index),
-                            &mut rule.else_power_plan_guid,
-                            plans,
-                        );
                     });
                 });
             });

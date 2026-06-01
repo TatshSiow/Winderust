@@ -38,6 +38,10 @@ impl Scheduler {
 }
 
 fn rule_applies(rule: &ScheduleRule, now: DateTime<Local>) -> bool {
+    if !rule.enabled {
+        return false;
+    }
+
     let Some((start, end)) = rule.parsed_times() else {
         return false;
     };
@@ -67,6 +71,7 @@ mod tests {
     #[test]
     fn overnight_rule_applies_after_midnight_from_previous_day() {
         let rule = ScheduleRule {
+            enabled: true,
             name: "Night".to_owned(),
             days: vec![WeekdaySetting::Fri],
             start_time: "22:00".to_owned(),
@@ -78,5 +83,22 @@ mod tests {
         let now = Local.with_ymd_and_hms(2026, 5, 30, 2, 0, 0).unwrap();
 
         assert!(rule_applies(&rule, now));
+    }
+
+    #[test]
+    fn disabled_rule_does_not_apply() {
+        let rule = ScheduleRule {
+            enabled: false,
+            name: "Night".to_owned(),
+            days: vec![WeekdaySetting::Fri],
+            start_time: "22:00".to_owned(),
+            end_time: "08:00".to_owned(),
+            power_plan_guid: None,
+            power_save_guid: None,
+            performance_guid: None,
+        };
+        let now = Local.with_ymd_and_hms(2026, 5, 30, 2, 0, 0).unwrap();
+
+        assert!(!rule_applies(&rule, now));
     }
 }

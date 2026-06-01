@@ -73,7 +73,7 @@ impl DecisionEngine {
             .filter(|_| settings.foreground_rules.enabled)
         {
             for rule in &settings.foreground_rules.rules {
-                if rule.process_name.trim().eq_ignore_ascii_case(app.trim()) {
+                if rule.enabled && rule.process_name.trim().eq_ignore_ascii_case(app.trim()) {
                     return DecisionOutcome::with_target(
                         rule.power_plan_guid.clone(),
                         DecisionState::ForegroundRule,
@@ -392,6 +392,7 @@ mod tests {
             performance_guid: Some("foreground-active".to_owned()),
         };
         settings.foreground_rules.rules = vec![ForegroundRule {
+            enabled: true,
             name: "Game".to_owned(),
             process_name: "game.exe".to_owned(),
             power_plan_guid: Some("foreground-custom".to_owned()),
@@ -457,6 +458,7 @@ mod tests {
     fn foreground_rule_can_target_any_power_plan() {
         let mut settings = test_settings();
         settings.foreground_rules.rules = vec![ForegroundRule {
+            enabled: true,
             name: "Editing".to_owned(),
             process_name: "editor.exe".to_owned(),
             power_plan_guid: Some("balanced-guid".to_owned()),
@@ -475,5 +477,30 @@ mod tests {
 
         assert_eq!(outcome.state, DecisionState::ForegroundRule);
         assert_eq!(outcome.target_guid.as_deref(), Some("balanced-guid"));
+    }
+
+    #[test]
+    fn disabled_foreground_rule_is_ignored() {
+        let mut settings = test_settings();
+        settings.foreground_rules.rules = vec![ForegroundRule {
+            enabled: false,
+            name: "Editing".to_owned(),
+            process_name: "editor.exe".to_owned(),
+            power_plan_guid: Some("balanced-guid".to_owned()),
+        }];
+
+        let outcome = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: Some("editor.exe".to_owned()),
+                plugged_in: None,
+                schedule: None,
+                cpu_usage: None,
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::IdlePowerSave);
+        assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
     }
 }

@@ -28,6 +28,7 @@ pub fn show(
     ui.add_enabled_ui(schedule.enabled, |ui| {
         if ui.button("Add time rule").clicked() {
             schedule.rules.push(ScheduleRule {
+                enabled: true,
                 name: "New Time Rule".to_owned(),
                 days: WeekdaySetting::all().to_vec(),
                 start_time: "22:00".to_owned(),
@@ -44,44 +45,49 @@ pub fn show(
         for (index, rule) in schedule.rules.iter_mut().enumerate() {
             ui.group(|ui| {
                 ui.horizontal(|ui| {
+                    ui.checkbox(&mut rule.enabled, "Enable");
                     ui.label("Name");
-                    ui.text_edit_singleline(&mut rule.name);
+                    ui.add_enabled_ui(rule.enabled, |ui| {
+                        ui.text_edit_singleline(&mut rule.name);
+                    });
                     if ui.button("Remove").clicked() {
                         remove_index = Some(index);
                     }
                 });
 
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Days");
-                    for day in WeekdaySetting::all() {
-                        let mut selected = rule.days.contains(&day);
-                        if ui.toggle_value(&mut selected, day.short_label()).changed() {
-                            if selected {
-                                rule.days.push(day);
-                            } else {
-                                rule.days.retain(|existing| *existing != day);
+                ui.add_enabled_ui(rule.enabled, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Days");
+                        for day in WeekdaySetting::all() {
+                            let mut selected = rule.days.contains(&day);
+                            if ui.toggle_value(&mut selected, day.short_label()).changed() {
+                                if selected {
+                                    rule.days.push(day);
+                                } else {
+                                    rule.days.retain(|existing| *existing != day);
+                                }
                             }
                         }
-                    }
-                });
+                    });
 
-                ui.horizontal(|ui| {
-                    ui.label("Start");
-                    ui.text_edit_singleline(&mut rule.start_time);
-                    ui.label("End");
-                    ui.text_edit_singleline(&mut rule.end_time);
-                    if rule.parsed_times().is_none() {
-                        ui.colored_label(egui::Color32::from_rgb(190, 60, 50), "Use HH:MM");
-                    }
-                });
+                    ui.horizontal(|ui| {
+                        ui.label("Start");
+                        ui.text_edit_singleline(&mut rule.start_time);
+                        ui.label("End");
+                        ui.text_edit_singleline(&mut rule.end_time);
+                        if rule.parsed_times().is_none() {
+                            ui.colored_label(egui::Color32::from_rgb(190, 60, 50), "Use HH:MM");
+                        }
+                    });
 
-                power_plan_page::plan_combo_with_id(
-                    ui,
-                    "Target power plan",
-                    ("schedule_rule_target", index),
-                    &mut rule.power_plan_guid,
-                    plans,
-                );
+                    power_plan_page::plan_combo_with_id(
+                        ui,
+                        "Target power plan",
+                        ("schedule_rule_target", index),
+                        &mut rule.power_plan_guid,
+                        plans,
+                    );
+                });
             });
 
             ui.add_space(10.0);

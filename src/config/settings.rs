@@ -77,6 +77,8 @@ pub struct ForegroundRules {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -95,6 +97,8 @@ pub struct ScheduleModeSettings {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
     pub name: String,
     pub days: Vec<WeekdaySetting>,
     pub start_time: String,
@@ -139,6 +143,8 @@ pub struct AppSuspensionSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuUsageRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
     pub name: String,
     pub comparison: CpuUsageComparison,
     pub threshold_percent: u8,
@@ -208,6 +214,7 @@ impl Default for Settings {
                 enabled: false,
                 power_plans: PowerPlanSettings::default(),
                 rules: vec![ScheduleRule {
+                    enabled: true,
                     name: "Night Idle Plan".to_owned(),
                     days: WeekdaySetting::all().to_vec(),
                     start_time: "22:00".to_owned(),
@@ -252,6 +259,7 @@ impl Default for CpuUsageModeSettings {
             power_plans: PowerPlanSettings::default(),
             rules: vec![
                 CpuUsageRule {
+                    enabled: true,
                     name: "Low CPU Idle".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,
                     threshold_percent: 15,
@@ -263,6 +271,7 @@ impl Default for CpuUsageModeSettings {
                     target: None,
                 },
                 CpuUsageRule {
+                    enabled: true,
                     name: "High CPU Active".to_owned(),
                     comparison: CpuUsageComparison::AtOrAbove,
                     threshold_percent: 50,
@@ -290,6 +299,10 @@ impl Default for EcoQosSettings {
 }
 
 const fn default_exclude_foreground_app() -> bool {
+    true
+}
+
+const fn default_rule_enabled() -> bool {
     true
 }
 
@@ -387,6 +400,7 @@ impl Settings {
 
         for process in &self.foreground_rules.whitelist {
             self.foreground_rules.rules.push(ForegroundRule {
+                enabled: true,
                 name: process.clone(),
                 process_name: process.clone(),
                 power_plan_guid: self
@@ -400,6 +414,7 @@ impl Settings {
 
         for process in &self.foreground_rules.force_power_save {
             self.foreground_rules.rules.push(ForegroundRule {
+                enabled: true,
                 name: process.clone(),
                 process_name: process.clone(),
                 power_plan_guid: self

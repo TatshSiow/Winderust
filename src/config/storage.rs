@@ -153,11 +153,13 @@ mod tests {
                 enabled: true,
                 rules: vec![
                     ForegroundRule {
+                        enabled: true,
                         name: "Game plan".to_owned(),
                         process_name: "game.exe".to_owned(),
                         power_plan_guid: Some("gaming-guid".to_owned()),
                     },
                     ForegroundRule {
+                        enabled: false,
                         name: "Backup plan".to_owned(),
                         process_name: "backup\\tool.exe".to_owned(),
                         power_plan_guid: Some("backup-guid".to_owned()),
@@ -174,6 +176,7 @@ mod tests {
                 enabled: true,
                 power_plans: PowerPlanSettings::default(),
                 rules: vec![ScheduleRule {
+                    enabled: true,
                     name: "Work hours".to_owned(),
                     days: vec![WeekdaySetting::Mon, WeekdaySetting::Fri],
                     start_time: "09:00".to_owned(),
@@ -187,6 +190,7 @@ mod tests {
                 enabled: true,
                 power_plans: PowerPlanSettings::default(),
                 rules: vec![CpuUsageRule {
+                    enabled: true,
                     name: "Low CPU".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,
                     threshold_percent: 18,
