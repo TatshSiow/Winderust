@@ -197,8 +197,9 @@ impl PowerLeafApp {
             .scheduler
             .next_switch_label(&self.settings.schedule_mode);
 
+        let decision_settings = self.runtime_settings();
         self.decision = self.decision_engine.decide(
-            &self.settings,
+            &decision_settings,
             DecisionInput {
                 activity_state: self.activity.state,
                 foreground_app: self.foreground_app.clone(),
@@ -223,7 +224,7 @@ impl PowerLeafApp {
     }
 
     fn input_hook_should_check(&self, events: InputHookEvents) -> bool {
-        self.settings.general.enabled
+        self.saved_settings.general.enabled
             && self.settings.activity_mode.enabled
             && ((events.keyboard && self.settings.activity_mode.input_detection.keyboard)
                 || (events.mouse && self.settings.activity_mode.input_detection.mouse))
@@ -443,9 +444,10 @@ impl eframe::App for PowerLeafApp {
             ui.add_space(8.0);
             match self.page {
                 Page::Dashboard => {
+                    let dashboard_settings = self.runtime_settings();
                     ui::dashboard::show(
                         ui,
-                        &self.settings,
+                        &dashboard_settings,
                         self.current_plan.as_ref(),
                         self.foreground_app.as_deref(),
                         &self.activity,
@@ -604,7 +606,12 @@ impl PowerLeafApp {
     }
 
     fn background_settings(&self) -> Settings {
+        self.runtime_settings()
+    }
+
+    fn runtime_settings(&self) -> Settings {
         let mut settings = self.settings.clone();
+        settings.general.enabled = self.saved_settings.general.enabled;
         settings.eco_qos = self.saved_settings.eco_qos.clone();
         settings.app_suspension = self.saved_settings.app_suspension.clone();
         settings
@@ -703,7 +710,7 @@ fn show_settings_page(
     ui.add_space(8.0);
 
     ui.checkbox(&mut settings.general.enabled, "Powerleaf master switch");
-    ui.label("This control whether to enable or disable all PowerLeaf features on toggle.");
+    ui.label("Enable or disable all PowerLeaf features after saving.");
     ui.add_space(18.0);
 
     ui.checkbox(
