@@ -215,10 +215,13 @@ mod tests {
                 temporary_thaw_duration_seconds: 15,
                 network_wake_enabled: true,
                 network_wake_duration_seconds: 20,
+                audio_wake_enabled: true,
+                audio_wake_duration_seconds: 8,
                 suspendable_apps: vec![
                     AppSuspensionRule {
                         process_name: "chat.exe".to_owned(),
                         network_wake_enabled: true,
+                        audio_wake_enabled: true,
                         network_download_threshold_bytes: 1,
                         network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                         network_upload_threshold_bytes: 0,
@@ -227,6 +230,7 @@ mod tests {
                     AppSuspensionRule {
                         process_name: "comma,app.exe".to_owned(),
                         network_wake_enabled: false,
+                        audio_wake_enabled: false,
                         network_download_threshold_bytes: 1,
                         network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                         network_upload_threshold_bytes: 0,
@@ -305,6 +309,7 @@ suspendable_apps = ["CHAT.EXE", "browser.exe"]
                 AppSuspensionRule {
                     process_name: "chat.exe".to_owned(),
                     network_wake_enabled: true,
+                    audio_wake_enabled: true,
                     network_download_threshold_bytes: 1,
                     network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                     network_upload_threshold_bytes: 0,
@@ -313,6 +318,7 @@ suspendable_apps = ["CHAT.EXE", "browser.exe"]
                 AppSuspensionRule {
                     process_name: "browser.exe".to_owned(),
                     network_wake_enabled: true,
+                    audio_wake_enabled: true,
                     network_download_threshold_bytes: 1,
                     network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                     network_upload_threshold_bytes: 0,

@@ -145,6 +145,10 @@ pub struct AppSuspensionSettings {
     pub network_wake_enabled: bool,
     #[serde(default = "default_network_wake_duration_seconds")]
     pub network_wake_duration_seconds: u64,
+    #[serde(default)]
+    pub audio_wake_enabled: bool,
+    #[serde(default = "default_audio_wake_duration_seconds")]
+    pub audio_wake_duration_seconds: u64,
     #[serde(
         default,
         alias = "suspend_whitelist",
@@ -158,6 +162,8 @@ pub struct AppSuspensionRule {
     pub process_name: String,
     #[serde(default = "default_rule_network_wake_enabled")]
     pub network_wake_enabled: bool,
+    #[serde(default = "default_rule_audio_wake_enabled")]
+    pub audio_wake_enabled: bool,
     #[serde(default = "default_rule_network_download_threshold_bytes")]
     pub network_download_threshold_bytes: u64,
     #[serde(default)]
@@ -357,7 +363,15 @@ const fn default_network_wake_duration_seconds() -> u64 {
     30
 }
 
+const fn default_audio_wake_duration_seconds() -> u64 {
+    10
+}
+
 const fn default_rule_network_wake_enabled() -> bool {
+    true
+}
+
+const fn default_rule_audio_wake_enabled() -> bool {
     true
 }
 
@@ -444,6 +458,8 @@ impl Default for AppSuspensionSettings {
             temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),
             network_wake_enabled: false,
             network_wake_duration_seconds: default_network_wake_duration_seconds(),
+            audio_wake_enabled: false,
+            audio_wake_duration_seconds: default_audio_wake_duration_seconds(),
             suspendable_apps: Vec::new(),
         }
     }
@@ -462,6 +478,17 @@ impl AppSuspensionSettings {
         self.network_wake_enabled
             && self.suspendable_apps.iter().any(|rule| {
                 rule.network_wake_enabled
+                    && rule
+                        .process_name
+                        .trim()
+                        .eq_ignore_ascii_case(process_name.trim())
+            })
+    }
+
+    pub fn audio_wake_enabled_for(&self, process_name: &str) -> bool {
+        self.audio_wake_enabled
+            && self.suspendable_apps.iter().any(|rule| {
+                rule.audio_wake_enabled
                     && rule
                         .process_name
                         .trim()
@@ -508,6 +535,7 @@ where
                 (!process_name.is_empty()).then_some(AppSuspensionRule {
                     process_name,
                     network_wake_enabled: true,
+                    audio_wake_enabled: true,
                     network_download_threshold_bytes: download_threshold,
                     network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                     network_upload_threshold_bytes: 0,

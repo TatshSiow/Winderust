@@ -6,6 +6,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+use windows::{
+    core::{IUnknown, Interface, HRESULT},
+    Win32::{
+        Media::Audio::{
+            eRender, AudioSessionStateActive, IAudioSessionControl2, IAudioSessionManager2,
+            IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
+        },
+        System::Com::{
+            CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+        },
+    },
+};
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER,
@@ -62,10 +74,12 @@ pub struct AppSuspensionSnapshot {
     pub suspended_processes: usize,
     pub temporary_thawed_processes: usize,
     pub network_wake_processes: usize,
+    pub audio_wake_processes: usize,
     pub tracked_apps: Vec<String>,
     pub suspended_apps: Vec<String>,
     pub temporary_thawed_apps: Vec<String>,
     pub network_wake_apps: Vec<String>,
+    pub audio_wake_apps: Vec<String>,
     pub skipped_processes: usize,
     pub failed_actions: usize,
     pub message: String,
@@ -79,6 +93,7 @@ pub struct AppSuspensionManager {
     temporary_thawed: BTreeMap<u32, TemporaryThaw>,
     network_snapshot: NetworkConnectionSnapshot,
     network_wake_windows: BTreeMap<String, NetworkWakeWindow>,
+    audio_wake_windows: BTreeMap<String, AudioWakeWindow>,
 }
 
 type NetworkConnectionSnapshot = BTreeMap<String, NetworkConnections>;
@@ -95,6 +110,11 @@ struct NetworkWakeWindow {
     wake_until: Instant,
     max_until: Instant,
     suppress_until: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AudioWakeWindow {
+    wake_until: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +163,7 @@ struct TemporaryThaw {
 enum TemporaryThawReason {
     Fallback,
     NetworkWake,
+    AudioWake,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,17 +284,32 @@ impl AppSuspensionManager {
             .values()
             .map(|process_name| process_name_key(process_name))
             .collect::<BTreeSet<_>>();
+        let audio_target_processes = target_processes
+            .iter()
+            .filter(|(_process_id, process_name)| settings.audio_wake_enabled_for(process_name))
+            .map(|(process_id, process_name)| (*process_id, process_name.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let audio_target_process_names = audio_target_processes
+            .values()
+            .map(|process_name| process_name_key(process_name))
+            .collect::<BTreeSet<_>>();
         let manual_freeze_names = manual_freeze_processes
             .iter()
             .map(|process_name| process_name_key(process_name))
             .collect::<BTreeSet<_>>();
         for process_name in &manual_freeze_names {
             self.network_wake_windows.remove(process_name);
+            self.audio_wake_windows.remove(process_name);
         }
         if settings.network_wake_enabled {
             self.prune_network_wake_windows(&network_target_process_names, now);
         } else {
             self.network_wake_windows.clear();
+        }
+        if settings.audio_wake_enabled {
+            self.prune_audio_wake_windows(&audio_target_process_names, now);
+        } else {
+            self.audio_wake_windows.clear();
         }
 
         let mut skipped_processes = 0;
@@ -313,8 +349,23 @@ impl AppSuspensionManager {
         if settings.network_wake_enabled {
             self.extend_network_wake_windows(settings, &network_event_names, now);
         }
+        if settings.audio_wake_enabled {
+            match audio_process_names_with_activity(&audio_target_processes) {
+                Ok(audio_event_names) => {
+                    self.extend_audio_wake_windows(settings, &audio_event_names, now);
+                }
+                Err(err) => {
+                    failed_actions += 1;
+                    if last_error.is_none() {
+                        last_error = Some(err);
+                    }
+                }
+            }
+        }
         let network_wake_names = self.active_network_wake_names(now);
         failed_actions += self.apply_network_wake(&target_processes, &network_wake_names, now);
+        let audio_wake_names = self.active_audio_wake_names(now);
+        failed_actions += self.apply_audio_wake(&target_processes, &audio_wake_names, now);
         self.network_snapshot = network_snapshot;
         failed_actions += self.release_for_temporary_thaw(settings, &target_ids, now);
 
@@ -374,6 +425,7 @@ impl AppSuspensionManager {
             suspended_processes: self.suspended.len(),
             temporary_thawed_processes: self.temporary_thawed.len(),
             network_wake_processes: self.network_wake_process_count(),
+            audio_wake_processes: self.audio_wake_process_count(),
             tracked_apps: unique_app_names(
                 self.tracked
                     .values()
@@ -393,6 +445,12 @@ impl AppSuspensionManager {
                 self.temporary_thawed
                     .values()
                     .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
+                    .map(|process| process.process_name.as_str()),
+            ),
+            audio_wake_apps: unique_app_names(
+                self.temporary_thawed
+                    .values()
+                    .filter(|process| process.reason == TemporaryThawReason::AudioWake)
                     .map(|process| process.process_name.as_str()),
             ),
             skipped_processes,
@@ -418,6 +476,7 @@ impl AppSuspensionManager {
         self.temporary_thawed.clear();
         self.network_snapshot.clear();
         self.network_wake_windows.clear();
+        self.audio_wake_windows.clear();
         let process_ids = self.suspended.keys().copied().collect::<Vec<_>>();
         self.release_processes(&process_ids)
     }
@@ -520,6 +579,45 @@ impl AppSuspensionManager {
         failed
     }
 
+    fn apply_audio_wake(
+        &mut self,
+        target_processes: &BTreeMap<u32, String>,
+        audio_process_names: &BTreeSet<String>,
+        now: Instant,
+    ) -> usize {
+        let process_ids = target_processes
+            .iter()
+            .filter(|(_process_id, process_name)| {
+                audio_process_names.contains(&process_name_key(process_name))
+            })
+            .map(|(process_id, process_name)| (*process_id, process_name.clone()))
+            .collect::<Vec<_>>();
+
+        let mut failed = 0;
+        for (process_id, process_name) in process_ids {
+            let Some(thaw_until) = self.active_audio_wake_until(&process_name, now) else {
+                continue;
+            };
+
+            if let Some(process) = self.suspended.remove(&process_id) {
+                if resume_process(process).is_err() {
+                    failed += 1;
+                    continue;
+                }
+            }
+
+            self.tracked.remove(&process_id);
+            self.set_temporary_thaw(
+                process_id,
+                process_name,
+                thaw_until,
+                TemporaryThawReason::AudioWake,
+            );
+        }
+
+        failed
+    }
+
     fn set_temporary_thaw(
         &mut self,
         process_id: u32,
@@ -588,8 +686,42 @@ impl AppSuspensionManager {
         });
     }
 
+    fn extend_audio_wake_windows(
+        &mut self,
+        settings: &AppSuspensionSettings,
+        audio_process_names: &BTreeSet<String>,
+        now: Instant,
+    ) {
+        let Some(duration) = audio_wake_duration(settings) else {
+            return;
+        };
+
+        for process_name in audio_process_names {
+            self.audio_wake_windows.insert(
+                process_name.clone(),
+                AudioWakeWindow {
+                    wake_until: now + duration,
+                },
+            );
+        }
+    }
+
+    fn prune_audio_wake_windows(&mut self, target_process_names: &BTreeSet<String>, now: Instant) {
+        self.audio_wake_windows.retain(|process_name, window| {
+            target_process_names.contains(process_name) && now < window.wake_until
+        });
+    }
+
     fn active_network_wake_names(&self, now: Instant) -> BTreeSet<String> {
         self.network_wake_windows
+            .iter()
+            .filter(|(_process_name, window)| now < window.wake_until)
+            .map(|(process_name, _window)| process_name.clone())
+            .collect()
+    }
+
+    fn active_audio_wake_names(&self, now: Instant) -> BTreeSet<String> {
+        self.audio_wake_windows
             .iter()
             .filter(|(_process_name, window)| now < window.wake_until)
             .map(|(process_name, _window)| process_name.clone())
@@ -603,10 +735,24 @@ impl AppSuspensionManager {
         (now < window.wake_until).then_some(window.wake_until)
     }
 
+    fn active_audio_wake_until(&self, process_name: &str, now: Instant) -> Option<Instant> {
+        let window = self
+            .audio_wake_windows
+            .get(&process_name_key(process_name))?;
+        (now < window.wake_until).then_some(window.wake_until)
+    }
+
     fn network_wake_process_count(&self) -> usize {
         self.temporary_thawed
             .values()
             .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
+            .count()
+    }
+
+    fn audio_wake_process_count(&self) -> usize {
+        self.temporary_thawed
+            .values()
+            .filter(|process| process.reason == TemporaryThawReason::AudioWake)
             .count()
     }
 
@@ -644,10 +790,12 @@ impl Default for AppSuspensionSnapshot {
             suspended_processes: 0,
             temporary_thawed_processes: 0,
             network_wake_processes: 0,
+            audio_wake_processes: 0,
             tracked_apps: Vec::new(),
             suspended_apps: Vec::new(),
             temporary_thawed_apps: Vec::new(),
             network_wake_apps: Vec::new(),
+            audio_wake_apps: Vec::new(),
             skipped_processes: 0,
             failed_actions: 0,
             message: "App Suspension disabled.".to_owned(),
@@ -670,6 +818,126 @@ pub fn contains_process(list: &[String], process_name: &str) -> bool {
 fn network_wake_duration(settings: &AppSuspensionSettings) -> Option<Duration> {
     (settings.network_wake_enabled && settings.network_wake_duration_seconds > 0)
         .then(|| Duration::from_secs(settings.network_wake_duration_seconds))
+}
+
+fn audio_wake_duration(settings: &AppSuspensionSettings) -> Option<Duration> {
+    (settings.audio_wake_enabled && settings.audio_wake_duration_seconds > 0)
+        .then(|| Duration::from_secs(settings.audio_wake_duration_seconds))
+}
+
+fn audio_process_names_with_activity(
+    target_processes: &BTreeMap<u32, String>,
+) -> Result<BTreeSet<String>, String> {
+    if target_processes.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let active_process_ids = active_audio_process_ids()?;
+    Ok(target_processes
+        .iter()
+        .filter(|(process_id, _process_name)| active_process_ids.contains(process_id))
+        .map(|(_process_id, process_name)| process_name_key(process_name))
+        .collect())
+}
+
+fn active_audio_process_ids() -> Result<BTreeSet<u32>, String> {
+    let _com = ComApartment::initialize()?;
+    let mut process_ids = BTreeSet::new();
+
+    let enumerator: IMMDeviceEnumerator = unsafe {
+        CoCreateInstance(&MMDeviceEnumerator, None::<&IUnknown>, CLSCTX_ALL)
+            .map_err(|err| format!("Failed to create audio device enumerator: {err}."))?
+    };
+    let devices = unsafe {
+        enumerator
+            .EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)
+            .map_err(|err| format!("Failed to enumerate audio output devices: {err}."))?
+    };
+    let device_count = unsafe {
+        devices
+            .GetCount()
+            .map_err(|err| format!("Failed to count audio output devices: {err}."))?
+    };
+
+    for device_index in 0..device_count {
+        let Ok(device) = (unsafe { devices.Item(device_index) }) else {
+            continue;
+        };
+        let Ok(manager) = (unsafe { device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) })
+        else {
+            continue;
+        };
+        let Ok(sessions) = (unsafe { manager.GetSessionEnumerator() }) else {
+            continue;
+        };
+        let Ok(session_count) = (unsafe { sessions.GetCount() }) else {
+            continue;
+        };
+
+        for session_index in 0..session_count {
+            let Ok(session) = (unsafe { sessions.GetSession(session_index) }) else {
+                continue;
+            };
+            let Ok(state) = (unsafe { session.GetState() }) else {
+                continue;
+            };
+            if state != AudioSessionStateActive {
+                continue;
+            }
+            let Ok(control) = session.cast::<IAudioSessionControl2>() else {
+                continue;
+            };
+            if unsafe { control.IsSystemSoundsSession() } == HRESULT(0) {
+                continue;
+            }
+            let Ok(process_id) = (unsafe { control.GetProcessId() }) else {
+                continue;
+            };
+            if process_id != 0 {
+                process_ids.insert(process_id);
+            }
+        }
+    }
+
+    Ok(process_ids)
+}
+
+struct ComApartment {
+    uninitialize: bool,
+}
+
+impl ComApartment {
+    fn initialize() -> Result<Self, String> {
+        const RPC_E_CHANGED_MODE: HRESULT = HRESULT(0x80010106u32 as i32);
+
+        let result = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        if result.0 >= 0 {
+            Ok(Self { uninitialize: true })
+        } else if result == RPC_E_CHANGED_MODE {
+            Ok(Self {
+                uninitialize: false,
+            })
+        } else {
+            Err(format!(
+                "Failed to initialize COM for audio detection: {}.",
+                format_hresult(result)
+            ))
+        }
+    }
+}
+
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        if self.uninitialize {
+            unsafe {
+                CoUninitialize();
+            }
+        }
+    }
+}
+
+fn format_hresult(result: HRESULT) -> String {
+    format!("0x{:08X}", result.0 as u32)
 }
 
 fn network_connection_snapshot(
@@ -1011,7 +1279,7 @@ fn query_ip_helper_table(
     let first_status = query(null_mut(), &mut size);
     if first_status != ERROR_INSUFFICIENT_BUFFER && first_status != NO_ERROR {
         return Err(format!(
-            "Network wake watcher failed to size IP Helper table with error {first_status}."
+            "Network intent detection failed to size IP Helper table with error {first_status}."
         ));
     }
 
@@ -1023,7 +1291,7 @@ fn query_ip_helper_table(
     let status = query(buffer.as_mut_ptr() as *mut c_void, &mut size);
     if status != NO_ERROR {
         return Err(format!(
-            "Network wake watcher failed to read IP Helper table with error {status}."
+            "Network intent detection failed to read IP Helper table with error {status}."
         ));
     }
 
@@ -1372,6 +1640,23 @@ mod tests {
     }
 
     #[test]
+    fn audio_wake_duration_requires_toggle_and_positive_duration() {
+        let mut settings = AppSuspensionSettings::default();
+
+        assert_eq!(audio_wake_duration(&settings), None);
+
+        settings.audio_wake_enabled = true;
+        settings.audio_wake_duration_seconds = 10;
+        assert_eq!(
+            audio_wake_duration(&settings),
+            Some(Duration::from_secs(10))
+        );
+
+        settings.audio_wake_duration_seconds = 0;
+        assert_eq!(audio_wake_duration(&settings), None);
+    }
+
+    #[test]
     fn network_process_names_with_activity_ignores_steady_sockets() {
         let previous = network_snapshot("chrome.exe", &[("tcp4:1:2:3:4", None)]);
         let current = previous.clone();
@@ -1620,6 +1905,31 @@ mod tests {
 
         manager.prune_network_wake_windows(&names, now + Duration::from_secs(30));
         assert!(manager.network_wake_windows.is_empty());
+    }
+
+    #[test]
+    fn audio_wake_window_extends_until_quiet() {
+        let mut manager = AppSuspensionManager::default();
+        let mut settings = AppSuspensionSettings::default();
+        settings.audio_wake_enabled = true;
+        settings.audio_wake_duration_seconds = 10;
+        let now = Instant::now();
+        let names = BTreeSet::from(["music.exe".to_owned()]);
+
+        manager.extend_audio_wake_windows(&settings, &names, now);
+        assert_eq!(
+            manager.active_audio_wake_names(now + Duration::from_secs(9)),
+            names
+        );
+
+        manager.extend_audio_wake_windows(&settings, &names, now + Duration::from_secs(8));
+        assert_eq!(
+            manager.active_audio_wake_names(now + Duration::from_secs(17)),
+            names
+        );
+
+        manager.prune_audio_wake_windows(&names, now + Duration::from_secs(18));
+        assert!(manager.audio_wake_windows.is_empty());
     }
 
     #[test]

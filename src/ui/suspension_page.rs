@@ -65,7 +65,20 @@ pub fn show(
                 );
             });
         });
-        ui.checkbox(&mut settings.network_wake_enabled, "Network wake watcher");
+        ui.checkbox(&mut settings.audio_wake_enabled, "Audio playback detection");
+        ui.add_enabled_ui(settings.audio_wake_enabled, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Refreeze after");
+                ui.add(
+                    egui::DragValue::new(&mut settings.audio_wake_duration_seconds)
+                        .speed(1.0)
+                        .range(1..=3_600)
+                        .suffix(" sec"),
+                );
+                ui.label("quiet");
+            });
+        });
+        ui.checkbox(&mut settings.network_wake_enabled, "Network intent detection");
         ui.add_enabled_ui(settings.network_wake_enabled, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Refreeze after");
@@ -107,6 +120,7 @@ pub fn show(
                 "Network wake",
                 &status.network_wake_processes.to_string(),
             );
+            row(ui, "Audio wake", &status.audio_wake_processes.to_string());
             row(
                 ui,
                 "Skipped processes",
@@ -207,13 +221,14 @@ fn show_suspendable_apps(
     let mut manual_freeze = None;
 
     egui::Grid::new("app_suspension_rules_grid")
-        .num_columns(7)
+        .num_columns(8)
         .spacing([12.0, 8.0])
         .striped(true)
         .show(ui, |ui| {
             ui.strong("State");
             ui.strong("Process");
-            ui.strong("Network Intent Detection");
+            ui.strong("Audio Detection");
+            ui.strong("Network Detection");
             ui.strong("Download Threshold");
             ui.strong("Upload Threshold");
             ui.strong("Manual Freeze");
@@ -241,6 +256,10 @@ fn show_suspendable_apps(
                 ui.add(egui::Checkbox::without_text(&mut rule.network_wake_enabled))
                     .on_hover_text(
                         "Allow inbound network activity to temporarily thaw this app when the watcher is enabled.",
+                    );
+                ui.add(egui::Checkbox::without_text(&mut rule.audio_wake_enabled))
+                    .on_hover_text(
+                        "Keep this app awake while Windows reports active audio playback.",
                     );
                 network_threshold_editor(
                     ui,
@@ -301,6 +320,12 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
             color: egui::Color32::from_rgb(80, 135, 190),
             hover:
                 "PowerLeaf has thawed or kept this app awake because it owns network connections.",
+        }
+    } else if suspension::contains_process(&status.audio_wake_apps, process) {
+        SuspensionIndicator {
+            label: "Audio",
+            color: egui::Color32::from_rgb(80, 135, 190),
+            hover: "PowerLeaf has thawed or kept this app awake because it is playing audio.",
         }
     } else if suspension::contains_process(&status.suspended_apps, process) {
         SuspensionIndicator {
@@ -586,6 +611,7 @@ fn add_process_name(settings: &mut AppSuspensionSettings, process: &str) {
         settings.suspendable_apps.push(AppSuspensionRule {
             process_name: process.trim().to_ascii_lowercase(),
             network_wake_enabled: true,
+            audio_wake_enabled: true,
             network_download_threshold_bytes: 1,
             network_download_threshold_unit: NetworkThresholdUnit::Bytes,
             network_upload_threshold_bytes: 0,
@@ -615,9 +641,12 @@ mod tests {
             temporary_thaw_duration_seconds: 20,
             network_wake_enabled: false,
             network_wake_duration_seconds: 30,
+            audio_wake_enabled: false,
+            audio_wake_duration_seconds: 10,
             suspendable_apps: vec![AppSuspensionRule {
                 process_name: "chat.exe".to_owned(),
                 network_wake_enabled: true,
+                audio_wake_enabled: true,
                 network_download_threshold_bytes: 1,
                 network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                 network_upload_threshold_bytes: 0,
@@ -635,6 +664,7 @@ mod tests {
                 AppSuspensionRule {
                     process_name: "chat.exe".to_owned(),
                     network_wake_enabled: true,
+                    audio_wake_enabled: true,
                     network_download_threshold_bytes: 1,
                     network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                     network_upload_threshold_bytes: 0,
@@ -643,6 +673,7 @@ mod tests {
                 AppSuspensionRule {
                     process_name: "browser.exe".to_owned(),
                     network_wake_enabled: true,
+                    audio_wake_enabled: true,
                     network_download_threshold_bytes: 1,
                     network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                     network_upload_threshold_bytes: 0,

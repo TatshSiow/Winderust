@@ -2398,6 +2398,7 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "toml",
+ "windows 0.61.3",
  "windows-sys 0.61.2",
 ]
 
