@@ -8,14 +8,13 @@ use std::{
 };
 
 use gpui::{
-    deferred, div, prelude::*, px, rgb, AnyElement, App, Context, Corner, Entity, Focusable,
-    IntoElement, SharedString, Subscription, Task, Timer, Window,
+    deferred, div, prelude::*, px, rgb, AnyElement, App, Context, Entity, Focusable, IntoElement,
+    SharedString, Subscription, Task, Timer, Window,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
     h_flex,
     input::{Escape as InputEscape, Input, InputEvent, InputState},
-    menu::{DropdownMenu, PopupMenuItem},
     scroll::ScrollableElement,
     v_flex, Disableable, InteractiveElementExt, Sizable,
 };
@@ -106,6 +105,7 @@ pub struct PowerLeafApp {
     tray_icon: Option<TrayIcon>,
     status_message: String,
     process_candidates: Vec<String>,
+    active_power_plan_picker: Option<String>,
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
     collapsed_rule_cards: HashSet<RuleCardTarget>,
@@ -274,6 +274,7 @@ impl PowerLeafApp {
             tray_icon: None,
             status_message: "Ready".to_owned(),
             process_candidates: Vec::new(),
+            active_power_plan_picker: None,
             start_minimized_applied: false,
             editing_rule_title: None,
             collapsed_rule_cards: HashSet::new(),
@@ -2373,6 +2374,7 @@ impl PowerLeafApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = id.into();
+        let is_open = self.active_power_plan_picker.as_deref() == Some(id.as_str());
         let selected_text = match selected_guid.as_deref() {
             Some(guid) => self
                 .plans
@@ -2383,56 +2385,103 @@ impl PowerLeafApp {
             None => "Use inherited/default plan".to_owned(),
         };
 
-        let view = cx.entity();
-        let picker = Button::new(SharedString::from(format!("{id}-select-control")))
-            .label(selected_text)
-            .small()
-            .dropdown_caret(true)
-            .outline()
+        let mut options = v_flex()
             .w_full()
-            .max_w(px(340.0))
-            .dropdown_menu_with_anchor(Corner::TopLeft, move |menu, _, popup_cx| {
-                let mut menu = menu.min_w(px(240.0)).max_w(px(420.0));
-                let mut items = vec![(
-                    None,
-                    SharedString::from("Use inherited/default plan"),
-                    selected_guid.is_none(),
-                )];
-                let mut plans_loaded = false;
+            .max_h(px(244.0))
+            .overflow_y_scrollbar()
+            .gap_1()
+            .p_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(COLOR_BORDER))
+            .bg(rgb(0x1f2329));
 
-                let _ = view.update(popup_cx, |app, cx| {
-                    app.refresh_power_plans();
-                    plans_loaded = !app.plans.is_empty();
-                    for plan in &app.plans {
-                        let selected = selected_guid
-                            .as_deref()
-                            .is_some_and(|selected| selected.eq_ignore_ascii_case(&plan.guid));
-                        items.push((
-                            Some(plan.guid.clone()),
-                            SharedString::from(plan.display_name()),
-                            selected,
-                        ));
-                    }
-                    cx.notify();
-                });
+        options = options.child(power_plan_option_row(
+            format!("{id}-default"),
+            "Use inherited/default plan".to_owned(),
+            selected_guid.is_none(),
+            None,
+            field,
+            cx,
+        ));
 
-                for (guid, item_label, selected) in items.clone() {
-                    let view = view.clone();
-                    menu = menu.item(PopupMenuItem::new(item_label).checked(selected).on_click(
-                        move |_, _, cx| {
-                            let _ = view.update(cx, |app, cx| {
-                                app.set_power_plan_field(field, guid.clone());
-                                cx.notify();
-                            });
-                        },
-                    ));
-                }
+        if self.plans.is_empty() {
+            options = options.child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .text_sm()
+                    .text_color(rgb(COLOR_DIM))
+                    .child("No power plans loaded"),
+            );
+        } else {
+            for plan in &self.plans {
+                let selected = selected_guid
+                    .as_deref()
+                    .is_some_and(|selected| selected.eq_ignore_ascii_case(&plan.guid));
+                options = options.child(power_plan_option_row(
+                    format!("{id}-{}", plan.guid),
+                    plan.display_name(),
+                    selected,
+                    Some(plan.guid.clone()),
+                    field,
+                    cx,
+                ));
+            }
+        }
 
-                if !plans_loaded {
-                    menu = menu.label("No power plans loaded.");
-                }
-
-                menu
+        let control_id = id.clone();
+        let picker = v_flex()
+            .w_full()
+            .max_w(px(372.0))
+            .min_w(px(0.0))
+            .relative()
+            .min_h(px(32.0))
+            .child(
+                h_flex()
+                    .id(SharedString::from(format!("{id}-select-control")))
+                    .h(px(32.0))
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_2()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(rgb(COLOR_BORDER))
+                    .bg(rgb(COLOR_PANEL))
+                    .text_sm()
+                    .text_color(rgb(COLOR_TEXT))
+                    .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
+                    .cursor_pointer()
+                    .child(div().flex_1().min_w(px(0.0)).child(selected_text))
+                    .child(div().text_color(rgb(COLOR_DIM)).child("v"))
+                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                        app.refresh_power_plans();
+                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                            != Some(control_id.as_str()))
+                        .then_some(control_id.clone());
+                        cx.notify();
+                    })),
+            )
+            .child(if is_open {
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(34.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
+                        .child(options),
+                )
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+            } else {
+                div().into_any_element()
             });
 
         labeled_element(label, picker.into_any_element()).into_any_element()
@@ -2624,6 +2673,36 @@ enum PowerPlanField {
     ScheduleRule(usize),
     CpuRule(usize),
     CpuRuleElse(usize),
+}
+
+fn power_plan_option_row(
+    id: String,
+    label: String,
+    selected: bool,
+    guid: Option<String>,
+    field: PowerPlanField,
+    cx: &mut Context<PowerLeafApp>,
+) -> AnyElement {
+    h_flex()
+        .id(SharedString::from(id))
+        .h(px(24.0))
+        .items_center()
+        .px_2()
+        .rounded_sm()
+        .text_sm()
+        .text_color(rgb(COLOR_MUTED))
+        .when(selected, |row| {
+            row.bg(rgb(COLOR_ACCENT_BG)).text_color(rgb(COLOR_TEXT))
+        })
+        .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
+        .cursor_pointer()
+        .child(label)
+        .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+            app.set_power_plan_field(field, guid.clone());
+            app.active_power_plan_picker = None;
+            cx.notify();
+        }))
+        .into_any_element()
 }
 
 #[derive(Debug, Clone, Copy)]
