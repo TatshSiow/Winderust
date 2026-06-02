@@ -2,13 +2,12 @@ use std::{
     ptr::null,
     sync::{
         atomic::{AtomicU8, Ordering},
-        mpsc, Mutex, OnceLock,
+        mpsc,
     },
     thread::{self, JoinHandle},
     time::Duration,
 };
 
-use eframe::egui;
 use windows_sys::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
@@ -19,13 +18,10 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::tray;
-
 const KEYBOARD_EVENT: u8 = 0b01;
 const MOUSE_EVENT: u8 = 0b10;
 
 static INPUT_EVENTS: AtomicU8 = AtomicU8::new(0);
-static REPAINT_CONTEXT: OnceLock<Mutex<Option<egui::Context>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct InputHookEvents {
@@ -39,9 +35,7 @@ pub struct InputHook {
 }
 
 impl InputHook {
-    pub fn install(ctx: &egui::Context) -> Result<Self, String> {
-        set_repaint_context(Some(ctx.clone()));
-
+    pub fn install() -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
         let thread = thread::spawn(move || hook_thread(sender));
 
@@ -52,13 +46,9 @@ impl InputHook {
             }),
             Ok(Err(err)) => {
                 let _ = thread.join();
-                set_repaint_context(None);
                 Err(err)
             }
-            Err(err) => {
-                set_repaint_context(None);
-                Err(format!("Input hooks did not start: {err}"))
-            }
+            Err(err) => Err(format!("Input hooks did not start: {err}")),
         }
     }
 
@@ -75,7 +65,6 @@ impl Drop for InputHook {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        set_repaint_context(None);
     }
 }
 
@@ -146,10 +135,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 }
 
 fn record_input_event(event: u8) {
-    let previous = INPUT_EVENTS.fetch_or(event, Ordering::AcqRel);
-    if previous == 0 && !tray::is_hidden_to_tray() {
-        request_repaint();
-    }
+    INPUT_EVENTS.fetch_or(event, Ordering::AcqRel);
 }
 
 pub fn take_pending_events() -> InputHookEvents {
@@ -157,23 +143,5 @@ pub fn take_pending_events() -> InputHookEvents {
     InputHookEvents {
         keyboard: events & KEYBOARD_EVENT != 0,
         mouse: events & MOUSE_EVENT != 0,
-    }
-}
-
-fn set_repaint_context(ctx: Option<egui::Context>) {
-    let storage = REPAINT_CONTEXT.get_or_init(|| Mutex::new(None));
-    if let Ok(mut stored) = storage.lock() {
-        *stored = ctx;
-    }
-}
-
-fn request_repaint() {
-    let Some(storage) = REPAINT_CONTEXT.get() else {
-        return;
-    };
-    if let Ok(stored) = storage.lock() {
-        if let Some(ctx) = stored.as_ref() {
-            ctx.request_repaint();
-        }
     }
 }

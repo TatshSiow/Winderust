@@ -67,8 +67,8 @@ impl Drop for TrayIcon {
     }
 }
 
-pub fn hwnd_from_creation_context(cc: &eframe::CreationContext<'_>) -> Option<HWND> {
-    let handle = cc.window_handle().ok()?.as_raw();
+pub fn hwnd_from_window(window: &gpui::Window) -> Option<HWND> {
+    let handle = HasWindowHandle::window_handle(window).ok()?.as_raw();
     match handle {
         RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
         _ => None,
