@@ -16,7 +16,7 @@ use gpui_component::{
     h_flex,
     input::{Escape as InputEscape, Input, InputEvent, InputState},
     scroll::ScrollableElement,
-    v_flex, Disableable, InteractiveElementExt, Sizable,
+    v_flex, Disableable, Sizable,
 };
 
 use crate::{
@@ -51,7 +51,6 @@ const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PAGE_HEADER_HEIGHT: f32 = 42.0;
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
-const RULE_CARD_MAX_WIDTH: f32 = 560.0;
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
 
@@ -1229,21 +1228,8 @@ impl PowerLeafApp {
                     move |app, _, _, cx| app.toggle_rule_card(card_target.clone(), cx)
                 }),
             ),
-            Button::new(SharedString::from(format!(
-                "remove-foreground-rule-{index}"
-            )))
-            .small()
-            .danger()
-            .label("Remove")
-            .on_click(cx.listener(move |app, _, _, cx| {
-                if index < app.settings.foreground_rules.rules.len() {
-                    app.settings.foreground_rules.rules.remove(index);
-                }
-                app.editing_rule_title = None;
-                app.collapsed_rule_cards.clear();
-                cx.notify();
-            }))
-            .into_any_element(),
+            card_target.clone(),
+            cx,
         );
         if !collapsed {
             card = card
@@ -1263,7 +1249,23 @@ impl PowerLeafApp {
                     rule.power_plan_guid.clone(),
                     PowerPlanField::ForegroundRule(index),
                     cx,
-                ));
+                ))
+                .child(
+                    Button::new(SharedString::from(format!(
+                        "remove-foreground-rule-{index}"
+                    )))
+                    .small()
+                    .danger()
+                    .label("Remove")
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        if index < app.settings.foreground_rules.rules.len() {
+                            app.settings.foreground_rules.rules.remove(index);
+                        }
+                        app.editing_rule_title = None;
+                        app.collapsed_rule_cards.clear();
+                        cx.notify();
+                    })),
+                );
         }
         card.into_any_element()
     }
@@ -1321,10 +1323,7 @@ impl PowerLeafApp {
                     .font_weight(gpui::FontWeight::BOLD)
                     .text_color(rgb(COLOR_TEXT))
                     .cursor_pointer()
-                    .child(title.to_owned())
-                    .on_double_click(cx.listener(move |app, _, window, cx| {
-                        app.begin_rule_title_edit(target, window, cx);
-                    })),
+                    .child(title.to_owned()),
             )
             .child(
                 Button::new(SharedString::from(format!("edit-rule-title-{target:?}")))
@@ -1442,19 +1441,8 @@ impl PowerLeafApp {
                     move |app, _, _, cx| app.toggle_rule_card(card_target.clone(), cx)
                 }),
             ),
-            Button::new(SharedString::from(format!("remove-schedule-rule-{index}")))
-                .small()
-                .danger()
-                .label("Remove")
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if index < app.settings.schedule_mode.rules.len() {
-                        app.settings.schedule_mode.rules.remove(index);
-                    }
-                    app.editing_rule_title = None;
-                    app.collapsed_rule_cards.clear();
-                    cx.notify();
-                }))
-                .into_any_element(),
+            card_target.clone(),
+            cx,
         );
         if !collapsed {
             card = card
@@ -1484,7 +1472,21 @@ impl PowerLeafApp {
                     rule.power_plan_guid.clone(),
                     PowerPlanField::ScheduleRule(index),
                     cx,
-                ));
+                ))
+                .child(
+                    Button::new(SharedString::from(format!("remove-schedule-rule-{index}")))
+                        .small()
+                        .danger()
+                        .label("Remove")
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if index < app.settings.schedule_mode.rules.len() {
+                                app.settings.schedule_mode.rules.remove(index);
+                            }
+                            app.editing_rule_title = None;
+                            app.collapsed_rule_cards.clear();
+                            cx.notify();
+                        })),
+                );
         }
         card.into_any_element()
     }
@@ -1600,19 +1602,8 @@ impl PowerLeafApp {
                     move |app, _, _, cx| app.toggle_rule_card(card_target.clone(), cx)
                 }),
             ),
-            Button::new(SharedString::from(format!("remove-cpu-rule-{index}")))
-                .small()
-                .danger()
-                .label("Remove")
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if index < app.settings.cpu_usage_mode.rules.len() {
-                        app.settings.cpu_usage_mode.rules.remove(index);
-                    }
-                    app.editing_rule_title = None;
-                    app.collapsed_rule_cards.clear();
-                    cx.notify();
-                }))
-                .into_any_element(),
+            card_target.clone(),
+            cx,
         );
         if !collapsed {
             card = card
@@ -1697,7 +1688,21 @@ impl PowerLeafApp {
                     )
                 } else {
                     div().into_any_element()
-                });
+                })
+                .child(
+                    Button::new(SharedString::from(format!("remove-cpu-rule-{index}")))
+                        .small()
+                        .danger()
+                        .label("Remove")
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if index < app.settings.cpu_usage_mode.rules.len() {
+                                app.settings.cpu_usage_mode.rules.remove(index);
+                            }
+                            app.editing_rule_title = None;
+                            app.collapsed_rule_cards.clear();
+                            cx.notify();
+                        })),
+                );
         }
         card.into_any_element()
     }
@@ -2064,21 +2069,8 @@ impl PowerLeafApp {
                         move |app, _, _, cx| app.toggle_rule_card(card_target.clone(), cx)
                     }),
                 ),
-                Button::new(SharedString::from(format!("remove-suspension-{index}")))
-                    .small()
-                    .danger()
-                    .label("Remove")
-                    .on_click(cx.listener({
-                        let card_target = card_target.clone();
-                        move |app, _, _, cx| {
-                            if index < app.settings.app_suspension.suspendable_apps.len() {
-                                app.settings.app_suspension.suspendable_apps.remove(index);
-                            }
-                            app.collapsed_rule_cards.remove(&card_target);
-                            cx.notify();
-                        }
-                    }))
-                    .into_any_element(),
+                card_target.clone(),
+                cx,
             );
             if !collapsed {
                 card = card
@@ -2142,7 +2134,23 @@ impl PowerLeafApp {
                         rule.network_upload_threshold_unit,
                         ThresholdField::Upload(index),
                         cx,
-                    ));
+                    ))
+                    .child(
+                        Button::new(SharedString::from(format!("remove-suspension-{index}")))
+                            .small()
+                            .danger()
+                            .label("Remove")
+                            .on_click(cx.listener({
+                                let card_target = card_target.clone();
+                                move |app, _, _, cx| {
+                                    if index < app.settings.app_suspension.suspendable_apps.len() {
+                                        app.settings.app_suspension.suspendable_apps.remove(index);
+                                    }
+                                    app.collapsed_rule_cards.remove(&card_target);
+                                    cx.notify();
+                                }
+                            })),
+                    );
             }
             list = list.child(card);
         }
@@ -2849,11 +2857,12 @@ fn rule_card(
     title: AnyElement,
     leading: AnyElement,
     toggle_action: AnyElement,
-    action: AnyElement,
-) -> gpui::Div {
+    card_target: RuleCardTarget,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
     v_flex()
+        .id(SharedString::from(format!("rule-card-{card_target:?}")))
         .w_full()
-        .max_w(px(RULE_CARD_MAX_WIDTH))
         .min_w(px(0.0))
         .gap_2()
         .p_3()
@@ -2861,6 +2870,10 @@ fn rule_card(
         .border_1()
         .border_color(rgb(COLOR_BORDER))
         .bg(rgb(COLOR_PANEL))
+        .cursor_pointer()
+        .on_click(cx.listener(move |app, _, _, cx| {
+            app.toggle_rule_card(card_target.clone(), cx);
+        }))
         .child(
             div()
                 .relative()
@@ -2873,7 +2886,7 @@ fn rule_card(
                         .min_w(px(0.0))
                         .items_start()
                         .gap_2()
-                        .pr(px(124.0))
+                        .pr(px(36.0))
                         .child(leading)
                         .child(title),
                 )
@@ -2884,8 +2897,7 @@ fn rule_card(
                         .right(px(0.0))
                         .items_center()
                         .gap_1()
-                        .child(toggle_action)
-                        .child(action),
+                        .child(toggle_action),
                 ),
         )
 }
@@ -2907,12 +2919,7 @@ fn rule_card_toggle_button(
 }
 
 fn rule_list() -> gpui::Div {
-    h_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .items_start()
-        .gap_2()
-        .flex_wrap()
+    v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
 fn row_card() -> gpui::Div {
