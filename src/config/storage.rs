@@ -114,11 +114,11 @@ fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
 mod tests {
     use super::*;
     use crate::config::{
-        ActivityModeSettings, AppSuspensionRule, AppSuspensionSettings, CpuAffinityRule,
-        CpuAffinitySettings, CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule,
-        EcoQosSettings, ForegroundRule, ForegroundRules, GeneralSettings, InputDetectionSettings,
-        ManualOverride, NetworkThresholdUnit, PowerPlanSettings, ScheduleModeSettings,
-        ScheduleRule, WeekdaySetting,
+        ActivityModeSettings, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
+        CpuAffinityRule, CpuAffinitySettings, CpuUsageComparison, CpuUsageModeSettings,
+        CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules, GeneralSettings,
+        InputDetectionSettings, ManualOverride, NetworkThresholdUnit, PowerPlanSettings,
+        ScheduleModeSettings, ScheduleRule, WeekdaySetting,
     };
 
     #[test]
@@ -129,6 +129,8 @@ mod tests {
                 startup_with_windows: true,
                 start_minimized: true,
                 hide_to_tray: true,
+                theme_mode: AppThemeMode::Dark,
+                language: AppLanguage::ZhTw,
                 pause_power_plan_switching_while_plugged_in: true,
                 check_interval_ms: 2_500,
                 manual_override: ManualOverride::UntilEpochSeconds(42),

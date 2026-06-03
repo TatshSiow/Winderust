@@ -27,9 +27,52 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub hide_to_tray: bool,
     #[serde(default)]
+    pub theme_mode: AppThemeMode,
+    #[serde(default)]
+    pub language: AppLanguage,
+    #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
     pub manual_override: ManualOverride,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl AppThemeMode {
+    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AppLanguage {
+    #[default]
+    English,
+    ZhTw,
+}
+
+impl AppLanguage {
+    pub const ALL: [Self; 2] = [Self::English, Self::ZhTw];
+
+    pub const fn locale(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::ZhTw => "zh-TW",
+        }
+    }
+
+    pub const fn label_key(self) -> &'static str {
+        match self {
+            Self::English => "language.english",
+            Self::ZhTw => "language.zh_tw",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +308,8 @@ impl Default for Settings {
                 startup_with_windows: false,
                 start_minimized: false,
                 hide_to_tray: false,
+                theme_mode: AppThemeMode::System,
+                language: AppLanguage::English,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
                 manual_override: ManualOverride::None,

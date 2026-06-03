@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
     Dashboard,
@@ -47,35 +49,50 @@ const PAGE_SECTIONS: [PageSection; 4] = [
 ];
 
 impl Page {
-    pub const fn label(self) -> &'static str {
+    pub fn label(self) -> String {
         match self {
-            Self::Dashboard => "Dashboard",
-            Self::Activity => "Action Based Scheduler",
-            Self::CpuUsage => "CPU Load Rules",
-            Self::EfficiencyMode => "Efficiency Mode",
-            Self::AppSuspension => "App Suspension",
-            Self::CpuAffinity => "CPU Affinity",
-            Self::ForegroundRules => "Foreground Rules",
-            Self::Schedule => "Time Rules",
-            Self::Settings => "Settings",
-            Self::About => "About",
+            Self::Dashboard => t!("nav.dashboard"),
+            Self::Activity => t!("nav.activity"),
+            Self::CpuUsage => t!("nav.cpu_usage"),
+            Self::EfficiencyMode => t!("nav.efficiency_mode"),
+            Self::AppSuspension => t!("nav.app_suspension"),
+            Self::CpuAffinity => t!("nav.cpu_affinity"),
+            Self::ForegroundRules => t!("nav.foreground_rules"),
+            Self::Schedule => t!("nav.schedule"),
+            Self::Settings => t!("nav.settings"),
+            Self::About => t!("nav.about"),
         }
+        .to_string()
     }
 
-    pub const fn section_label(self) -> &'static str {
+    pub fn section_label(self) -> String {
         match self {
-            Self::Dashboard => "Overview",
+            Self::Dashboard => t!("nav.overview"),
             Self::Activity | Self::CpuUsage | Self::Schedule | Self::ForegroundRules => {
-                "Power Plan Controls"
+                t!("nav.power_plan_controls")
             }
-            Self::EfficiencyMode | Self::AppSuspension | Self::CpuAffinity => "Process Controls",
-            Self::Settings | Self::About => "App",
+            Self::EfficiencyMode | Self::AppSuspension | Self::CpuAffinity => {
+                t!("nav.process_controls")
+            }
+            Self::Settings | Self::About => t!("nav.app"),
         }
+        .to_string()
     }
 
     pub const fn sections() -> &'static [PageSection] {
         &PAGE_SECTIONS
     }
+}
+
+pub fn section_label(label: &str) -> String {
+    match label {
+        "Overview" => t!("nav.overview"),
+        "Power Plan Controls" => t!("nav.power_plan_controls"),
+        "Process Controls" => t!("nav.process_controls"),
+        "App" => t!("nav.app"),
+        _ => label.into(),
+    }
+    .to_string()
 }
 
 pub fn duration_label(seconds: u64) -> String {

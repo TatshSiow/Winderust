@@ -7,16 +7,23 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rust_i18n::t;
+
 use gpui::{
     deferred, div, prelude::*, px, rgb, AnyElement, App, Context, Entity, Focusable, IntoElement,
     SharedString, Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
+    badge::Badge,
     button::{Button, ButtonVariants},
+    description_list::DescriptionList,
+    group_box::{GroupBox, GroupBoxVariants},
     h_flex,
     input::{Escape as InputEscape, Input, InputEvent, InputState},
+    label::Label,
     scroll::ScrollableElement,
-    v_flex, Disableable, Icon, IconNamed, Sizable,
+    tag::Tag,
+    v_flex, ActiveTheme, Disableable, Icon, IconNamed, Sizable,
 };
 
 use crate::{
@@ -24,9 +31,9 @@ use crate::{
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
-        self, AppSuspensionRule, AppSuspensionSettings, CpuAffinityRule, CpuAffinitySettings,
-        CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundRule, NetworkThresholdUnit,
-        ScheduleRule, Settings, WeekdaySetting,
+        self, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode, CpuAffinityRule,
+        CpuAffinitySettings, CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundRule,
+        NetworkThresholdUnit, ScheduleRule, Settings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{self, EcoQosSnapshot},
@@ -57,13 +64,8 @@ const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
 
-const COLOR_BG: u32 = 0x282c33;
-const COLOR_CHROME: u32 = 0x3b414d;
-const COLOR_PANEL: u32 = 0x2f343e;
-const COLOR_PANEL_ALT: u32 = 0x363c46;
 const COLOR_PANEL_ACTIVE: u32 = 0x454a56;
 const COLOR_BORDER: u32 = 0x464b57;
-const COLOR_BORDER_SUBTLE: u32 = 0x363c46;
 const COLOR_TEXT: u32 = 0xdce0e5;
 const COLOR_MUTED: u32 = 0xa9afbc;
 const COLOR_DIM: u32 = 0x878a98;
@@ -74,7 +76,6 @@ const COLOR_SUCCESS_BG: u32 = 0x38482f;
 const COLOR_WARNING: u32 = 0xdec184;
 const COLOR_WARNING_BG: u32 = 0x5d4c2f;
 const COLOR_DANGER: u32 = 0xd07277;
-const COLOR_DANGER_BG: u32 = 0x4c2b2c;
 
 pub struct PowerLeafApp {
     settings: Settings,
@@ -245,6 +246,8 @@ impl PowerLeafApp {
         });
         let inputs = UiInputs::new(window, cx, &settings);
         let background_automation = BackgroundAutomation::start(&settings);
+        apply_language(settings.general.language);
+        apply_theme_mode(settings.general.theme_mode, window, cx);
 
         let mut app = Self {
             saved_settings: settings.clone(),
@@ -264,9 +267,9 @@ impl PowerLeafApp {
             decision: DecisionOutcome {
                 target_guid: None,
                 state: DecisionState::NoTargetPlan,
-                reason: "Waiting for first check.".to_owned(),
+                reason: t!("status.waiting_first_check").to_string(),
             },
-            next_schedule: "No active time rules".to_owned(),
+            next_schedule: t!("status.no_active_time_rules").to_string(),
             next_check: Instant::now(),
             next_active_plan_refresh: Instant::now(),
             next_cpu_usage_refresh: Instant::now(),
@@ -283,7 +286,7 @@ impl PowerLeafApp {
             decision_engine: DecisionEngine,
             hwnd,
             tray_icon: None,
-            status_message: "Ready".to_owned(),
+            status_message: t!("status.ready").to_string(),
             process_candidates: Vec::new(),
             active_power_plan_picker: None,
             start_minimized_applied: false,
@@ -339,7 +342,8 @@ impl PowerLeafApp {
                 self.plans = plans;
                 self.current_plan = self.plans.iter().find(|plan| plan.active).cloned();
                 self.next_active_plan_refresh = Instant::now() + ACTIVE_PLAN_REFRESH_INTERVAL;
-                self.status_message = format!("Loaded {} power plans.", self.plans.len());
+                self.status_message =
+                    t!("status.loaded_power_plans", count = self.plans.len()).to_string();
             }
             Err(err) => self.status_message = err,
         }
@@ -469,7 +473,8 @@ impl PowerLeafApp {
 
         match self.power.set_active(target_guid) {
             Ok(()) => {
-                self.status_message = format!("Switched power plan: {}", self.decision.reason);
+                self.status_message =
+                    t!("status.switched_power_plan", reason = self.decision.reason).to_string();
                 self.refresh_power_plans();
             }
             Err(err) => self.status_message = err,
@@ -483,11 +488,12 @@ impl PowerLeafApp {
                 self.status_message = match startup::set_startup_with_windows(
                     self.saved_settings.general.startup_with_windows,
                 ) {
-                    Ok(()) => format!(
-                        "Saved settings to {}",
-                        config::storage::config_path().display()
-                    ),
-                    Err(err) => format!("Saved settings, but {err}."),
+                    Ok(()) => t!(
+                        "status.saved_settings",
+                        path = config::storage::config_path().display()
+                    )
+                    .to_string(),
+                    Err(err) => t!("status.saved_settings_with_error", error = err).to_string(),
                 };
             }
             Err(err) => self.status_message = err,
@@ -498,12 +504,13 @@ impl PowerLeafApp {
         match choose_settings_file(self.hwnd, FileDialogMode::Save) {
             Ok(Some(path)) => match config::storage::export_toml_to(&path, &self.settings) {
                 Ok(()) => {
-                    self.status_message = format!("Exported settings to {}", path.display());
+                    self.status_message =
+                        t!("status.exported_settings", path = path.display()).to_string();
                 }
                 Err(err) => self.status_message = err,
             },
             Ok(None) => {
-                self.status_message = "Export canceled.".to_owned();
+                self.status_message = t!("status.export_canceled").to_string();
             }
             Err(err) => self.status_message = err,
         }
@@ -514,14 +521,18 @@ impl PowerLeafApp {
             Ok(Some(path)) => match config::storage::import_toml_from(&path) {
                 Ok(settings) => {
                     self.settings = settings;
+                    apply_language(self.settings.general.language);
+                    apply_theme_mode(self.settings.general.theme_mode, window, cx);
                     match config::storage::save(&self.settings) {
                         Ok(()) => {
                             self.saved_settings = self.settings.clone();
                             self.status_message = match startup::set_startup_with_windows(
                                 self.saved_settings.general.startup_with_windows,
                             ) {
-                                Ok(()) => format!("Imported settings from {}", path.display()),
-                                Err(err) => format!("Imported settings, but {err}."),
+                                Ok(()) => t!("status.imported_settings", path = path.display())
+                                    .to_string(),
+                                Err(err) => t!("status.imported_settings_with_error", error = err)
+                                    .to_string(),
                             };
                             self.rebuild_inputs(window, cx);
                         }
@@ -531,7 +542,7 @@ impl PowerLeafApp {
                 Err(err) => self.status_message = err,
             },
             Ok(None) => {
-                self.status_message = "Import canceled.".to_owned();
+                self.status_message = t!("status.import_canceled").to_string();
             }
             Err(err) => self.status_message = err,
         }
@@ -544,10 +555,11 @@ impl PowerLeafApp {
                 let changed = self.process_candidates != processes;
                 self.process_candidates = processes;
                 if report_status {
-                    let message = format!(
-                        "Loaded {} running applications.",
-                        self.process_candidates.len()
-                    );
+                    let message = t!(
+                        "status.loaded_running_apps",
+                        count = self.process_candidates.len()
+                    )
+                    .to_string();
                     let status_changed = self.status_message != message;
                     self.status_message = message;
                     changed || status_changed
@@ -571,14 +583,14 @@ impl PowerLeafApp {
             if self.tray_icon.is_none() {
                 let Some(hwnd) = self.hwnd else {
                     tray::set_hide_on_close(false);
-                    self.status_message = "System tray unavailable: no window handle.".to_owned();
+                    self.status_message = t!("status.system_tray_unavailable").to_string();
                     return;
                 };
 
                 match TrayIcon::install(hwnd) {
                     Ok(icon) => {
                         self.tray_icon = Some(icon);
-                        self.status_message = "System tray icon enabled.".to_owned();
+                        self.status_message = t!("status.system_tray_enabled").to_string();
                     }
                     Err(err) => self.status_message = err,
                 }
@@ -586,7 +598,7 @@ impl PowerLeafApp {
             tray::set_hide_on_close(self.settings.general.hide_to_tray && self.tray_icon.is_some());
         } else if self.tray_icon.take().is_some() {
             tray::set_hide_on_close(false);
-            self.status_message = "System tray icon disabled.".to_owned();
+            self.status_message = t!("status.system_tray_disabled").to_string();
         } else {
             tray::set_hide_on_close(false);
         }
@@ -605,13 +617,13 @@ impl PowerLeafApp {
         if self.tray_icon.is_some() {
             if let Some(hwnd) = self.hwnd {
                 tray::hide_window(hwnd);
-                self.status_message = "Started in system tray.".to_owned();
+                self.status_message = t!("status.started_in_tray").to_string();
                 return true;
             }
         }
 
         window.minimize_window();
-        self.status_message = "Started minimized.".to_owned();
+        self.status_message = t!("status.started_minimized").to_string();
         true
     }
 
@@ -685,7 +697,9 @@ impl PowerLeafApp {
 
     fn cancel_settings_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings = self.saved_settings.clone();
-        self.status_message = "Unsaved settings changes canceled.".to_owned();
+        apply_language(self.settings.general.language);
+        apply_theme_mode(self.settings.general.theme_mode, window, cx);
+        self.status_message = t!("status.unsaved_canceled").to_string();
         self.editing_rule_title = None;
         self.collapsed_rule_cards.clear();
         self.rebuild_inputs(window, cx);
@@ -917,9 +931,9 @@ impl Render for PowerLeafApp {
             .flex()
             .flex_col()
             .size_full()
-            .bg(rgb(COLOR_BG))
-            .text_color(rgb(COLOR_TEXT))
-            .child(self.render_title_bar(window))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(self.render_title_bar(window, cx))
             .child(
                 div()
                     .flex()
@@ -949,7 +963,7 @@ impl Render for PowerLeafApp {
                                     .gap_3()
                                     .child(page),
                             )
-                            .child(self.render_status_bar()),
+                            .child(self.render_status_bar(cx)),
                     ),
             )
             .child(if unsaved {
@@ -961,7 +975,7 @@ impl Render for PowerLeafApp {
 }
 
 impl PowerLeafApp {
-    fn render_title_bar(&self, window: &mut Window) -> AnyElement {
+    fn render_title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
             .id("powerleaf-title-bar")
             .window_control_area(WindowControlArea::Drag)
@@ -971,8 +985,8 @@ impl PowerLeafApp {
             .items_center()
             .justify_between()
             .border_b_1()
-            .border_color(rgb(COLOR_BORDER_SUBTLE))
-            .bg(rgb(COLOR_CHROME))
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().title_bar)
             .child(
                 h_flex()
                     .h_full()
@@ -987,19 +1001,19 @@ impl PowerLeafApp {
                             .flex_none()
                             .text_sm()
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(COLOR_TEXT))
-                            .child("PowerLeaf"),
+                            .text_color(cx.theme().foreground)
+                            .child(t!("app.name").to_string()),
                     )
                     .child(
                         div()
                             .text_xs()
                             .min_w(px(0.0))
                             .overflow_hidden()
-                            .text_color(rgb(COLOR_DIM))
-                            .child(env!("CARGO_PKG_DESCRIPTION")),
+                            .text_color(cx.theme().muted_foreground)
+                            .child(t!("app.description").to_string()),
                     ),
             )
-            .child(title_bar_controls(window))
+            .child(title_bar_controls(window, cx))
             .into_any_element()
     }
 
@@ -1009,8 +1023,8 @@ impl PowerLeafApp {
             .min_w(px(258.0))
             .h_full()
             .border_r_1()
-            .border_color(rgb(COLOR_BORDER_SUBTLE))
-            .bg(rgb(COLOR_PANEL));
+            .border_color(cx.theme().sidebar_border)
+            .bg(cx.theme().sidebar);
 
         let mut drawer = v_flex().gap_3().p_2();
 
@@ -1022,15 +1036,15 @@ impl PowerLeafApp {
                     .pt_1()
                     .text_xs()
                     .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(rgb(COLOR_DIM))
-                    .child(section.label),
+                    .text_color(cx.theme().muted_foreground)
+                    .child(ui::section_label(section.label)),
             );
             for page in section.pages {
                 let selected = self.page == *page;
                 let target = *page;
                 let status = self.nav_status(*page);
                 group = group.child(
-                    nav_row(*page, selected, status)
+                    nav_row(*page, selected, status, cx)
                         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.page = target;
                             cx.notify();
@@ -1045,18 +1059,18 @@ impl PowerLeafApp {
         nav.into_any_element()
     }
 
-    fn render_status_bar(&self) -> AnyElement {
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         h_flex()
             .h(px(38.0))
             .items_center()
             .gap_2()
             .px_4()
             .border_t_1()
-            .border_color(rgb(COLOR_BORDER_SUBTLE))
-            .bg(rgb(COLOR_CHROME))
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().title_bar)
             .text_sm()
             .child(text_muted(&self.status_message))
-            .child(div().text_color(rgb(COLOR_DIM)).child("|"))
+            .child(div().text_color(cx.theme().muted_foreground).child("|"))
             .child(text_muted(&self.decision.reason))
             .into_any_element()
     }
@@ -1075,23 +1089,21 @@ impl PowerLeafApp {
             .p_3()
             .rounded_md()
             .border_1()
-            .border_color(rgb(COLOR_WARNING_BG))
-            .bg(rgb(COLOR_PANEL))
+            .border_color(cx.theme().warning)
+            .bg(cx.theme().popover)
             .child(
                 h_flex()
                     .items_center()
                     .gap_2()
-                    .child(div().size(px(8.0)).rounded_full().bg(rgb(COLOR_WARNING)))
+                    .child(div().size(px(8.0)).rounded_full().bg(cx.theme().warning))
                     .child(
                         div()
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(COLOR_TEXT))
-                            .child("Unsaved settings"),
+                            .text_color(cx.theme().popover_foreground)
+                            .child(t!("unsaved.title").to_string()),
                     ),
             )
-            .child(text_muted(
-                "Save these changes before leaving them in draft state.",
-            ))
+            .child(text_muted(t!("unsaved.message").to_string()))
             .child(
                 h_flex()
                     .justify_end()
@@ -1099,7 +1111,7 @@ impl PowerLeafApp {
                     .child(
                         Button::new("discard-settings")
                             .small()
-                            .label("Discard")
+                            .label(t!("common.discard").to_string())
                             .on_click(cx.listener(|app, _, window, cx| {
                                 app.cancel_settings_changes(window, cx);
                                 cx.notify();
@@ -1109,7 +1121,7 @@ impl PowerLeafApp {
                         Button::new("save-settings")
                             .small()
                             .primary()
-                            .label("Save")
+                            .label(t!("common.save").to_string())
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.sync_input_values(cx);
                                 app.save_settings();
@@ -1139,53 +1151,73 @@ impl PowerLeafApp {
         let settings = self.runtime_settings();
         page_shell(Page::Dashboard)
             .child(info_card(vec![
-                "Dashboard summarizes the current automation decision, detected state, and active power plan.",
-                "Use it to verify what PowerLeaf is doing before changing page settings.",
+                t!("dashboard.intro_1").to_string(),
+                t!("dashboard.intro_2").to_string(),
             ]))
             .child(
                 stat_grid(vec![
                     (
-                        "Current power plan",
+                        t!("dashboard.current_power_plan").to_string(),
                         self.current_plan
                             .as_ref()
                             .map(|plan| plan.name.as_str())
-                            .unwrap_or("Unknown")
-                            .to_owned(),
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| t!("common.unknown").to_string()),
                     ),
-                    ("Current mode", self.decision.state.label().to_owned()),
                     (
-                        "Automation",
+                        t!("dashboard.current_mode").to_string(),
+                        self.decision.state.label().to_owned(),
+                    ),
+                    (
+                        t!("dashboard.automation").to_string(),
                         if settings.general.enabled {
-                            "Enabled"
+                            t!("common.enabled").to_string()
                         } else {
-                            "Disabled"
-                        }
-                        .to_owned(),
+                            t!("common.disabled").to_string()
+                        },
                     ),
                     (
-                        "Foreground app",
+                        t!("dashboard.foreground_app").to_string(),
                         self.foreground_app
                             .as_deref()
-                            .unwrap_or("Unknown")
-                            .to_owned(),
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| t!("common.unknown").to_string()),
                     ),
-                    ("Activity state", format!("{:?}", self.activity.state)),
-                    ("CPU usage", cpu_usage_label(self.cpu_usage.percent)),
-                    ("Efficiency Mode", eco_qos_label(&self.eco_qos_status)),
                     (
-                        "App Suspension",
+                        t!("dashboard.activity_state").to_string(),
+                        format!("{:?}", self.activity.state),
+                    ),
+                    (
+                        t!("dashboard.cpu_usage").to_string(),
+                        cpu_usage_label(self.cpu_usage.percent),
+                    ),
+                    (
+                        t!("dashboard.efficiency_mode").to_string(),
+                        eco_qos_label(&self.eco_qos_status),
+                    ),
+                    (
+                        t!("dashboard.app_suspension").to_string(),
                         app_suspension_label(&self.app_suspension_status),
                     ),
-                    ("CPU Affinity", cpu_affinity_label(&self.cpu_affinity_status)),
                     (
-                        "Idle time",
+                        t!("dashboard.cpu_affinity").to_string(),
+                        cpu_affinity_label(&self.cpu_affinity_status),
+                    ),
+                    (
+                        t!("dashboard.idle_time").to_string(),
                         self.activity
                             .idle_for
                             .map(|duration| ui::duration_label(duration.as_secs()))
-                            .unwrap_or_else(|| "Unknown".to_owned()),
+                            .unwrap_or_else(|| t!("common.unknown").to_string()),
                     ),
-                    ("Time rules", self.next_schedule.clone()),
-                    ("Decision reason", self.decision.reason.clone()),
+                    (
+                        t!("dashboard.time_rules").to_string(),
+                        self.next_schedule.clone(),
+                    ),
+                    (
+                        t!("dashboard.decision_reason").to_string(),
+                        self.decision.reason.clone(),
+                    ),
                 ])
                 .into_any_element(),
             )
@@ -1196,12 +1228,12 @@ impl PowerLeafApp {
         let enabled = self.settings.activity_mode.enabled;
         page_shell(Page::Activity)
             .child(info_card(vec![
-                "Action Based Scheduler switches power plans from keyboard and mouse activity.",
-                "Idle and active plans are selected below; input detection controls when the app changes state.",
+                t!("activity.intro_1").to_string(),
+                t!("activity.intro_2").to_string(),
             ]))
             .child(checkbox(
                 "activity-enabled",
-                "Enable action-based scheduler",
+                t!("activity.enable").to_string(),
                 enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.activity_mode.enabled = *checked;
@@ -1209,33 +1241,46 @@ impl PowerLeafApp {
                 }),
             ))
             .child(text_muted(format!(
-                "Current active plan: {}",
-                self.current_plan
-                    .as_ref()
-                    .map(|plan| plan.name.as_str())
-                    .unwrap_or("Unknown")
+                "{}",
+                t!(
+                    "activity.current_active_plan",
+                    plan = self
+                        .current_plan
+                        .as_ref()
+                        .map(|plan| plan.name.as_str())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| t!("common.unknown").to_string())
+                )
             )))
-            .child(self.render_power_plan_picker(
-                "activity-idle-plan",
-                "Idle plan",
-                self.settings.activity_mode.power_plans.power_save_guid.clone(),
-                PowerPlanField::ActivityKind(PowerPlanKind::Idle),
-                cx,
-            ))
-            .child(self.render_power_plan_picker(
-                "activity-active-plan",
-                "Active plan",
-                self.settings
-                    .activity_mode
-                    .power_plans
-                    .performance_guid
-                    .clone(),
-                PowerPlanField::ActivityKind(PowerPlanKind::Active),
-                cx,
-            ))
+            .child(
+                self.render_power_plan_picker(
+                    "activity-idle-plan",
+                    &t!("activity.idle_plan"),
+                    self.settings
+                        .activity_mode
+                        .power_plans
+                        .power_save_guid
+                        .clone(),
+                    PowerPlanField::ActivityKind(PowerPlanKind::Idle),
+                    cx,
+                ),
+            )
+            .child(
+                self.render_power_plan_picker(
+                    "activity-active-plan",
+                    &t!("activity.active_plan"),
+                    self.settings
+                        .activity_mode
+                        .power_plans
+                        .performance_guid
+                        .clone(),
+                    PowerPlanField::ActivityKind(PowerPlanKind::Active),
+                    cx,
+                ),
+            )
             .child(checkbox(
                 "keyboard-input",
-                "Keyboard input",
+                t!("activity.keyboard_input").to_string(),
                 self.settings.activity_mode.input_detection.keyboard,
                 cx.listener(|app, checked: &bool, _, cx| {
                     if !*checked && !app.settings.activity_mode.input_detection.mouse {
@@ -1253,7 +1298,7 @@ impl PowerLeafApp {
             ))
             .child(checkbox(
                 "mouse-input",
-                "Mouse input",
+                t!("activity.mouse_input").to_string(),
                 self.settings.activity_mode.input_detection.mouse,
                 cx.listener(|app, checked: &bool, _, cx| {
                     if !*checked && !app.settings.activity_mode.input_detection.keyboard {
@@ -1271,7 +1316,7 @@ impl PowerLeafApp {
             ))
             .child(stepper_u64(
                 "activity-idle-timeout",
-                "Idle timeout",
+                &t!("activity.idle_timeout"),
                 self.settings.activity_mode.idle_timeout_seconds,
                 " sec",
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
@@ -1286,16 +1331,12 @@ impl PowerLeafApp {
             ))
             .child(stepper_u64(
                 "general-check-interval",
-                "Check interval",
+                &t!("activity.check_interval"),
                 self.settings.general.check_interval_ms,
                 " ms",
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.general.check_interval_ms = apply_u64_step(
-                        app.settings.general.check_interval_ms,
-                        change,
-                        250,
-                        60_000,
-                    );
+                    app.settings.general.check_interval_ms =
+                        apply_u64_step(app.settings.general.check_interval_ms, change, 250, 60_000);
                     cx.notify();
                 }),
             ))
@@ -1309,12 +1350,12 @@ impl PowerLeafApp {
     ) -> AnyElement {
         let mut content = page_shell(Page::ForegroundRules)
             .child(info_card(vec![
-                "Foreground Rules switch power plans when a specific app is focused.",
-                "Rules are matched against running process names and can use any Windows power plan.",
+                t!("foreground.intro_1").to_string(),
+                t!("foreground.intro_2").to_string(),
             ]))
             .child(checkbox(
                 "foreground-enabled",
-                "Enable foreground rules",
+                t!("foreground.enable").to_string(),
                 self.settings.foreground_rules.enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.foreground_rules.enabled = *checked;
@@ -1325,11 +1366,11 @@ impl PowerLeafApp {
                 Button::new("add-foreground-rule")
                     .small()
                     .primary()
-                    .label("Add foreground rule")
+                    .label(t!("foreground.add_rule").to_string())
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.settings.foreground_rules.rules.push(ForegroundRule {
                             enabled: true,
-                            name: "New Foreground Rule".to_owned(),
+                            name: t!("foreground.new_rule").to_string(),
                             process_name: String::new(),
                             power_plan_guid: app
                                 .current_plan
@@ -1367,7 +1408,7 @@ impl PowerLeafApp {
         let card_target = RuleCardTarget::Foreground(index);
         let collapsed = self.is_rule_card_collapsed(&card_target);
         let mut card = rule_card(
-            self.render_rule_title(rule_card_title(&rule.name), &name_input, title_target, cx),
+            self.render_rule_title(&rule_card_title(&rule.name), &name_input, title_target, cx),
             rule_enable_checkbox(
                 format!("foreground-rule-enabled-{index}"),
                 rule.enabled,
@@ -1385,7 +1426,7 @@ impl PowerLeafApp {
         if !collapsed {
             card = card
                 .child(labeled_element(
-                    "Focused app",
+                    &t!("foreground.focused_app"),
                     self.render_process_picker(
                         format!("foreground-process-{index}"),
                         &process_input,
@@ -1396,7 +1437,7 @@ impl PowerLeafApp {
                 ))
                 .child(self.render_power_plan_picker(
                     format!("foreground-rule-plan-{index}"),
-                    "Target power plan",
+                    &t!("foreground.target_power_plan"),
                     rule.power_plan_guid.clone(),
                     PowerPlanField::ForegroundRule(index),
                     cx,
@@ -1407,7 +1448,7 @@ impl PowerLeafApp {
                     )))
                     .small()
                     .danger()
-                    .label("Remove")
+                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         if index < app.settings.foreground_rules.rules.len() {
                             app.settings.foreground_rules.rules.remove(index);
@@ -1452,7 +1493,7 @@ impl PowerLeafApp {
                     )))
                     .small()
                     .primary()
-                    .label("Done")
+                    .label(t!("common.done").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.finish_rule_title_edit(target, cx);
                     })),
@@ -1476,7 +1517,6 @@ impl PowerLeafApp {
                     .text_size(px(16.0))
                     .line_height(px(22.0))
                     .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(rgb(COLOR_TEXT))
                     .cursor_pointer()
                     .child(title.to_owned()),
             )
@@ -1492,8 +1532,8 @@ impl PowerLeafApp {
                         Button::new(SharedString::from(format!("edit-rule-title-{target:?}")))
                             .small()
                             .ghost()
-                            .label("Edit")
-                            .tooltip("Rename rule")
+                            .label(t!("common.edit").to_string())
+                            .tooltip(t!("common.rename_rule").to_string())
                             .on_click(cx.listener(move |app, _, window, cx| {
                                 app.begin_rule_title_edit(target, window, cx);
                             })),
@@ -1505,12 +1545,12 @@ impl PowerLeafApp {
     fn render_schedule_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut content = page_shell(Page::Schedule)
             .child(info_card(vec![
-                "Time rules switch power plans based on the current day and time.",
-                "Each rule can use its own target plan; overnight ranges are supported.",
+                t!("schedule.intro_1").to_string(),
+                t!("schedule.intro_2").to_string(),
             ]))
             .child(checkbox(
                 "schedule-enabled",
-                "Enable time rules",
+                t!("schedule.enable").to_string(),
                 self.settings.schedule_mode.enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.schedule_mode.enabled = *checked;
@@ -1521,11 +1561,11 @@ impl PowerLeafApp {
                 Button::new("add-time-rule")
                     .small()
                     .primary()
-                    .label("Add time rule")
+                    .label(t!("schedule.add_rule").to_string())
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.settings.schedule_mode.rules.push(ScheduleRule {
                             enabled: true,
-                            name: "New Time Rule".to_owned(),
+                            name: t!("schedule.new_rule").to_string(),
                             days: WeekdaySetting::all().to_vec(),
                             start_time: "22:00".to_owned(),
                             end_time: "08:00".to_owned(),
@@ -1586,7 +1626,7 @@ impl PowerLeafApp {
         let card_target = RuleCardTarget::Schedule(index);
         let collapsed = self.is_rule_card_collapsed(&card_target);
         let mut card = rule_card(
-            self.render_rule_title(rule_card_title(&rule.name), &name_input, title_target, cx),
+            self.render_rule_title(&rule_card_title(&rule.name), &name_input, title_target, cx),
             rule_enable_checkbox(
                 format!("schedule-rule-enabled-{index}"),
                 rule.enabled,
@@ -1603,29 +1643,34 @@ impl PowerLeafApp {
         );
         if !collapsed {
             card = card
-                .child(labeled_element("Days", days.into_any_element()))
+                .child(labeled_element(
+                    &t!("schedule.days"),
+                    days.into_any_element(),
+                ))
                 .child(
                     h_flex()
                         .gap_2()
                         .items_center()
                         .flex_wrap()
                         .child(match self.inputs.schedule_start_times.get(index).cloned() {
-                            Some(input) => input_row("Start", input).into_any_element(),
+                            Some(input) => {
+                                input_row(&t!("schedule.start"), input).into_any_element()
+                            }
                             None => syncing_input_message().into_any_element(),
                         })
                         .child(match self.inputs.schedule_end_times.get(index).cloned() {
-                            Some(input) => input_row("End", input).into_any_element(),
+                            Some(input) => input_row(&t!("schedule.end"), input).into_any_element(),
                             None => syncing_input_message().into_any_element(),
                         })
                         .child(if rule.parsed_times().is_none() {
-                            text_danger("Use HH:MM").into_any_element()
+                            text_danger(t!("schedule.use_hhmm").to_string()).into_any_element()
                         } else {
                             div().into_any_element()
                         }),
                 )
                 .child(self.render_power_plan_picker(
                     format!("schedule-rule-plan-{index}"),
-                    "Target power plan",
+                    &t!("schedule.target_power_plan"),
                     rule.power_plan_guid.clone(),
                     PowerPlanField::ScheduleRule(index),
                     cx,
@@ -1634,7 +1679,7 @@ impl PowerLeafApp {
                     Button::new(SharedString::from(format!("remove-schedule-rule-{index}")))
                         .small()
                         .danger()
-                        .label("Remove")
+                        .label(t!("common.remove").to_string())
                         .on_click(cx.listener(move |app, _, _, cx| {
                             if index < app.settings.schedule_mode.rules.len() {
                                 app.settings.schedule_mode.rules.remove(index);
@@ -1651,12 +1696,12 @@ impl PowerLeafApp {
     fn render_cpu_usage_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut content = page_shell(Page::CpuUsage)
             .child(info_card(vec![
-                "CPU Load Rules switch power plans when processor usage crosses a threshold for a duration.",
-                "Use else plans for fallback behavior when a CPU rule is no longer active.",
+                t!("cpu_rules.intro_1").to_string(),
+                t!("cpu_rules.intro_2").to_string(),
             ]))
             .child(checkbox(
                 "cpu-usage-enabled",
-                "Enable CPU load rules",
+                t!("cpu_rules.enable").to_string(),
                 self.settings.cpu_usage_mode.enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.cpu_usage_mode.enabled = *checked;
@@ -1667,11 +1712,11 @@ impl PowerLeafApp {
                 Button::new("add-cpu-rule")
                     .small()
                     .primary()
-                    .label("Add CPU load rule")
+                    .label(t!("cpu_rules.add_rule").to_string())
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.settings.cpu_usage_mode.rules.push(CpuUsageRule {
                             enabled: true,
-                            name: "New CPU Load Rule".to_owned(),
+                            name: t!("cpu_rules.new_rule").to_string(),
                             comparison: CpuUsageComparison::AtOrBelow,
                             threshold_percent: 20,
                             upper_threshold_percent: None,
@@ -1740,7 +1785,7 @@ impl PowerLeafApp {
         let card_target = RuleCardTarget::Cpu(index);
         let collapsed = self.is_rule_card_collapsed(&card_target);
         let mut card = rule_card(
-            self.render_rule_title(rule_card_title(&rule.name), &name_input, title_target, cx),
+            self.render_rule_title(&rule_card_title(&rule.name), &name_input, title_target, cx),
             rule_enable_checkbox(
                 format!("cpu-rule-enabled-{index}"),
                 rule.enabled,
@@ -1758,12 +1803,12 @@ impl PowerLeafApp {
         if !collapsed {
             card = card
                 .child(labeled_element(
-                    "When CPU load",
+                    &t!("cpu_rules.when_cpu_load"),
                     comparisons.into_any_element(),
                 ))
                 .child(stepper_u8(
                     format!("cpu-rule-threshold-{index}"),
-                    "Threshold",
+                    &t!("cpu_rules.threshold"),
                     rule.threshold_percent,
                     "%",
                     cx.listener(move |app, change: &StepChange<u8>, _, cx| {
@@ -1777,7 +1822,7 @@ impl PowerLeafApp {
                 .child(if rule.comparison == CpuUsageComparison::Between {
                     stepper_u8(
                         format!("cpu-rule-upper-threshold-{index}"),
-                        "Upper threshold",
+                        &t!("cpu_rules.upper_threshold"),
                         upper,
                         "%",
                         cx.listener(move |app, change: &StepChange<u8>, _, cx| {
@@ -1795,7 +1840,7 @@ impl PowerLeafApp {
                 })
                 .child(stepper_u64(
                     format!("cpu-rule-duration-{index}"),
-                    "Duration",
+                    &t!("cpu_rules.duration"),
                     rule.duration_seconds,
                     " sec",
                     cx.listener(move |app, change: &StepChange<u64>, _, cx| {
@@ -1808,14 +1853,14 @@ impl PowerLeafApp {
                 ))
                 .child(self.render_power_plan_picker(
                     format!("cpu-rule-plan-{index}"),
-                    "Use",
+                    &t!("cpu_rules.use"),
                     rule.power_plan_guid.clone(),
                     PowerPlanField::CpuRule(index),
                     cx,
                 ))
                 .child(checkbox(
                     format!("cpu-rule-else-{index}"),
-                    "Else",
+                    t!("cpu_rules.else").to_string(),
                     rule.else_enabled,
                     cx.listener(move |app, checked, _, cx| {
                         let current_plan = app.current_plan.as_ref().map(|plan| plan.guid.clone());
@@ -1831,7 +1876,7 @@ impl PowerLeafApp {
                 .child(if rule.else_enabled {
                     self.render_power_plan_picker(
                         format!("cpu-rule-else-plan-{index}"),
-                        "Else use",
+                        &t!("cpu_rules.else_use"),
                         rule.else_power_plan_guid.clone(),
                         PowerPlanField::CpuRuleElse(index),
                         cx,
@@ -1843,7 +1888,7 @@ impl PowerLeafApp {
                     Button::new(SharedString::from(format!("remove-cpu-rule-{index}")))
                         .small()
                         .danger()
-                        .label("Remove")
+                        .label(t!("common.remove").to_string())
                         .on_click(cx.listener(move |app, _, _, cx| {
                             if index < app.settings.cpu_usage_mode.rules.len() {
                                 app.settings.cpu_usage_mode.rules.remove(index);
@@ -1861,13 +1906,13 @@ impl PowerLeafApp {
         let input_value = self.inputs.eco_qos_exclusion.read(cx).value().to_string();
         page_shell(Page::EfficiencyMode)
             .child(info_card(vec![
-                "Efficiency Mode applies Windows EcoQoS to background apps to reduce CPU power use.",
-                "PowerLeaf also lowers the target app's process priority while Efficiency Mode is active.",
-                "This is safer than App Suspension because apps keep running.",
+                t!("efficiency.intro_1").to_string(),
+                t!("efficiency.intro_2").to_string(),
+                t!("efficiency.intro_3").to_string(),
             ]))
             .child(checkbox(
                 "eco-qos-enabled",
-                "Enable Windows EcoQoS",
+                t!("efficiency.enable").to_string(),
                 self.settings.eco_qos.enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.eco_qos.enabled = *checked;
@@ -1876,7 +1921,7 @@ impl PowerLeafApp {
             ))
             .child(checkbox(
                 "eco-qos-foreground",
-                "App focus detection",
+                t!("efficiency.focus_detection").to_string(),
                 self.settings.eco_qos.exclude_foreground_app,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.eco_qos.exclude_foreground_app = *checked;
@@ -1884,37 +1929,38 @@ impl PowerLeafApp {
                 }),
             ))
             .child(stat_grid(vec![
-                ("Status", self.eco_qos_status.message.clone()),
                 (
-                    "Throttled processes",
+                    t!("common.status").to_string(),
+                    self.eco_qos_status.message.clone(),
+                ),
+                (
+                    t!("efficiency.throttled_processes").to_string(),
                     self.eco_qos_status.throttled_processes.to_string(),
                 ),
                 (
-                    "Scanned processes",
+                    t!("efficiency.scanned_processes").to_string(),
                     self.eco_qos_status.scanned_processes.to_string(),
                 ),
                 (
-                    "Skipped processes",
+                    t!("efficiency.skipped_processes").to_string(),
                     self.eco_qos_status.skipped_processes.to_string(),
                 ),
                 (
-                    "Failed actions",
+                    t!("efficiency.failed_actions").to_string(),
                     self.eco_qos_status.failed_processes.to_string(),
                 ),
                 (
-                    "Last failure",
+                    t!("common.last_failure").to_string(),
                     self.eco_qos_status
                         .last_error
                         .as_deref()
-                        .unwrap_or("None")
-                        .to_owned(),
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| t!("common.none").to_string()),
                 ),
             ]))
             .child(
-                section_card("Efficiency Whitelist")
-                    .child(text_muted(
-                        "Apps in this whitelist will never be put into Efficiency Mode.",
-                    ))
+                section_card(&t!("efficiency.whitelist"))
+                    .child(text_muted(t!("efficiency.whitelist_help").to_string()))
                     .child(
                         h_flex()
                             .gap_2()
@@ -1930,7 +1976,7 @@ impl PowerLeafApp {
                             .child(
                                 Button::new("add-eco-qos-exclusion")
                                     .small()
-                                    .label("Add")
+                                    .label(t!("common.add").to_string())
                                     .disabled(!can_add_eco_qos_process(
                                         &self.settings.eco_qos,
                                         &input_value,
@@ -1942,7 +1988,8 @@ impl PowerLeafApp {
                                             .read(cx)
                                             .value()
                                             .to_string();
-                                        if can_add_eco_qos_process(&app.settings.eco_qos, &process) {
+                                        if can_add_eco_qos_process(&app.settings.eco_qos, &process)
+                                        {
                                             app.settings
                                                 .eco_qos
                                                 .efficiency_whitelist
@@ -1980,7 +2027,7 @@ impl PowerLeafApp {
                         Button::new(SharedString::from(format!("remove-eco-qos-{index}")))
                             .small()
                             .danger()
-                            .label("Remove")
+                            .label(t!("common.remove").to_string())
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 if index < app.settings.eco_qos.efficiency_whitelist.len() {
                                     app.settings.eco_qos.efficiency_whitelist.remove(index);
@@ -1991,7 +2038,7 @@ impl PowerLeafApp {
             );
         }
         if self.settings.eco_qos.efficiency_whitelist.is_empty() {
-            list = list.child(text_muted("No apps are whitelisted."));
+            list = list.child(text_muted(t!("efficiency.no_whitelist").to_string()));
         }
         list.into_any_element()
     }
@@ -2000,13 +2047,13 @@ impl PowerLeafApp {
         let input_value = self.inputs.suspension_process.read(cx).value().to_string();
         page_shell(Page::AppSuspension)
             .child(info_card(vec![
-                "App Suspension pauses selected background apps after a delay to reduce CPU usage.",
-                "Suspended apps are resumed automatically when you switch back to them or quit PowerLeaf.",
-                "Use it only for apps that are safe to pause in the background.",
+                t!("suspension.intro_1").to_string(),
+                t!("suspension.intro_2").to_string(),
+                t!("suspension.intro_3").to_string(),
             ]))
             .child(checkbox(
                 "app-suspension-enabled",
-                "Enable app suspension",
+                t!("suspension.enable").to_string(),
                 self.settings.app_suspension.enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.app_suspension.enabled = *checked;
@@ -2015,18 +2062,22 @@ impl PowerLeafApp {
             ))
             .child(stepper_u64(
                 "suspension-background-delay",
-                "Background delay",
+                &t!("suspension.background_delay"),
                 self.settings.app_suspension.background_delay_seconds,
                 " sec",
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.background_delay_seconds =
-                        apply_u64_step(app.settings.app_suspension.background_delay_seconds, change, 1, 86_400);
+                    app.settings.app_suspension.background_delay_seconds = apply_u64_step(
+                        app.settings.app_suspension.background_delay_seconds,
+                        change,
+                        1,
+                        86_400,
+                    );
                     cx.notify();
                 }),
             ))
             .child(checkbox(
                 "temporary-thaw",
-                "Temporary thaw fallback",
+                t!("suspension.temporary_thaw").to_string(),
                 self.settings.app_suspension.temporary_thaw_enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.app_suspension.temporary_thaw_enabled = *checked;
@@ -2035,33 +2086,37 @@ impl PowerLeafApp {
             ))
             .child(stepper_u64(
                 "suspension-thaw-interval",
-                "Thaw every",
-                self.settings
-                    .app_suspension
-                    .temporary_thaw_interval_seconds,
+                &t!("suspension.thaw_every"),
+                self.settings.app_suspension.temporary_thaw_interval_seconds,
                 " sec",
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.temporary_thaw_interval_seconds =
-                        apply_u64_step(app.settings.app_suspension.temporary_thaw_interval_seconds, change, 1, 86_400);
+                    app.settings.app_suspension.temporary_thaw_interval_seconds = apply_u64_step(
+                        app.settings.app_suspension.temporary_thaw_interval_seconds,
+                        change,
+                        1,
+                        86_400,
+                    );
                     cx.notify();
                 }),
             ))
             .child(stepper_u64(
                 "suspension-thaw-duration",
-                "Thaw duration",
-                self.settings
-                    .app_suspension
-                    .temporary_thaw_duration_seconds,
+                &t!("suspension.thaw_duration"),
+                self.settings.app_suspension.temporary_thaw_duration_seconds,
                 " sec",
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.temporary_thaw_duration_seconds =
-                        apply_u64_step(app.settings.app_suspension.temporary_thaw_duration_seconds, change, 1, 3_600);
+                    app.settings.app_suspension.temporary_thaw_duration_seconds = apply_u64_step(
+                        app.settings.app_suspension.temporary_thaw_duration_seconds,
+                        change,
+                        1,
+                        3_600,
+                    );
                     cx.notify();
                 }),
             ))
             .child(checkbox(
                 "audio-wake",
-                "Audio playback detection",
+                t!("suspension.audio_detection").to_string(),
                 self.settings.app_suspension.audio_wake_enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.app_suspension.audio_wake_enabled = *checked;
@@ -2070,18 +2125,22 @@ impl PowerLeafApp {
             ))
             .child(stepper_u64(
                 "suspension-audio-refreeze",
-                "Audio refreeze after",
+                &t!("suspension.audio_refreeze"),
                 self.settings.app_suspension.audio_wake_duration_seconds,
                 " sec quiet",
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.audio_wake_duration_seconds =
-                        apply_u64_step(app.settings.app_suspension.audio_wake_duration_seconds, change, 1, 3_600);
+                    app.settings.app_suspension.audio_wake_duration_seconds = apply_u64_step(
+                        app.settings.app_suspension.audio_wake_duration_seconds,
+                        change,
+                        1,
+                        3_600,
+                    );
                     cx.notify();
                 }),
             ))
             .child(checkbox(
                 "network-wake",
-                "Network intent detection",
+                t!("suspension.network_detection").to_string(),
                 self.settings.app_suspension.network_wake_enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.app_suspension.network_wake_enabled = *checked;
@@ -2090,65 +2149,68 @@ impl PowerLeafApp {
             ))
             .child(stepper_u64(
                 "suspension-network-refreeze",
-                "Network refreeze after",
+                &t!("suspension.network_refreeze"),
                 self.settings.app_suspension.network_wake_duration_seconds,
                 " sec quiet",
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.network_wake_duration_seconds =
-                        apply_u64_step(app.settings.app_suspension.network_wake_duration_seconds, change, 1, 3_600);
+                    app.settings.app_suspension.network_wake_duration_seconds = apply_u64_step(
+                        app.settings.app_suspension.network_wake_duration_seconds,
+                        change,
+                        1,
+                        3_600,
+                    );
                     cx.notify();
                 }),
             ))
             .child(stat_grid(vec![
-                ("Status", self.app_suspension_status.message.clone()),
                 (
-                    "Tracked processes",
+                    t!("common.status").to_string(),
+                    self.app_suspension_status.message.clone(),
+                ),
+                (
+                    t!("suspension.tracked_processes").to_string(),
                     self.app_suspension_status.tracked_processes.to_string(),
                 ),
                 (
-                    "Suspended processes",
-                    self.app_suspension_status
-                        .suspended_processes
-                        .to_string(),
+                    t!("suspension.suspended_processes").to_string(),
+                    self.app_suspension_status.suspended_processes.to_string(),
                 ),
                 (
-                    "Temporary thawed",
+                    t!("suspension.temporary_thawed").to_string(),
                     self.app_suspension_status
                         .temporary_thawed_processes
                         .to_string(),
                 ),
                 (
-                    "Network wake",
+                    t!("suspension.network_wake").to_string(),
                     self.app_suspension_status
                         .network_wake_processes
                         .to_string(),
                 ),
                 (
-                    "Audio wake",
+                    t!("suspension.audio_wake").to_string(),
                     self.app_suspension_status.audio_wake_processes.to_string(),
                 ),
                 (
-                    "Skipped processes",
+                    t!("efficiency.skipped_processes").to_string(),
                     self.app_suspension_status.skipped_processes.to_string(),
                 ),
                 (
-                    "Failed actions",
+                    t!("efficiency.failed_actions").to_string(),
                     self.app_suspension_status.failed_actions.to_string(),
                 ),
                 (
-                    "Last failure",
+                    t!("common.last_failure").to_string(),
                     self.app_suspension_status
                         .last_error
                         .as_deref()
-                        .unwrap_or("None")
-                        .to_owned(),
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| t!("common.none").to_string()),
                 ),
             ]))
             .child(
-                section_card("Suspendable Apps")
-                    .child(text_muted(
-                        "Only apps in this list can be suspended after the background delay.",
-                    ))
+                section_card(&t!("suspension.suspendable_apps"))
+                    .child(text_muted(t!("suspension.suspendable_help").to_string()))
                     .child(
                         h_flex()
                             .gap_2()
@@ -2164,7 +2226,7 @@ impl PowerLeafApp {
                             .child(
                                 Button::new("add-suspension-process")
                                     .small()
-                                    .label("Add")
+                                    .label(t!("common.add").to_string())
                                     .disabled(!can_add_suspension_process(
                                         &self.settings.app_suspension,
                                         &input_value,
@@ -2221,7 +2283,7 @@ impl PowerLeafApp {
                     .child(
                         Button::new(SharedString::from(format!("freeze-suspension-{index}")))
                             .small()
-                            .label("Freeze")
+                            .label(t!("suspension.freeze").to_string())
                             .disabled(!can_manual_freeze(&self.app_suspension_status, &process))
                             .on_click(cx.listener({
                                 let process = process.clone();
@@ -2229,14 +2291,15 @@ impl PowerLeafApp {
                                     app.background_automation
                                         .request_app_suspension_freeze(&process);
                                     app.status_message =
-                                        format!("Manual freeze requested for {process}.");
+                                        t!("suspension.manual_freeze_requested", process = process)
+                                            .to_string();
                                     cx.notify();
                                 }
                             })),
                     )
                     .child(checkbox(
                         format!("suspension-network-rule-{index}"),
-                        "Network Detection",
+                        t!("suspension.network_detection").to_string(),
                         rule.network_wake_enabled,
                         cx.listener(move |app, checked, _, cx| {
                             if let Some(rule) =
@@ -2249,7 +2312,7 @@ impl PowerLeafApp {
                     ))
                     .child(checkbox(
                         format!("suspension-audio-rule-{index}"),
-                        "Audio Detection",
+                        t!("suspension.audio_detection").to_string(),
                         rule.audio_wake_enabled,
                         cx.listener(move |app, checked, _, cx| {
                             if let Some(rule) =
@@ -2263,7 +2326,7 @@ impl PowerLeafApp {
                     .child(self.render_network_threshold(
                         index,
                         true,
-                        "Download Threshold",
+                        &t!("suspension.download_threshold"),
                         rule.network_download_threshold_bytes,
                         rule.network_download_threshold_unit,
                         ThresholdField::Download(index),
@@ -2272,7 +2335,7 @@ impl PowerLeafApp {
                     .child(self.render_network_threshold(
                         index,
                         false,
-                        "Upload Threshold",
+                        &t!("suspension.upload_threshold"),
                         rule.network_upload_threshold_bytes,
                         rule.network_upload_threshold_unit,
                         ThresholdField::Upload(index),
@@ -2282,7 +2345,7 @@ impl PowerLeafApp {
                         Button::new(SharedString::from(format!("remove-suspension-{index}")))
                             .small()
                             .danger()
-                            .label("Remove")
+                            .label(t!("common.remove").to_string())
                             .on_click(cx.listener({
                                 let card_target = card_target.clone();
                                 move |app, _, _, cx| {
@@ -2298,7 +2361,7 @@ impl PowerLeafApp {
             list = list.child(card);
         }
         if self.settings.app_suspension.suspendable_apps.is_empty() {
-            list = list.child(text_muted("No apps are suspendable."));
+            list = list.child(text_muted(t!("suspension.no_suspendable").to_string()));
         }
         list.into_any_element()
     }
@@ -2307,13 +2370,13 @@ impl PowerLeafApp {
         let input_value = self.inputs.affinity_process.read(cx).value().to_string();
         page_shell(Page::CpuAffinity)
             .child(info_card(vec![
-                "CPU Affinity limits selected background apps to specific logical CPUs.",
-                "Use this as an advanced compatibility control; it can reduce responsiveness if the mask is too narrow.",
-                "PowerLeaf restores the original affinity when a rule no longer applies.",
+                t!("affinity.intro_1").to_string(),
+                t!("affinity.intro_2").to_string(),
+                t!("affinity.intro_3").to_string(),
             ]))
             .child(checkbox(
                 "cpu-affinity-enabled",
-                "Enable CPU affinity rules",
+                t!("affinity.enable").to_string(),
                 self.settings.cpu_affinity.enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.cpu_affinity.enabled = *checked;
@@ -2322,7 +2385,7 @@ impl PowerLeafApp {
             ))
             .child(checkbox(
                 "cpu-affinity-foreground",
-                "App focus detection",
+                t!("affinity.focus_detection").to_string(),
                 self.settings.cpu_affinity.exclude_foreground_app,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.cpu_affinity.exclude_foreground_app = *checked;
@@ -2330,37 +2393,38 @@ impl PowerLeafApp {
                 }),
             ))
             .child(stat_grid(vec![
-                ("Status", self.cpu_affinity_status.message.clone()),
                 (
-                    "Adjusted processes",
+                    t!("common.status").to_string(),
+                    self.cpu_affinity_status.message.clone(),
+                ),
+                (
+                    t!("affinity.adjusted_processes").to_string(),
                     self.cpu_affinity_status.adjusted_processes.to_string(),
                 ),
                 (
-                    "Scanned processes",
+                    t!("affinity.scanned_processes").to_string(),
                     self.cpu_affinity_status.scanned_processes.to_string(),
                 ),
                 (
-                    "Skipped processes",
+                    t!("affinity.skipped_processes").to_string(),
                     self.cpu_affinity_status.skipped_processes.to_string(),
                 ),
                 (
-                    "Failed actions",
+                    t!("affinity.failed_actions").to_string(),
                     self.cpu_affinity_status.failed_processes.to_string(),
                 ),
                 (
-                    "Last failure",
+                    t!("common.last_failure").to_string(),
                     self.cpu_affinity_status
                         .last_error
                         .as_deref()
-                        .unwrap_or("None")
-                        .to_owned(),
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| t!("common.none").to_string()),
                 ),
             ]))
             .child(
-                section_card("Affinity Rules")
-                    .child(text_muted(
-                        "Add a process, then choose the logical CPUs it may run on.",
-                    ))
+                section_card(&t!("affinity.rules"))
+                    .child(text_muted(t!("affinity.rules_help").to_string()))
                     .child(
                         h_flex()
                             .gap_2()
@@ -2376,7 +2440,7 @@ impl PowerLeafApp {
                             .child(
                                 Button::new("add-affinity-process")
                                     .small()
-                                    .label("Add")
+                                    .label(t!("common.add").to_string())
                                     .disabled(!can_add_affinity_process(
                                         &self.settings.cpu_affinity,
                                         &input_value,
@@ -2440,7 +2504,7 @@ impl PowerLeafApp {
                         Button::new(SharedString::from(format!("remove-affinity-{index}")))
                             .small()
                             .danger()
-                            .label("Remove")
+                            .label(t!("common.remove").to_string())
                             .on_click(cx.listener({
                                 let card_target = card_target.clone();
                                 move |app, _, _, cx| {
@@ -2456,7 +2520,7 @@ impl PowerLeafApp {
             list = list.child(card);
         }
         if self.settings.cpu_affinity.rules.is_empty() {
-            list = list.child(text_muted("No CPU affinity rules are configured."));
+            list = list.child(text_muted(t!("affinity.no_rules").to_string()));
         }
         list.into_any_element()
     }
@@ -2477,21 +2541,21 @@ impl PowerLeafApp {
         let mut presets = h_flex().gap_1().flex_wrap();
         for (label, mask, tooltip, enabled) in [
             (
-                "All",
+                t!("affinity.all").to_string(),
                 all_mask,
-                "Allow every logical CPU reported by Windows.",
+                t!("affinity.all_help").to_string(),
                 all_mask != 0,
             ),
             (
-                "P-cores",
+                t!("affinity.p_cores").to_string(),
                 performance_mask,
-                "Allow only logical CPUs on performance cores.",
+                t!("affinity.p_cores_help").to_string(),
                 performance_mask != 0,
             ),
             (
-                "E-cores",
+                t!("affinity.e_cores").to_string(),
                 efficiency_mask,
-                "Allow only logical CPUs on efficiency cores.",
+                t!("affinity.e_cores_help").to_string(),
                 efficiency_mask != 0,
             ),
         ] {
@@ -2535,7 +2599,7 @@ impl PowerLeafApp {
         }
 
         labeled_element(
-            "Allowed logical CPUs",
+            &t!("affinity.allowed_cpus"),
             v_flex()
                 .gap_2()
                 .child(presets)
@@ -2557,7 +2621,7 @@ impl PowerLeafApp {
     ) -> AnyElement {
         let value = unit.threshold_value_from_bytes(threshold_bytes);
         let value_label = if threshold_bytes == 0 {
-            "Unlimited".to_owned()
+            t!("affinity.unlimited").to_string()
         } else {
             format!("{value:.3} {}", unit.label())
                 .trim_end_matches('0')
@@ -2658,15 +2722,58 @@ impl PowerLeafApp {
         row.into_any_element()
     }
 
+    fn render_theme_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut row = h_flex().gap_1().flex_wrap();
+        for mode in AppThemeMode::ALL {
+            let label = match mode {
+                AppThemeMode::System => t!("theme.system"),
+                AppThemeMode::Light => t!("theme.light"),
+                AppThemeMode::Dark => t!("theme.dark"),
+            };
+            row = row.child(
+                toggle_button(
+                    format!("theme-mode-{:?}", mode),
+                    label.to_string(),
+                    self.settings.general.theme_mode == mode,
+                )
+                .on_click(cx.listener(move |app, _, window, cx| {
+                    app.settings.general.theme_mode = mode;
+                    apply_theme_mode(mode, window, cx);
+                    cx.notify();
+                })),
+            );
+        }
+        labeled_element(&t!("common.theme"), row.into_any_element()).into_any_element()
+    }
+
+    fn render_language_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut row = h_flex().gap_1().flex_wrap();
+        for language in AppLanguage::ALL {
+            row = row.child(
+                toggle_button(
+                    format!("language-{:?}", language),
+                    t!(language.label_key()).to_string(),
+                    self.settings.general.language == language,
+                )
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings.general.language = language;
+                    apply_language(language);
+                    cx.notify();
+                })),
+            );
+        }
+        labeled_element(&t!("common.language"), row.into_any_element()).into_any_element()
+    }
+
     fn render_settings_page(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         page_shell(Page::Settings)
             .child(info_card(vec![
-                "General settings control startup behavior, tray behavior, and the master automation switch.",
-                "Export or import the settings file from this page.",
+                t!("settings.intro_1").to_string(),
+                t!("settings.intro_2").to_string(),
             ]))
             .child(checkbox(
                 "general-enabled",
-                "PowerLeaf master switch",
+                t!("settings.master_switch").to_string(),
                 self.settings.general.enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.general.enabled = *checked;
@@ -2675,7 +2782,7 @@ impl PowerLeafApp {
             ))
             .child(checkbox(
                 "startup-windows",
-                "Start PowerLeaf when Windows starts",
+                t!("settings.startup_windows").to_string(),
                 self.settings.general.startup_with_windows,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.general.startup_with_windows = *checked;
@@ -2684,7 +2791,7 @@ impl PowerLeafApp {
             ))
             .child(checkbox(
                 "start-minimized",
-                "Start in system tray",
+                t!("settings.start_minimized").to_string(),
                 self.settings.general.start_minimized,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.general.start_minimized = *checked;
@@ -2693,7 +2800,7 @@ impl PowerLeafApp {
             ))
             .child(checkbox(
                 "pause-plugged",
-                "Stop power plan scheduler on A/C",
+                t!("settings.pause_plugged").to_string(),
                 self.settings
                     .general
                     .pause_power_plan_switching_while_plugged_in,
@@ -2706,7 +2813,7 @@ impl PowerLeafApp {
             ))
             .child(checkbox(
                 "hide-to-tray",
-                "Hide to system tray on close",
+                t!("settings.hide_to_tray").to_string(),
                 self.settings.general.hide_to_tray,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.general.hide_to_tray = *checked;
@@ -2714,14 +2821,19 @@ impl PowerLeafApp {
                 }),
             ))
             .child(
-                section_card("Settings Files").child(
+                section_card(&t!("settings.appearance"))
+                    .child(self.render_theme_selector(cx))
+                    .child(self.render_language_selector(cx)),
+            )
+            .child(
+                section_card(&t!("settings.settings_files")).child(
                     h_flex()
                         .gap_2()
                         .flex_wrap()
                         .child(
                             Button::new("export-settings")
                                 .small()
-                                .label("Export settings (.toml)")
+                                .label(t!("settings.export_settings").to_string())
                                 .on_click(cx.listener(|app, _, _, cx| {
                                     app.export_settings_toml();
                                     cx.notify();
@@ -2730,7 +2842,7 @@ impl PowerLeafApp {
                         .child(
                             Button::new("import-settings")
                                 .small()
-                                .label("Import settings (.toml)")
+                                .label(t!("settings.import_settings").to_string())
                                 .on_click(cx.listener(|app, _, window, cx| {
                                     app.import_settings_toml(window, cx);
                                     cx.notify();
@@ -2744,15 +2856,18 @@ impl PowerLeafApp {
     fn render_about_page(&self) -> AnyElement {
         page_shell(Page::About)
             .child(info_card(vec![
-                "PowerLeaf is a local Windows power automation utility.",
-                "Version and project details are shown below.",
+                t!("about.intro_1").to_string(),
+                t!("about.intro_2").to_string(),
             ]))
             .child(
-                section_card("PowerLeaf")
-                    .child(text_muted(env!("CARGO_PKG_DESCRIPTION")))
+                section_card(&t!("app.name"))
+                    .child(text_muted(t!("app.description").to_string()))
                     .child(stat_grid(vec![
-                        ("Author", "Tatsh Siow".to_owned()),
-                        ("Version", env!("CARGO_PKG_VERSION").to_owned()),
+                        (t!("about.author").to_string(), "Tatsh Siow".to_owned()),
+                        (
+                            t!("about.version").to_string(),
+                            env!("CARGO_PKG_VERSION").to_owned(),
+                        ),
                     ])),
             )
             .into_any_element()
@@ -2774,8 +2889,8 @@ impl PowerLeafApp {
                 .iter()
                 .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
                 .map(PowerPlan::display_name)
-                .unwrap_or_else(|| "Selected plan unavailable".to_owned()),
-            None => "Use inherited/default plan".to_owned(),
+                .unwrap_or_else(|| t!("common.selected_plan_unavailable").to_string()),
+            None => t!("common.use_inherited_default_plan").to_string(),
         };
 
         let mut options = v_flex()
@@ -2786,12 +2901,12 @@ impl PowerLeafApp {
             .p_1()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(COLOR_BORDER))
-            .bg(rgb(0x1f2329));
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover);
 
         options = options.child(power_plan_option_row(
             format!("{id}-default"),
-            "Use inherited/default plan".to_owned(),
+            t!("common.use_inherited_default_plan").to_string(),
             selected_guid.is_none(),
             None,
             field,
@@ -2804,8 +2919,8 @@ impl PowerLeafApp {
                     .px_2()
                     .py_2()
                     .text_sm()
-                    .text_color(rgb(COLOR_DIM))
-                    .child("No power plans loaded"),
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("common.no_power_plans_loaded").to_string()),
             );
         } else {
             for plan in &self.plans {
@@ -2841,14 +2956,14 @@ impl PowerLeafApp {
                     .px_2()
                     .rounded_sm()
                     .border_1()
-                    .border_color(rgb(COLOR_BORDER))
-                    .bg(rgb(COLOR_PANEL))
+                    .border_color(cx.theme().input)
+                    .bg(cx.theme().background)
                     .text_sm()
-                    .text_color(rgb(COLOR_TEXT))
-                    .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
+                    .text_color(cx.theme().foreground)
+                    .hover(|style| style.bg(cx.theme().secondary_hover))
                     .cursor_pointer()
                     .child(div().flex_1().min_w(px(0.0)).child(selected_text))
-                    .child(div().text_color(rgb(COLOR_DIM)).child("v"))
+                    .child(div().text_color(cx.theme().muted_foreground).child("v"))
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                         app.refresh_power_plans();
                         app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
@@ -2939,19 +3054,19 @@ impl PowerLeafApp {
             .p_1()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(COLOR_BORDER))
-            .bg(rgb(0x1f2329));
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover);
         if matches.is_empty() {
             suggestions = suggestions.child(
                 div()
                     .px_2()
                     .py_2()
                     .text_sm()
-                    .text_color(rgb(COLOR_DIM))
+                    .text_color(cx.theme().muted_foreground)
                     .child(if self.process_candidates.is_empty() {
-                        "No running apps loaded"
+                        t!("common.no_running_apps_loaded").to_string()
                     } else {
-                        "No matching apps"
+                        t!("common.no_matching_apps").to_string()
                     }),
             );
         }
@@ -2964,11 +3079,12 @@ impl PowerLeafApp {
                     .px_2()
                     .rounded_sm()
                     .text_sm()
-                    .text_color(rgb(COLOR_MUTED))
+                    .text_color(cx.theme().popover_foreground)
                     .when(count == 0, |row| {
-                        row.bg(rgb(COLOR_ACCENT_BG)).text_color(rgb(COLOR_TEXT))
+                        row.bg(cx.theme().accent)
+                            .text_color(cx.theme().accent_foreground)
                     })
-                    .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
+                    .hover(|style| style.bg(cx.theme().secondary_hover))
                     .cursor_pointer()
                     .child(process.clone())
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
@@ -3079,6 +3195,11 @@ fn power_plan_option_row(
     field: PowerPlanField,
     cx: &mut Context<PowerLeafApp>,
 ) -> AnyElement {
+    let text_color = cx.theme().popover_foreground;
+    let selected_bg = cx.theme().accent;
+    let selected_text_color = cx.theme().accent_foreground;
+    let hover_bg = cx.theme().secondary_hover;
+
     h_flex()
         .id(SharedString::from(id))
         .h(px(24.0))
@@ -3086,11 +3207,11 @@ fn power_plan_option_row(
         .px_2()
         .rounded_sm()
         .text_sm()
-        .text_color(rgb(COLOR_MUTED))
+        .text_color(text_color)
         .when(selected, |row| {
-            row.bg(rgb(COLOR_ACCENT_BG)).text_color(rgb(COLOR_TEXT))
+            row.bg(selected_bg).text_color(selected_text_color)
         })
-        .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
+        .hover(move |style| style.bg(hover_bg))
         .cursor_pointer()
         .child(label)
         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
@@ -3181,6 +3302,22 @@ fn clear_input_to(
     let _ = input.update(cx, |input, cx| input.set_value(value, window, cx));
 }
 
+fn apply_theme_mode(mode: AppThemeMode, window: &mut Window, cx: &mut App) {
+    match mode {
+        AppThemeMode::System => gpui_component::Theme::sync_system_appearance(Some(window), cx),
+        AppThemeMode::Light => {
+            gpui_component::Theme::change(gpui_component::ThemeMode::Light, Some(window), cx)
+        }
+        AppThemeMode::Dark => {
+            gpui_component::Theme::change(gpui_component::ThemeMode::Dark, Some(window), cx)
+        }
+    }
+}
+
+fn apply_language(language: AppLanguage) {
+    rust_i18n::set_locale(language.locale());
+}
+
 fn page_shell(page: Page) -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_3().child(
         h_flex()
@@ -3196,7 +3333,7 @@ fn page_shell(page: Page) -> gpui::Div {
                     .text_size(px(24.0))
                     .line_height(px(32.0))
                     .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(rgb(COLOR_MUTED))
+                    .opacity(0.72)
                     .truncate()
                     .child(page.section_label()),
             )
@@ -3205,7 +3342,7 @@ fn page_shell(page: Page) -> gpui::Div {
                     .text_size(px(22.0))
                     .line_height(px(30.0))
                     .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(rgb(COLOR_DIM))
+                    .opacity(0.48)
                     .child("›"),
             )
             .child(
@@ -3215,32 +3352,16 @@ fn page_shell(page: Page) -> gpui::Div {
                     .text_size(px(24.0))
                     .line_height(px(32.0))
                     .font_weight(gpui::FontWeight::BOLD)
-                    .text_color(rgb(COLOR_TEXT))
                     .truncate()
                     .child(page.label()),
             ),
     )
 }
 
-fn section_card(title: &str) -> gpui::Div {
-    v_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .gap_2()
-        .p_3()
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(COLOR_BORDER))
-        .bg(rgb(COLOR_PANEL))
-        .child(
-            div()
-                .w_full()
-                .text_size(px(16.0))
-                .line_height(px(22.0))
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(rgb(COLOR_TEXT))
-                .child(title.to_owned()),
-        )
+fn section_card(title: &str) -> GroupBox {
+    GroupBox::new()
+        .outline()
+        .title(Label::new(title.to_owned()))
 }
 
 fn rule_card(
@@ -3258,8 +3379,8 @@ fn rule_card(
         .p_3()
         .rounded_sm()
         .border_1()
-        .border_color(rgb(COLOR_BORDER))
-        .bg(rgb(COLOR_PANEL))
+        .border_color(cx.theme().border)
+        .bg(cx.theme().group_box)
         .child(
             div()
                 .relative()
@@ -3307,7 +3428,7 @@ fn rule_card_collapse_indicator(collapsed: bool) -> AnyElement {
         .justify_center()
         .text_size(px(14.0))
         .line_height(px(18.0))
-        .text_color(rgb(COLOR_MUTED))
+        .opacity(0.72)
         .child(if collapsed { ">" } else { "v" })
         .into_any_element()
 }
@@ -3325,67 +3446,29 @@ fn row_card() -> gpui::Div {
         .flex_wrap()
         .p_2()
         .rounded_sm()
-        .bg(rgb(COLOR_PANEL_ALT))
         .border_1()
-        .border_color(rgb(COLOR_BORDER_SUBTLE))
+        .opacity(0.92)
 }
 
-fn stat_grid(rows: Vec<(&'static str, String)>) -> gpui::Div {
-    let mut grid = v_flex()
-        .gap_1()
-        .p_3()
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(COLOR_BORDER))
-        .bg(rgb(COLOR_PANEL));
+fn stat_grid(rows: Vec<(String, String)>) -> GroupBox {
+    let mut list = DescriptionList::vertical()
+        .columns(1)
+        .bordered(false)
+        .label_width(px(160.0));
     for (label, value) in rows {
-        grid = grid.child(
-            h_flex()
-                .w_full()
-                .min_w(px(0.0))
-                .gap_2()
-                .items_start()
-                .flex_wrap()
-                .py_1()
-                .child(
-                    div()
-                        .w(px(160.0))
-                        .min_w(px(120.0))
-                        .text_size(px(13.0))
-                        .line_height(px(18.0))
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(rgb(COLOR_TEXT))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .text_size(px(13.0))
-                        .line_height(px(18.0))
-                        .text_color(rgb(COLOR_MUTED))
-                        .child(value),
-                ),
-        );
+        list = list.item(label, text_muted(value).into_any_element(), 1);
     }
-    grid
+    GroupBox::new().outline().child(list)
 }
 
-fn info_card(lines: Vec<&'static str>) -> gpui::Div {
-    let mut card = v_flex()
-        .gap_1()
-        .p_2()
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(COLOR_ACCENT_BG))
-        .bg(rgb(0x2b3544));
+fn info_card(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> GroupBox {
+    let mut card = GroupBox::new().fill();
     for line in lines {
         card = card.child(
             div()
                 .text_size(px(13.0))
                 .line_height(px(18.0))
-                .text_color(rgb(COLOR_MUTED))
-                .child(line),
+                .child(line.into()),
         );
     }
     card
@@ -3396,14 +3479,7 @@ fn labeled_element(label: &str, element: AnyElement) -> gpui::Div {
         .w_full()
         .min_w(px(0.0))
         .gap_1()
-        .child(
-            div()
-                .text_size(px(12.0))
-                .line_height(px(16.0))
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(rgb(COLOR_MUTED))
-                .child(label.to_owned()),
-        )
+        .child(Label::new(label.to_owned()).text_size(px(12.0)))
         .child(element)
 }
 
@@ -3423,12 +3499,12 @@ fn syncing_rule_card(index: usize) -> AnyElement {
         .into_any_element()
 }
 
-fn rule_card_title(name: &str) -> &str {
+fn rule_card_title(name: &str) -> String {
     let name = name.trim();
     if name.is_empty() {
-        "Unnamed rule"
+        t!("common.unnamed_rule").to_string()
     } else {
-        name
+        name.to_owned()
     }
 }
 
@@ -3441,23 +3517,21 @@ fn static_rule_title(title: &str) -> AnyElement {
         .text_size(px(16.0))
         .line_height(px(22.0))
         .font_weight(gpui::FontWeight::BOLD)
-        .text_color(rgb(COLOR_TEXT))
         .child(title.to_owned())
         .into_any_element()
 }
 
-fn status_pill(label: &'static str, bg: u32, fg: u32) -> AnyElement {
-    div()
-        .flex_shrink_0()
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .bg(rgb(bg))
-        .text_size(px(12.0))
-        .line_height(px(16.0))
-        .text_color(rgb(fg))
-        .child(label)
-        .into_any_element()
+fn status_pill(label: impl Into<SharedString>, _bg: u32, fg: u32) -> AnyElement {
+    let label: SharedString = label.into();
+    let tag = match fg {
+        COLOR_SUCCESS => Tag::success(),
+        COLOR_WARNING => Tag::warning(),
+        COLOR_DANGER => Tag::danger(),
+        COLOR_ACCENT => Tag::info(),
+        _ => Tag::secondary(),
+    };
+
+    tag.flex_shrink_0().child(label).into_any_element()
 }
 
 fn rule_enable_checkbox(
@@ -3476,7 +3550,7 @@ fn rule_enable_checkbox(
         .justify_center()
         .flex_shrink_0()
         .rounded_sm()
-        .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
+        .hover(|style| style.opacity(0.86))
         .cursor_pointer()
         .child(
             div()
@@ -3487,7 +3561,6 @@ fn rule_enable_checkbox(
                 .rounded_sm()
                 .border_1()
                 .border_color(rgb(border_color))
-                .bg(rgb(COLOR_PANEL))
                 .when(checked, |this| {
                     this.child(
                         div()
@@ -3508,7 +3581,7 @@ fn rule_enable_checkbox(
 }
 
 fn syncing_input_message() -> gpui::Div {
-    text_muted("Syncing rule editor state...")
+    text_muted(t!("common.syncing_rule_editor").to_string())
 }
 
 fn checkbox(
@@ -3533,7 +3606,7 @@ fn checkbox(
         .text_color(rgb(text_color))
         .text_size(px(13.0))
         .line_height(px(18.0))
-        .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
+        .hover(|style| style.opacity(0.86))
         .cursor_pointer()
         .child(
             div()
@@ -3545,7 +3618,6 @@ fn checkbox(
                 .rounded_sm()
                 .border_1()
                 .border_color(rgb(border_color))
-                .bg(rgb(COLOR_PANEL))
                 .when(checked, |this| {
                     this.child(
                         div()
@@ -3573,7 +3645,7 @@ enum NavStatus {
     Unsupported,
 }
 
-fn title_bar_controls(window: &Window) -> AnyElement {
+fn title_bar_controls(window: &Window, cx: &mut Context<PowerLeafApp>) -> AnyElement {
     let (maximize_id, maximize_icon) = if window.is_maximized() {
         ("titlebar-restore", "\u{e923}")
     } else {
@@ -3590,18 +3662,21 @@ fn title_bar_controls(window: &Window) -> AnyElement {
             "\u{e921}",
             WindowControlArea::Min,
             false,
+            cx,
         ))
         .child(title_bar_control_button(
             maximize_id,
             maximize_icon,
             WindowControlArea::Max,
             false,
+            cx,
         ))
         .child(title_bar_control_button(
             "titlebar-close",
             "\u{e8bb}",
             WindowControlArea::Close,
             true,
+            cx,
         ))
         .into_any_element()
 }
@@ -3611,13 +3686,18 @@ fn title_bar_control_button(
     icon: &'static str,
     control_area: WindowControlArea,
     is_close: bool,
+    cx: &mut Context<PowerLeafApp>,
 ) -> AnyElement {
     let hover_bg = if is_close {
-        0xe81123
+        cx.theme().danger_hover
     } else {
-        COLOR_PANEL_ACTIVE
+        cx.theme().secondary_hover
     };
-    let active_bg = if is_close { 0xc50f1f } else { COLOR_PANEL_ALT };
+    let active_bg = if is_close {
+        cx.theme().danger_active
+    } else {
+        cx.theme().secondary_active
+    };
 
     h_flex()
         .id(id)
@@ -3629,21 +3709,35 @@ fn title_bar_control_button(
         .items_center()
         .justify_center()
         .text_size(px(10.0))
-        .text_color(rgb(COLOR_MUTED))
-        .hover(move |style| style.bg(rgb(hover_bg)))
-        .active(move |style| style.bg(rgb(active_bg)))
+        .text_color(cx.theme().muted_foreground)
+        .hover(move |style| style.bg(hover_bg))
+        .active(move |style| style.bg(active_bg))
         .child(icon)
         .into_any_element()
 }
 
-fn nav_row(page: Page, selected: bool, status: Option<NavStatus>) -> gpui::Stateful<gpui::Div> {
+fn nav_row(
+    page: Page,
+    selected: bool,
+    status: Option<NavStatus>,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
     let row_bg = if selected {
-        COLOR_PANEL_ACTIVE
+        cx.theme().sidebar_accent
     } else {
-        COLOR_PANEL
+        cx.theme().transparent
     };
-    let indicator = if selected { COLOR_ACCENT } else { row_bg };
-    let text_color = if selected { COLOR_TEXT } else { COLOR_MUTED };
+    let indicator = if selected {
+        cx.theme().sidebar_primary
+    } else {
+        cx.theme().transparent
+    };
+    let text_color = if selected {
+        cx.theme().sidebar_accent_foreground
+    } else {
+        cx.theme().sidebar_foreground
+    };
+    let hover_bg = cx.theme().sidebar_accent;
 
     let row = h_flex()
         .id(SharedString::from(format!("nav-row-{:?}", page)))
@@ -3653,12 +3747,12 @@ fn nav_row(page: Page, selected: bool, status: Option<NavStatus>) -> gpui::State
         .gap_2()
         .px_2()
         .rounded_sm()
-        .bg(rgb(row_bg))
-        .text_color(rgb(text_color))
-        .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
+        .bg(row_bg)
+        .text_color(text_color)
+        .hover(move |style| style.bg(hover_bg))
         .cursor_pointer()
-        .child(div().w(px(2.0)).h(px(16.0)).rounded_sm().bg(rgb(indicator)))
-        .child(nav_icon(page, selected))
+        .child(div().w(px(2.0)).h(px(16.0)).rounded_sm().bg(indicator))
+        .child(nav_icon(page, selected, cx))
         .child(
             div()
                 .flex_1()
@@ -3669,26 +3763,24 @@ fn nav_row(page: Page, selected: bool, status: Option<NavStatus>) -> gpui::State
         );
 
     if let Some(status) = status {
-        row.child(nav_status_indicator(status))
+        row.child(nav_status_indicator(status, cx))
     } else {
         row
     }
 }
 
-fn nav_status_indicator(status: NavStatus) -> AnyElement {
+fn nav_status_indicator(status: NavStatus, cx: &mut Context<PowerLeafApp>) -> AnyElement {
     let color = match status {
-        NavStatus::Enabled => COLOR_SUCCESS,
-        NavStatus::Failed => COLOR_DANGER,
-        NavStatus::Disabled => COLOR_DIM,
-        NavStatus::Unsupported => COLOR_DIM,
+        NavStatus::Enabled => cx.theme().success_foreground,
+        NavStatus::Failed => cx.theme().danger_foreground,
+        NavStatus::Disabled => cx.theme().muted_foreground,
+        NavStatus::Unsupported => cx.theme().muted_foreground,
     };
 
-    div()
-        .w(px(8.0))
-        .h(px(8.0))
-        .flex_shrink_0()
-        .rounded_full()
-        .bg(rgb(color))
+    Badge::new()
+        .dot()
+        .color(color)
+        .child(div().size(px(8.0)))
         .into_any_element()
 }
 
@@ -3721,8 +3813,12 @@ fn feature_nav_status(
     }
 }
 
-fn nav_icon(page: Page, selected: bool) -> AnyElement {
-    let color = if selected { COLOR_ACCENT } else { COLOR_DIM };
+fn nav_icon(page: Page, selected: bool, cx: &mut Context<PowerLeafApp>) -> AnyElement {
+    let color = if selected {
+        cx.theme().sidebar_primary
+    } else {
+        cx.theme().muted_foreground
+    };
 
     div()
         .w(px(18.0))
@@ -3734,7 +3830,7 @@ fn nav_icon(page: Page, selected: bool) -> AnyElement {
         .child(
             Icon::new(nav_icon_name(page))
                 .with_size(px(16.0))
-                .text_color(rgb(color)),
+                .text_color(color),
         )
         .into_any_element()
 }
@@ -3799,37 +3895,29 @@ fn toggle_button(
 }
 
 fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .px_2()
-        .py_1()
-        .text_size(px(13.0))
-        .line_height(px(18.0))
-        .rounded_sm()
-        .bg(rgb(COLOR_PANEL_ALT))
-        .border_1()
-        .border_color(rgb(COLOR_BORDER))
-        .text_color(rgb(COLOR_ACCENT))
-        .child(value.into())
+    div().child(
+        Tag::info()
+            .outline()
+            .text_size(px(13.0))
+            .child(value.into()),
+    )
 }
 
 fn text_muted(value: impl Into<SharedString>) -> gpui::Div {
     div()
         .text_size(px(13.0))
         .line_height(px(18.0))
-        .text_color(rgb(COLOR_MUTED))
+        .opacity(0.72)
         .child(value.into())
 }
 
 fn text_danger(value: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .text_size(px(13.0))
-        .line_height(px(18.0))
-        .px_2()
-        .py_1()
-        .rounded_sm()
-        .bg(rgb(COLOR_DANGER_BG))
-        .text_color(rgb(COLOR_DANGER))
-        .child(value.into())
+    div().child(
+        Tag::danger()
+            .outline()
+            .text_size(px(13.0))
+            .child(value.into()),
+    )
 }
 
 fn stepper_u64(
@@ -3965,15 +4053,17 @@ fn apply_u8_step(current: u8, change: &StepChange<u8>, min: u8, max: u8) -> u8 {
 fn cpu_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
-        .unwrap_or_else(|| "Collecting".to_owned())
+        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
 }
 
 fn eco_qos_label(status: &EcoQosSnapshot) -> String {
     if status.enabled {
-        format!(
-            "{} ({} throttled)",
-            status.message, status.throttled_processes
+        t!(
+            "dashboard.throttled_suffix",
+            message = status.message.clone(),
+            count = status.throttled_processes
         )
+        .to_string()
     } else {
         status.message.clone()
     }
@@ -3981,10 +4071,12 @@ fn eco_qos_label(status: &EcoQosSnapshot) -> String {
 
 fn app_suspension_label(status: &AppSuspensionSnapshot) -> String {
     if status.enabled {
-        format!(
-            "{} ({} suspended)",
-            status.message, status.suspended_processes
+        t!(
+            "dashboard.suspended_suffix",
+            message = status.message.clone(),
+            count = status.suspended_processes
         )
+        .to_string()
     } else {
         status.message.clone()
     }
@@ -3992,10 +4084,12 @@ fn app_suspension_label(status: &AppSuspensionSnapshot) -> String {
 
 fn cpu_affinity_label(status: &CpuAffinitySnapshot) -> String {
     if status.enabled {
-        format!(
-            "{} ({} adjusted)",
-            status.message, status.adjusted_processes
+        t!(
+            "dashboard.adjusted_suffix",
+            message = status.message.clone(),
+            count = status.adjusted_processes
         )
+        .to_string()
     } else {
         status.message.clone()
     }
@@ -4052,76 +4146,75 @@ fn new_affinity_rule(process: &str) -> CpuAffinityRule {
 }
 
 struct SuspensionIndicator {
-    label: &'static str,
+    label: String,
     bg: u32,
     fg: u32,
-    hover: &'static str,
+    hover: String,
 }
 
 struct AffinityIndicator {
-    label: &'static str,
+    label: String,
     bg: u32,
     fg: u32,
-    hover: &'static str,
+    hover: String,
 }
 
 fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> SuspensionIndicator {
     if suspension::is_builtin_excluded(process) {
         SuspensionIndicator {
-            label: "Protected",
+            label: t!("suspension.indicator.protected").to_string(),
             bg: COLOR_ACCENT_BG,
             fg: COLOR_ACCENT,
-            hover: "PowerLeaf does not suspend this app because it can fail to restore correctly.",
+            hover: t!("suspension.indicator.protected_help").to_string(),
         }
     } else if suspension::contains_process(&status.network_wake_apps, process) {
         SuspensionIndicator {
-            label: "Network",
+            label: t!("suspension.indicator.network").to_string(),
             bg: COLOR_ACCENT_BG,
             fg: COLOR_ACCENT,
-            hover:
-                "PowerLeaf has thawed or kept this app awake because it owns network connections.",
+            hover: t!("suspension.indicator.network_help").to_string(),
         }
     } else if suspension::contains_process(&status.audio_wake_apps, process) {
         SuspensionIndicator {
-            label: "Audio",
+            label: t!("suspension.indicator.audio").to_string(),
             bg: COLOR_ACCENT_BG,
             fg: COLOR_ACCENT,
-            hover: "PowerLeaf has thawed or kept this app awake because it is playing audio.",
+            hover: t!("suspension.indicator.audio_help").to_string(),
         }
     } else if suspension::contains_process(&status.suspended_apps, process) {
         SuspensionIndicator {
-            label: "Frozen",
+            label: t!("suspension.indicator.frozen").to_string(),
             bg: COLOR_SUCCESS_BG,
             fg: COLOR_SUCCESS,
-            hover: "PowerLeaf has frozen this app with Windows Job Object freeze.",
+            hover: t!("suspension.indicator.frozen_help").to_string(),
         }
     } else if suspension::contains_process(&status.temporary_thawed_apps, process) {
         SuspensionIndicator {
-            label: "Thawed",
+            label: t!("suspension.indicator.thawed").to_string(),
             bg: COLOR_ACCENT_BG,
             fg: COLOR_ACCENT,
-            hover: "PowerLeaf has temporarily thawed this app before freezing it again.",
+            hover: t!("suspension.indicator.thawed_help").to_string(),
         }
     } else if suspension::contains_process(&status.tracked_apps, process) {
         SuspensionIndicator {
-            label: "Waiting",
+            label: t!("suspension.indicator.waiting").to_string(),
             bg: COLOR_WARNING_BG,
             fg: COLOR_WARNING,
-            hover: "This app is in the background and waiting for the delay.",
+            hover: t!("suspension.indicator.waiting_help").to_string(),
         }
     } else if status.enabled {
         SuspensionIndicator {
-            label: "Not suspended",
+            label: t!("suspension.indicator.not_suspended").to_string(),
             bg: COLOR_PANEL_ACTIVE,
             fg: COLOR_MUTED,
-            hover: "PowerLeaf is not currently suspending this app.",
+            hover: t!("suspension.indicator.not_suspended_help").to_string(),
         }
     } else {
         SuspensionIndicator {
-            label: "Off",
+            label: t!("suspension.indicator.off").to_string(),
             bg: COLOR_PANEL_ACTIVE,
             fg: COLOR_DIM,
-            hover: "App Suspension is disabled.",
+            hover: t!("suspension.indicator.off_help").to_string(),
         }
     }
 }
@@ -4129,31 +4222,31 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
 fn affinity_indicator(status: &CpuAffinitySnapshot, process: &str) -> AffinityIndicator {
     if affinity::is_builtin_excluded(process) {
         AffinityIndicator {
-            label: "Protected",
+            label: t!("affinity.indicator.protected").to_string(),
             bg: COLOR_ACCENT_BG,
             fg: COLOR_ACCENT,
-            hover: "PowerLeaf does not change affinity for this Windows process.",
+            hover: t!("affinity.indicator.protected_help").to_string(),
         }
     } else if affinity::contains_process(&status.adjusted_apps, process) {
         AffinityIndicator {
-            label: "Pinned",
+            label: t!("affinity.indicator.pinned").to_string(),
             bg: COLOR_SUCCESS_BG,
             fg: COLOR_SUCCESS,
-            hover: "PowerLeaf has applied this affinity rule to at least one process.",
+            hover: t!("affinity.indicator.pinned_help").to_string(),
         }
     } else if status.enabled {
         AffinityIndicator {
-            label: "Ready",
+            label: t!("affinity.indicator.ready").to_string(),
             bg: COLOR_PANEL_ACTIVE,
             fg: COLOR_MUTED,
-            hover: "PowerLeaf is watching for matching background processes.",
+            hover: t!("affinity.indicator.ready_help").to_string(),
         }
     } else {
         AffinityIndicator {
-            label: "Off",
+            label: t!("affinity.indicator.off").to_string(),
             bg: COLOR_PANEL_ACTIVE,
             fg: COLOR_DIM,
-            hover: "CPU Affinity is disabled.",
+            hover: t!("affinity.indicator.off_help").to_string(),
         }
     }
 }
@@ -4202,7 +4295,7 @@ fn affinity_mask_label(mask: u64) -> String {
     let processors = affinity::logical_processors();
     let all_mask = affinity_processors_mask(&processors);
     if all_mask != 0 && (mask & all_mask) == all_mask {
-        return "All logical CPUs".to_owned();
+        return t!("affinity.all_logical_cpus").to_string();
     }
 
     let cores = processors
@@ -4212,9 +4305,9 @@ fn affinity_mask_label(mask: u64) -> String {
         .collect::<Vec<_>>();
 
     if cores.is_empty() {
-        "No logical CPUs selected".to_owned()
+        t!("affinity.no_logical_cpus").to_string()
     } else {
-        format!("Logical CPUs: {}", cores.join(", "))
+        t!("affinity.logical_cpus", cores = cores.join(", ")).to_string()
     }
 }
 
@@ -4242,29 +4335,42 @@ fn affinity_processor_bit(index: usize) -> Option<u64> {
 
 fn affinity_processor_label(processor: &LogicalProcessorInfo) -> String {
     match processor.kind {
-        LogicalProcessorKind::Performance => format!("P{}", processor.index),
-        LogicalProcessorKind::Efficiency => format!("E{}", processor.index),
-        LogicalProcessorKind::Standard => format!("CPU{}", processor.index),
+        LogicalProcessorKind::Performance => {
+            t!("affinity.p_core", index = processor.index).to_string()
+        }
+        LogicalProcessorKind::Efficiency => {
+            t!("affinity.e_core", index = processor.index).to_string()
+        }
+        LogicalProcessorKind::Standard => {
+            t!("affinity.cpu_core", index = processor.index).to_string()
+        }
     }
 }
 
 fn affinity_processor_tooltip(processor: &LogicalProcessorInfo) -> String {
     let kind = match processor.kind {
-        LogicalProcessorKind::Performance => "P-core",
-        LogicalProcessorKind::Efficiency => "E-core",
-        LogicalProcessorKind::Standard => "Logical CPU",
+        LogicalProcessorKind::Performance => t!("affinity.performance_core_kind").to_string(),
+        LogicalProcessorKind::Efficiency => t!("affinity.efficiency_core_kind").to_string(),
+        LogicalProcessorKind::Standard => t!("affinity.logical_cpu_kind").to_string(),
     };
 
     if processor.kind == LogicalProcessorKind::Standard {
-        format!(
-            "{kind} {} on physical core {}",
-            processor.index, processor.core_index
+        t!(
+            "affinity.standard_cpu_tooltip",
+            kind = kind,
+            index = processor.index,
+            core = processor.core_index
         )
+        .to_string()
     } else {
-        format!(
-            "{kind} logical CPU {} on physical core {} (efficiency class {})",
-            processor.index, processor.core_index, processor.efficiency_class
+        t!(
+            "affinity.hybrid_cpu_tooltip",
+            kind = kind,
+            index = processor.index,
+            core = processor.core_index,
+            class = processor.efficiency_class
         )
+        .to_string()
     }
 }
 

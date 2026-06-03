@@ -4121,6 +4121,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "raw-window-handle",
+ "rust-i18n",
  "serde",
  "toml 0.8.23",
  "windows 0.61.3",
