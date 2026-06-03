@@ -1,655 +1,274 @@
-# Windows Automatic Power Plan Switcher
+# Process Priority Control Plan
 
-> Legacy planning document.
->
-> This file records the original product plan and may use older terms such as
-> Power Save, Performance, whitelist, pause, and manual override. The current
-> implemented app uses `Idle plan`, `Active plan`, `Action Based Scheduler`,
-> `Time Based Scheduler`, and `Foreground Rules`.
->
-> For the current implementation and future development guidance, use
-> `DEVELOPMENT_GUIDE.md`. For user-facing instructions, use `README.md`.
+## Goal
 
-## 1. Project Overview
+Add configurable process priority control to PowerLeaf so background apps can be restrained for better foreground responsiveness, with EcoQoS remaining the primary power-efficiency mechanism.
 
-This project is a Windows desktop application that automatically switches between user-selected power plans based on user activity, foreground applications, or scheduled time rules.
+Priority control should be presented honestly:
 
-The application will be developed using:
+- It improves responsiveness under contention.
+- It can support power saving when paired with EcoQoS.
+- It does not guarantee lower power by itself, because an idle-priority process can still consume available CPU.
 
-* **Rust** for system-level reliability and performance
-* **egui / eframe** for the desktop GUI
-* **Windows APIs / `powercfg`** for power plan detection and switching
+## Current State
 
-The terms **Power Save** and **Performance** are only logical labels inside the application. Users can map each label to any available Windows power plan.
+PowerLeaf already has the main plumbing needed:
 
----
+- `src/ecoqos/mod.rs` applies Windows EcoQoS and lowers matched processes to `IDLE_PRIORITY_CLASS`.
+- `src/automation.rs` runs process automation in the background thread.
+- `src/foreground` can detect the foreground process.
+- `src/config/settings.rs` stores EcoQoS and App Suspension settings.
+- `src/app.rs` already has process pickers and pages for process-control features.
 
-## 2. Core Goals
+The missing piece is a user-facing priority rule system independent of Efficiency Mode.
 
-* Automatically switch Windows power plans based on user behavior
-* Support multiple switching modes
-* Allow users to customize which Windows power plans are used
-* Minimize background resource usage
-* Provide a simple GUI for configuration
-* Preserve manual user control when needed
-* Avoid unnecessary power plan switching
+## Scope
 
----
+Implement a conservative first version:
 
-## 3. Power Plan Mapping
+- Add a new Process Priority feature/page.
+- Match rules by process name.
+- Apply only safe downward/neutral priorities:
+  - `Normal`
+  - `Below Normal`
+  - `Idle`
+- Exclude the foreground app by default.
+- Reuse or mirror the existing built-in exclusions from EcoQoS.
+- Store the previous priority per PID and restore it when the process no longer matches.
+- Avoid `Above Normal`, `High`, and `Realtime` in v1.
 
-The application should not hardcode specific Windows power plans.
+## Non-Goals
 
-Instead, it should detect available power plans from the system and allow users to assign them to logical roles.
+- No CPU affinity or CPU Sets.
+- No hard CPU throttling.
+- No priority boosting for foreground apps.
+- No registry-enforced persistent priority rules.
+- No service process split.
+- No global timer-resolution control in this feature.
 
-Example:
+## Configuration Model
 
-```text
-Logical Mode      Selected Windows Power Plan
--------------     ----------------------------
-Power Save        Power saver
-Performance       High performance
-Balanced          Balanced
-Custom 1          User-created power plan
+Add settings similar to:
+
+```rust
+pub struct PriorityControlSettings {
+    pub enabled: bool,
+    pub exclude_foreground_app: bool,
+    pub rules: Vec<PriorityRule>,
+}
+
+pub struct PriorityRule {
+    pub enabled: bool,
+    pub process_name: String,
+    pub priority: ProcessPriority,
+}
+
+pub enum ProcessPriority {
+    Normal,
+    BelowNormal,
+    Idle,
+}
 ```
 
-Internally, the application should store the selected power plan GUIDs.
-
----
-
-## 4. Switching Modes
-
-## Mode 1: Activity-Based Switching
-
-This mode switches power plans based on user activity.
-
-### Behavior
-
-* If no user input is detected for a configured duration, switch to the selected **Power Save** plan.
-* If user input is detected again, switch to the selected **Performance** plan.
-
-### Input Sources
-
-The application should detect activity from:
-
-* Mouse movement
-* Mouse clicks
-* Keyboard input
-* Controller input
-* Other supported Windows input events
-
-### Configurable Options
+Default:
 
 ```text
-Idle timeout: 1 / 3 / 5 / 10 / custom minutes
-Power Save plan: user-selected Windows power plan
-Performance plan: user-selected Windows power plan
+enabled = false
+exclude_foreground_app = true
+rules = []
 ```
 
----
-
-## 5. Foreground Application Rules
-
-Mode 1 should support foreground application rules.
-
-These rules override the normal idle/activity switching behavior.
-
----
-
-### 5.1 Foreground Whitelist
-
-Some applications should prevent automatic switching.
-
-If a whitelisted application is currently in the foreground, the application should not change the power plan automatically.
-
-### Example Use Cases
-
-* Games
-* Video editors
-* 3D rendering software
-* Benchmark tools
-* Virtual machines
-* Remote desktop sessions
-
-### Example Behavior
-
-```text
-Current foreground app: blender.exe
-Rule: Whitelisted
-Result: Do not switch power plan automatically
-```
-
----
-
-### 5.2 Force Power Save Application List
-
-Some applications should always trigger the selected **Power Save** plan when they are in the foreground.
-
-### Example Use Cases
-
-* Browser video playback
-* E-book readers
-* Music players
-* Chat applications
-* Note-taking apps
-
-### Example Behavior
-
-```text
-Current foreground app: chrome.exe
-Rule: Force Power Save
-Result: Switch to Power Save plan
-```
-
----
-
-## 6. Mode 2: Schedule-Based Switching
-
-This mode switches power plans based on a user-defined schedule.
-
-### Behavior
-
-* During configured schedule periods, switch to the selected **Power Save** plan.
-* Outside configured schedule periods, switch to the selected **Performance** plan.
-
-### Example Schedule
-
-```text
-Power Save period:
-22:00 - 08:00
-
-Outside this period:
-Use Performance plan
-```
-
-### Configurable Options
-
-```text
-Start time
-End time
-Days of week
-Power Save plan
-Performance plan
-```
-
----
-
-## 7. Rule Priority
-
-When multiple rules are active, the application should apply a clear priority order.
-
-Suggested priority:
-
-```text
-1. Manual override
-2. Foreground app force Power Save rule
-3. Foreground app whitelist rule
-4. Schedule-based rule
-5. Activity-based idle rule
-6. Default selected plan
-```
-
----
-
-## 8. Manual Override
-
-Users should be able to temporarily disable automatic switching.
-
-### Options
-
-```text
-Pause automation for 15 minutes
-Pause automation for 30 minutes
-Pause automation for 1 hour
-Pause until next restart
-Pause indefinitely
-```
-
-When automation is paused, the app should not change the Windows power plan.
-
----
-
-## 9. Application Architecture
-
-## 9.1 Suggested Modules
-
-```text
-src/
-├── main.rs
-├── app.rs
-├── config/
-│   ├── mod.rs
-│   ├── settings.rs
-│   └── storage.rs
-├── power/
-│   ├── mod.rs
-│   ├── plan.rs
-│   └── powercfg.rs
-├── activity/
-│   ├── mod.rs
-│   ├── input_tracker.rs
-│   └── idle_detector.rs
-├── foreground/
-│   ├── mod.rs
-│   └── active_window.rs
-├── scheduler/
-│   ├── mod.rs
-│   └── schedule_rule.rs
-├── rules/
-│   ├── mod.rs
-│   └── decision_engine.rs
-└── ui/
-    ├── mod.rs
-    ├── dashboard.rs
-    ├── power_plan_page.rs
-    ├── rules_page.rs
-    └── schedule_page.rs
-```
-
----
-
-## 10. Main Components
-
-## 10.1 Power Plan Manager
-
-Responsibilities:
-
-* List available Windows power plans
-* Store power plan GUIDs
-* Detect the currently active power plan
-* Switch to a selected power plan
-
-Possible implementation methods:
-
-* Use `powercfg /list`
-* Use `powercfg /getactivescheme`
-* Use `powercfg /setactive <GUID>`
-
-Later, this can be replaced or improved with direct Windows API usage.
-
----
-
-## 10.2 Activity Tracker
-
-Responsibilities:
-
-* Detect last user input time
-* Track whether the system is currently idle
-* Detect input changes from mouse, keyboard, and controller
-* Send activity state to the rule engine
-
-Suggested state:
-
-```text
-Active
-Idle
-Unknown
-```
-
----
-
-## 10.3 Foreground Application Detector
-
-Responsibilities:
-
-* Detect the currently focused foreground window
-* Extract process name
-* Match process name against user-defined rules
-
-Example detected process:
-
-```text
-chrome.exe
-code.exe
-blender.exe
-eldenring.exe
-```
-
----
-
-## 10.4 Scheduler
-
-Responsibilities:
-
-* Store schedule rules
-* Compare current time with configured schedule
-* Return whether the current time is inside a Power Save period
-
-Example rule:
-
-```text
-Days: Monday - Friday
-Start: 22:00
-End: 08:00
-Target plan: Power Save
-```
-
-The scheduler should support overnight schedules.
-
-Example:
-
-```text
-22:00 - 08:00
-```
-
-This means the schedule starts at night and ends the next morning.
-
----
-
-## 10.5 Decision Engine
-
-The decision engine decides which power plan should be active.
-
-Input sources:
-
-* Current user activity state
-* Current foreground application
-* Current schedule status
-* Manual override status
-* User configuration
-
-Output:
-
-```text
-Target power plan GUID
-Reason for decision
-```
-
-Example output:
-
-```text
-Target plan: Power Save
-Reason: User has been idle for 5 minutes
-```
-
----
-
-## 11. Configuration Design
-
-Suggested configuration format:
+TOML shape:
 
 ```toml
-[general]
+[priority_control]
+enabled = false
+exclude_foreground_app = true
+
+[[priority_control.rules]]
 enabled = true
-startup_with_windows = false
-check_interval_ms = 1000
+process_name = "backup.exe"
+priority = "idle"
 
-[power_plans]
-power_save_guid = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-performance_guid = "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
-
-[activity_mode]
+[[priority_control.rules]]
 enabled = true
-idle_timeout_seconds = 300
-
-[foreground_rules]
-whitelist = [
-  "blender.exe",
-  "davinciresolve.exe",
-  "code.exe"
-]
-
-force_power_save = [
-  "chrome.exe",
-  "spotify.exe",
-  "discord.exe"
-]
-
-[schedule_mode]
-enabled = true
-
-[[schedule_mode.rules]]
-name = "Night Power Save"
-days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-start_time = "22:00"
-end_time = "08:00"
-power_save_guid = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-performance_guid = "yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy"
+process_name = "browser.exe"
+priority = "below_normal"
 ```
 
----
+## Runtime Design
 
-## 12. GUI Design
-
-## 12.1 Main Dashboard
-
-The dashboard should show:
+Create a new module:
 
 ```text
-Current power plan
-Current mode
-Current detected foreground app
-Current activity state
-Last input time
-Next scheduled switch
-Automation status
+src/priority/
+  mod.rs
 ```
 
-Example:
+Responsibilities:
+
+- Enumerate processes with existing `foreground::list_processes()`.
+- Filter to the current user session.
+- Skip PowerLeaf itself.
+- Skip foreground process when configured.
+- Skip protected/built-in excluded processes.
+- Apply the configured priority class using `SetPriorityClass`.
+- Remember previous priority per PID.
+- Restore previous priority when:
+  - automation is disabled,
+  - Priority Control is disabled,
+  - a process no longer matches a rule,
+  - a process becomes foreground and foreground exclusion is enabled,
+  - the manager is dropped.
+
+Use existing Windows APIs already used in `src/ecoqos/mod.rs`:
+
+- `OpenProcess`
+- `GetPriorityClass`
+- `SetPriorityClass`
+- `CloseHandle`
+
+Prefer sharing duplicated process-handle code only if the duplication becomes noisy. For v1, a small local helper is acceptable to keep the change low-risk.
+
+## Priority Mapping
+
+Map settings to Windows priority classes:
 
 ```text
-Current Plan: Power Saver
-Mode: Activity-Based
-State: Idle
-Foreground App: chrome.exe
-Reason: Idle for 5 minutes
+Normal       -> NORMAL_PRIORITY_CLASS
+BelowNormal  -> BELOW_NORMAL_PRIORITY_CLASS
+Idle         -> IDLE_PRIORITY_CLASS
 ```
 
----
-
-## 12.2 Power Plan Settings Page
-
-Features:
-
-* Refresh available Windows power plans
-* Select logical **Power Save** plan
-* Select logical **Performance** plan
-* Show currently active Windows power plan
-* Test switch button
-
----
-
-## 12.3 Activity Mode Page
-
-Features:
-
-* Enable or disable activity-based switching
-* Set idle timeout
-* Enable input detection options
-* Configure behavior when activity resumes
-
----
-
-## 12.4 Foreground Rules Page
-
-Features:
-
-* Add application to whitelist
-* Add application to force Power Save list
-* Remove application from rules
-* Detect current foreground app and add it quickly
-* Show rule conflict warnings
-
----
-
-## 12.5 Schedule Mode Page
-
-Features:
-
-* Enable or disable schedule-based switching
-* Add multiple schedule rules
-* Select days of week
-* Select start and end time
-* Assign power plans for schedule periods
-* Support overnight schedules
-
----
-
-## 13. Background Service Behavior
-
-The first version can run as a normal tray application.
-
-Suggested behavior:
-
-* Starts minimized to tray if configured
-* Runs a lightweight loop every configured interval
-* Checks foreground app, idle state, and schedule state
-* Only switches power plans when the target plan changes
-* Avoids repeatedly calling `powercfg` if the desired plan is already active
-
----
-
-## 14. State Machine
-
-Suggested states:
+Do not expose:
 
 ```text
-Disabled
-ManualOverride
-ForegroundWhitelist
-ForegroundForcePowerSave
-ScheduledPowerSave
-ScheduledPerformance
-IdlePowerSave
-ActivePerformance
+ABOVE_NORMAL_PRIORITY_CLASS
+HIGH_PRIORITY_CLASS
+REALTIME_PRIORITY_CLASS
 ```
 
-Example transition:
+Those can reduce stability or starve other work when misused.
+
+## Automation Integration
+
+Update `BackgroundAutomation`:
+
+- Add `PriorityControlManager` to `HiddenAutomationRunner`.
+- Add `PriorityControlSnapshot` to shared worker state.
+- Refresh priority control on the same cadence as EcoQoS at first.
+- Later, optimize cadence if needed.
+
+Potential constant:
+
+```rust
+const PRIORITY_CONTROL_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+```
+
+This is acceptable initially because EcoQoS already scans on a 1-second cadence. Avoid adding another independent full process scan if possible; a later optimization can share process snapshots across EcoQoS, Priority Control, and App Suspension.
+
+## UI Plan
+
+Add `Page::PriorityControl` under the process-control group.
+
+Page content:
+
+- Enable Priority Control toggle.
+- Exclude foreground app toggle.
+- Status metrics:
+  - scanned processes,
+  - adjusted processes,
+  - skipped processes,
+  - failed processes.
+- Add process rule row:
+  - process picker,
+  - priority selector,
+  - add button.
+- Rule list:
+  - enabled toggle,
+  - process name,
+  - selected priority,
+  - remove button.
+
+Suggested copy:
 
 ```text
-ActivePerformance
-  -> no input for 5 minutes
-IdlePowerSave
-
-IdlePowerSave
-  -> user moves mouse
-ActivePerformance
+Priority Control lowers background process priority to preserve foreground responsiveness.
+For power saving, pair this with Efficiency Mode.
 ```
 
----
+## Interaction With Existing Features
 
-## 15. MVP Scope
+Priority Control and EcoQoS may both target the same process.
 
-## Phase 1: Basic Power Plan Switching
+Initial behavior:
 
-* Detect available Windows power plans
-* Allow user to select Power Save and Performance plans
-* Switch plans manually from GUI
-* Show current active power plan
+- EcoQoS can continue to set `Idle`.
+- Priority Control should not fight EcoQoS.
+- If EcoQoS is active for a process, Priority Control may skip it or treat `Idle` as already acceptable.
 
-## Phase 2: Activity-Based Switching
-
-* Detect idle time
-* Switch to Power Save after timeout
-* Switch to Performance when activity resumes
-* Add basic enable/disable toggle
-
-## Phase 3: Foreground Application Rules
-
-* Detect foreground process name
-* Add whitelist
-* Add force Power Save list
-* Apply priority rules
-
-## Phase 4: Schedule-Based Switching
-
-* Add schedule rules
-* Support day and time configuration
-* Support overnight schedules
-* Integrate schedule logic into decision engine
-
-## Phase 5: Tray and Polish
-
-* Add system tray support
-* Add startup with Windows option
-* Add manual override
-* Add logging
-* Add import/export configuration
-
----
-
-## 16. Possible Rust Crates
-
-Potential crates to evaluate:
+Preferred v1 rule:
 
 ```text
-eframe / egui      GUI framework
-serde              Serialization
-toml               Config file format
-chrono             Date and time handling
-windows            Windows API bindings
-sysinfo            Process information
-tracing            Logging
-tracing-subscriber Logging backend
-directories        Config directory handling
+If EcoQoS has already throttled a PID, Priority Control does not overwrite it.
 ```
 
-Optional:
+This avoids restore-order bugs where one manager restores a priority another manager intentionally changed.
 
-```text
-gilrs              Controller input detection
-tray-icon          System tray support
-```
+Implementation options:
 
----
+- Expose throttled PID set from `EcoQosManager`.
+- Or keep v1 simpler by documenting that Priority Control and EcoQoS should not be configured for the same process.
 
-## 17. Logging
+Better implementation:
 
-The application should keep lightweight logs for debugging.
+- Introduce one shared `ProcessPolicyManager` later to coordinate EcoQoS, priority, timer policy, and suspension state.
+- Do not build that abstraction for v1 unless restore conflicts become hard to avoid.
 
-Example log entries:
+## Safety Rules
 
-```text
-[INFO] Current foreground app: chrome.exe
-[INFO] User idle for 300 seconds
-[INFO] Switching power plan to Power Save
-[INFO] Skipped switch because target plan is already active
-[WARN] Power plan GUID not found
-```
+- Never modify system processes.
+- Never modify PowerLeaf itself.
+- Never use Realtime or High priority in v1.
+- Restore prior priority on disable/drop.
+- Treat access denied as skipped, not failed.
+- Keep foreground exclusion enabled by default.
+- Preserve user changes in unrelated files.
 
----
+## Tests
 
-## 18. Error Handling
+Unit tests:
 
-The application should handle:
+- Priority enum serializes/deserializes expected TOML names.
+- Built-in exclusions are respected.
+- Foreground skip matches by PID and process name.
+- Disabled settings clear previously adjusted processes.
+- Rule matching is case-insensitive and trims whitespace.
+- Priority mapping returns the expected Windows constants.
 
-* Missing power plan GUID
-* Deleted user-selected power plan
-* Failed `powercfg` command
-* Permission issues
-* Unknown foreground process
-* Invalid schedule configuration
-* Conflicting foreground rules
+Manual verification:
 
-The GUI should show clear error messages instead of silently failing.
+- Add a rule for a harmless test process.
+- Confirm priority changes in Task Manager or Process Explorer.
+- Bring the process foreground and confirm it restores/skips when foreground exclusion is enabled.
+- Disable Priority Control and confirm priority restores.
+- Enable EcoQoS and Priority Control with different targets and confirm they do not interfere.
 
----
+## Suggested Implementation Order
 
-## 19. Design Principles
+1. Add settings structs, defaults, and TOML storage tests.
+2. Add `priority` module with manager, snapshot, priority mapping, and unit tests.
+3. Integrate the manager into `BackgroundAutomation`.
+4. Add status plumbing to `PowerLeafApp`.
+5. Add `Priority Control` page and navigation entry.
+6. Run `cargo fmt`, `cargo test`, and `cargo check`.
+7. Manually verify priority apply/restore on Windows.
 
-* Avoid unnecessary background CPU usage
-* Avoid aggressive polling where possible
-* Avoid repeated power plan switching
-* Keep user configuration explicit
-* Make rule priority predictable
-* Keep the MVP simple before adding advanced automation
-* Allow users to fully customize which Windows power plans are used
+## Future Extensions
 
----
-
-## 20. Final Expected Behavior
-
-The final application should allow users to configure automatic Windows power plan switching in two main ways:
-
-1. **Activity Mode**
-
-   * Active input means Performance plan
-   * Idle state means Power Save plan
-   * Foreground app rules can override this behavior
-
-2. **Schedule Mode**
-
-   * Specific time periods use Power Save plan
-   * Outside those periods use Performance plan
-
-Both modes should use user-selected Windows power plans instead of hardcoded Windows defaults.
+- Per-rule condition: only apply while background.
+- Per-rule delay after process launch.
+- Combined rules: EcoQoS + priority + timer-resolution policy.
+- Process Watchdog rules based on CPU usage duration.
+- Action log for applied/restored priority changes.
+- Profile-specific rules for battery, plugged-in, gaming, and work.

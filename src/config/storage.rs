@@ -114,10 +114,11 @@ fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
 mod tests {
     use super::*;
     use crate::config::{
-        ActivityModeSettings, AppSuspensionRule, AppSuspensionSettings, CpuUsageComparison,
-        CpuUsageModeSettings, CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules,
-        GeneralSettings, InputDetectionSettings, ManualOverride, NetworkThresholdUnit,
-        PowerPlanSettings, ScheduleModeSettings, ScheduleRule, WeekdaySetting,
+        ActivityModeSettings, AppSuspensionRule, AppSuspensionSettings, CpuAffinityRule,
+        CpuAffinitySettings, CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule,
+        EcoQosSettings, ForegroundRule, ForegroundRules, GeneralSettings, InputDetectionSettings,
+        ManualOverride, NetworkThresholdUnit, PowerPlanSettings, ScheduleModeSettings,
+        ScheduleRule, WeekdaySetting,
     };
 
     #[test]
@@ -235,6 +236,22 @@ mod tests {
                         network_download_threshold_unit: NetworkThresholdUnit::Bytes,
                         network_upload_threshold_bytes: 0,
                         network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+                    },
+                ],
+            },
+            cpu_affinity: CpuAffinitySettings {
+                enabled: true,
+                exclude_foreground_app: true,
+                rules: vec![
+                    CpuAffinityRule {
+                        enabled: true,
+                        process_name: "backup.exe".to_owned(),
+                        core_mask: 0b0011,
+                    },
+                    CpuAffinityRule {
+                        enabled: false,
+                        process_name: "indexer.exe".to_owned(),
+                        core_mask: 0b1100,
                     },
                 ],
             },

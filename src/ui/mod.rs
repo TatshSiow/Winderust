@@ -5,6 +5,7 @@ pub enum Page {
     CpuUsage,
     EfficiencyMode,
     AppSuspension,
+    CpuAffinity,
     ForegroundRules,
     Schedule,
     Settings,
@@ -23,7 +24,8 @@ const AUTOMATION_RULE_PAGES: [Page; 4] = [
     Page::Schedule,
     Page::ForegroundRules,
 ];
-const PROCESS_CONTROL_PAGES: [Page; 2] = [Page::EfficiencyMode, Page::AppSuspension];
+const PROCESS_CONTROL_PAGES: [Page; 3] =
+    [Page::EfficiencyMode, Page::AppSuspension, Page::CpuAffinity];
 const APP_PAGES: [Page; 2] = [Page::Settings, Page::About];
 const PAGE_SECTIONS: [PageSection; 4] = [
     PageSection {
@@ -52,6 +54,7 @@ impl Page {
             Self::CpuUsage => "CPU Load Rules",
             Self::EfficiencyMode => "Efficiency Mode",
             Self::AppSuspension => "App Suspension",
+            Self::CpuAffinity => "CPU Affinity",
             Self::ForegroundRules => "Foreground Rules",
             Self::Schedule => "Time Rules",
             Self::Settings => "Settings",
@@ -65,7 +68,7 @@ impl Page {
             Self::Activity | Self::CpuUsage | Self::Schedule | Self::ForegroundRules => {
                 "Power Plan Controls"
             }
-            Self::EfficiencyMode | Self::AppSuspension => "Process Controls",
+            Self::EfficiencyMode | Self::AppSuspension | Self::CpuAffinity => "Process Controls",
             Self::Settings | Self::About => "App",
         }
     }

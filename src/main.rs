@@ -4,6 +4,7 @@
 compile_error!("PowerLeaf is a Windows-only application.");
 
 mod activity;
+mod affinity;
 mod app;
 mod automation;
 mod config;

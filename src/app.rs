@@ -21,11 +21,12 @@ use gpui_component::{
 
 use crate::{
     activity::{ActivitySnapshot, ActivityState, IdleDetector, InputHook, InputHookEvents},
+    affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
-        self, AppSuspensionRule, AppSuspensionSettings, CpuUsageComparison, CpuUsageRule,
-        EcoQosSettings, ForegroundRule, NetworkThresholdUnit, ScheduleRule, Settings,
-        WeekdaySetting,
+        self, AppSuspensionRule, AppSuspensionSettings, CpuAffinityRule, CpuAffinitySettings,
+        CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundRule, NetworkThresholdUnit,
+        ScheduleRule, Settings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{self, EcoQosSnapshot},
@@ -47,6 +48,7 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const HIDDEN_APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const PAGE_HEADER_HEIGHT: f32 = 42.0;
@@ -83,6 +85,7 @@ pub struct PowerLeafApp {
     cpu_usage: CpuUsageSnapshot,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
+    cpu_affinity_status: CpuAffinitySnapshot,
     foreground_app: Option<String>,
     decision: DecisionOutcome,
     next_schedule: String,
@@ -122,6 +125,7 @@ struct UiInputs {
     foreground_rule_processes: Vec<Entity<InputState>>,
     eco_qos_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
+    affinity_process: Entity<InputState>,
 }
 
 impl UiInputs {
@@ -165,6 +169,7 @@ impl UiInputs {
                 .collect(),
             eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
+            affinity_process: make_input(window, cx, "", "Search running apps..."),
         }
     }
 
@@ -248,6 +253,7 @@ impl PowerLeafApp {
             cpu_usage: CpuUsageSnapshot::default(),
             eco_qos_status: EcoQosSnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
+            cpu_affinity_status: CpuAffinitySnapshot::default(),
             foreground_app: None,
             decision: DecisionOutcome {
                 target_guid: None,
@@ -294,8 +300,9 @@ impl PowerLeafApp {
     }
 
     fn schedule_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tick_interval = self.tick_interval();
         self._tick_task = cx.spawn_in(window, async move |this, cx| {
-            Timer::after(APP_TICK_INTERVAL).await;
+            Timer::after(tick_interval).await;
             let _ = cx.update(move |window, app_cx| {
                 if let Some(this) = this.upgrade() {
                     let _ = this.update(app_cx, |app, cx| {
@@ -308,6 +315,14 @@ impl PowerLeafApp {
                 }
             });
         });
+    }
+
+    fn tick_interval(&self) -> Duration {
+        if tray::is_hidden_to_tray() {
+            HIDDEN_APP_TICK_INTERVAL
+        } else {
+            APP_TICK_INTERVAL
+        }
     }
 
     fn refresh_power_plans(&mut self) {
@@ -577,6 +592,7 @@ impl PowerLeafApp {
 
         self.eco_qos_status = self.background_automation.eco_qos_status();
         self.app_suspension_status = self.background_automation.app_suspension_status();
+        self.cpu_affinity_status = self.background_automation.cpu_affinity_status();
 
         if Instant::now() >= self.next_process_refresh {
             self.refresh_process_candidates(false);
@@ -779,6 +795,7 @@ impl PowerLeafApp {
         settings.general.enabled = self.saved_settings.general.enabled;
         settings.eco_qos = self.saved_settings.eco_qos.clone();
         settings.app_suspension = self.saved_settings.app_suspension.clone();
+        settings.cpu_affinity = self.saved_settings.cpu_affinity.clone();
         settings
     }
 }
@@ -973,6 +990,7 @@ impl PowerLeafApp {
             Page::CpuUsage => self.render_cpu_usage_page(window, cx),
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
+            Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::Settings => self.render_settings_page(window, cx),
             Page::About => self.render_about_page(),
         }
@@ -1019,6 +1037,7 @@ impl PowerLeafApp {
                         "App Suspension",
                         app_suspension_label(&self.app_suspension_status),
                     ),
+                    ("CPU Affinity", cpu_affinity_label(&self.cpu_affinity_status)),
                     (
                         "Idle time",
                         self.activity
@@ -1220,14 +1239,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ),
-            rule_card_toggle_button(
-                format!("toggle-foreground-rule-{index}"),
-                collapsed,
-                cx.listener({
-                    let card_target = card_target.clone();
-                    move |app, _, _, cx| app.toggle_rule_card(card_target.clone(), cx)
-                }),
-            ),
+            rule_card_collapse_indicator(collapsed),
             card_target.clone(),
             cx,
         );
@@ -1279,11 +1291,15 @@ impl PowerLeafApp {
     ) -> AnyElement {
         if self.editing_rule_title == Some(target) {
             return h_flex()
+                .id(SharedString::from(format!("rule-title-editor-{target:?}")))
                 .flex_1()
                 .min_w(px(180.0))
                 .max_w(px(460.0))
                 .items_center()
                 .gap_2()
+                .on_click(|_, _, cx| {
+                    cx.stop_propagation();
+                })
                 .on_action(cx.listener(move |app, _: &InputEscape, _, cx| {
                     app.finish_rule_title_edit(target, cx);
                 }))
@@ -1326,14 +1342,23 @@ impl PowerLeafApp {
                     .child(title.to_owned()),
             )
             .child(
-                Button::new(SharedString::from(format!("edit-rule-title-{target:?}")))
-                    .small()
-                    .ghost()
-                    .label("Edit")
-                    .tooltip("Rename rule")
-                    .on_click(cx.listener(move |app, _, window, cx| {
-                        app.begin_rule_title_edit(target, window, cx);
-                    })),
+                div()
+                    .id(SharedString::from(format!(
+                        "edit-rule-title-target-{target:?}"
+                    )))
+                    .on_click(|_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(
+                        Button::new(SharedString::from(format!("edit-rule-title-{target:?}")))
+                            .small()
+                            .ghost()
+                            .label("Edit")
+                            .tooltip("Rename rule")
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.begin_rule_title_edit(target, window, cx);
+                            })),
+                    ),
             )
             .into_any_element()
     }
@@ -1433,14 +1458,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ),
-            rule_card_toggle_button(
-                format!("toggle-schedule-rule-{index}"),
-                collapsed,
-                cx.listener({
-                    let card_target = card_target.clone();
-                    move |app, _, _, cx| app.toggle_rule_card(card_target.clone(), cx)
-                }),
-            ),
+            rule_card_collapse_indicator(collapsed),
             card_target.clone(),
             cx,
         );
@@ -1594,14 +1612,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ),
-            rule_card_toggle_button(
-                format!("toggle-cpu-rule-{index}"),
-                collapsed,
-                cx.listener({
-                    let card_target = card_target.clone();
-                    move |app, _, _, cx| app.toggle_rule_card(card_target.clone(), cx)
-                }),
-            ),
+            rule_card_collapse_indicator(collapsed),
             card_target.clone(),
             cx,
         );
@@ -2061,14 +2072,7 @@ impl PowerLeafApp {
             let mut card = rule_card(
                 static_rule_title(&process),
                 status_pill(indicator.label, indicator.bg, indicator.fg),
-                rule_card_toggle_button(
-                    format!("toggle-suspension-rule-{index}"),
-                    collapsed,
-                    cx.listener({
-                        let card_target = card_target.clone();
-                        move |app, _, _, cx| app.toggle_rule_card(card_target.clone(), cx)
-                    }),
-                ),
+                rule_card_collapse_indicator(collapsed),
                 card_target.clone(),
                 cx,
             );
@@ -2158,6 +2162,248 @@ impl PowerLeafApp {
             list = list.child(text_muted("No apps are suspendable."));
         }
         list.into_any_element()
+    }
+
+    fn render_affinity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self.inputs.affinity_process.read(cx).value().to_string();
+        page_shell(Page::CpuAffinity)
+            .child(info_card(vec![
+                "CPU Affinity limits selected background apps to specific logical CPUs.",
+                "Use this as an advanced compatibility control; it can reduce responsiveness if the mask is too narrow.",
+                "PowerLeaf restores the original affinity when a rule no longer applies.",
+            ]))
+            .child(checkbox(
+                "cpu-affinity-enabled",
+                "Enable CPU affinity rules",
+                self.settings.cpu_affinity.enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.cpu_affinity.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(checkbox(
+                "cpu-affinity-foreground",
+                "App focus detection",
+                self.settings.cpu_affinity.exclude_foreground_app,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.cpu_affinity.exclude_foreground_app = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(stat_grid(vec![
+                ("Status", self.cpu_affinity_status.message.clone()),
+                (
+                    "Adjusted processes",
+                    self.cpu_affinity_status.adjusted_processes.to_string(),
+                ),
+                (
+                    "Scanned processes",
+                    self.cpu_affinity_status.scanned_processes.to_string(),
+                ),
+                (
+                    "Skipped processes",
+                    self.cpu_affinity_status.skipped_processes.to_string(),
+                ),
+                (
+                    "Failed actions",
+                    self.cpu_affinity_status.failed_processes.to_string(),
+                ),
+                (
+                    "Last failure",
+                    self.cpu_affinity_status
+                        .last_error
+                        .as_deref()
+                        .unwrap_or("None")
+                        .to_owned(),
+                ),
+            ]))
+            .child(
+                section_card("Affinity Rules")
+                    .child(text_muted(
+                        "Add a process, then choose the logical CPUs it may run on.",
+                    ))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_start()
+                            .flex_wrap()
+                            .child(self.render_process_picker(
+                                "affinity-suggestion",
+                                &self.inputs.affinity_process,
+                                SuggestionTarget::Affinity,
+                                window,
+                                cx,
+                            ))
+                            .child(
+                                Button::new("add-affinity-process")
+                                    .small()
+                                    .label("Add")
+                                    .disabled(!can_add_affinity_process(
+                                        &self.settings.cpu_affinity,
+                                        &input_value,
+                                    ))
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        let process = app
+                                            .inputs
+                                            .affinity_process
+                                            .read(cx)
+                                            .value()
+                                            .to_string();
+                                        if can_add_affinity_process(
+                                            &app.settings.cpu_affinity,
+                                            &process,
+                                        ) {
+                                            app.settings
+                                                .cpu_affinity
+                                                .rules
+                                                .push(new_affinity_rule(&process));
+                                            clear_input(&app.inputs.affinity_process, window, cx);
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                    )
+                    .child(self.render_affinity_rules(cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_affinity_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.cpu_affinity.rules.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let indicator = affinity_indicator(&self.cpu_affinity_status, &process);
+            let card_target = RuleCardTarget::Affinity(process.clone());
+            let collapsed = self.is_rule_card_collapsed(&card_target);
+            let mut card = rule_card(
+                static_rule_title(&process),
+                rule_enable_checkbox(
+                    format!("affinity-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ),
+                rule_card_collapse_indicator(collapsed),
+                card_target.clone(),
+                cx,
+            );
+            if !collapsed {
+                card = card
+                    .child(status_pill(indicator.label, indicator.bg, indicator.fg))
+                    .child(text_muted(indicator.hover))
+                    .child(value_pill(affinity_mask_label(rule.core_mask)))
+                    .child(self.render_affinity_core_selector(index, rule.core_mask, cx))
+                    .child(
+                        Button::new(SharedString::from(format!("remove-affinity-{index}")))
+                            .small()
+                            .danger()
+                            .label("Remove")
+                            .on_click(cx.listener({
+                                let card_target = card_target.clone();
+                                move |app, _, _, cx| {
+                                    if index < app.settings.cpu_affinity.rules.len() {
+                                        app.settings.cpu_affinity.rules.remove(index);
+                                    }
+                                    app.collapsed_rule_cards.remove(&card_target);
+                                    cx.notify();
+                                }
+                            })),
+                    );
+            }
+            list = list.child(card);
+        }
+        if self.settings.cpu_affinity.rules.is_empty() {
+            list = list.child(text_muted("No CPU affinity rules are configured."));
+        }
+        list.into_any_element()
+    }
+
+    fn render_affinity_core_selector(
+        &self,
+        index: usize,
+        core_mask: u64,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let processors = affinity::logical_processors();
+        let all_mask = affinity_processors_mask(&processors);
+        let performance_mask =
+            affinity_processors_kind_mask(&processors, LogicalProcessorKind::Performance);
+        let efficiency_mask =
+            affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency);
+
+        let mut presets = h_flex().gap_1().flex_wrap();
+        for (label, mask, tooltip, enabled) in [
+            (
+                "All",
+                all_mask,
+                "Allow every logical CPU reported by Windows.",
+                all_mask != 0,
+            ),
+            (
+                "P-cores",
+                performance_mask,
+                "Allow only logical CPUs on performance cores.",
+                performance_mask != 0,
+            ),
+            (
+                "E-cores",
+                efficiency_mask,
+                "Allow only logical CPUs on efficiency cores.",
+                efficiency_mask != 0,
+            ),
+        ] {
+            presets = presets.child(
+                toggle_button(
+                    format!("affinity-core-preset-{index}-{label}"),
+                    label,
+                    enabled && core_mask == mask,
+                )
+                .tooltip(tooltip)
+                .disabled(!enabled)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if mask != 0 {
+                        if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                            rule.core_mask = mask;
+                        }
+                        cx.notify();
+                    }
+                })),
+            );
+        }
+
+        let mut row = h_flex().gap_1().flex_wrap();
+        for processor in processors {
+            let core = processor.index;
+            let selected = affinity_mask_contains(core_mask, core);
+            row = row.child(
+                toggle_button(
+                    format!("affinity-core-{index}-{core}"),
+                    affinity_processor_label(&processor),
+                    selected,
+                )
+                .tooltip(affinity_processor_tooltip(&processor))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                        toggle_affinity_core(&mut rule.core_mask, core);
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+
+        labeled_element(
+            "Allowed logical CPUs",
+            v_flex()
+                .gap_2()
+                .child(presets)
+                .child(row)
+                .into_any_element(),
+        )
+        .into_any_element()
     }
 
     fn render_network_threshold(
@@ -2664,6 +2910,9 @@ impl PowerLeafApp {
             SuggestionTarget::Suspension => {
                 clear_input_to(&self.inputs.suspension_process, process, window, cx);
             }
+            SuggestionTarget::Affinity => {
+                clear_input_to(&self.inputs.affinity_process, process, window, cx);
+            }
         }
     }
 }
@@ -2718,6 +2967,7 @@ enum SuggestionTarget {
     ForegroundRule(usize),
     EcoQos,
     Suspension,
+    Affinity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2733,6 +2983,7 @@ enum RuleCardTarget {
     Schedule(usize),
     Cpu(usize),
     Suspension(String),
+    Affinity(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2856,7 +3107,7 @@ fn section_card(title: &str) -> gpui::Div {
 fn rule_card(
     title: AnyElement,
     leading: AnyElement,
-    toggle_action: AnyElement,
+    collapse_indicator: AnyElement,
     card_target: RuleCardTarget,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
@@ -2870,16 +3121,15 @@ fn rule_card(
         .border_1()
         .border_color(rgb(COLOR_BORDER))
         .bg(rgb(COLOR_PANEL))
-        .cursor_pointer()
-        .on_click(cx.listener(move |app, _, _, cx| {
-            app.toggle_rule_card(card_target.clone(), cx);
-        }))
         .child(
             div()
                 .relative()
                 .w_full()
                 .min_w(px(0.0))
                 .min_h(px(30.0))
+                .id(SharedString::from(format!(
+                    "rule-card-header-{card_target:?}"
+                )))
                 .child(
                     h_flex()
                         .w_full()
@@ -2887,6 +3137,13 @@ fn rule_card(
                         .items_start()
                         .gap_2()
                         .pr(px(36.0))
+                        .id(SharedString::from(format!(
+                            "rule-card-header-action-{card_target:?}"
+                        )))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.toggle_rule_card(card_target.clone(), cx);
+                        }))
                         .child(leading)
                         .child(title),
                 )
@@ -2897,24 +3154,22 @@ fn rule_card(
                         .right(px(0.0))
                         .items_center()
                         .gap_1()
-                        .child(toggle_action),
+                        .child(collapse_indicator),
                 ),
         )
 }
 
-fn rule_card_toggle_button(
-    id: impl Into<SharedString>,
-    collapsed: bool,
-    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    let id = id.into();
-    Button::new(id)
-        .small()
-        .ghost()
-        .label(if collapsed { ">" } else { "v" })
+fn rule_card_collapse_indicator(collapsed: bool) -> AnyElement {
+    div()
         .w(px(28.0))
-        .tooltip(if collapsed { "Expand" } else { "Collapse" })
-        .on_click(on_click)
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(14.0))
+        .line_height(px(18.0))
+        .text_color(rgb(COLOR_MUTED))
+        .child(if collapsed { ">" } else { "v" })
         .into_any_element()
 }
 
@@ -3106,6 +3361,7 @@ fn rule_enable_checkbox(
                 }),
         )
         .on_click(move |_, window, cx| {
+            cx.stop_propagation();
             let next = !checked;
             handler(&next, window, cx);
         })
@@ -3399,6 +3655,17 @@ fn app_suspension_label(status: &AppSuspensionSnapshot) -> String {
     }
 }
 
+fn cpu_affinity_label(status: &CpuAffinitySnapshot) -> String {
+    if status.enabled {
+        format!(
+            "{} ({} adjusted)",
+            status.message, status.adjusted_processes
+        )
+    } else {
+        status.message.clone()
+    }
+}
+
 fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, process: &str) -> bool {
     match target {
         SuggestionTarget::ForegroundRule(_) => true,
@@ -3406,6 +3673,7 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::Suspension => {
             can_add_suspension_process(&settings.app_suspension, process)
         }
+        SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
     }
 }
 
@@ -3421,6 +3689,13 @@ fn can_add_suspension_process(settings: &AppSuspensionSettings, process: &str) -
         && !suspension::is_builtin_excluded(process)
 }
 
+fn can_add_affinity_process(settings: &CpuAffinitySettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !settings.contains_rule_for(process)
+        && !affinity::is_builtin_excluded(process)
+}
+
 fn new_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         process_name: process.trim().to_ascii_lowercase(),
@@ -3433,7 +3708,22 @@ fn new_suspension_rule(process: &str) -> AppSuspensionRule {
     }
 }
 
+fn new_affinity_rule(process: &str) -> CpuAffinityRule {
+    CpuAffinityRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+        core_mask: default_affinity_mask(),
+    }
+}
+
 struct SuspensionIndicator {
+    label: &'static str,
+    bg: u32,
+    fg: u32,
+    hover: &'static str,
+}
+
+struct AffinityIndicator {
     label: &'static str,
     bg: u32,
     fg: u32,
@@ -3501,8 +3791,146 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
     }
 }
 
+fn affinity_indicator(status: &CpuAffinitySnapshot, process: &str) -> AffinityIndicator {
+    if affinity::is_builtin_excluded(process) {
+        AffinityIndicator {
+            label: "Protected",
+            bg: COLOR_ACCENT_BG,
+            fg: COLOR_ACCENT,
+            hover: "PowerLeaf does not change affinity for this Windows process.",
+        }
+    } else if affinity::contains_process(&status.adjusted_apps, process) {
+        AffinityIndicator {
+            label: "Pinned",
+            bg: COLOR_SUCCESS_BG,
+            fg: COLOR_SUCCESS,
+            hover: "PowerLeaf has applied this affinity rule to at least one process.",
+        }
+    } else if status.enabled {
+        AffinityIndicator {
+            label: "Ready",
+            bg: COLOR_PANEL_ACTIVE,
+            fg: COLOR_MUTED,
+            hover: "PowerLeaf is watching for matching background processes.",
+        }
+    } else {
+        AffinityIndicator {
+            label: "Off",
+            bg: COLOR_PANEL_ACTIVE,
+            fg: COLOR_DIM,
+            hover: "CPU Affinity is disabled.",
+        }
+    }
+}
+
 fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
     status.enabled && !suspension::contains_process(&status.suspended_apps, process)
+}
+
+fn logical_core_count() -> usize {
+    affinity::logical_processors().len().clamp(1, 64)
+}
+
+fn default_affinity_mask() -> u64 {
+    let processors = affinity::logical_processors();
+    let mask = affinity_processors_mask(&processors);
+    if mask == 0 {
+        let core_count = logical_core_count();
+        if core_count >= 64 {
+            u64::MAX
+        } else {
+            (1_u64 << core_count) - 1
+        }
+    } else {
+        mask
+    }
+}
+
+fn affinity_mask_contains(mask: u64, core: usize) -> bool {
+    core < 64 && (mask & (1_u64 << core)) != 0
+}
+
+fn toggle_affinity_core(mask: &mut u64, core: usize) {
+    if core >= 64 {
+        return;
+    }
+
+    let bit = 1_u64 << core;
+    if (*mask & bit) == 0 {
+        *mask |= bit;
+    } else if mask.count_ones() > 1 {
+        *mask &= !bit;
+    }
+}
+
+fn affinity_mask_label(mask: u64) -> String {
+    let processors = affinity::logical_processors();
+    let all_mask = affinity_processors_mask(&processors);
+    if all_mask != 0 && (mask & all_mask) == all_mask {
+        return "All logical CPUs".to_owned();
+    }
+
+    let cores = processors
+        .iter()
+        .filter(|processor| affinity_mask_contains(mask, processor.index))
+        .map(affinity_processor_label)
+        .collect::<Vec<_>>();
+
+    if cores.is_empty() {
+        "No logical CPUs selected".to_owned()
+    } else {
+        format!("Logical CPUs: {}", cores.join(", "))
+    }
+}
+
+fn affinity_processors_mask(processors: &[LogicalProcessorInfo]) -> u64 {
+    processors
+        .iter()
+        .filter_map(|processor| affinity_processor_bit(processor.index))
+        .fold(0, |mask, bit| mask | bit)
+}
+
+fn affinity_processors_kind_mask(
+    processors: &[LogicalProcessorInfo],
+    kind: LogicalProcessorKind,
+) -> u64 {
+    processors
+        .iter()
+        .filter(|processor| processor.kind == kind)
+        .filter_map(|processor| affinity_processor_bit(processor.index))
+        .fold(0, |mask, bit| mask | bit)
+}
+
+fn affinity_processor_bit(index: usize) -> Option<u64> {
+    (index < 64).then_some(1_u64 << index)
+}
+
+fn affinity_processor_label(processor: &LogicalProcessorInfo) -> String {
+    match processor.kind {
+        LogicalProcessorKind::Performance => format!("P{}", processor.index),
+        LogicalProcessorKind::Efficiency => format!("E{}", processor.index),
+        LogicalProcessorKind::Standard => format!("CPU{}", processor.index),
+    }
+}
+
+fn affinity_processor_tooltip(processor: &LogicalProcessorInfo) -> String {
+    let kind = match processor.kind {
+        LogicalProcessorKind::Performance => "P-core",
+        LogicalProcessorKind::Efficiency => "E-core",
+        LogicalProcessorKind::Standard => "Logical CPU",
+    };
+
+    if processor.kind == LogicalProcessorKind::Standard {
+        format!(
+            "{kind} {} on physical core {}",
+            processor.index, processor.core_index
+        )
+    } else {
+        format!(
+            "{kind} logical CPU {} on physical core {} (efficiency class {})",
+            processor.index, processor.core_index, processor.efficiency_class
+        )
+    }
 }
 
 fn network_threshold_step(unit: NetworkThresholdUnit) -> f64 {

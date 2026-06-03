@@ -1,0 +1,809 @@
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    mem::size_of,
+    ptr::{null_mut, read_unaligned},
+    slice,
+};
+
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE},
+    System::{
+        RemoteDesktop::ProcessIdToSessionId,
+        SystemInformation::{
+            GetLogicalProcessorInformationEx, RelationProcessorCore, GROUP_AFFINITY,
+            LOGICAL_PROCESSOR_RELATIONSHIP, PROCESSOR_RELATIONSHIP,
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+        },
+        Threading::{
+            GetCurrentProcessId, GetProcessAffinityMask, OpenProcess, SetProcessAffinityMask,
+            PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        },
+    },
+};
+
+use crate::{
+    config::{CpuAffinityRule, CpuAffinitySettings},
+    foreground::list_processes,
+};
+
+const BUILT_IN_EXCLUSIONS: &[&str] = &[
+    "audiodg.exe",
+    "conhost.exe",
+    "csrss.exe",
+    "ctfmon.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "fontdrvhost.exe",
+    "lsaiso.exe",
+    "lsass.exe",
+    "registry",
+    "searchhost.exe",
+    "securityhealthservice.exe",
+    "securityhealthsystray.exe",
+    "services.exe",
+    "shellexperiencehost.exe",
+    "sihost.exe",
+    "smss.exe",
+    "startmenuexperiencehost.exe",
+    "system",
+    "taskmgr.exe",
+    "textinputhost.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "wudfhost.exe",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CpuAffinitySnapshot {
+    pub enabled: bool,
+    pub scanned_processes: usize,
+    pub adjusted_processes: usize,
+    pub skipped_processes: usize,
+    pub failed_processes: usize,
+    pub adjusted_apps: Vec<String>,
+    pub message: String,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicalProcessorKind {
+    Performance,
+    Efficiency,
+    Standard,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogicalProcessorInfo {
+    pub index: usize,
+    pub core_index: usize,
+    pub kind: LogicalProcessorKind,
+    pub efficiency_class: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LogicalProcessorInformationHeader {
+    relationship: LOGICAL_PROCESSOR_RELATIONSHIP,
+    size: u32,
+}
+
+#[derive(Default)]
+pub struct CpuAffinityManager {
+    adjusted: BTreeMap<u32, AdjustedProcess>,
+}
+
+#[derive(Clone)]
+struct AdjustedProcess {
+    process_name: String,
+    previous_affinity: usize,
+    applied_affinity: usize,
+}
+
+impl CpuAffinityManager {
+    pub fn update(
+        &mut self,
+        settings: &CpuAffinitySettings,
+        automation_enabled: bool,
+        foreground_process_id: Option<u32>,
+    ) -> CpuAffinitySnapshot {
+        if !automation_enabled {
+            let failed = self.clear_all();
+            return CpuAffinitySnapshot {
+                enabled: false,
+                failed_processes: failed,
+                message: "Automation disabled.".to_owned(),
+                ..Default::default()
+            };
+        }
+
+        if !settings.enabled {
+            let failed = self.clear_all();
+            return CpuAffinitySnapshot {
+                enabled: false,
+                failed_processes: failed,
+                message: "CPU Affinity disabled.".to_owned(),
+                ..Default::default()
+            };
+        }
+
+        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+            let failed = self.clear_all();
+            return CpuAffinitySnapshot {
+                enabled: true,
+                failed_processes: failed,
+                message: "Paused: foreground app is unknown.".to_owned(),
+                ..Default::default()
+            };
+        }
+
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let Some(current_session_id) = process_session_id(current_process_id) else {
+            let failed = self.clear_all();
+            return CpuAffinitySnapshot {
+                enabled: true,
+                failed_processes: failed,
+                message: "Paused: current Windows session is unknown.".to_owned(),
+                ..Default::default()
+            };
+        };
+
+        let processes = match list_processes() {
+            Ok(processes) => processes,
+            Err(err) => {
+                let failed = self.clear_all();
+                return CpuAffinitySnapshot {
+                    enabled: true,
+                    failed_processes: failed,
+                    message: err,
+                    ..Default::default()
+                };
+            }
+        };
+
+        let scanned_processes = processes.len();
+        let current_process_names = processes
+            .iter()
+            .map(|process| (process.id, process.name.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let foreground_process_name = if settings.exclude_foreground_app {
+            foreground_process_id.and_then(|id| {
+                processes
+                    .iter()
+                    .find(|process| process.id == id)
+                    .map(|process| process.name.clone())
+            })
+        } else {
+            None
+        };
+        let mut target_processes = BTreeMap::new();
+        for process in processes {
+            if process.id == 0
+                || process.id == current_process_id
+                || should_ignore_foreground_process(
+                    settings,
+                    process.id,
+                    &process.name,
+                    foreground_process_id,
+                    foreground_process_name.as_deref(),
+                )
+                || is_builtin_excluded(&process.name)
+            {
+                continue;
+            }
+
+            if process_session_id(process.id) != Some(current_session_id) {
+                continue;
+            }
+
+            if let Some(rule) = matching_rule(settings, &process.name) {
+                target_processes.insert(process.id, (process.name, rule.core_mask));
+            }
+        }
+
+        let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        let mut failed_processes = self.release_non_targets(&target_ids, &current_process_names);
+        let mut skipped_processes = 0;
+        let mut last_error = None;
+
+        for (process_id, (process_name, rule_mask)) in target_processes {
+            match apply_affinity(
+                process_id,
+                process_name,
+                rule_mask,
+                self.adjusted.get(&process_id),
+            ) {
+                Ok(Some(adjusted)) => {
+                    self.adjusted.insert(process_id, adjusted);
+                }
+                Ok(None) => {
+                    skipped_processes += 1;
+                }
+                Err(AffinityError::AccessDenied) => {
+                    skipped_processes += 1;
+                }
+                Err(AffinityError::Failed(err)) => {
+                    failed_processes += 1;
+                    if last_error.is_none() {
+                        last_error = Some(err);
+                    }
+                }
+            }
+        }
+
+        CpuAffinitySnapshot {
+            enabled: true,
+            scanned_processes,
+            adjusted_processes: self.adjusted.len(),
+            skipped_processes,
+            failed_processes,
+            adjusted_apps: unique_app_names(
+                self.adjusted
+                    .values()
+                    .map(|process| process.process_name.as_str()),
+            ),
+            message: "CPU Affinity active.".to_owned(),
+            last_error,
+        }
+    }
+
+    fn release_non_targets(
+        &mut self,
+        target_ids: &BTreeSet<u32>,
+        current_process_names: &BTreeMap<u32, String>,
+    ) -> usize {
+        let process_ids = self
+            .adjusted
+            .keys()
+            .copied()
+            .filter(|process_id| !target_ids.contains(process_id))
+            .collect::<Vec<_>>();
+
+        self.release_processes(&process_ids, Some(current_process_names))
+    }
+
+    fn clear_all(&mut self) -> usize {
+        let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
+        self.release_processes(&process_ids, None)
+    }
+
+    fn release_processes(
+        &mut self,
+        process_ids: &[u32],
+        current_process_names: Option<&BTreeMap<u32, String>>,
+    ) -> usize {
+        let mut failed = 0;
+        for process_id in process_ids {
+            if let Some(process) = self.adjusted.remove(process_id) {
+                let still_same_process = current_process_names.map_or(true, |names| {
+                    names
+                        .get(process_id)
+                        .is_some_and(|name| name.eq_ignore_ascii_case(&process.process_name))
+                });
+                if still_same_process && restore_affinity(*process_id, process).is_err() {
+                    failed += 1;
+                }
+            }
+        }
+        failed
+    }
+}
+
+impl Drop for CpuAffinityManager {
+    fn drop(&mut self) {
+        self.clear_all();
+    }
+}
+
+impl Default for CpuAffinitySnapshot {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scanned_processes: 0,
+            adjusted_processes: 0,
+            skipped_processes: 0,
+            failed_processes: 0,
+            adjusted_apps: Vec::new(),
+            message: "CPU Affinity disabled.".to_owned(),
+            last_error: None,
+        }
+    }
+}
+
+pub fn is_builtin_excluded(process_name: &str) -> bool {
+    let process_name = process_name.trim();
+    BUILT_IN_EXCLUSIONS
+        .iter()
+        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+}
+
+pub fn contains_process(list: &[String], process_name: &str) -> bool {
+    list.iter()
+        .any(|name| name.trim().eq_ignore_ascii_case(process_name.trim()))
+}
+
+pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
+    logical_processors_from_topology().unwrap_or_else(fallback_logical_processors)
+}
+
+fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
+    let mut returned_length = 0;
+    unsafe {
+        GetLogicalProcessorInformationEx(RelationProcessorCore, null_mut(), &mut returned_length);
+    }
+
+    if returned_length == 0 {
+        return None;
+    }
+
+    let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
+    let mut buffer = vec![0_usize; word_count];
+    let ok = unsafe {
+        GetLogicalProcessorInformationEx(
+            RelationProcessorCore,
+            buffer.as_mut_ptr() as *mut SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+            &mut returned_length,
+        )
+    };
+    if ok == 0 || returned_length == 0 {
+        return None;
+    }
+
+    let bytes =
+        unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) };
+
+    logical_processors_from_topology_bytes(bytes)
+}
+
+fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalProcessorInfo>> {
+    let mut processors = Vec::new();
+    let mut core_index = 0;
+    let mut offset = 0;
+    let header_size = size_of::<LogicalProcessorInformationHeader>();
+    let processor_size = size_of::<PROCESSOR_RELATIONSHIP>();
+    let group_mask_offset = header_size + std::mem::offset_of!(PROCESSOR_RELATIONSHIP, GroupMask);
+    let group_mask_size = size_of::<GROUP_AFFINITY>();
+
+    while offset + header_size <= buffer.len() {
+        let header = unsafe {
+            read_unaligned(buffer.as_ptr().add(offset) as *const LogicalProcessorInformationHeader)
+        };
+        let record_size = header.size as usize;
+        if record_size < header_size || offset + record_size > buffer.len() {
+            break;
+        }
+
+        if header.relationship == RelationProcessorCore
+            && record_size >= header_size + processor_size
+        {
+            let processor = unsafe {
+                read_unaligned(
+                    buffer.as_ptr().add(offset + header_size) as *const PROCESSOR_RELATIONSHIP
+                )
+            };
+            let available_group_count =
+                record_size.saturating_sub(group_mask_offset) / group_mask_size;
+            let group_count = usize::from(processor.GroupCount).min(available_group_count);
+            for group_index in 0..group_count {
+                let group_affinity = unsafe {
+                    read_unaligned(
+                        buffer
+                            .as_ptr()
+                            .add(offset + group_mask_offset + group_index * group_mask_size)
+                            as *const GROUP_AFFINITY,
+                    )
+                };
+                if group_affinity.Group != 0 {
+                    continue;
+                }
+
+                for bit in 0..usize::BITS as usize {
+                    if (group_affinity.Mask & (1_usize << bit)) != 0 && bit < 64 {
+                        processors.push(LogicalProcessorInfo {
+                            index: bit,
+                            core_index,
+                            kind: LogicalProcessorKind::Standard,
+                            efficiency_class: processor.EfficiencyClass,
+                        });
+                    }
+                }
+            }
+            core_index += 1;
+        }
+
+        offset += record_size;
+    }
+
+    if processors.is_empty() {
+        None
+    } else {
+        classify_logical_processors(&mut processors);
+        processors.sort_by_key(|processor| processor.index);
+        processors.dedup_by_key(|processor| processor.index);
+        Some(processors)
+    }
+}
+
+fn fallback_logical_processors() -> Vec<LogicalProcessorInfo> {
+    let count = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .clamp(1, 64);
+
+    (0..count)
+        .map(|index| LogicalProcessorInfo {
+            index,
+            core_index: index,
+            kind: LogicalProcessorKind::Standard,
+            efficiency_class: 0,
+        })
+        .collect()
+}
+
+fn classify_logical_processors(processors: &mut [LogicalProcessorInfo]) {
+    let Some(min_efficiency_class) = processors
+        .iter()
+        .map(|processor| processor.efficiency_class)
+        .min()
+    else {
+        return;
+    };
+    let max_efficiency_class = processors
+        .iter()
+        .map(|processor| processor.efficiency_class)
+        .max()
+        .unwrap_or(min_efficiency_class);
+
+    for processor in processors {
+        processor.kind = processor_kind(
+            processor.efficiency_class,
+            min_efficiency_class,
+            max_efficiency_class,
+        );
+    }
+}
+
+fn processor_kind(
+    efficiency_class: u8,
+    min_efficiency_class: u8,
+    max_efficiency_class: u8,
+) -> LogicalProcessorKind {
+    if min_efficiency_class == max_efficiency_class {
+        LogicalProcessorKind::Standard
+    } else if efficiency_class == max_efficiency_class {
+        LogicalProcessorKind::Performance
+    } else if efficiency_class == min_efficiency_class {
+        LogicalProcessorKind::Efficiency
+    } else {
+        LogicalProcessorKind::Standard
+    }
+}
+
+fn should_ignore_foreground_process(
+    settings: &CpuAffinitySettings,
+    process_id: u32,
+    process_name: &str,
+    foreground_process_id: Option<u32>,
+    foreground_process_name: Option<&str>,
+) -> bool {
+    settings.exclude_foreground_app
+        && (foreground_process_id.is_some_and(|id| id == process_id)
+            || foreground_process_name
+                .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
+}
+
+fn matching_rule<'a>(
+    settings: &'a CpuAffinitySettings,
+    process_name: &str,
+) -> Option<&'a CpuAffinityRule> {
+    settings.rules.iter().find(|rule| {
+        rule.enabled
+            && rule.core_mask != 0
+            && rule
+                .process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+    })
+}
+
+fn process_session_id(process_id: u32) -> Option<u32> {
+    let mut session_id = 0;
+    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
+    (ok != 0).then_some(session_id)
+}
+
+enum AffinityError {
+    AccessDenied,
+    Failed(String),
+}
+
+fn apply_affinity(
+    process_id: u32,
+    process_name: String,
+    rule_mask: u64,
+    existing: Option<&AdjustedProcess>,
+) -> Result<Option<AdjustedProcess>, AffinityError> {
+    let process = ProcessHandle::open(process_id)?;
+    let (current_affinity, system_affinity) = process.affinity_mask()?;
+    let Some(target_affinity) = target_affinity_mask(rule_mask, system_affinity) else {
+        return Ok(None);
+    };
+
+    if existing.is_some_and(|adjusted| {
+        adjusted.process_name.eq_ignore_ascii_case(&process_name)
+            && adjusted.applied_affinity == target_affinity
+            && current_affinity == target_affinity
+    }) {
+        return Ok(existing.cloned());
+    }
+
+    process.set_affinity_mask(target_affinity)?;
+
+    let previous_affinity = existing
+        .filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name))
+        .map(|adjusted| adjusted.previous_affinity)
+        .unwrap_or(current_affinity);
+
+    Ok(Some(AdjustedProcess {
+        process_name,
+        previous_affinity,
+        applied_affinity: target_affinity,
+    }))
+}
+
+fn restore_affinity(process_id: u32, process_state: AdjustedProcess) -> Result<(), AffinityError> {
+    let process = ProcessHandle::open(process_id)?;
+    process.set_affinity_mask(process_state.previous_affinity)
+}
+
+fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize> {
+    let mut mask = (rule_mask & usize::MAX as u64) as usize;
+    if system_affinity != 0 {
+        mask &= system_affinity;
+    }
+    (mask != 0).then_some(mask)
+}
+
+fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    names
+        .map(|name| name.trim().to_ascii_lowercase())
+        .filter(|name| !name.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+struct ProcessHandle(HANDLE);
+
+impl ProcessHandle {
+    fn open(process_id: u32) -> Result<Self, AffinityError> {
+        let access_masks = [
+            PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
+        ];
+
+        let mut last_open_error = 0;
+        for access in access_masks {
+            let handle = unsafe { OpenProcess(access, 0, process_id) };
+            if !handle.is_null() {
+                return Ok(Self(handle));
+            }
+            last_open_error = last_error();
+        }
+
+        if last_open_error == ERROR_ACCESS_DENIED {
+            Err(AffinityError::AccessDenied)
+        } else {
+            Err(AffinityError::Failed(format!(
+                "OpenProcess({process_id}) failed with error {last_open_error}."
+            )))
+        }
+    }
+
+    fn affinity_mask(&self) -> Result<(usize, usize), AffinityError> {
+        let mut process_affinity = 0;
+        let mut system_affinity = 0;
+        let ok =
+            unsafe { GetProcessAffinityMask(self.0, &mut process_affinity, &mut system_affinity) };
+        if ok == 0 {
+            Err(AffinityError::Failed(format!(
+                "GetProcessAffinityMask failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok((process_affinity, system_affinity))
+        }
+    }
+
+    fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), AffinityError> {
+        let ok = unsafe { SetProcessAffinityMask(self.0, affinity_mask) };
+        if ok == 0 {
+            Err(AffinityError::Failed(format!(
+                "SetProcessAffinityMask failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+fn last_error() -> u32 {
+    unsafe { GetLastError() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rule_match_is_case_insensitive_and_ignores_disabled_or_empty_masks() {
+        let settings = CpuAffinitySettings {
+            enabled: true,
+            exclude_foreground_app: true,
+            rules: vec![
+                CpuAffinityRule {
+                    enabled: false,
+                    process_name: "browser.exe".to_owned(),
+                    core_mask: 1,
+                },
+                CpuAffinityRule {
+                    enabled: true,
+                    process_name: "backup.exe".to_owned(),
+                    core_mask: 0,
+                },
+                CpuAffinityRule {
+                    enabled: true,
+                    process_name: " Worker.EXE ".to_owned(),
+                    core_mask: 0b11,
+                },
+            ],
+        };
+
+        assert!(matching_rule(&settings, "worker.exe").is_some());
+        assert!(matching_rule(&settings, "browser.exe").is_none());
+        assert!(matching_rule(&settings, "backup.exe").is_none());
+    }
+
+    #[test]
+    fn target_mask_intersects_system_affinity() {
+        assert_eq!(target_affinity_mask(0b1110, 0b0110), Some(0b0110));
+        assert_eq!(target_affinity_mask(0b1000, 0b0111), None);
+        assert_eq!(target_affinity_mask(0, 0b0111), None);
+    }
+
+    #[test]
+    fn foreground_skip_matches_pid_or_name() {
+        let mut settings = CpuAffinitySettings::default();
+        settings.exclude_foreground_app = true;
+
+        assert!(should_ignore_foreground_process(
+            &settings,
+            42,
+            "helper.exe",
+            Some(42),
+            Some("app.exe"),
+        ));
+        assert!(should_ignore_foreground_process(
+            &settings,
+            99,
+            "APP.EXE",
+            Some(42),
+            Some("app.exe"),
+        ));
+        assert!(!should_ignore_foreground_process(
+            &settings,
+            99,
+            "other.exe",
+            Some(42),
+            Some("app.exe"),
+        ));
+
+        settings.exclude_foreground_app = false;
+        assert!(!should_ignore_foreground_process(
+            &settings,
+            42,
+            "app.exe",
+            Some(42),
+            Some("app.exe"),
+        ));
+    }
+
+    #[test]
+    fn built_in_exclusions_include_system_processes() {
+        assert!(is_builtin_excluded("csrss.exe"));
+        assert!(is_builtin_excluded("winlogon.exe"));
+        assert!(!is_builtin_excluded("browser.exe"));
+    }
+
+    #[test]
+    fn homogeneous_topology_is_standard() {
+        let mut processors = vec![
+            LogicalProcessorInfo {
+                index: 0,
+                core_index: 0,
+                kind: LogicalProcessorKind::Performance,
+                efficiency_class: 0,
+            },
+            LogicalProcessorInfo {
+                index: 1,
+                core_index: 1,
+                kind: LogicalProcessorKind::Efficiency,
+                efficiency_class: 0,
+            },
+        ];
+
+        classify_logical_processors(&mut processors);
+
+        assert!(processors
+            .iter()
+            .all(|processor| processor.kind == LogicalProcessorKind::Standard));
+    }
+
+    #[test]
+    fn hybrid_topology_classifies_min_and_max_efficiency_classes() {
+        assert_eq!(processor_kind(0, 0, 1), LogicalProcessorKind::Efficiency);
+        assert_eq!(processor_kind(1, 0, 1), LogicalProcessorKind::Performance);
+        assert_eq!(processor_kind(2, 0, 3), LogicalProcessorKind::Standard);
+    }
+
+    #[test]
+    fn topology_parser_reads_final_minimal_processor_record() {
+        let mut buffer = Vec::new();
+        append_processor_record(&mut buffer, 1, 1);
+        append_processor_record(&mut buffer, 1_usize << 11, 0);
+
+        let processors = logical_processors_from_topology_bytes(&buffer).unwrap();
+
+        assert_eq!(
+            processors
+                .iter()
+                .map(|processor| processor.index)
+                .collect::<Vec<_>>(),
+            vec![0, 11]
+        );
+        assert_eq!(processors[0].kind, LogicalProcessorKind::Performance);
+        assert_eq!(processors[1].kind, LogicalProcessorKind::Efficiency);
+    }
+
+    fn append_processor_record(buffer: &mut Vec<u8>, mask: usize, efficiency_class: u8) {
+        let header_size = size_of::<LogicalProcessorInformationHeader>();
+        let processor_size = size_of::<PROCESSOR_RELATIONSHIP>();
+        let record_size = header_size + processor_size;
+        let start = buffer.len();
+        buffer.resize(start + record_size, 0);
+
+        let header = LogicalProcessorInformationHeader {
+            relationship: RelationProcessorCore,
+            size: record_size as u32,
+        };
+        let processor = PROCESSOR_RELATIONSHIP {
+            EfficiencyClass: efficiency_class,
+            GroupCount: 1,
+            GroupMask: [GROUP_AFFINITY {
+                Mask: mask,
+                Group: 0,
+                Reserved: [0; 3],
+            }],
+            ..Default::default()
+        };
+
+        unsafe {
+            std::ptr::write_unaligned(
+                buffer.as_mut_ptr().add(start) as *mut LogicalProcessorInformationHeader,
+                header,
+            );
+            std::ptr::write_unaligned(
+                buffer.as_mut_ptr().add(start + header_size) as *mut PROCESSOR_RELATIONSHIP,
+                processor,
+            );
+        }
+    }
+}

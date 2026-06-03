@@ -8,6 +8,7 @@
 # Editor and OS files
 .vscode/
 .idea/
+.omx
 *.swp
 *.swo
 Thumbs.db

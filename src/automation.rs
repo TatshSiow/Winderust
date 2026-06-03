@@ -6,6 +6,7 @@ use std::{
 
 use crate::{
     activity::{input_hook, IdleDetector, InputHookEvents},
+    affinity::{CpuAffinityManager, CpuAffinitySnapshot},
     config::Settings,
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
@@ -22,6 +23,7 @@ const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ECO_QOS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const CPU_AFFINITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -39,6 +41,7 @@ struct AutomationWorkerState {
     settings: Settings,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
+    cpu_affinity_status: CpuAffinitySnapshot,
     app_suspension_freeze_requests: Vec<String>,
     stop_requested: bool,
 }
@@ -50,6 +53,7 @@ impl BackgroundAutomation {
                 settings: settings.clone(),
                 eco_qos_status: EcoQosSnapshot::default(),
                 app_suspension_status: AppSuspensionSnapshot::default(),
+                cpu_affinity_status: CpuAffinitySnapshot::default(),
                 app_suspension_freeze_requests: Vec::new(),
                 stop_requested: false,
             }),
@@ -90,6 +94,14 @@ impl BackgroundAutomation {
             .unwrap_or_default()
     }
 
+    pub fn cpu_affinity_status(&self) -> CpuAffinitySnapshot {
+        self.shared
+            .state
+            .lock()
+            .map(|state| state.cpu_affinity_status.clone())
+            .unwrap_or_default()
+    }
+
     pub fn request_app_suspension_freeze(&self, process_name: &str) {
         let process_name = process_name.trim().to_ascii_lowercase();
         if process_name.is_empty() {
@@ -121,6 +133,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_check = Instant::now();
     let mut next_eco_qos_refresh = Instant::now();
     let mut next_app_suspension_refresh = Instant::now();
+    let mut next_cpu_affinity_refresh = Instant::now();
 
     loop {
         let snapshot = match automation_snapshot(&shared) {
@@ -144,6 +157,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             update_app_suspension_status(&shared, app_suspension_status);
             next_app_suspension_refresh = Instant::now() + APP_SUSPENSION_REFRESH_INTERVAL;
         }
+        if Instant::now() >= next_cpu_affinity_refresh {
+            let cpu_affinity_status = runner.run_cpu_affinity_update(&settings);
+            update_cpu_affinity_status(&shared, cpu_affinity_status);
+            next_cpu_affinity_refresh = Instant::now() + CPU_AFFINITY_REFRESH_INTERVAL;
+        }
 
         let wait_for = if tray::is_hidden_to_tray() {
             let input_events = input_hook::take_pending_events();
@@ -161,6 +179,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 .min(HIDDEN_POLL_INTERVAL)
                 .min(next_eco_qos_refresh.saturating_duration_since(Instant::now()))
                 .min(next_app_suspension_refresh.saturating_duration_since(Instant::now()))
+                .min(next_cpu_affinity_refresh.saturating_duration_since(Instant::now()))
         } else {
             next_check = Instant::now();
             next_eco_qos_refresh
@@ -168,6 +187,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 .min(ECO_QOS_REFRESH_INTERVAL)
                 .min(next_app_suspension_refresh.saturating_duration_since(Instant::now()))
                 .min(APP_SUSPENSION_REFRESH_INTERVAL)
+                .min(next_cpu_affinity_refresh.saturating_duration_since(Instant::now()))
+                .min(CPU_AFFINITY_REFRESH_INTERVAL)
         };
 
         match wait_for_wake(&shared, wait_for) {
@@ -176,6 +197,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_check = Instant::now();
                 next_eco_qos_refresh = Instant::now();
                 next_app_suspension_refresh = Instant::now();
+                next_cpu_affinity_refresh = Instant::now();
             }
             WorkerWake::Timeout => {}
         }
@@ -207,6 +229,12 @@ fn update_eco_qos_status(shared: &SharedAutomationState, status: EcoQosSnapshot)
 fn update_app_suspension_status(shared: &SharedAutomationState, status: AppSuspensionSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
         state.app_suspension_status = status;
+    }
+}
+
+fn update_cpu_affinity_status(shared: &SharedAutomationState, status: CpuAffinitySnapshot) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.cpu_affinity_status = status;
     }
 }
 
@@ -256,6 +284,7 @@ struct HiddenAutomationRunner {
     decision_engine: DecisionEngine,
     eco_qos_manager: EcoQosManager,
     app_suspension_manager: AppSuspensionManager,
+    cpu_affinity_manager: CpuAffinityManager,
 }
 
 impl HiddenAutomationRunner {
@@ -279,6 +308,15 @@ impl HiddenAutomationRunner {
             settings.general.enabled,
             foreground_process_id,
             manual_freeze_processes,
+        )
+    }
+
+    fn run_cpu_affinity_update(&mut self, settings: &Settings) -> CpuAffinitySnapshot {
+        let foreground_process_id = self.foreground_detector.process_id();
+        self.cpu_affinity_manager.update(
+            &settings.cpu_affinity,
+            settings.general.enabled,
+            foreground_process_id,
         )
     }
 

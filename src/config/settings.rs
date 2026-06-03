@@ -14,6 +14,8 @@ pub struct Settings {
     pub eco_qos: EcoQosSettings,
     #[serde(default)]
     pub app_suspension: AppSuspensionSettings,
+    #[serde(default)]
+    pub cpu_affinity: CpuAffinitySettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +160,26 @@ pub struct AppSuspensionSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuAffinitySettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub exclude_foreground_app: bool,
+    #[serde(default)]
+    pub rules: Vec<CpuAffinityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuAffinityRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+    pub core_mask: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSuspensionRule {
     pub process_name: String,
     #[serde(default = "default_rule_network_wake_enabled")]
@@ -273,6 +295,7 @@ impl Default for Settings {
             cpu_usage_mode: CpuUsageModeSettings::default(),
             eco_qos: EcoQosSettings::default(),
             app_suspension: AppSuspensionSettings::default(),
+            cpu_affinity: CpuAffinitySettings::default(),
         }
     }
 }
@@ -465,6 +488,16 @@ impl Default for AppSuspensionSettings {
     }
 }
 
+impl Default for CpuAffinitySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exclude_foreground_app: default_exclude_foreground_app(),
+            rules: Vec::new(),
+        }
+    }
+}
+
 impl AppSuspensionSettings {
     pub fn contains_suspendable_app(&self, process_name: &str) -> bool {
         self.suspendable_apps.iter().any(|rule| {
@@ -508,6 +541,16 @@ impl AppSuspensionSettings {
                 rule.network_download_threshold_bytes,
                 rule.network_upload_threshold_bytes,
             ))
+        })
+    }
+}
+
+impl CpuAffinitySettings {
+    pub fn contains_rule_for(&self, process_name: &str) -> bool {
+        self.rules.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
         })
     }
 }
