@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     ffi::{OsStr, OsString},
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
@@ -33,7 +33,7 @@ use crate::{
     config::{
         self, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode, CpuAffinityRule,
         CpuAffinitySettings, CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundRule,
-        NetworkThresholdUnit, ScheduleRule, Settings, WeekdaySetting,
+        ForegroundRules, NetworkThresholdUnit, ScheduleRule, Settings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{self, EcoQosSnapshot},
@@ -54,15 +54,18 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 };
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
-const APP_TICK_INTERVAL: Duration = Duration::from_secs(2);
+const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const CPU_USAGE_HISTORY_LEN: usize = 36;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TITLE_BAR_HEIGHT: f32 = 36.0;
 const PAGE_HEADER_HEIGHT: f32 = 42.0;
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
+const RULE_TITLE_TEXT_SIZE: f32 = 15.0;
+const RULE_TITLE_LINE_HEIGHT: f32 = 21.0;
 
 const COLOR_PANEL_ACTIVE: u32 = 0x454a56;
 const COLOR_BORDER: u32 = 0x464b57;
@@ -85,6 +88,7 @@ pub struct PowerLeafApp {
     current_plan: Option<PowerPlan>,
     activity: ActivitySnapshot,
     cpu_usage: CpuUsageSnapshot,
+    cpu_usage_history: VecDeque<f32>,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     cpu_affinity_status: CpuAffinitySnapshot,
@@ -127,6 +131,7 @@ struct UiInputs {
     schedule_end_times: Vec<Entity<InputState>>,
     foreground_rule_names: Vec<Entity<InputState>>,
     foreground_rule_processes: Vec<Entity<InputState>>,
+    foreground_process: Entity<InputState>,
     eco_qos_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
@@ -177,6 +182,7 @@ impl UiInputs {
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.process_name, "process.exe"))
                 .collect(),
+            foreground_process: make_input(window, cx, "", "Search running apps..."),
             eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
@@ -264,6 +270,7 @@ impl PowerLeafApp {
                 idle_for: None,
             },
             cpu_usage: CpuUsageSnapshot::default(),
+            cpu_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
             eco_qos_status: EcoQosSnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
             cpu_affinity_status: CpuAffinitySnapshot::default(),
@@ -386,10 +393,7 @@ impl PowerLeafApp {
         self.activity = self.idle_detector.snapshot(Duration::from_secs(
             self.settings.activity_mode.idle_timeout_seconds,
         ));
-        if Instant::now() >= self.next_cpu_usage_refresh {
-            self.cpu_usage = self.cpu_monitor.sample();
-            self.next_cpu_usage_refresh = Instant::now() + CPU_USAGE_REFRESH_INTERVAL;
-        }
+        self.refresh_cpu_usage_sample();
         self.foreground_app = self.foreground_detector.process_name();
         let schedule = self
             .scheduler
@@ -442,6 +446,27 @@ impl PowerLeafApp {
             || self.plans != plans
             || self.current_plan != current_plan
             || self.status_message != status_message
+    }
+
+    fn refresh_cpu_usage_sample(&mut self) -> bool {
+        if Instant::now() < self.next_cpu_usage_refresh {
+            return false;
+        }
+
+        let previous_percent = self.cpu_usage.percent;
+        self.cpu_usage = self.cpu_monitor.sample();
+        let mut changed = self.cpu_usage.percent != previous_percent;
+
+        if let Some(percent) = self.cpu_usage.percent {
+            if self.cpu_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+                self.cpu_usage_history.pop_front();
+            }
+            self.cpu_usage_history.push_back(percent.clamp(0.0, 100.0));
+            changed = true;
+        }
+
+        self.next_cpu_usage_refresh = Instant::now() + CPU_USAGE_REFRESH_INTERVAL;
+        changed
     }
 
     fn install_input_hook(&mut self) {
@@ -671,6 +696,8 @@ impl PowerLeafApp {
             changed |= self.refresh_process_candidates(false);
         }
 
+        changed |= self.refresh_cpu_usage_sample();
+
         let _input_events = self
             .input_hook
             .as_ref()
@@ -721,9 +748,7 @@ impl PowerLeafApp {
     }
 
     fn rule_title_input_count(&self) -> usize {
-        self.inputs.foreground_rule_names.len()
-            + self.inputs.schedule_rule_names.len()
-            + self.inputs.cpu_rule_names.len()
+        self.inputs.schedule_rule_names.len() + self.inputs.cpu_rule_names.len()
     }
 
     fn ensure_rule_title_input_subscriptions(
@@ -742,14 +767,6 @@ impl PowerLeafApp {
         cx: &mut Context<Self>,
     ) {
         let mut inputs = Vec::new();
-        inputs.extend(
-            self.inputs
-                .foreground_rule_names
-                .iter()
-                .cloned()
-                .enumerate()
-                .map(|(index, input)| (input, RuleTitleTarget::Foreground(index))),
-        );
         inputs.extend(
             self.inputs
                 .schedule_rule_names
@@ -818,7 +835,6 @@ impl PowerLeafApp {
 
     fn rule_title_input(&self, target: RuleTitleTarget) -> Option<Entity<InputState>> {
         match target {
-            RuleTitleTarget::Foreground(index) => self.inputs.foreground_rule_names.get(index),
             RuleTitleTarget::Schedule(index) => self.inputs.schedule_rule_names.get(index),
             RuleTitleTarget::Cpu(index) => self.inputs.cpu_rule_names.get(index),
         }
@@ -1285,12 +1301,10 @@ impl PowerLeafApp {
     fn render_dashboard(&self) -> AnyElement {
         let settings = self.runtime_settings();
         page_shell(Page::Dashboard)
-            .child(info_card(vec![
-                t!("dashboard.intro_1").to_string(),
-                t!("dashboard.intro_2").to_string(),
-            ]))
-            .child(
-                stat_grid(vec![
+            .child(self.render_cpu_usage_graph())
+            .child(titled_stat_grid(
+                &t!("dashboard.current_power_plan"),
+                vec![
                     (
                         t!("dashboard.current_power_plan").to_string(),
                         self.current_plan
@@ -1300,63 +1314,270 @@ impl PowerLeafApp {
                             .unwrap_or_else(|| t!("common.unknown").to_string()),
                     ),
                     (
-                        t!("dashboard.current_mode").to_string(),
+                        "Activated rule".to_owned(),
                         self.decision.state.label().to_owned(),
                     ),
                     (
-                        t!("dashboard.automation").to_string(),
-                        if settings.general.enabled {
-                            t!("common.enabled").to_string()
-                        } else {
-                            t!("common.disabled").to_string()
-                        },
-                    ),
-                    (
-                        t!("dashboard.foreground_app").to_string(),
-                        self.foreground_app
+                        "Activated plan".to_owned(),
+                        self.decision
+                            .target_guid
                             .as_deref()
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| t!("common.unknown").to_string()),
-                    ),
-                    (
-                        t!("dashboard.activity_state").to_string(),
-                        format!("{:?}", self.activity.state),
-                    ),
-                    (
-                        t!("dashboard.cpu_usage").to_string(),
-                        cpu_usage_label(self.cpu_usage.percent),
-                    ),
-                    (
-                        t!("dashboard.efficiency_mode").to_string(),
-                        eco_qos_label(&self.eco_qos_status),
-                    ),
-                    (
-                        t!("dashboard.app_suspension").to_string(),
-                        app_suspension_label(&self.app_suspension_status),
-                    ),
-                    (
-                        t!("dashboard.cpu_affinity").to_string(),
-                        cpu_affinity_label(&self.cpu_affinity_status),
-                    ),
-                    (
-                        t!("dashboard.idle_time").to_string(),
-                        self.activity
-                            .idle_for
-                            .map(|duration| ui::duration_label(duration.as_secs()))
-                            .unwrap_or_else(|| t!("common.unknown").to_string()),
-                    ),
-                    (
-                        t!("dashboard.time_rules").to_string(),
-                        self.next_schedule.clone(),
+                            .and_then(|guid| self.power_plan_name(guid))
+                            .unwrap_or_else(|| t!("common.none").to_string()),
                     ),
                     (
                         t!("dashboard.decision_reason").to_string(),
                         self.decision.reason.clone(),
                     ),
-                ])
-                .into_any_element(),
-            )
+                ],
+            ))
+            .child(titled_stat_grid(
+                "Activated power plan controls",
+                self.dashboard_power_control_rows(&settings),
+            ))
+            .child(titled_stat_grid(
+                "Activated process controls",
+                self.dashboard_process_control_rows(),
+            ))
+            .child(titled_stat_grid(
+                "Efficiency Mode status",
+                self.dashboard_efficiency_rows(),
+            ))
+            .child(titled_stat_grid(
+                "App Suspension status",
+                self.dashboard_suspension_rows(),
+            ))
             .into_any_element()
+    }
+
+    fn render_cpu_usage_graph(&self) -> GroupBox {
+        let mut graph = h_flex()
+            .w_full()
+            .h(px(112.0))
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_2()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(COLOR_BORDER));
+
+        if self.cpu_usage_history.is_empty() {
+            graph = graph.child(
+                div()
+                    .w_full()
+                    .text_sm()
+                    .text_color(rgb(COLOR_MUTED))
+                    .child(t!("dashboard.collecting").to_string()),
+            );
+        } else {
+            for percent in &self.cpu_usage_history {
+                let bar_height = 8.0 + (percent / 100.0) * 88.0;
+                graph = graph.child(
+                    v_flex().h_full().flex_1().justify_end().child(
+                        div()
+                            .w_full()
+                            .h(px(bar_height))
+                            .rounded_sm()
+                            .bg(rgb(COLOR_ACCENT)),
+                    ),
+                );
+            }
+        }
+
+        GroupBox::new()
+            .outline()
+            .title(Label::new(t!("dashboard.cpu_usage").to_string()))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .child(text_muted(cpu_usage_label(self.cpu_usage.percent)))
+                            .child(text_muted(format!(
+                                "{} samples",
+                                self.cpu_usage_history.len()
+                            ))),
+                    )
+                    .child(graph),
+            )
+    }
+
+    fn power_plan_name(&self, guid: &str) -> Option<String> {
+        self.plans
+            .iter()
+            .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+            .map(PowerPlan::display_name)
+    }
+
+    fn dashboard_power_control_rows(&self, settings: &Settings) -> Vec<(String, String)> {
+        vec![
+            (
+                t!("dashboard.automation").to_string(),
+                enabled_label(settings.general.enabled),
+            ),
+            (
+                t!("nav.foreground_rules").to_string(),
+                active_rule_label(
+                    matches!(
+                        self.decision.state,
+                        DecisionState::ForegroundRule
+                            | DecisionState::ForegroundForceActive
+                            | DecisionState::ForegroundForcePowerSave
+                    ),
+                    foreground_label(self.foreground_app.as_deref()),
+                ),
+            ),
+            (
+                t!("nav.schedule").to_string(),
+                active_rule_label(
+                    self.decision.state == DecisionState::ScheduledRule,
+                    self.next_schedule.clone(),
+                ),
+            ),
+            (
+                t!("nav.cpu_usage").to_string(),
+                active_rule_label(
+                    self.decision.state == DecisionState::CpuLoadRule,
+                    cpu_usage_label(self.cpu_usage.percent),
+                ),
+            ),
+            (
+                t!("nav.activity").to_string(),
+                active_rule_label(
+                    matches!(
+                        self.decision.state,
+                        DecisionState::IdlePowerSave | DecisionState::ActivePerformance
+                    ),
+                    format!(
+                        "{:?}, idle {}",
+                        self.activity.state,
+                        self.activity
+                            .idle_for
+                            .map(|duration| ui::duration_label(duration.as_secs()))
+                            .unwrap_or_else(|| t!("common.unknown").to_string())
+                    ),
+                ),
+            ),
+        ]
+    }
+
+    fn dashboard_process_control_rows(&self) -> Vec<(String, String)> {
+        vec![
+            (
+                t!("nav.efficiency_mode").to_string(),
+                format!(
+                    "{}; {} throttled",
+                    enabled_label(self.eco_qos_status.enabled),
+                    self.eco_qos_status.throttled_processes
+                ),
+            ),
+            (
+                t!("nav.app_suspension").to_string(),
+                format!(
+                    "{}; {} suspended",
+                    enabled_label(self.app_suspension_status.enabled),
+                    self.app_suspension_status.suspended_processes
+                ),
+            ),
+            (
+                t!("nav.cpu_affinity").to_string(),
+                format!(
+                    "{}; {} adjusted",
+                    enabled_label(self.cpu_affinity_status.enabled),
+                    self.cpu_affinity_status.adjusted_processes
+                ),
+            ),
+        ]
+    }
+
+    fn dashboard_efficiency_rows(&self) -> Vec<(String, String)> {
+        vec![
+            (
+                t!("common.status").to_string(),
+                self.eco_qos_status.message.clone(),
+            ),
+            (
+                "Throttled processes".to_owned(),
+                self.eco_qos_status.throttled_processes.to_string(),
+            ),
+            (
+                "Scanned processes".to_owned(),
+                self.eco_qos_status.scanned_processes.to_string(),
+            ),
+            (
+                "Skipped processes".to_owned(),
+                self.eco_qos_status.skipped_processes.to_string(),
+            ),
+            (
+                "Failed actions".to_owned(),
+                self.eco_qos_status.failed_processes.to_string(),
+            ),
+            (
+                t!("common.last_failure").to_string(),
+                self.eco_qos_status
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| t!("common.none").to_string()),
+            ),
+        ]
+    }
+
+    fn dashboard_suspension_rows(&self) -> Vec<(String, String)> {
+        vec![
+            (
+                t!("common.status").to_string(),
+                self.app_suspension_status.message.clone(),
+            ),
+            (
+                "Tracked apps".to_owned(),
+                app_list_label(
+                    &self.app_suspension_status.tracked_apps,
+                    self.app_suspension_status.tracked_processes,
+                ),
+            ),
+            (
+                "Suspended apps".to_owned(),
+                app_list_label(
+                    &self.app_suspension_status.suspended_apps,
+                    self.app_suspension_status.suspended_processes,
+                ),
+            ),
+            (
+                "Temporary thawed".to_owned(),
+                app_list_label(
+                    &self.app_suspension_status.temporary_thawed_apps,
+                    self.app_suspension_status.temporary_thawed_processes,
+                ),
+            ),
+            (
+                "Network wake".to_owned(),
+                app_list_label(
+                    &self.app_suspension_status.network_wake_apps,
+                    self.app_suspension_status.network_wake_processes,
+                ),
+            ),
+            (
+                "Audio wake".to_owned(),
+                app_list_label(
+                    &self.app_suspension_status.audio_wake_apps,
+                    self.app_suspension_status.audio_wake_processes,
+                ),
+            ),
+            (
+                "Failed actions".to_owned(),
+                self.app_suspension_status.failed_actions.to_string(),
+            ),
+            (
+                t!("common.last_failure").to_string(),
+                self.app_suspension_status
+                    .last_error
+                    .clone()
+                    .unwrap_or_else(|| t!("common.none").to_string()),
+            ),
+        ]
     }
 
     fn render_activity_page(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1493,6 +1714,7 @@ impl PowerLeafApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let input_value = self.inputs.foreground_process.read(cx).value().to_string();
         let mut content = page_shell(Page::ForegroundRules)
             .child(info_card(vec![
                 t!("foreground.intro_1").to_string(),
@@ -1508,28 +1730,48 @@ impl PowerLeafApp {
                 }),
             ))
             .child(
-                Button::new("add-foreground-rule")
-                    .small()
-                    .primary()
-                    .label(t!("foreground.add_rule").to_string())
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.settings.foreground_rules.rules.push(ForegroundRule {
-                            enabled: true,
-                            name: t!("foreground.new_rule").to_string(),
-                            process_name: String::new(),
-                            power_plan_guid: app
-                                .current_plan
-                                .as_ref()
-                                .map(|plan| plan.guid.clone()),
-                        });
-                        app.inputs.ensure_for_settings(window, cx, &app.settings);
-                        cx.notify();
-                    })),
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "foreground-suggestion",
+                        &self.inputs.foreground_process,
+                        SuggestionTarget::Foreground,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        Button::new("add-foreground-rule")
+                            .small()
+                            .primary()
+                            .label(t!("common.add").to_string())
+                            .disabled(!can_add_foreground_process(
+                                &self.settings.foreground_rules,
+                                &input_value,
+                            ))
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.foreground_process.read(cx).value().to_string();
+                                if can_add_foreground_process(
+                                    &app.settings.foreground_rules,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .foreground_rules
+                                        .rules
+                                        .push(app.new_foreground_rule(&process));
+                                    app.inputs.ensure_for_settings(window, cx, &app.settings);
+                                    clear_input(&app.inputs.foreground_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
             );
 
         let mut rules = rule_list();
         for (index, rule) in self.settings.foreground_rules.rules.iter().enumerate() {
-            rules = rules.child(self.render_foreground_rule(index, rule, window, cx));
+            rules = rules.child(self.render_foreground_rule(index, rule, cx));
         }
         content = content.child(rules);
 
@@ -1540,21 +1782,10 @@ impl PowerLeafApp {
         &self,
         index: usize,
         rule: &ForegroundRule,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(name_input) = self.inputs.foreground_rule_names.get(index).cloned() else {
-            return syncing_rule_card(index);
-        };
-        let Some(process_input) = self.inputs.foreground_rule_processes.get(index).cloned() else {
-            return syncing_rule_card(index);
-        };
-        let title_target = RuleTitleTarget::Foreground(index);
-        let card_target = RuleCardTarget::Foreground(index);
-        let collapsed = self.is_rule_card_collapsed(&card_target);
-        let mut card = rule_card(
-            self.render_rule_title(&rule_card_title(&rule.name), &name_input, title_target, cx),
-            rule_enable_checkbox(
+        compact_rule_row(cx)
+            .child(rule_enable_checkbox(
                 format!("foreground-rule-enabled-{index}"),
                 rule.enabled,
                 cx.listener(move |app, checked, _, cx| {
@@ -1563,48 +1794,51 @@ impl PowerLeafApp {
                     }
                     cx.notify();
                 }),
-            ),
-            rule_card_collapse_indicator(collapsed),
-            card_target.clone(),
-            cx,
-        );
-        if !collapsed {
-            card = card
-                .child(labeled_element(
-                    &t!("foreground.focused_app"),
-                    self.render_process_picker(
-                        format!("foreground-process-{index}"),
-                        &process_input,
-                        SuggestionTarget::ForegroundRule(index),
-                        window,
-                        cx,
-                    ),
-                ))
-                .child(self.render_power_plan_picker(
-                    format!("foreground-rule-plan-{index}"),
-                    &t!("foreground.target_power_plan"),
-                    rule.power_plan_guid.clone(),
-                    PowerPlanField::ForegroundRule(index),
-                    cx,
-                ))
-                .child(
-                    Button::new(SharedString::from(format!(
-                        "remove-foreground-rule-{index}"
-                    )))
-                    .small()
-                    .danger()
-                    .label(t!("common.remove").to_string())
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        if index < app.settings.foreground_rules.rules.len() {
-                            app.settings.foreground_rules.rules.remove(index);
-                        }
-                        app.editing_rule_title = None;
-                        app.collapsed_rule_cards.clear();
-                        cx.notify();
-                    })),
-                );
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(160.0))
+                    .text_size(px(RULE_TITLE_TEXT_SIZE))
+                    .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .truncate()
+                    .child(rule.process_name.clone()),
+            )
+            .child(self.render_inline_power_plan_picker(
+                format!("foreground-rule-plan-{index}"),
+                rule.power_plan_guid.clone(),
+                PowerPlanField::ForegroundRule(index),
+                cx,
+            ))
+            .child(
+                Button::new(SharedString::from(format!(
+                    "remove-foreground-rule-{index}"
+                )))
+                .small()
+                .danger()
+                .label(t!("common.remove").to_string())
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if index < app.settings.foreground_rules.rules.len() {
+                        app.settings.foreground_rules.rules.remove(index);
+                    }
+                    app.editing_rule_title = None;
+                    app.collapsed_rule_cards.clear();
+                    cx.notify();
+                }))
+                .into_any_element(),
+            )
+            .into_any_element()
+    }
+
+    fn new_foreground_rule(&self, process: &str) -> ForegroundRule {
+        let process_name = process.trim().to_ascii_lowercase();
+        ForegroundRule {
+            enabled: true,
+            name: process_name.clone(),
+            process_name,
+            power_plan_guid: self.current_plan.as_ref().map(|plan| plan.guid.clone()),
         }
-        card.into_any_element()
     }
 
     fn render_rule_title(
@@ -1655,34 +1889,16 @@ impl PowerLeafApp {
             .child(
                 div()
                     .id(SharedString::from(format!("rule-title-{target:?}")))
-                    .flex_none()
+                    .flex_1()
+                    .min_w(px(0.0))
                     .max_w(px(420.0))
                     .overflow_hidden()
                     .whitespace_nowrap()
-                    .text_size(px(16.0))
-                    .line_height(px(22.0))
+                    .text_size(px(RULE_TITLE_TEXT_SIZE))
+                    .line_height(px(RULE_TITLE_LINE_HEIGHT))
                     .font_weight(gpui::FontWeight::BOLD)
                     .cursor_pointer()
                     .child(title.to_owned()),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "edit-rule-title-target-{target:?}"
-                    )))
-                    .on_click(|_, _, cx| {
-                        cx.stop_propagation();
-                    })
-                    .child(
-                        Button::new(SharedString::from(format!("edit-rule-title-{target:?}")))
-                            .small()
-                            .ghost()
-                            .label(t!("common.edit").to_string())
-                            .tooltip(t!("common.rename_rule").to_string())
-                            .on_click(cx.listener(move |app, _, window, cx| {
-                                app.begin_rule_title_edit(target, window, cx);
-                            })),
-                    ),
             )
             .into_any_element()
     }
@@ -1788,39 +2004,32 @@ impl PowerLeafApp {
         );
         if !collapsed {
             card = card
-                .child(labeled_element(
-                    &t!("schedule.days"),
-                    days.into_any_element(),
-                ))
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .flex_wrap()
-                        .child(match self.inputs.schedule_start_times.get(index).cloned() {
-                            Some(input) => {
-                                input_row(&t!("schedule.start"), input).into_any_element()
-                            }
-                            None => syncing_input_message().into_any_element(),
-                        })
-                        .child(match self.inputs.schedule_end_times.get(index).cloned() {
-                            Some(input) => input_row(&t!("schedule.end"), input).into_any_element(),
-                            None => syncing_input_message().into_any_element(),
-                        })
-                        .child(if rule.parsed_times().is_none() {
-                            text_danger(t!("schedule.use_hhmm").to_string()).into_any_element()
-                        } else {
-                            div().into_any_element()
-                        }),
-                )
-                .child(self.render_power_plan_picker(
+                .child(rule_card_body_row(vec![
+                    labeled_element(&t!("schedule.days"), days.into_any_element())
+                        .into_any_element(),
+                    match self.inputs.schedule_start_times.get(index).cloned() {
+                        Some(input) => input_row(&t!("schedule.start"), input).into_any_element(),
+                        None => syncing_input_message().into_any_element(),
+                    },
+                    match self.inputs.schedule_end_times.get(index).cloned() {
+                        Some(input) => input_row(&t!("schedule.end"), input).into_any_element(),
+                        None => syncing_input_message().into_any_element(),
+                    },
+                    if rule.parsed_times().is_none() {
+                        text_danger(t!("schedule.use_hhmm").to_string()).into_any_element()
+                    } else {
+                        div().into_any_element()
+                    },
+                ]))
+                .child(rule_card_body_row(vec![self.render_power_plan_picker(
                     format!("schedule-rule-plan-{index}"),
                     &t!("schedule.target_power_plan"),
                     rule.power_plan_guid.clone(),
                     PowerPlanField::ScheduleRule(index),
                     cx,
-                ))
-                .child(
+                )]))
+                .child(rule_card_body_actions(vec![
+                    rename_rule_button(title_target, cx),
                     Button::new(SharedString::from(format!("remove-schedule-rule-{index}")))
                         .small()
                         .danger()
@@ -1832,8 +2041,9 @@ impl PowerLeafApp {
                             app.editing_rule_title = None;
                             app.collapsed_rule_cards.clear();
                             cx.notify();
-                        })),
-                );
+                        }))
+                        .into_any_element(),
+                ]));
         }
         card.into_any_element()
     }
@@ -1946,12 +2156,13 @@ impl PowerLeafApp {
             cx,
         );
         if !collapsed {
-            card = card
-                .child(labeled_element(
+            let mut condition_fields = vec![
+                labeled_element(
                     &t!("cpu_rules.when_cpu_load"),
                     comparisons.into_any_element(),
-                ))
-                .child(stepper_u8(
+                )
+                .into_any_element(),
+                stepper_u8(
                     format!("cpu-rule-threshold-{index}"),
                     &t!("cpu_rules.threshold"),
                     rule.threshold_percent,
@@ -1968,8 +2179,11 @@ impl PowerLeafApp {
                         }
                         cx.notify();
                     }),
-                ))
-                .child(if rule.comparison == CpuUsageComparison::Between {
+                )
+                .into_any_element(),
+            ];
+            if rule.comparison == CpuUsageComparison::Between {
+                condition_fields.push(
                     stepper_u8(
                         format!("cpu-rule-upper-threshold-{index}"),
                         &t!("cpu_rules.upper_threshold"),
@@ -1989,11 +2203,11 @@ impl PowerLeafApp {
                             cx.notify();
                         }),
                     )
-                    .into_any_element()
-                } else {
-                    div().into_any_element()
-                })
-                .child(stepper_u64(
+                    .into_any_element(),
+                );
+            }
+            condition_fields.push(
+                stepper_u64(
                     format!("cpu-rule-duration-{index}"),
                     &t!("cpu_rules.duration"),
                     rule.duration_seconds,
@@ -2010,15 +2224,19 @@ impl PowerLeafApp {
                         }
                         cx.notify();
                     }),
-                ))
-                .child(self.render_power_plan_picker(
+                )
+                .into_any_element(),
+            );
+
+            let mut plan_fields = vec![
+                self.render_power_plan_picker(
                     format!("cpu-rule-plan-{index}"),
                     &t!("cpu_rules.use"),
                     rule.power_plan_guid.clone(),
                     PowerPlanField::CpuRule(index),
                     cx,
-                ))
-                .child(checkbox(
+                ),
+                checkbox(
                     format!("cpu-rule-else-{index}"),
                     t!("cpu_rules.else").to_string(),
                     rule.else_enabled,
@@ -2032,19 +2250,23 @@ impl PowerLeafApp {
                         }
                         cx.notify();
                     }),
-                ))
-                .child(if rule.else_enabled {
-                    self.render_power_plan_picker(
-                        format!("cpu-rule-else-plan-{index}"),
-                        &t!("cpu_rules.else_use"),
-                        rule.else_power_plan_guid.clone(),
-                        PowerPlanField::CpuRuleElse(index),
-                        cx,
-                    )
-                } else {
-                    div().into_any_element()
-                })
-                .child(
+                ),
+            ];
+            if rule.else_enabled {
+                plan_fields.push(self.render_power_plan_picker(
+                    format!("cpu-rule-else-plan-{index}"),
+                    &t!("cpu_rules.else_use"),
+                    rule.else_power_plan_guid.clone(),
+                    PowerPlanField::CpuRuleElse(index),
+                    cx,
+                ));
+            }
+
+            card = card
+                .child(rule_card_body_row(condition_fields))
+                .child(rule_card_body_row(plan_fields))
+                .child(rule_card_body_actions(vec![
+                    rename_rule_button(title_target, cx),
                     Button::new(SharedString::from(format!("remove-cpu-rule-{index}")))
                         .small()
                         .danger()
@@ -2056,8 +2278,9 @@ impl PowerLeafApp {
                             app.editing_rule_title = None;
                             app.collapsed_rule_cards.clear();
                             cx.notify();
-                        })),
-                );
+                        }))
+                        .into_any_element(),
+                ]));
         }
         card.into_any_element()
     }
@@ -2118,50 +2341,45 @@ impl PowerLeafApp {
                         .unwrap_or_else(|| t!("common.none").to_string()),
                 ),
             ]))
+            .child(section_header(
+                &t!("efficiency.whitelist"),
+                t!("efficiency.whitelist_help").to_string(),
+            ))
             .child(
-                section_card(&t!("efficiency.whitelist"))
-                    .child(text_muted(t!("efficiency.whitelist_help").to_string()))
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "eco-qos-suggestion",
+                        &self.inputs.eco_qos_exclusion,
+                        SuggestionTarget::EcoQos,
+                        window,
+                        cx,
+                    ))
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .items_start()
-                            .flex_wrap()
-                            .child(self.render_process_picker(
-                                "eco-qos-suggestion",
-                                &self.inputs.eco_qos_exclusion,
-                                SuggestionTarget::EcoQos,
-                                window,
-                                cx,
+                        Button::new("add-eco-qos-exclusion")
+                            .small()
+                            .label(t!("common.add").to_string())
+                            .disabled(!can_add_eco_qos_process(
+                                &self.settings.eco_qos,
+                                &input_value,
                             ))
-                            .child(
-                                Button::new("add-eco-qos-exclusion")
-                                    .small()
-                                    .label(t!("common.add").to_string())
-                                    .disabled(!can_add_eco_qos_process(
-                                        &self.settings.eco_qos,
-                                        &input_value,
-                                    ))
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        let process = app
-                                            .inputs
-                                            .eco_qos_exclusion
-                                            .read(cx)
-                                            .value()
-                                            .to_string();
-                                        if can_add_eco_qos_process(&app.settings.eco_qos, &process)
-                                        {
-                                            app.settings
-                                                .eco_qos
-                                                .efficiency_whitelist
-                                                .push(process.trim().to_ascii_lowercase());
-                                            clear_input(&app.inputs.eco_qos_exclusion, window, cx);
-                                        }
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(self.render_eco_qos_whitelist(cx)),
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.eco_qos_exclusion.read(cx).value().to_string();
+                                if can_add_eco_qos_process(&app.settings.eco_qos, &process) {
+                                    app.settings
+                                        .eco_qos
+                                        .efficiency_whitelist
+                                        .push(process.trim().to_ascii_lowercase());
+                                    clear_input(&app.inputs.eco_qos_exclusion, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
             )
+            .child(self.render_eco_qos_whitelist(cx))
             .into_any_element()
     }
 
@@ -2175,11 +2393,14 @@ impl PowerLeafApp {
             .enumerate()
         {
             list = list.child(
-                row_card()
+                compact_rule_row(cx)
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.0))
+                            .min_w(px(160.0))
+                            .text_size(px(RULE_TITLE_TEXT_SIZE))
+                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                            .font_weight(gpui::FontWeight::BOLD)
                             .truncate()
                             .child(process.clone()),
                     )
@@ -2490,8 +2711,10 @@ impl PowerLeafApp {
             );
             if !collapsed {
                 card = card
-                    .child(text_muted(indicator.hover))
-                    .child(
+                    .child(rule_card_body_row(vec![
+                        text_muted(indicator.hover).into_any_element()
+                    ]))
+                    .child(rule_card_body_row(vec![
                         Button::new(SharedString::from(format!("freeze-suspension-{index}")))
                             .small()
                             .label(t!("suspension.freeze").to_string())
@@ -2506,53 +2729,56 @@ impl PowerLeafApp {
                                             .to_string();
                                     cx.notify();
                                 }
-                            })),
-                    )
-                    .child(checkbox(
-                        format!("suspension-network-rule-{index}"),
-                        t!("suspension.network_detection").to_string(),
-                        rule.network_wake_enabled,
-                        cx.listener(move |app, checked, _, cx| {
-                            if let Some(rule) =
-                                app.settings.app_suspension.suspendable_apps.get_mut(index)
-                            {
-                                rule.network_wake_enabled = *checked;
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(checkbox(
-                        format!("suspension-audio-rule-{index}"),
-                        t!("suspension.audio_detection").to_string(),
-                        rule.audio_wake_enabled,
-                        cx.listener(move |app, checked, _, cx| {
-                            if let Some(rule) =
-                                app.settings.app_suspension.suspendable_apps.get_mut(index)
-                            {
-                                rule.audio_wake_enabled = *checked;
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(self.render_network_threshold(
-                        index,
-                        true,
-                        &t!("suspension.download_threshold"),
-                        rule.network_download_threshold_bytes,
-                        rule.network_download_threshold_unit,
-                        ThresholdField::Download(index),
-                        cx,
-                    ))
-                    .child(self.render_network_threshold(
-                        index,
-                        false,
-                        &t!("suspension.upload_threshold"),
-                        rule.network_upload_threshold_bytes,
-                        rule.network_upload_threshold_unit,
-                        ThresholdField::Upload(index),
-                        cx,
-                    ))
-                    .child(
+                            }))
+                            .into_any_element(),
+                        checkbox(
+                            format!("suspension-network-rule-{index}"),
+                            t!("suspension.network_detection").to_string(),
+                            rule.network_wake_enabled,
+                            cx.listener(move |app, checked, _, cx| {
+                                if let Some(rule) =
+                                    app.settings.app_suspension.suspendable_apps.get_mut(index)
+                                {
+                                    rule.network_wake_enabled = *checked;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                        checkbox(
+                            format!("suspension-audio-rule-{index}"),
+                            t!("suspension.audio_detection").to_string(),
+                            rule.audio_wake_enabled,
+                            cx.listener(move |app, checked, _, cx| {
+                                if let Some(rule) =
+                                    app.settings.app_suspension.suspendable_apps.get_mut(index)
+                                {
+                                    rule.audio_wake_enabled = *checked;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                    ]))
+                    .child(rule_card_body_row(vec![
+                        self.render_network_threshold(
+                            index,
+                            true,
+                            &t!("suspension.download_threshold"),
+                            rule.network_download_threshold_bytes,
+                            rule.network_download_threshold_unit,
+                            ThresholdField::Download(index),
+                            cx,
+                        ),
+                        self.render_network_threshold(
+                            index,
+                            false,
+                            &t!("suspension.upload_threshold"),
+                            rule.network_upload_threshold_bytes,
+                            rule.network_upload_threshold_unit,
+                            ThresholdField::Upload(index),
+                            cx,
+                        ),
+                    ]))
+                    .child(rule_card_body_action(
                         Button::new(SharedString::from(format!("remove-suspension-{index}")))
                             .small()
                             .danger()
@@ -2566,8 +2792,9 @@ impl PowerLeafApp {
                                     app.collapsed_rule_cards.remove(&card_target);
                                     cx.notify();
                                 }
-                            })),
-                    );
+                            }))
+                            .into_any_element(),
+                    ));
             }
             list = list.child(card);
         }
@@ -2700,11 +2927,18 @@ impl PowerLeafApp {
             );
             if !collapsed {
                 card = card
-                    .child(status_pill(indicator.label, indicator.bg, indicator.fg))
-                    .child(text_muted(indicator.hover))
-                    .child(value_pill(affinity_mask_label(rule.core_mask)))
-                    .child(self.render_affinity_core_selector(index, rule.core_mask, cx))
-                    .child(
+                    .child(rule_card_body_row(vec![
+                        status_pill(indicator.label, indicator.bg, indicator.fg),
+                        text_muted(indicator.hover).into_any_element(),
+                    ]))
+                    .child(rule_card_body_row(vec![value_pill(affinity_mask_label(
+                        rule.core_mask,
+                    ))
+                    .into_any_element()]))
+                    .child(rule_card_body_row(vec![
+                        self.render_affinity_core_selector(index, rule.core_mask, cx)
+                    ]))
+                    .child(rule_card_body_action(
                         Button::new(SharedString::from(format!("remove-affinity-{index}")))
                             .small()
                             .danger()
@@ -2718,8 +2952,9 @@ impl PowerLeafApp {
                                     app.collapsed_rule_cards.remove(&card_target);
                                     cx.notify();
                                 }
-                            })),
-                    );
+                            }))
+                            .into_any_element(),
+                    ));
             }
             list = list.child(card);
         }
@@ -3011,10 +3246,6 @@ impl PowerLeafApp {
 
     fn render_settings_page(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         page_shell(Page::Settings)
-            .child(info_card(vec![
-                t!("settings.intro_1").to_string(),
-                t!("settings.intro_2").to_string(),
-            ]))
             .child(checkbox(
                 "general-enabled",
                 t!("settings.master_switch").to_string(),
@@ -3099,21 +3330,17 @@ impl PowerLeafApp {
 
     fn render_about_page(&self) -> AnyElement {
         page_shell(Page::About)
-            .child(info_card(vec![
-                t!("about.intro_1").to_string(),
-                t!("about.intro_2").to_string(),
+            .child(section_header(
+                &t!("app.name"),
+                t!("app.description").to_string(),
+            ))
+            .child(stat_grid(vec![
+                (t!("about.author").to_string(), "Tatsh Siow".to_owned()),
+                (
+                    t!("about.version").to_string(),
+                    env!("CARGO_PKG_VERSION").to_owned(),
+                ),
             ]))
-            .child(
-                section_card(&t!("app.name"))
-                    .child(text_muted(t!("app.description").to_string()))
-                    .child(stat_grid(vec![
-                        (t!("about.author").to_string(), "Tatsh Siow".to_owned()),
-                        (
-                            t!("about.version").to_string(),
-                            env!("CARGO_PKG_VERSION").to_owned(),
-                        ),
-                    ])),
-            )
             .into_any_element()
     }
 
@@ -3237,6 +3464,131 @@ impl PowerLeafApp {
             });
 
         labeled_element(label, picker.into_any_element()).into_any_element()
+    }
+
+    fn render_inline_power_plan_picker(
+        &self,
+        id: impl Into<String>,
+        selected_guid: Option<String>,
+        field: PowerPlanField,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = id.into();
+        let is_open = self.active_power_plan_picker.as_deref() == Some(id.as_str());
+        let selected_text = match selected_guid.as_deref() {
+            Some(guid) => self
+                .plans
+                .iter()
+                .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+                .map(PowerPlan::display_name)
+                .unwrap_or_else(|| t!("common.selected_plan_unavailable").to_string()),
+            None => t!("common.use_inherited_default_plan").to_string(),
+        };
+
+        let mut options = v_flex()
+            .w_full()
+            .max_h(px(244.0))
+            .overflow_y_scrollbar()
+            .gap_1()
+            .p_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover);
+
+        options = options.child(power_plan_option_row(
+            format!("{id}-default"),
+            t!("common.use_inherited_default_plan").to_string(),
+            selected_guid.is_none(),
+            None,
+            field,
+            cx,
+        ));
+
+        if self.plans.is_empty() {
+            options = options.child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("common.no_power_plans_loaded").to_string()),
+            );
+        } else {
+            for plan in &self.plans {
+                let selected = selected_guid
+                    .as_deref()
+                    .is_some_and(|selected| selected.eq_ignore_ascii_case(&plan.guid));
+                options = options.child(power_plan_option_row(
+                    format!("{id}-{}", plan.guid),
+                    plan.display_name(),
+                    selected,
+                    Some(plan.guid.clone()),
+                    field,
+                    cx,
+                ));
+            }
+        }
+
+        let control_id = id.clone();
+        v_flex()
+            .w(px(240.0))
+            .min_w(px(180.0))
+            .relative()
+            .min_h(px(32.0))
+            .child(
+                h_flex()
+                    .id(SharedString::from(format!("{id}-select-control")))
+                    .h(px(32.0))
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_2()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(cx.theme().input)
+                    .bg(cx.theme().background)
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .hover(|style| style.bg(cx.theme().secondary_hover))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(selected_text),
+                    )
+                    .child(div().text_color(cx.theme().muted_foreground).child("v"))
+                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                        app.refresh_power_plans();
+                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                            != Some(control_id.as_str()))
+                        .then_some(control_id.clone());
+                        cx.notify();
+                    })),
+            )
+            .child(if is_open {
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(34.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
+                        .child(options),
+                )
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            .into_any_element()
     }
 
     fn set_power_plan_field(&mut self, field: PowerPlanField, guid: Option<String>) {
@@ -3398,10 +3750,8 @@ impl PowerLeafApp {
         cx: &mut Context<Self>,
     ) {
         match target {
-            SuggestionTarget::ForegroundRule(index) => {
-                if let Some(input) = self.inputs.foreground_rule_processes.get(index) {
-                    clear_input_to(input, process, window, cx);
-                }
+            SuggestionTarget::Foreground => {
+                clear_input_to(&self.inputs.foreground_process, process, window, cx);
             }
             SuggestionTarget::EcoQos => {
                 clear_input_to(&self.inputs.eco_qos_exclusion, process, window, cx);
@@ -3468,7 +3818,7 @@ fn power_plan_option_row(
 
 #[derive(Debug, Clone, Copy)]
 enum SuggestionTarget {
-    ForegroundRule(usize),
+    Foreground,
     EcoQos,
     Suspension,
     Affinity,
@@ -3476,14 +3826,12 @@ enum SuggestionTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuleTitleTarget {
-    Foreground(usize),
     Schedule(usize),
     Cpu(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum RuleCardTarget {
-    Foreground(usize),
     Schedule(usize),
     Cpu(usize),
     Suspension(String),
@@ -3630,8 +3978,8 @@ fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
         .gap_1()
         .child(
             div()
-                .text_size(px(16.0))
-                .line_height(px(22.0))
+                .text_size(px(RULE_TITLE_TEXT_SIZE))
+                .line_height(px(RULE_TITLE_LINE_HEIGHT))
                 .font_weight(gpui::FontWeight::BOLD)
                 .child(title.to_owned()),
         )
@@ -3649,18 +3997,18 @@ fn rule_card(
         .id(SharedString::from(format!("rule-card-{card_target:?}")))
         .w_full()
         .min_w(px(0.0))
-        .gap_2()
-        .p_3()
+        .overflow_hidden()
         .rounded_sm()
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().group_box)
+        .hover(|style| style.border_color(rgb(COLOR_DIM)))
         .child(
             div()
                 .relative()
                 .w_full()
                 .min_w(px(0.0))
-                .min_h(px(30.0))
+                .min_h(px(38.0))
                 .id(SharedString::from(format!(
                     "rule-card-header-{card_target:?}"
                 )))
@@ -3668,13 +4016,16 @@ fn rule_card(
                     h_flex()
                         .w_full()
                         .min_w(px(0.0))
-                        .items_start()
+                        .items_center()
                         .gap_2()
-                        .pr(px(36.0))
+                        .py_2()
+                        .pl_2()
+                        .pr(px(42.0))
                         .id(SharedString::from(format!(
                             "rule-card-header-action-{card_target:?}"
                         )))
                         .cursor_pointer()
+                        .hover(|style| style.bg(cx.theme().secondary_hover))
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.toggle_rule_card(card_target.clone(), cx);
                         }))
@@ -3686,8 +4037,10 @@ fn rule_card(
                         .absolute()
                         .top(px(0.0))
                         .right(px(0.0))
+                        .h(px(38.0))
                         .items_center()
                         .gap_1()
+                        .px_1()
                         .child(collapse_indicator),
                 ),
         )
@@ -3711,17 +4064,63 @@ fn rule_list() -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
-fn row_card() -> gpui::Div {
+fn rule_card_body_row(children: Vec<AnyElement>) -> gpui::Div {
+    let mut row = h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .items_start()
+        .gap_3()
+        .flex_wrap()
+        .px_3()
+        .py_2();
+    for child in children {
+        row = row.child(child);
+    }
+    row
+}
+
+fn rule_card_body_action(action: AnyElement) -> gpui::Div {
+    rule_card_body_actions(vec![action])
+}
+
+fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
+    let mut row = h_flex().items_center().justify_end().gap_2();
+    for action in actions {
+        row = row.child(action);
+    }
+
+    h_flex()
+        .w_full()
+        .items_center()
+        .justify_end()
+        .px_3()
+        .pb_3()
+        .child(row)
+}
+
+fn rename_rule_button(target: RuleTitleTarget, cx: &mut Context<PowerLeafApp>) -> AnyElement {
+    Button::new(SharedString::from(format!("rename-rule-{target:?}")))
+        .small()
+        .label("Rename")
+        .tooltip(t!("common.rename_rule").to_string())
+        .on_click(cx.listener(move |app, _, window, cx| {
+            app.begin_rule_title_edit(target, window, cx);
+        }))
+        .into_any_element()
+}
+
+fn compact_rule_row(cx: &mut Context<PowerLeafApp>) -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
         .items_center()
         .gap_2()
-        .flex_wrap()
         .p_2()
         .rounded_sm()
         .border_1()
-        .opacity(0.92)
+        .border_color(cx.theme().border)
+        .bg(cx.theme().group_box)
+        .hover(|style| style.border_color(rgb(COLOR_DIM)))
 }
 
 fn stat_grid(rows: Vec<(String, String)>) -> GroupBox {
@@ -3733,6 +4132,55 @@ fn stat_grid(rows: Vec<(String, String)>) -> GroupBox {
         list = list.item(label, text_muted(value).into_any_element(), 1);
     }
     GroupBox::new().outline().child(list)
+}
+
+fn titled_stat_grid(title: &str, rows: Vec<(String, String)>) -> GroupBox {
+    let mut list = DescriptionList::vertical()
+        .columns(1)
+        .bordered(false)
+        .label_width(px(180.0));
+    for (label, value) in rows {
+        list = list.item(label, text_muted(value).into_any_element(), 1);
+    }
+    GroupBox::new()
+        .outline()
+        .title(Label::new(title.to_owned()))
+        .child(list)
+}
+
+fn enabled_label(enabled: bool) -> String {
+    if enabled {
+        t!("common.enabled").to_string()
+    } else {
+        t!("common.disabled").to_string()
+    }
+}
+
+fn active_rule_label(active: bool, detail: String) -> String {
+    let state = if active { "Active" } else { "Inactive" };
+    format!("{state}: {detail}")
+}
+
+fn foreground_label(process: Option<&str>) -> String {
+    process
+        .filter(|process| !process.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| t!("common.unknown").to_string())
+}
+
+fn app_list_label(apps: &[String], count: usize) -> String {
+    if count == 0 {
+        return t!("common.none").to_string();
+    }
+    if apps.is_empty() {
+        return count.to_string();
+    }
+
+    let mut names = apps.iter().take(3).cloned().collect::<Vec<_>>();
+    if apps.len() > names.len() {
+        names.push(format!("+{}", apps.len() - names.len()));
+    }
+    format!("{count}: {}", names.join(", "))
 }
 
 fn info_card(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> GroupBox {
@@ -3788,8 +4236,8 @@ fn static_rule_title(title: &str) -> AnyElement {
         .min_w(px(0.0))
         .overflow_hidden()
         .whitespace_nowrap()
-        .text_size(px(16.0))
-        .line_height(px(22.0))
+        .text_size(px(RULE_TITLE_TEXT_SIZE))
+        .line_height(px(RULE_TITLE_LINE_HEIGHT))
         .font_weight(gpui::FontWeight::BOLD)
         .child(title.to_owned())
         .into_any_element()
@@ -4334,54 +4782,26 @@ fn cpu_usage_label(percent: Option<f32>) -> String {
         .unwrap_or_else(|| t!("dashboard.collecting").to_string())
 }
 
-fn eco_qos_label(status: &EcoQosSnapshot) -> String {
-    if status.enabled {
-        t!(
-            "dashboard.throttled_suffix",
-            message = status.message.clone(),
-            count = status.throttled_processes
-        )
-        .to_string()
-    } else {
-        status.message.clone()
-    }
-}
-
-fn app_suspension_label(status: &AppSuspensionSnapshot) -> String {
-    if status.enabled {
-        t!(
-            "dashboard.suspended_suffix",
-            message = status.message.clone(),
-            count = status.suspended_processes
-        )
-        .to_string()
-    } else {
-        status.message.clone()
-    }
-}
-
-fn cpu_affinity_label(status: &CpuAffinitySnapshot) -> String {
-    if status.enabled {
-        t!(
-            "dashboard.adjusted_suffix",
-            message = status.message.clone(),
-            count = status.adjusted_processes
-        )
-        .to_string()
-    } else {
-        status.message.clone()
-    }
-}
-
 fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, process: &str) -> bool {
     match target {
-        SuggestionTarget::ForegroundRule(_) => true,
+        SuggestionTarget::Foreground => {
+            can_add_foreground_process(&settings.foreground_rules, process)
+        }
         SuggestionTarget::EcoQos => can_add_eco_qos_process(&settings.eco_qos, process),
         SuggestionTarget::Suspension => {
             can_add_suspension_process(&settings.app_suspension, process)
         }
         SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
     }
+}
+
+fn can_add_foreground_process(settings: &ForegroundRules, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !settings
+            .rules
+            .iter()
+            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
 }
 
 fn can_add_eco_qos_process(settings: &EcoQosSettings, process: &str) -> bool {
