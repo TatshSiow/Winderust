@@ -23,6 +23,7 @@ const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ECO_QOS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL: Duration = Duration::from_millis(50);
 const CPU_AFFINITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
@@ -134,6 +135,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_check = Instant::now();
     let mut next_eco_qos_refresh = Instant::now();
     let mut next_app_suspension_refresh = Instant::now();
+    let mut next_app_suspension_foreground_release = Instant::now();
     let mut next_cpu_affinity_refresh = Instant::now();
 
     loop {
@@ -155,6 +157,16 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_app_suspension_refresh = Instant::now();
         }
 
+        if runner.app_suspension_manager.has_suspended_processes()
+            && Instant::now() >= next_app_suspension_foreground_release
+        {
+            if let Some(app_suspension_status) = runner.run_app_suspension_foreground_release() {
+                update_app_suspension_status(&shared, app_suspension_status);
+            }
+            next_app_suspension_foreground_release =
+                Instant::now() + APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL;
+        }
+
         if Instant::now() >= next_eco_qos_refresh {
             let eco_qos_status = runner.run_eco_qos_update(&settings);
             update_eco_qos_status(&shared, eco_qos_status);
@@ -165,6 +177,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 runner.run_app_suspension_update(&settings, &app_suspension_freeze_requests);
             update_app_suspension_status(&shared, app_suspension_status);
             next_app_suspension_refresh = Instant::now() + app_suspension_refresh_interval;
+            if runner.app_suspension_manager.has_suspended_processes() {
+                next_app_suspension_foreground_release = Instant::now();
+            }
         }
         if Instant::now() >= next_cpu_affinity_refresh {
             let cpu_affinity_status = runner.run_cpu_affinity_update(&settings);
@@ -172,7 +187,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_cpu_affinity_refresh = Instant::now() + cpu_affinity_refresh_interval;
         }
 
-        let wait_for = if hidden_to_tray {
+        let mut wait_for = if hidden_to_tray {
             let input_events = input_hook::take_pending_events();
             let should_check_now =
                 Instant::now() >= next_check || input_hook_should_check(&settings, input_events);
@@ -199,6 +214,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 .min(next_cpu_affinity_refresh.saturating_duration_since(Instant::now()))
                 .min(cpu_affinity_refresh_interval)
         };
+        if runner.app_suspension_manager.has_suspended_processes() {
+            wait_for = wait_for
+                .min(
+                    next_app_suspension_foreground_release
+                        .saturating_duration_since(Instant::now()),
+                )
+                .min(APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL);
+        }
 
         match wait_for_wake(&shared, wait_for) {
             WorkerWake::Stop => break,
@@ -206,6 +229,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_check = Instant::now();
                 next_eco_qos_refresh = Instant::now();
                 next_app_suspension_refresh = Instant::now();
+                next_app_suspension_foreground_release = Instant::now();
                 next_cpu_affinity_refresh = Instant::now();
             }
             WorkerWake::Timeout => {}
@@ -325,6 +349,42 @@ impl HiddenAutomationRunner {
             settings.general.enabled,
             foreground_process_id,
             manual_freeze_processes,
+        )
+    }
+
+    fn run_app_suspension_foreground_release(&mut self) -> Option<AppSuspensionSnapshot> {
+        if self.foreground_detector.shell_window_mouse_pressed() {
+            return self
+                .app_suspension_manager
+                .release_all_suspended_for_user_intent();
+        }
+
+        let foreground_process_id = self.foreground_detector.process_id();
+        let foreground_process = self.foreground_detector.process();
+        if let Some(status) = foreground_process_id.and_then(|process_id| {
+            self.app_suspension_manager.release_foreground_process(
+                process_id,
+                foreground_process
+                    .as_ref()
+                    .filter(|process| process.id == process_id)
+                    .map(|process| process.name.as_str()),
+            )
+        }) {
+            return Some(status);
+        }
+
+        let cursor_process_id = self.foreground_detector.cursor_process_id()?;
+        if foreground_process_id == Some(cursor_process_id) {
+            return None;
+        }
+        let cursor_process = self.foreground_detector.cursor_process();
+
+        self.app_suspension_manager.release_foreground_process(
+            cursor_process_id,
+            cursor_process
+                .as_ref()
+                .filter(|process| process.id == cursor_process_id)
+                .map(|process| process.name.as_str()),
         )
     }
 
