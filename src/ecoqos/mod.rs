@@ -4,7 +4,10 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE},
+    Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER,
+        ERROR_NOT_SUPPORTED, HANDLE,
+    },
     System::{
         RemoteDesktop::ProcessIdToSessionId,
         Threading::{
@@ -49,6 +52,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EcoQosSnapshot {
     pub enabled: bool,
+    pub unsupported: bool,
     pub scanned_processes: usize,
     pub throttled_processes: usize,
     pub skipped_processes: usize,
@@ -167,6 +171,7 @@ impl EcoQosManager {
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut failed_processes = self.release_non_targets(&target_ids);
         let mut last_error = None;
+        let mut unsupported = false;
 
         for (process_id, _name) in target_processes {
             if self.throttled.contains_key(&process_id) {
@@ -180,6 +185,10 @@ impl EcoQosManager {
                 Err(EcoQosError::AccessDenied) => {
                     skipped_processes += 1;
                 }
+                Err(EcoQosError::Unsupported) => {
+                    skipped_processes += 1;
+                    unsupported = true;
+                }
                 Err(EcoQosError::Failed(err)) => {
                     failed_processes += 1;
                     if last_error.is_none() {
@@ -191,6 +200,7 @@ impl EcoQosManager {
 
         EcoQosSnapshot {
             enabled: true,
+            unsupported,
             scanned_processes,
             throttled_processes: self.throttled.len(),
             skipped_processes,
@@ -252,6 +262,7 @@ impl Default for EcoQosSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
+            unsupported: false,
             scanned_processes: 0,
             throttled_processes: 0,
             skipped_processes: 0,
@@ -281,6 +292,7 @@ fn process_session_id(process_id: u32) -> Option<u32> {
 
 enum EcoQosError {
     AccessDenied,
+    Unsupported,
     Failed(String),
 }
 
@@ -382,10 +394,10 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(EcoQosError::Failed(format!(
-                "GetProcessInformation failed with error {}.",
-                last_error()
-            )))
+            Err(process_power_throttling_error(
+                "GetProcessInformation",
+                last_error(),
+            ))
         } else {
             Ok(state)
         }
@@ -416,10 +428,10 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(EcoQosError::Failed(format!(
-                "SetProcessInformation failed with error {}.",
-                last_error()
-            )))
+            Err(process_power_throttling_error(
+                "SetProcessInformation",
+                last_error(),
+            ))
         } else {
             Ok(())
         }
@@ -446,6 +458,13 @@ impl Drop for ProcessHandle {
     }
 }
 
+fn process_power_throttling_error(operation: &str, error: u32) -> EcoQosError {
+    match error {
+        ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED => EcoQosError::Unsupported,
+        _ => EcoQosError::Failed(format!("{operation} failed with error {error}.")),
+    }
+}
+
 fn last_error() -> u32 {
     unsafe { GetLastError() }
 }
@@ -467,6 +486,18 @@ mod tests {
         assert!(is_process_excluded("winlogon.exe", &settings));
         assert!(is_process_excluded("Mouse.exe", &settings));
         assert!(!is_process_excluded("browser.exe", &settings));
+    }
+
+    #[test]
+    fn power_throttling_unsupported_codes_mark_feature_unsupported() {
+        assert!(matches!(
+            process_power_throttling_error("SetProcessInformation", ERROR_NOT_SUPPORTED),
+            EcoQosError::Unsupported
+        ));
+        assert!(matches!(
+            process_power_throttling_error("SetProcessInformation", ERROR_INVALID_PARAMETER),
+            EcoQosError::Unsupported
+        ));
     }
 
     #[test]

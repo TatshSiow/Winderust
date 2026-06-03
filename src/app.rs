@@ -798,6 +798,44 @@ impl PowerLeafApp {
         settings.cpu_affinity = self.saved_settings.cpu_affinity.clone();
         settings
     }
+
+    fn nav_status(&self, page: Page) -> Option<NavStatus> {
+        let settings = &self.saved_settings;
+
+        match page {
+            Page::Dashboard => None,
+            Page::Activity => {
+                if !settings.activity_mode.enabled
+                    || !settings.activity_mode.input_detection.any_enabled()
+                {
+                    Some(NavStatus::Disabled)
+                } else {
+                    Some(NavStatus::Enabled)
+                }
+            }
+            Page::CpuUsage => Some(enabled_nav_status(settings.cpu_usage_mode.enabled)),
+            Page::EfficiencyMode => Some(feature_nav_status(
+                settings.eco_qos.enabled,
+                self.eco_qos_status.unsupported,
+                self.eco_qos_status.failed_processes,
+                self.eco_qos_status.last_error.is_some(),
+            )),
+            Page::AppSuspension => Some(feature_nav_status(
+                settings.app_suspension.enabled,
+                self.app_suspension_status.unsupported,
+                self.app_suspension_status.failed_actions,
+                self.app_suspension_status.last_error.is_some(),
+            )),
+            Page::CpuAffinity => Some(process_nav_status(
+                settings.cpu_affinity.enabled,
+                self.cpu_affinity_status.failed_processes,
+                self.cpu_affinity_status.last_error.is_some(),
+            )),
+            Page::ForegroundRules => Some(enabled_nav_status(settings.foreground_rules.enabled)),
+            Page::Schedule => Some(enabled_nav_status(settings.schedule_mode.enabled)),
+            Page::Settings | Page::About => None,
+        }
+    }
 }
 
 impl Render for PowerLeafApp {
@@ -891,8 +929,9 @@ impl PowerLeafApp {
             for page in section.pages {
                 let selected = self.page == *page;
                 let target = *page;
+                let status = self.nav_status(*page);
                 group = group.child(
-                    nav_row(*page, selected)
+                    nav_row(*page, selected, status)
                         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.page = target;
                             cx.notify();
@@ -3426,7 +3465,15 @@ fn checkbox(
         .into_any_element()
 }
 
-fn nav_row(page: Page, selected: bool) -> gpui::Stateful<gpui::Div> {
+#[derive(Clone, Copy)]
+enum NavStatus {
+    Enabled,
+    Disabled,
+    Failed,
+    Unsupported,
+}
+
+fn nav_row(page: Page, selected: bool, status: Option<NavStatus>) -> gpui::Stateful<gpui::Div> {
     let row_bg = if selected {
         COLOR_PANEL_ACTIVE
     } else {
@@ -3435,7 +3482,7 @@ fn nav_row(page: Page, selected: bool) -> gpui::Stateful<gpui::Div> {
     let indicator = if selected { COLOR_ACCENT } else { row_bg };
     let text_color = if selected { COLOR_TEXT } else { COLOR_MUTED };
 
-    h_flex()
+    let row = h_flex()
         .id(SharedString::from(format!("nav-row-{:?}", page)))
         .h(px(32.0))
         .w_full()
@@ -3456,7 +3503,59 @@ fn nav_row(page: Page, selected: bool) -> gpui::Stateful<gpui::Div> {
                 .text_sm()
                 .truncate()
                 .child(page.label()),
-        )
+        );
+
+    if let Some(status) = status {
+        row.child(nav_status_indicator(status))
+    } else {
+        row
+    }
+}
+
+fn nav_status_indicator(status: NavStatus) -> AnyElement {
+    let color = match status {
+        NavStatus::Enabled => COLOR_SUCCESS,
+        NavStatus::Failed => COLOR_DANGER,
+        NavStatus::Disabled => COLOR_DIM,
+        NavStatus::Unsupported => COLOR_DIM,
+    };
+
+    div()
+        .w(px(8.0))
+        .h(px(8.0))
+        .flex_shrink_0()
+        .rounded_full()
+        .bg(rgb(color))
+        .into_any_element()
+}
+
+fn enabled_nav_status(enabled: bool) -> NavStatus {
+    if enabled {
+        NavStatus::Enabled
+    } else {
+        NavStatus::Disabled
+    }
+}
+
+fn process_nav_status(enabled: bool, failed_count: usize, has_error: bool) -> NavStatus {
+    if failed_count > 0 || has_error {
+        NavStatus::Failed
+    } else {
+        enabled_nav_status(enabled)
+    }
+}
+
+fn feature_nav_status(
+    enabled: bool,
+    unsupported: bool,
+    failed_count: usize,
+    has_error: bool,
+) -> NavStatus {
+    if unsupported {
+        NavStatus::Unsupported
+    } else {
+        process_nav_status(enabled, failed_count, has_error)
+    }
 }
 
 fn nav_icon(page: Page, selected: bool) -> AnyElement {

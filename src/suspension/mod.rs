@@ -21,7 +21,7 @@ use windows::{
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER,
-        ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR,
+        ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR,
     },
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, GetPerTcp6ConnectionEStats,
@@ -70,6 +70,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSuspensionSnapshot {
     pub enabled: bool,
+    pub unsupported: bool,
     pub tracked_processes: usize,
     pub suspended_processes: usize,
     pub temporary_thawed_processes: usize,
@@ -314,6 +315,7 @@ impl AppSuspensionManager {
 
         let mut skipped_processes = 0;
         let mut last_error = None;
+        let mut unsupported = false;
         let suspended_process_names = self
             .suspended
             .values()
@@ -410,6 +412,10 @@ impl AppSuspensionManager {
                 Err(SuspensionError::AccessDenied | SuspensionError::NotSupported) => {
                     skipped_processes += 1;
                 }
+                Err(SuspensionError::Unsupported) => {
+                    skipped_processes += 1;
+                    unsupported = true;
+                }
                 Err(SuspensionError::Failed(err)) => {
                     failed_actions += 1;
                     if last_error.is_none() {
@@ -421,6 +427,7 @@ impl AppSuspensionManager {
 
         AppSuspensionSnapshot {
             enabled: true,
+            unsupported,
             tracked_processes: self.tracked.len(),
             suspended_processes: self.suspended.len(),
             temporary_thawed_processes: self.temporary_thawed.len(),
@@ -786,6 +793,7 @@ impl Default for AppSuspensionSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
+            unsupported: false,
             tracked_processes: 0,
             suspended_processes: 0,
             temporary_thawed_processes: 0,
@@ -1355,6 +1363,7 @@ fn process_session_id(process_id: u32) -> Option<u32> {
 enum SuspensionError {
     AccessDenied,
     NotSupported,
+    Unsupported,
     Failed(String),
 }
 
@@ -1440,11 +1449,7 @@ impl ProcessFreezer {
         };
 
         if ok == 0 {
-            Err(SuspensionError::Failed(format!(
-                "SetInformationJobObject freeze={} failed with error {}.",
-                frozen,
-                last_error()
-            )))
+            Err(job_freeze_error(frozen, last_error()))
         } else {
             Ok(())
         }
@@ -1490,6 +1495,15 @@ fn assign_process_to_job_error(process_id: u32, error: u32) -> SuspensionError {
         ERROR_NOT_SUPPORTED => SuspensionError::NotSupported,
         _ => SuspensionError::Failed(format!(
             "AssignProcessToJobObject({process_id}) failed with error {error}."
+        )),
+    }
+}
+
+fn job_freeze_error(frozen: bool, error: u32) -> SuspensionError {
+    match error {
+        ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED => SuspensionError::Unsupported,
+        _ => SuspensionError::Failed(format!(
+            "SetInformationJobObject freeze={frozen} failed with error {error}."
         )),
     }
 }
@@ -1619,6 +1633,18 @@ mod tests {
         assert_eq!(
             assign_process_to_job_error(3252, ERROR_NOT_SUPPORTED),
             SuspensionError::NotSupported
+        );
+    }
+
+    #[test]
+    fn job_freeze_unsupported_codes_mark_feature_unsupported() {
+        assert_eq!(
+            job_freeze_error(true, ERROR_NOT_SUPPORTED),
+            SuspensionError::Unsupported
+        );
+        assert_eq!(
+            job_freeze_error(true, ERROR_INVALID_PARAMETER),
+            SuspensionError::Unsupported
         );
     }
 
