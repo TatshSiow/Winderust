@@ -24,6 +24,7 @@ const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ECO_QOS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_AFFINITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -142,6 +143,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         };
         let settings = snapshot.settings;
         let app_suspension_freeze_requests = snapshot.app_suspension_freeze_requests;
+        let hidden_to_tray = tray::is_hidden_to_tray();
+        let eco_qos_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, ECO_QOS_REFRESH_INTERVAL);
+        let app_suspension_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, APP_SUSPENSION_REFRESH_INTERVAL);
+        let cpu_affinity_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, CPU_AFFINITY_REFRESH_INTERVAL);
+
         if !app_suspension_freeze_requests.is_empty() {
             next_app_suspension_refresh = Instant::now();
         }
@@ -149,21 +158,21 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         if Instant::now() >= next_eco_qos_refresh {
             let eco_qos_status = runner.run_eco_qos_update(&settings);
             update_eco_qos_status(&shared, eco_qos_status);
-            next_eco_qos_refresh = Instant::now() + ECO_QOS_REFRESH_INTERVAL;
+            next_eco_qos_refresh = Instant::now() + eco_qos_refresh_interval;
         }
         if Instant::now() >= next_app_suspension_refresh {
             let app_suspension_status =
                 runner.run_app_suspension_update(&settings, &app_suspension_freeze_requests);
             update_app_suspension_status(&shared, app_suspension_status);
-            next_app_suspension_refresh = Instant::now() + APP_SUSPENSION_REFRESH_INTERVAL;
+            next_app_suspension_refresh = Instant::now() + app_suspension_refresh_interval;
         }
         if Instant::now() >= next_cpu_affinity_refresh {
             let cpu_affinity_status = runner.run_cpu_affinity_update(&settings);
             update_cpu_affinity_status(&shared, cpu_affinity_status);
-            next_cpu_affinity_refresh = Instant::now() + CPU_AFFINITY_REFRESH_INTERVAL;
+            next_cpu_affinity_refresh = Instant::now() + cpu_affinity_refresh_interval;
         }
 
-        let wait_for = if tray::is_hidden_to_tray() {
+        let wait_for = if hidden_to_tray {
             let input_events = input_hook::take_pending_events();
             let should_check_now =
                 Instant::now() >= next_check || input_hook_should_check(&settings, input_events);
@@ -184,11 +193,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_check = Instant::now();
             next_eco_qos_refresh
                 .saturating_duration_since(Instant::now())
-                .min(ECO_QOS_REFRESH_INTERVAL)
+                .min(eco_qos_refresh_interval)
                 .min(next_app_suspension_refresh.saturating_duration_since(Instant::now()))
-                .min(APP_SUSPENSION_REFRESH_INTERVAL)
+                .min(app_suspension_refresh_interval)
                 .min(next_cpu_affinity_refresh.saturating_duration_since(Instant::now()))
-                .min(CPU_AFFINITY_REFRESH_INTERVAL)
+                .min(cpu_affinity_refresh_interval)
         };
 
         match wait_for_wake(&shared, wait_for) {
@@ -235,6 +244,14 @@ fn update_app_suspension_status(shared: &SharedAutomationState, status: AppSuspe
 fn update_cpu_affinity_status(shared: &SharedAutomationState, status: CpuAffinitySnapshot) {
     if let Ok(mut state) = shared.state.lock() {
         state.cpu_affinity_status = status;
+    }
+}
+
+fn automation_refresh_interval(hidden_to_tray: bool, hidden_interval: Duration) -> Duration {
+    if hidden_to_tray {
+        hidden_interval
+    } else {
+        VISIBLE_AUTOMATION_REFRESH_INTERVAL
     }
 }
 

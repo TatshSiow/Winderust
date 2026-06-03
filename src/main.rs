@@ -22,7 +22,10 @@ mod tray;
 mod ui;
 
 fn main() {
-    use gpui::{px, rgb, size, App, AppContext, Application, Bounds, WindowBounds, WindowOptions};
+    use gpui::{
+        px, rgb, size, App, AppContext, Application, Bounds, WindowBounds, WindowDecorations,
+        WindowOptions,
+    };
 
     Application::new()
         .with_assets(assets::Assets)
@@ -60,9 +63,11 @@ fn main() {
             let bounds = Bounds::centered(None, size(px(1120.0), px(760.0)), cx);
             cx.open_window(
                 WindowOptions {
+                    titlebar: None,
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(900.0), px(620.0))),
                     app_id: Some("PowerLeaf".to_owned()),
+                    window_decorations: Some(WindowDecorations::Client),
                     ..Default::default()
                 },
                 |window, cx| {

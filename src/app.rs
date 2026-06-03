@@ -9,7 +9,7 @@ use std::{
 
 use gpui::{
     deferred, div, prelude::*, px, rgb, AnyElement, App, Context, Entity, Focusable, IntoElement,
-    SharedString, Subscription, Task, Timer, Window,
+    SharedString, Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
     button::{Button, ButtonVariants},
@@ -20,7 +20,7 @@ use gpui_component::{
 };
 
 use crate::{
-    activity::{ActivitySnapshot, ActivityState, IdleDetector, InputHook, InputHookEvents},
+    activity::{ActivitySnapshot, ActivityState, IdleDetector, InputHook},
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
@@ -47,10 +47,11 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
 };
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
-const APP_TICK_INTERVAL: Duration = Duration::from_millis(250);
+const APP_TICK_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const TITLE_BAR_HEIGHT: f32 = 36.0;
 const PAGE_HEADER_HEIGHT: f32 = 42.0;
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
@@ -126,6 +127,11 @@ struct UiInputs {
     eco_qos_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
+}
+
+enum TickOutcome {
+    Continue { changed: bool },
+    Stop,
 }
 
 impl UiInputs {
@@ -305,12 +311,14 @@ impl PowerLeafApp {
             Timer::after(tick_interval).await;
             let _ = cx.update(move |window, app_cx| {
                 if let Some(this) = this.upgrade() {
-                    let _ = this.update(app_cx, |app, cx| {
-                        app.sync_input_values(cx);
-                        if app.tick(window) {
+                    let _ = this.update(app_cx, |app, cx| match app.tick(window) {
+                        TickOutcome::Continue { changed } => {
                             app.schedule_tick(window, cx);
-                            cx.notify();
+                            if changed {
+                                cx.notify();
+                            }
                         }
+                        TickOutcome::Stop => {}
                     });
                 }
             });
@@ -397,6 +405,34 @@ impl PowerLeafApp {
         self.apply_decision();
     }
 
+    fn run_check_changed(&mut self) -> bool {
+        let activity_state = self.activity.state;
+        let activity_idle_for = self.activity.idle_for;
+        let cpu_usage_percent = self.cpu_usage.percent;
+        let foreground_app = self.foreground_app.clone();
+        let decision_target_guid = self.decision.target_guid.clone();
+        let decision_state = self.decision.state;
+        let decision_reason = self.decision.reason.clone();
+        let next_schedule = self.next_schedule.clone();
+        let plans = self.plans.clone();
+        let current_plan = self.current_plan.clone();
+        let status_message = self.status_message.clone();
+
+        self.run_check();
+
+        self.activity.state != activity_state
+            || self.activity.idle_for != activity_idle_for
+            || self.cpu_usage.percent != cpu_usage_percent
+            || self.foreground_app != foreground_app
+            || self.decision.target_guid != decision_target_guid
+            || self.decision.state != decision_state
+            || self.decision.reason != decision_reason
+            || self.next_schedule != next_schedule
+            || self.plans != plans
+            || self.current_plan != current_plan
+            || self.status_message != status_message
+    }
+
     fn install_input_hook(&mut self) {
         match InputHook::install() {
             Ok(input_hook) => {
@@ -406,13 +442,6 @@ impl PowerLeafApp {
                 self.status_message = err;
             }
         }
-    }
-
-    fn input_hook_should_check(&self, events: InputHookEvents) -> bool {
-        self.saved_settings.general.enabled
-            && self.settings.activity_mode.enabled
-            && ((events.keyboard && self.settings.activity_mode.input_detection.keyboard)
-                || (events.mouse && self.settings.activity_mode.input_detection.mouse))
     }
 
     fn apply_decision(&mut self) {
@@ -508,19 +537,29 @@ impl PowerLeafApp {
         }
     }
 
-    fn refresh_process_candidates(&mut self, report_status: bool) {
+    fn refresh_process_candidates(&mut self, report_status: bool) -> bool {
         self.next_process_refresh = Instant::now() + PROCESS_REFRESH_INTERVAL;
         match list_process_names() {
             Ok(processes) => {
+                let changed = self.process_candidates != processes;
                 self.process_candidates = processes;
                 if report_status {
-                    self.status_message = format!(
+                    let message = format!(
                         "Loaded {} running applications.",
                         self.process_candidates.len()
                     );
+                    let status_changed = self.status_message != message;
+                    self.status_message = message;
+                    changed || status_changed
+                } else {
+                    changed
                 }
             }
-            Err(err) => self.status_message = err,
+            Err(err) => {
+                let changed = self.status_message != err;
+                self.status_message = err;
+                changed
+            }
         }
     }
 
@@ -553,69 +592,95 @@ impl PowerLeafApp {
         }
     }
 
-    fn apply_start_minimized(&mut self, window: &mut Window) {
+    fn apply_start_minimized(&mut self, window: &mut Window) -> bool {
         if self.start_minimized_applied {
-            return;
+            return false;
         }
         self.start_minimized_applied = true;
 
         if !self.saved_settings.general.start_minimized {
-            return;
+            return false;
         }
 
         if self.tray_icon.is_some() {
             if let Some(hwnd) = self.hwnd {
                 tray::hide_window(hwnd);
                 self.status_message = "Started in system tray.".to_owned();
-                return;
+                return true;
             }
         }
 
         window.minimize_window();
         self.status_message = "Started minimized.".to_owned();
+        true
     }
 
-    fn tick(&mut self, window: &mut Window) -> bool {
+    fn tick(&mut self, window: &mut Window) -> TickOutcome {
         if tray::take_quit_requested() {
             tray::set_hide_on_close(false);
             self.tray_icon = None;
             window.remove_window();
-            return false;
+            return TickOutcome::Stop;
         }
 
-        self.apply_start_minimized(window);
+        let mut changed = self.apply_start_minimized(window);
         if tray::is_hidden_to_tray() {
             self.background_automation
                 .update_settings(&self.background_settings());
-            return true;
+            return TickOutcome::Continue { changed: false };
         }
 
-        self.eco_qos_status = self.background_automation.eco_qos_status();
-        self.app_suspension_status = self.background_automation.app_suspension_status();
-        self.cpu_affinity_status = self.background_automation.cpu_affinity_status();
-
-        if Instant::now() >= self.next_process_refresh {
-            self.refresh_process_candidates(false);
+        let eco_qos_status = self.background_automation.eco_qos_status();
+        if self.eco_qos_status != eco_qos_status {
+            self.eco_qos_status = eco_qos_status;
+            changed = true;
         }
 
-        let input_events = self
+        let app_suspension_status = self.background_automation.app_suspension_status();
+        if self.app_suspension_status != app_suspension_status {
+            self.app_suspension_status = app_suspension_status;
+            changed = true;
+        }
+
+        let cpu_affinity_status = self.background_automation.cpu_affinity_status();
+        if self.cpu_affinity_status != cpu_affinity_status {
+            self.cpu_affinity_status = cpu_affinity_status;
+            changed = true;
+        }
+
+        if self.page_uses_process_candidates() && Instant::now() >= self.next_process_refresh {
+            changed |= self.refresh_process_candidates(false);
+        }
+
+        let _input_events = self
             .input_hook
             .as_ref()
             .map(InputHook::take_events)
             .unwrap_or_default();
-        let should_check_now =
-            Instant::now() >= self.next_check || self.input_hook_should_check(input_events);
+        let should_check_now = Instant::now() >= self.next_check;
 
         if should_check_now {
-            self.run_check();
+            changed |= self.run_check_changed();
             self.next_check = Instant::now()
                 + Duration::from_millis(self.settings.general.check_interval_ms.max(250));
         }
 
+        let tray_present = self.tray_icon.is_some();
+        let status_message = self.status_message.clone();
         self.sync_tray_icon();
+        changed |=
+            tray_present != self.tray_icon.is_some() || status_message != self.status_message;
+
         self.background_automation
             .update_settings(&self.background_settings());
-        true
+        TickOutcome::Continue { changed }
+    }
+
+    fn page_uses_process_candidates(&self) -> bool {
+        matches!(
+            self.page,
+            Page::ForegroundRules | Page::EfficiencyMode | Page::AppSuspension | Page::CpuAffinity
+        )
     }
 
     fn cancel_settings_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -850,28 +915,42 @@ impl Render for PowerLeafApp {
         div()
             .relative()
             .flex()
-            .flex_row()
+            .flex_col()
             .size_full()
             .bg(rgb(COLOR_BG))
             .text_color(rgb(COLOR_TEXT))
-            .child(self.render_navigation(cx))
+            .child(self.render_title_bar(window))
             .child(
-                v_flex()
+                div()
+                    .flex()
+                    .flex_row()
                     .flex_1()
+                    .w_full()
                     .min_w(px(0.0))
                     .min_h(px(0.0))
+                    .items_start()
                     .overflow_hidden()
+                    .child(self.render_navigation(cx))
                     .child(
                         v_flex()
                             .flex_1()
+                            .h_full()
                             .min_w(px(0.0))
                             .min_h(px(0.0))
-                            .overflow_y_scrollbar()
-                            .p_4()
-                            .gap_3()
-                            .child(page),
-                    )
-                    .child(self.render_status_bar()),
+                            .overflow_hidden()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .h_full()
+                                    .min_w(px(0.0))
+                                    .min_h(px(0.0))
+                                    .overflow_y_scrollbar()
+                                    .p_4()
+                                    .gap_3()
+                                    .child(page),
+                            )
+                            .child(self.render_status_bar()),
+                    ),
             )
             .child(if unsaved {
                 self.render_unsaved_popup(window, cx).into_any_element()
@@ -882,25 +961,31 @@ impl Render for PowerLeafApp {
 }
 
 impl PowerLeafApp {
-    fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut nav = v_flex()
-            .w(px(258.0))
-            .min_w(px(258.0))
-            .h_full()
-            .border_r_1()
+    fn render_title_bar(&self, window: &mut Window) -> AnyElement {
+        h_flex()
+            .id("powerleaf-title-bar")
+            .window_control_area(WindowControlArea::Drag)
+            .flex_none()
+            .w_full()
+            .h(px(TITLE_BAR_HEIGHT))
+            .items_center()
+            .justify_between()
+            .border_b_1()
             .border_color(rgb(COLOR_BORDER_SUBTLE))
-            .bg(rgb(COLOR_PANEL))
+            .bg(rgb(COLOR_CHROME))
             .child(
-                v_flex()
-                    .h(px(72.0))
-                    .justify_center()
+                h_flex()
+                    .h_full()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .items_center()
+                    .gap_2()
                     .px_3()
-                    .border_b_1()
-                    .border_color(rgb(COLOR_BORDER_SUBTLE))
-                    .bg(rgb(COLOR_CHROME))
+                    .overflow_hidden()
                     .child(
                         div()
-                            .text_lg()
+                            .flex_none()
+                            .text_sm()
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(COLOR_TEXT))
                             .child("PowerLeaf"),
@@ -908,10 +993,24 @@ impl PowerLeafApp {
                     .child(
                         div()
                             .text_xs()
+                            .min_w(px(0.0))
+                            .overflow_hidden()
                             .text_color(rgb(COLOR_DIM))
                             .child(env!("CARGO_PKG_DESCRIPTION")),
                     ),
-            );
+            )
+            .child(title_bar_controls(window))
+            .into_any_element()
+    }
+
+    fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut nav = v_flex()
+            .w(px(258.0))
+            .min_w(px(258.0))
+            .h_full()
+            .border_r_1()
+            .border_color(rgb(COLOR_BORDER_SUBTLE))
+            .bg(rgb(COLOR_PANEL));
 
         let mut drawer = v_flex().gap_3().p_2();
 
@@ -1012,6 +1111,7 @@ impl PowerLeafApp {
                             .primary()
                             .label("Save")
                             .on_click(cx.listener(|app, _, _, cx| {
+                                app.sync_input_values(cx);
                                 app.save_settings();
                                 cx.notify();
                             })),
@@ -3471,6 +3571,69 @@ enum NavStatus {
     Disabled,
     Failed,
     Unsupported,
+}
+
+fn title_bar_controls(window: &Window) -> AnyElement {
+    let (maximize_id, maximize_icon) = if window.is_maximized() {
+        ("titlebar-restore", "\u{e923}")
+    } else {
+        ("titlebar-maximize", "\u{e922}")
+    };
+
+    h_flex()
+        .id("titlebar-controls")
+        .h_full()
+        .flex_none()
+        .font_family("Segoe MDL2 Assets")
+        .child(title_bar_control_button(
+            "titlebar-minimize",
+            "\u{e921}",
+            WindowControlArea::Min,
+            false,
+        ))
+        .child(title_bar_control_button(
+            maximize_id,
+            maximize_icon,
+            WindowControlArea::Max,
+            false,
+        ))
+        .child(title_bar_control_button(
+            "titlebar-close",
+            "\u{e8bb}",
+            WindowControlArea::Close,
+            true,
+        ))
+        .into_any_element()
+}
+
+fn title_bar_control_button(
+    id: &'static str,
+    icon: &'static str,
+    control_area: WindowControlArea,
+    is_close: bool,
+) -> AnyElement {
+    let hover_bg = if is_close {
+        0xe81123
+    } else {
+        COLOR_PANEL_ACTIVE
+    };
+    let active_bg = if is_close { 0xc50f1f } else { COLOR_PANEL_ALT };
+
+    h_flex()
+        .id(id)
+        .window_control_area(control_area)
+        .occlude()
+        .flex_none()
+        .w(px(46.0))
+        .h(px(TITLE_BAR_HEIGHT))
+        .items_center()
+        .justify_center()
+        .text_size(px(10.0))
+        .text_color(rgb(COLOR_MUTED))
+        .hover(move |style| style.bg(rgb(hover_bg)))
+        .active(move |style| style.bg(rgb(active_bg)))
+        .child(icon)
+        .into_any_element()
 }
 
 fn nav_row(page: Page, selected: bool, status: Option<NavStatus>) -> gpui::Stateful<gpui::Div> {
