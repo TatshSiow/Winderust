@@ -95,7 +95,8 @@ User-facing behavior:
 - After the configured background delay, PowerLeaf enumerates the process threads.
 - It opens each thread with suspend/resume access.
 - It pauses the threads with `SuspendThread`.
-- It resumes those same threads with `ResumeThread` when the app becomes foreground, is removed from the list, App Suspension is disabled, automation is disabled, or PowerLeaf exits.
+- It resumes those same threads with `ResumeThread` when the focused or clicked app needs to recover, when the process is removed from the list, App Suspension is disabled, automation is disabled, or PowerLeaf exits.
+- Taskbar and tray shell clicks temporarily thaw suspended top-level window owner processes only, so minimized and tray-hidden apps can restore without thawing unrelated non-window worker processes. Repeated shell clicks do not keep extending the thaw window.
 
 ### Thread Control APIs
 

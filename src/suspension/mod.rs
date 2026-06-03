@@ -42,7 +42,8 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::{config::AppSuspensionSettings, foreground::list_processes};
+use crate::config::AppSuspensionSettings;
+use crate::foreground::list_processes;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "audiodg.exe",
@@ -169,7 +170,10 @@ enum TemporaryThawReason {
     Fallback,
     NetworkWake,
     AudioWake,
+    UserIntent,
 }
+
+const USER_INTENT_THAW_SECONDS: u64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TemporaryThawState {
@@ -183,38 +187,18 @@ impl AppSuspensionManager {
         !self.suspended.is_empty()
     }
 
-    pub fn release_foreground_process(
+    pub fn release_interactive_process(
         &mut self,
-        foreground_process_id: u32,
-        foreground_process_name: Option<&str>,
+        process_id: u32,
+        process_name: Option<&str>,
     ) -> Option<AppSuspensionSnapshot> {
-        let process_ids = self
-            .foreground_managed_process_ids(foreground_process_id, foreground_process_name)
-            .into_iter()
-            .collect::<Vec<_>>();
-
+        let process_ids = self.interactive_process_ids(process_id, process_name);
         if process_ids.is_empty() {
             return None;
         }
 
+        let process_ids = process_ids.into_iter().collect::<Vec<_>>();
         let failed_actions = self.release_foreground_processes(&process_ids);
-        Some(self.snapshot(
-            true,
-            self.job_freeze_unsupported,
-            0,
-            failed_actions,
-            "App Suspension active.".to_owned(),
-            None,
-        ))
-    }
-
-    pub fn release_all_suspended_for_user_intent(&mut self) -> Option<AppSuspensionSnapshot> {
-        let process_ids = self.suspended.keys().copied().collect::<Vec<_>>();
-        if process_ids.is_empty() {
-            return None;
-        }
-
-        let failed_actions = self.release_processes(&process_ids);
         Some(self.snapshot(
             true,
             self.job_freeze_unsupported,
@@ -268,36 +252,27 @@ impl AppSuspensionManager {
         }
 
         let Some(foreground_process_id) = foreground_process_id else {
-            failed_actions += self.clear_all();
-            return AppSuspensionSnapshot {
-                enabled: true,
+            return self.pause_without_clearing(
+                "Paused: foreground app is unknown.".to_owned(),
                 failed_actions,
-                message: "Paused: foreground app is unknown.".to_owned(),
-                ..Default::default()
-            };
+                None,
+            );
         };
 
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            failed_actions += self.clear_all();
-            return AppSuspensionSnapshot {
-                enabled: true,
+            return self.pause_without_clearing(
+                "Paused: current Windows session is unknown.".to_owned(),
                 failed_actions,
-                message: "Paused: current Windows session is unknown.".to_owned(),
-                ..Default::default()
-            };
+                None,
+            );
         };
 
         let processes = match list_processes() {
             Ok(processes) => processes,
             Err(err) => {
-                failed_actions += self.clear_all();
-                return AppSuspensionSnapshot {
-                    enabled: true,
-                    failed_actions,
-                    message: err,
-                    ..Default::default()
-                };
+                failed_actions += 1;
+                return self.pause_without_clearing(err.clone(), failed_actions, Some(err));
             }
         };
 
@@ -355,10 +330,8 @@ impl AppSuspensionManager {
             .values()
             .map(|process_name| process_name_key(process_name))
             .collect::<BTreeSet<_>>();
-        let manual_freeze_names = manual_freeze_processes
-            .iter()
-            .map(|process_name| process_name_key(process_name))
-            .collect::<BTreeSet<_>>();
+        let mut manual_freeze_requests = manual_freeze_requests_by_name(manual_freeze_processes);
+        let manual_freeze_names = manual_freeze_requests.keys().cloned().collect::<Vec<_>>();
         for process_name in &manual_freeze_names {
             self.network_wake_windows.remove(process_name);
             self.audio_wake_windows.remove(process_name);
@@ -437,7 +410,8 @@ impl AppSuspensionManager {
                 continue;
             }
 
-            let manual_freeze = manual_freeze_names.contains(&process_name_key(&process_name));
+            let manual_freeze =
+                take_manual_freeze_request(&mut manual_freeze_requests, &process_name);
             if manual_freeze {
                 self.temporary_thawed.remove(&process_id);
                 self.tracked.remove(&process_id);
@@ -524,6 +498,24 @@ impl AppSuspensionManager {
         failed
     }
 
+    fn pause_without_clearing(
+        &mut self,
+        message: String,
+        failed_actions: usize,
+        last_error: Option<String>,
+    ) -> AppSuspensionSnapshot {
+        self.tracked.clear();
+        self.network_snapshot.clear();
+        self.snapshot(
+            true,
+            self.job_freeze_unsupported,
+            0,
+            failed_actions,
+            message,
+            last_error,
+        )
+    }
+
     fn release_processes(&mut self, process_ids: &[u32]) -> usize {
         let mut failed = 0;
         for process_id in process_ids {
@@ -555,6 +547,56 @@ impl AppSuspensionManager {
         failed
     }
 
+    pub fn release_window_owner_processes_for_user_intent(
+        &mut self,
+        window_owner_process_ids: &BTreeSet<u32>,
+    ) -> Option<AppSuspensionSnapshot> {
+        let process_ids = self
+            .window_owner_suspended_process_ids(window_owner_process_ids)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if process_ids.is_empty() {
+            return None;
+        }
+
+        let failed_actions = self.thaw_processes_for_user_intent(&process_ids, Instant::now());
+        Some(self.snapshot(
+            true,
+            self.job_freeze_unsupported,
+            0,
+            failed_actions,
+            "App Suspension active.".to_owned(),
+            None,
+        ))
+    }
+
+    fn thaw_processes_for_user_intent(&mut self, process_ids: &[u32], now: Instant) -> usize {
+        let mut failed = 0;
+        for process_id in process_ids {
+            let process_name = self.controlled_process_name(*process_id).map(str::to_owned);
+            if self.suspended.contains_key(process_id) && self.thaw_process(*process_id).is_err() {
+                failed += 1;
+                continue;
+            }
+
+            self.tracked.remove(process_id);
+            self.suspended.remove(process_id);
+            if let Some(process_name) = process_name {
+                self.set_temporary_thaw(
+                    *process_id,
+                    process_name,
+                    now + Duration::from_secs(USER_INTENT_THAW_SECONDS),
+                    TemporaryThawReason::UserIntent,
+                );
+            } else {
+                self.temporary_thawed.remove(process_id);
+                self.freezers.remove(process_id);
+            }
+        }
+
+        failed
+    }
+
     fn managed_process_ids(&self) -> BTreeSet<u32> {
         self.suspended
             .keys()
@@ -563,33 +605,85 @@ impl AppSuspensionManager {
             .collect()
     }
 
-    fn foreground_managed_process_ids(
+    fn interactive_process_ids(
         &self,
-        foreground_process_id: u32,
-        foreground_process_name: Option<&str>,
+        process_id: u32,
+        process_name: Option<&str>,
     ) -> BTreeSet<u32> {
-        self.suspended
+        let mut process_ids = BTreeSet::new();
+        if self.is_controlled_process_id(process_id) {
+            process_ids.insert(process_id);
+        }
+
+        let process_name = process_name.map(process_name_key).or_else(|| {
+            self.controlled_process_name(process_id)
+                .map(process_name_key)
+        });
+        let Some(process_name) = process_name else {
+            return process_ids;
+        };
+
+        process_ids.extend(self.controlled_process_ids_by_name(&process_name));
+        process_ids
+    }
+
+    fn is_controlled_process_id(&self, process_id: u32) -> bool {
+        self.tracked.contains_key(&process_id)
+            || self.suspended.contains_key(&process_id)
+            || self.temporary_thawed.contains_key(&process_id)
+            || self.freezers.contains_key(&process_id)
+    }
+
+    fn controlled_process_name(&self, process_id: u32) -> Option<&str> {
+        self.tracked
+            .get(&process_id)
+            .map(|process| process.process_name.as_str())
+            .or_else(|| {
+                self.suspended
+                    .get(&process_id)
+                    .map(|process| process.process_name.as_str())
+            })
+            .or_else(|| {
+                self.temporary_thawed
+                    .get(&process_id)
+                    .map(|process| process.process_name.as_str())
+            })
+    }
+
+    fn controlled_process_ids_by_name(&self, process_name: &str) -> BTreeSet<u32> {
+        self.tracked
             .iter()
-            .filter(|(process_id, process)| {
-                **process_id == foreground_process_id
-                    || foreground_process_name.is_some_and(|name| {
-                        name.trim()
-                            .eq_ignore_ascii_case(process.process_name.trim())
-                    })
+            .filter(|(_process_id, process)| {
+                process_name_key(&process.process_name) == process_name
             })
             .map(|(process_id, _process)| *process_id)
             .chain(
-                self.temporary_thawed
+                self.suspended
                     .iter()
-                    .filter(|(process_id, process)| {
-                        **process_id == foreground_process_id
-                            || foreground_process_name.is_some_and(|name| {
-                                name.trim()
-                                    .eq_ignore_ascii_case(process.process_name.trim())
-                            })
+                    .filter(|(_process_id, process)| {
+                        process_name_key(&process.process_name) == process_name
                     })
                     .map(|(process_id, _process)| *process_id),
             )
+            .chain(
+                self.temporary_thawed
+                    .iter()
+                    .filter(|(_process_id, process)| {
+                        process_name_key(&process.process_name) == process_name
+                    })
+                    .map(|(process_id, _process)| *process_id),
+            )
+            .collect()
+    }
+
+    fn window_owner_suspended_process_ids(
+        &self,
+        window_owner_process_ids: &BTreeSet<u32>,
+    ) -> BTreeSet<u32> {
+        window_owner_process_ids
+            .iter()
+            .copied()
+            .filter(|process_id| self.suspended.contains_key(process_id))
             .collect()
     }
 
@@ -1232,6 +1326,29 @@ fn process_name_key(process_name: &str) -> String {
     process_name.trim().to_ascii_lowercase()
 }
 
+fn manual_freeze_requests_by_name(process_names: &[String]) -> BTreeMap<String, usize> {
+    let mut requests = BTreeMap::new();
+    for process_name in process_names {
+        let process_name = process_name_key(process_name);
+        if !process_name.is_empty() {
+            *requests.entry(process_name).or_default() += 1;
+        }
+    }
+    requests
+}
+
+fn take_manual_freeze_request(requests: &mut BTreeMap<String, usize>, process_name: &str) -> bool {
+    let Some(remaining) = requests.get_mut(&process_name_key(process_name)) else {
+        return false;
+    };
+    if *remaining == 0 {
+        return false;
+    }
+
+    *remaining -= 1;
+    true
+}
+
 fn add_tcp_connections(
     connections_by_pid: &mut NetworkConnectionsByProcess,
     target_ids: &BTreeSet<u32>,
@@ -1538,7 +1655,7 @@ fn should_skip_foreground_process(
 ) -> bool {
     process_id == foreground_process_id
         || foreground_process_name
-            .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim()))
+            .is_some_and(|name| process_name_key(name) == process_name_key(process_name))
 }
 
 fn process_session_id(process_id: u32) -> Option<u32> {
@@ -1771,7 +1888,7 @@ mod tests {
     }
 
     #[test]
-    fn foreground_skip_matches_pid_or_name() {
+    fn foreground_skip_matches_pid_or_process_name() {
         assert!(should_skip_foreground_process(
             42,
             "helper.exe",
@@ -1790,6 +1907,67 @@ mod tests {
             42,
             Some("app.exe"),
         ));
+    }
+
+    #[test]
+    fn user_intent_release_thaws_window_owner_processes_only() {
+        let mut manager = AppSuspensionManager::default();
+        let now = Instant::now();
+        manager.suspended.insert(
+            7,
+            SuspendedProcess {
+                process_name: "chat.exe".to_owned(),
+                suspended_since: now,
+            },
+        );
+        manager.suspended.insert(
+            8,
+            SuspendedProcess {
+                process_name: "mail.exe".to_owned(),
+                suspended_since: now,
+            },
+        );
+
+        let status = manager
+            .release_window_owner_processes_for_user_intent(&BTreeSet::from([7]))
+            .unwrap();
+
+        assert_eq!(status.suspended_processes, 1);
+        assert_eq!(status.temporary_thawed_processes, 1);
+        assert!(!manager.suspended.contains_key(&7));
+        assert!(manager.suspended.contains_key(&8));
+        assert!(manager.temporary_thawed.contains_key(&7));
+    }
+
+    #[test]
+    fn user_intent_release_does_not_extend_existing_temporary_thaw() {
+        let mut manager = AppSuspensionManager::default();
+        let now = Instant::now();
+        manager.temporary_thawed.insert(
+            7,
+            TemporaryThaw {
+                process_name: "chat.exe".to_owned(),
+                thaw_until: now + Duration::from_secs(5),
+                reason: TemporaryThawReason::UserIntent,
+            },
+        );
+
+        assert!(manager
+            .release_window_owner_processes_for_user_intent(&BTreeSet::from([7]))
+            .is_none());
+        assert_eq!(
+            manager.temporary_thawed.get(&7).unwrap().thaw_until,
+            now + Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn user_intent_release_returns_none_without_matching_window_owner() {
+        let mut manager = AppSuspensionManager::default();
+
+        assert!(manager
+            .release_window_owner_processes_for_user_intent(&BTreeSet::from([42]))
+            .is_none());
     }
 
     #[test]
@@ -1904,9 +2082,48 @@ mod tests {
     }
 
     #[test]
-    fn foreground_release_matches_pid_and_process_name() {
+    fn foreground_unknown_pauses_without_releasing_suspended_processes() {
+        let mut manager = AppSuspensionManager::default();
+        let mut settings = AppSuspensionSettings::default();
+        settings.enabled = true;
+        let now = Instant::now();
+        manager.tracked.insert(
+            6,
+            TrackedProcess {
+                process_name: "chat.exe".to_owned(),
+                background_since: now,
+            },
+        );
+        manager.freezers.insert(7, inert_freezer());
+        manager.suspended.insert(
+            7,
+            SuspendedProcess {
+                process_name: "chat.exe".to_owned(),
+                suspended_since: now,
+            },
+        );
+
+        let status = manager.update(&settings, true, None, &[]);
+
+        assert_eq!(status.message, "Paused: foreground app is unknown.");
+        assert_eq!(status.tracked_processes, 0);
+        assert_eq!(status.suspended_processes, 1);
+        assert!(manager.tracked.is_empty());
+        assert!(manager.suspended.contains_key(&7));
+        assert!(manager.freezers.contains_key(&7));
+    }
+
+    #[test]
+    fn interactive_release_matches_process_app_group() {
         let mut manager = AppSuspensionManager::default();
         let now = Instant::now();
+        manager.tracked.insert(
+            6,
+            TrackedProcess {
+                process_name: "chat.exe".to_owned(),
+                background_since: now,
+            },
+        );
         manager.suspended.insert(
             7,
             SuspendedProcess {
@@ -1930,20 +2147,48 @@ mod tests {
         );
 
         let status = manager
-            .release_foreground_process(7, Some("chat.exe"))
+            .release_interactive_process(7, Some("chat.exe"))
             .unwrap();
 
+        assert_eq!(status.tracked_processes, 0);
         assert_eq!(status.suspended_processes, 1);
+        assert!(!manager.tracked.contains_key(&6));
         assert!(!manager.suspended.contains_key(&7));
         assert!(!manager.suspended.contains_key(&8));
         assert!(manager.suspended.contains_key(&9));
     }
 
     #[test]
-    fn foreground_release_clears_matching_thawed_freezers() {
+    fn interactive_release_uses_managed_process_name_when_lookup_is_unavailable() {
+        let mut manager = AppSuspensionManager::default();
+        let now = Instant::now();
+        manager.suspended.insert(
+            7,
+            SuspendedProcess {
+                process_name: "browser.exe".to_owned(),
+                suspended_since: now,
+            },
+        );
+        manager.suspended.insert(
+            8,
+            SuspendedProcess {
+                process_name: "BROWSER.EXE".to_owned(),
+                suspended_since: now,
+            },
+        );
+
+        let status = manager.release_interactive_process(7, None).unwrap();
+
+        assert_eq!(status.suspended_processes, 0);
+        assert!(manager.suspended.is_empty());
+    }
+
+    #[test]
+    fn interactive_release_clears_matching_thawed_freezers() {
         let mut manager = AppSuspensionManager::default();
         let now = Instant::now();
         manager.freezers.insert(7, inert_freezer());
+        manager.freezers.insert(8, inert_freezer());
         manager.temporary_thawed.insert(
             7,
             TemporaryThaw {
@@ -1952,58 +2197,33 @@ mod tests {
                 reason: TemporaryThawReason::Fallback,
             },
         );
+        manager.temporary_thawed.insert(
+            8,
+            TemporaryThaw {
+                process_name: "CHAT.EXE".to_owned(),
+                thaw_until: now + Duration::from_secs(5),
+                reason: TemporaryThawReason::Fallback,
+            },
+        );
 
         let status = manager
-            .release_foreground_process(42, Some("CHAT.EXE"))
+            .release_interactive_process(7, Some("chat.exe"))
             .unwrap();
 
         assert_eq!(status.temporary_thawed_processes, 0);
         assert!(!manager.freezers.contains_key(&7));
         assert!(!manager.temporary_thawed.contains_key(&7));
+        assert!(!manager.freezers.contains_key(&8));
+        assert!(!manager.temporary_thawed.contains_key(&8));
     }
 
     #[test]
-    fn foreground_release_returns_none_without_matching_managed_process() {
+    fn interactive_release_returns_none_without_matching_controlled_process() {
         let mut manager = AppSuspensionManager::default();
 
         assert!(manager
-            .release_foreground_process(42, Some("chat.exe"))
+            .release_interactive_process(42, Some("chat.exe"))
             .is_none());
-    }
-
-    #[test]
-    fn user_intent_release_thaws_all_suspended_processes() {
-        let mut manager = AppSuspensionManager::default();
-        let now = Instant::now();
-        manager.freezers.insert(7, inert_freezer());
-        manager.freezers.insert(8, inert_freezer());
-        manager.suspended.insert(
-            7,
-            SuspendedProcess {
-                process_name: "chat.exe".to_owned(),
-                suspended_since: now,
-            },
-        );
-        manager.suspended.insert(
-            8,
-            SuspendedProcess {
-                process_name: "mail.exe".to_owned(),
-                suspended_since: now,
-            },
-        );
-
-        let status = manager.release_all_suspended_for_user_intent().unwrap();
-
-        assert_eq!(status.suspended_processes, 0);
-        assert!(manager.suspended.is_empty());
-        assert!(manager.freezers.is_empty());
-    }
-
-    #[test]
-    fn user_intent_release_returns_none_without_suspended_processes() {
-        let mut manager = AppSuspensionManager::default();
-
-        assert!(manager.release_all_suspended_for_user_intent().is_none());
     }
 
     #[test]
@@ -2319,6 +2539,17 @@ mod tests {
     #[test]
     fn process_name_key_trims_and_lowercases() {
         assert_eq!(process_name_key(" Chrome.EXE "), "chrome.exe");
+    }
+
+    #[test]
+    fn manual_freeze_requests_are_consumed_one_process_at_a_time() {
+        let mut requests =
+            manual_freeze_requests_by_name(&[" Chat.EXE ".to_owned(), "chat.exe".to_owned()]);
+
+        assert!(take_manual_freeze_request(&mut requests, "CHAT.EXE"));
+        assert!(take_manual_freeze_request(&mut requests, "chat.exe"));
+        assert!(!take_manual_freeze_request(&mut requests, "chat.exe"));
+        assert!(!take_manual_freeze_request(&mut requests, "mail.exe"));
     }
 
     #[test]

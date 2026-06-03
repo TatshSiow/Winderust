@@ -1,17 +1,15 @@
-use std::path::Path;
+use std::{collections::BTreeSet, path::Path};
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, MAX_PATH, POINT},
+    Foundation::{CloseHandle, HWND, LPARAM, MAX_PATH, POINT},
     System::{
         ProcessStatus::K32GetModuleFileNameExW,
         Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
     },
-    UI::{
-        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
-        WindowsAndMessaging::{
-            GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow,
-            GetWindowThreadProcessId, WindowFromPoint, GA_ROOT,
-        },
+    UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
+    UI::WindowsAndMessaging::{
+        EnumWindows, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow,
+        GetWindowThreadProcessId, WindowFromPoint, GA_ROOT, GW_OWNER,
     },
 };
 
@@ -47,6 +45,17 @@ impl ForegroundDetector {
 
     pub fn process_name(&self) -> Option<String> {
         self.process().map(|process| process.name)
+    }
+}
+
+pub fn top_level_window_process_ids() -> BTreeSet<u32> {
+    unsafe {
+        let mut process_ids = BTreeSet::new();
+        EnumWindows(
+            Some(collect_top_level_window_process),
+            &mut process_ids as *mut BTreeSet<u32> as LPARAM,
+        );
+        process_ids
     }
 }
 
@@ -137,7 +146,7 @@ unsafe fn cursor_root_window() -> Option<windows_sys::Win32::Foundation::HWND> {
     })
 }
 
-unsafe fn window_class_name(window: windows_sys::Win32::Foundation::HWND) -> String {
+unsafe fn window_class_name(window: HWND) -> String {
     let mut buffer = [0u16; 128];
     let len = GetClassNameW(window, buffer.as_mut_ptr(), buffer.len() as i32);
     if len <= 0 {
@@ -155,6 +164,21 @@ fn is_shell_window_class(class_name: &str) -> bool {
             | "Shell_TrayWndClass"
             | "NotifyIconOverflowWindow"
     )
+}
+
+unsafe extern "system" fn collect_top_level_window_process(hwnd: HWND, lparam: LPARAM) -> i32 {
+    if !GetWindow(hwnd, GW_OWNER).is_null() {
+        return 1;
+    }
+
+    let mut process_id = 0;
+    GetWindowThreadProcessId(hwnd, &mut process_id);
+    if process_id != 0 {
+        let process_ids = &mut *(lparam as *mut BTreeSet<u32>);
+        process_ids.insert(process_id);
+    }
+
+    1
 }
 
 unsafe fn mouse_button_pressed() -> bool {

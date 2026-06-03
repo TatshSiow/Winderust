@@ -172,10 +172,11 @@ Current behavior:
 - Only apps in `suspendable_apps` are candidates.
 - A candidate must stay in the background for `background_delay_seconds` before suspension.
 - The manager suspends individual process threads with `SuspendThread` and resumes those same threads with `ResumeThread`.
-- It resumes suspended processes when they become foreground, leave the suspendable app list, App Suspension is disabled, automation is disabled, or PowerLeaf exits.
-- It pauses and clears suspension if the foreground app or current Windows session cannot be identified.
+- It resumes the focused or clicked app's matching executable processes together, so multi-process apps such as browsers can recover without thawing unrelated apps.
+- It pauses new suspension work if the foreground app or current Windows session cannot be identified, while preserving already suspended processes.
 - It only targets processes in the current user session.
-- It never targets the PowerLeaf process, foreground process, or same-name foreground app processes.
+- It never targets the PowerLeaf process, current foreground process, or matching executable processes for the current foreground app.
+- Taskbar and tray shell clicks temporarily thaw suspended top-level window owner processes only, which lets minimized and tray-hidden apps restore without thawing unrelated non-window worker processes. These shell-intent checks are rate-limited and do not extend an already active user-intent thaw.
 - Built-in exclusions cover Windows shell/input processes such as `explorer.exe`, `dwm.exe`, and `textinputhost.exe`.
 - Access-denied thread opens are counted as skipped, not failed. This is expected for protected/elevated Windows processes.
 - Suspendable Apps are edited with the same searchable running-app dropdown pattern as Foreground Rules and are persisted to TOML/INI.

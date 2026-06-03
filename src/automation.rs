@@ -10,7 +10,7 @@ use crate::{
     config::Settings,
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
-    foreground::ForegroundDetector,
+    foreground::{top_level_window_process_ids, ForegroundDetector},
     power::PowerPlanManager,
     power_source,
     rules::{DecisionEngine, DecisionInput, DecisionOutcome},
@@ -24,6 +24,7 @@ const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ECO_QOS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL: Duration = Duration::from_millis(50);
+const APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL: Duration = Duration::from_millis(750);
 const CPU_AFFINITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
@@ -325,6 +326,7 @@ struct HiddenAutomationRunner {
     decision_engine: DecisionEngine,
     eco_qos_manager: EcoQosManager,
     app_suspension_manager: AppSuspensionManager,
+    last_app_suspension_shell_user_intent: Option<Instant>,
     cpu_affinity_manager: CpuAffinityManager,
 }
 
@@ -353,16 +355,23 @@ impl HiddenAutomationRunner {
     }
 
     fn run_app_suspension_foreground_release(&mut self) -> Option<AppSuspensionSnapshot> {
-        if self.foreground_detector.shell_window_mouse_pressed() {
-            return self
+        let now = Instant::now();
+        if self.foreground_detector.shell_window_mouse_pressed()
+            && self.app_suspension_shell_user_intent_due(now)
+        {
+            self.last_app_suspension_shell_user_intent = Some(now);
+            if let Some(status) = self
                 .app_suspension_manager
-                .release_all_suspended_for_user_intent();
+                .release_window_owner_processes_for_user_intent(&top_level_window_process_ids())
+            {
+                return Some(status);
+            }
         }
 
         let foreground_process_id = self.foreground_detector.process_id();
         let foreground_process = self.foreground_detector.process();
         if let Some(status) = foreground_process_id.and_then(|process_id| {
-            self.app_suspension_manager.release_foreground_process(
+            self.app_suspension_manager.release_interactive_process(
                 process_id,
                 foreground_process
                     .as_ref()
@@ -378,14 +387,20 @@ impl HiddenAutomationRunner {
             return None;
         }
         let cursor_process = self.foreground_detector.cursor_process();
-
-        self.app_suspension_manager.release_foreground_process(
+        self.app_suspension_manager.release_interactive_process(
             cursor_process_id,
             cursor_process
                 .as_ref()
                 .filter(|process| process.id == cursor_process_id)
                 .map(|process| process.name.as_str()),
         )
+    }
+
+    fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {
+        self.last_app_suspension_shell_user_intent
+            .map_or(true, |last| {
+                now.duration_since(last) >= APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL
+            })
     }
 
     fn run_cpu_affinity_update(&mut self, settings: &Settings) -> CpuAffinitySnapshot {
