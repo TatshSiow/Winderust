@@ -112,8 +112,10 @@ pub struct PowerLeafApp {
     active_power_plan_picker: Option<String>,
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
+    editing_numeric: Option<NumericField>,
     collapsed_rule_cards: HashSet<RuleCardTarget>,
     _rule_title_input_subscriptions: Vec<Subscription>,
+    _numeric_input_subscription: Option<Subscription>,
     inputs: UiInputs,
     _tick_task: Task<()>,
 }
@@ -128,6 +130,7 @@ struct UiInputs {
     eco_qos_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
+    numeric_value: Entity<InputState>,
 }
 
 enum TickOutcome {
@@ -177,6 +180,7 @@ impl UiInputs {
             eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
+            numeric_value: make_input(window, cx, "", "Value"),
         }
     }
 
@@ -291,13 +295,16 @@ impl PowerLeafApp {
             active_power_plan_picker: None,
             start_minimized_applied: false,
             editing_rule_title: None,
+            editing_numeric: None,
             collapsed_rule_cards: HashSet::new(),
             _rule_title_input_subscriptions: Vec::new(),
+            _numeric_input_subscription: None,
             inputs,
             _tick_task: Task::ready(()),
         };
 
         app.rebuild_rule_title_input_subscriptions(window, cx);
+        app.subscribe_to_numeric_input(window, cx);
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
         app.refresh_process_candidates(false);
@@ -793,6 +800,22 @@ impl PowerLeafApp {
         }
     }
 
+    fn subscribe_to_numeric_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._numeric_input_subscription = Some(cx.subscribe_in(
+            &self.inputs.numeric_value,
+            window,
+            move |app, _, event: &InputEvent, _, cx| {
+                app.handle_numeric_input_event(event, cx);
+            },
+        ));
+    }
+
+    fn handle_numeric_input_event(&mut self, event: &InputEvent, cx: &mut Context<Self>) {
+        if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+            self.finish_numeric_edit(cx);
+        }
+    }
+
     fn rule_title_input(&self, target: RuleTitleTarget) -> Option<Entity<InputState>> {
         match target {
             RuleTitleTarget::Foreground(index) => self.inputs.foreground_rule_names.get(index),
@@ -813,6 +836,118 @@ impl PowerLeafApp {
             input.read(cx).focus_handle(cx).focus(window);
         }
         cx.notify();
+    }
+
+    fn begin_numeric_edit(
+        &mut self,
+        field: NumericField,
+        value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editing_numeric = Some(field);
+        clear_input_to(&self.inputs.numeric_value, &value, window, cx);
+        self.inputs
+            .numeric_value
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window);
+        cx.notify();
+    }
+
+    fn finish_numeric_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(field) = self.editing_numeric.take() else {
+            return;
+        };
+        let value = self.inputs.numeric_value.read(cx).value().to_string();
+        self.apply_numeric_input(field, &value);
+        cx.notify();
+    }
+
+    fn apply_numeric_input(&mut self, field: NumericField, value: &str) {
+        let value = value.trim().replace(',', "");
+        match field {
+            NumericField::ActivityIdleTimeout => {
+                if let Some(value) = parse_u64_input(&value, 1, 7_200) {
+                    self.settings.activity_mode.idle_timeout_seconds = value;
+                }
+            }
+            NumericField::GeneralCheckInterval => {
+                if let Some(value) = parse_u64_input(&value, 250, 60_000) {
+                    self.settings.general.check_interval_ms = value;
+                }
+            }
+            NumericField::SuspensionBackgroundDelay => {
+                if let Some(value) = parse_u64_input(&value, 1, 86_400) {
+                    self.settings.app_suspension.background_delay_seconds = value;
+                }
+            }
+            NumericField::SuspensionThawInterval => {
+                if let Some(value) = parse_u64_input(&value, 1, 86_400) {
+                    self.settings.app_suspension.temporary_thaw_interval_seconds = value;
+                }
+            }
+            NumericField::SuspensionThawDuration => {
+                if let Some(value) = parse_u64_input(&value, 1, 3_600) {
+                    self.settings.app_suspension.temporary_thaw_duration_seconds = value;
+                }
+            }
+            NumericField::SuspensionAudioRefreeze => {
+                if let Some(value) = parse_u64_input(&value, 1, 3_600) {
+                    self.settings.app_suspension.audio_wake_duration_seconds = value;
+                }
+            }
+            NumericField::SuspensionNetworkRefreeze => {
+                if let Some(value) = parse_u64_input(&value, 1, 3_600) {
+                    self.settings.app_suspension.network_wake_duration_seconds = value;
+                }
+            }
+            NumericField::CpuThreshold(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.cpu_usage_mode.rules.get_mut(index),
+                    parse_u64_input(&value, 0, 100),
+                ) {
+                    rule.threshold_percent = value as u8;
+                }
+            }
+            NumericField::CpuUpperThreshold(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.cpu_usage_mode.rules.get_mut(index),
+                    parse_u64_input(&value, 0, 100),
+                ) {
+                    rule.upper_threshold_percent = Some(value as u8);
+                }
+            }
+            NumericField::CpuDuration(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.cpu_usage_mode.rules.get_mut(index),
+                    parse_u64_input(&value, 0, 86_400),
+                ) {
+                    rule.duration_seconds = value;
+                }
+            }
+            NumericField::NetworkThreshold(field) => {
+                let Ok(value) = value.parse::<f64>() else {
+                    return;
+                };
+                let Some(rule) = self.threshold_rule_mut(field) else {
+                    return;
+                };
+                let (bytes, unit) = match field {
+                    ThresholdField::Download(_) => (
+                        &mut rule.network_download_threshold_bytes,
+                        rule.network_download_threshold_unit,
+                    ),
+                    ThresholdField::Upload(_) => (
+                        &mut rule.network_upload_threshold_bytes,
+                        rule.network_upload_threshold_unit,
+                    ),
+                };
+                *bytes = unit
+                    .threshold_bytes_from_value(value.max(0.0))
+                    .min(MAX_NETWORK_THRESHOLD_BYTES);
+            }
+        }
     }
 
     fn finish_rule_title_edit(&mut self, target: RuleTitleTarget, cx: &mut Context<Self>) {
@@ -1318,7 +1453,12 @@ impl PowerLeafApp {
                 "activity-idle-timeout",
                 &t!("activity.idle_timeout"),
                 self.settings.activity_mode.idle_timeout_seconds,
-                " sec",
+                self.render_numeric_value(
+                    NumericField::ActivityIdleTimeout,
+                    format!("{} sec", self.settings.activity_mode.idle_timeout_seconds),
+                    self.settings.activity_mode.idle_timeout_seconds.to_string(),
+                    cx,
+                ),
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                     app.settings.activity_mode.idle_timeout_seconds = apply_u64_step(
                         app.settings.activity_mode.idle_timeout_seconds,
@@ -1333,7 +1473,12 @@ impl PowerLeafApp {
                 "general-check-interval",
                 &t!("activity.check_interval"),
                 self.settings.general.check_interval_ms,
-                " ms",
+                self.render_numeric_value(
+                    NumericField::GeneralCheckInterval,
+                    format!("{} ms", self.settings.general.check_interval_ms),
+                    self.settings.general.check_interval_ms.to_string(),
+                    cx,
+                ),
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                     app.settings.general.check_interval_ms =
                         apply_u64_step(app.settings.general.check_interval_ms, change, 250, 60_000);
@@ -1810,7 +1955,12 @@ impl PowerLeafApp {
                     format!("cpu-rule-threshold-{index}"),
                     &t!("cpu_rules.threshold"),
                     rule.threshold_percent,
-                    "%",
+                    self.render_numeric_value(
+                        NumericField::CpuThreshold(index),
+                        format!("{}%", rule.threshold_percent),
+                        rule.threshold_percent.to_string(),
+                        cx,
+                    ),
                     cx.listener(move |app, change: &StepChange<u8>, _, cx| {
                         if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
                             rule.threshold_percent =
@@ -1824,7 +1974,12 @@ impl PowerLeafApp {
                         format!("cpu-rule-upper-threshold-{index}"),
                         &t!("cpu_rules.upper_threshold"),
                         upper,
-                        "%",
+                        self.render_numeric_value(
+                            NumericField::CpuUpperThreshold(index),
+                            format!("{upper}%"),
+                            upper.to_string(),
+                            cx,
+                        ),
                         cx.listener(move |app, change: &StepChange<u8>, _, cx| {
                             if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
                                 let value = rule.upper_threshold_percent.unwrap_or(100);
@@ -1842,7 +1997,12 @@ impl PowerLeafApp {
                     format!("cpu-rule-duration-{index}"),
                     &t!("cpu_rules.duration"),
                     rule.duration_seconds,
-                    " sec",
+                    self.render_numeric_value(
+                        NumericField::CpuDuration(index),
+                        format!("{} sec", rule.duration_seconds),
+                        rule.duration_seconds.to_string(),
+                        cx,
+                    ),
                     cx.listener(move |app, change: &StepChange<u64>, _, cx| {
                         if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
                             rule.duration_seconds =
@@ -2064,7 +2224,18 @@ impl PowerLeafApp {
                 "suspension-background-delay",
                 &t!("suspension.background_delay"),
                 self.settings.app_suspension.background_delay_seconds,
-                " sec",
+                self.render_numeric_value(
+                    NumericField::SuspensionBackgroundDelay,
+                    format!(
+                        "{} sec",
+                        self.settings.app_suspension.background_delay_seconds
+                    ),
+                    self.settings
+                        .app_suspension
+                        .background_delay_seconds
+                        .to_string(),
+                    cx,
+                ),
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                     app.settings.app_suspension.background_delay_seconds = apply_u64_step(
                         app.settings.app_suspension.background_delay_seconds,
@@ -2088,7 +2259,18 @@ impl PowerLeafApp {
                 "suspension-thaw-interval",
                 &t!("suspension.thaw_every"),
                 self.settings.app_suspension.temporary_thaw_interval_seconds,
-                " sec",
+                self.render_numeric_value(
+                    NumericField::SuspensionThawInterval,
+                    format!(
+                        "{} sec",
+                        self.settings.app_suspension.temporary_thaw_interval_seconds
+                    ),
+                    self.settings
+                        .app_suspension
+                        .temporary_thaw_interval_seconds
+                        .to_string(),
+                    cx,
+                ),
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                     app.settings.app_suspension.temporary_thaw_interval_seconds = apply_u64_step(
                         app.settings.app_suspension.temporary_thaw_interval_seconds,
@@ -2103,7 +2285,18 @@ impl PowerLeafApp {
                 "suspension-thaw-duration",
                 &t!("suspension.thaw_duration"),
                 self.settings.app_suspension.temporary_thaw_duration_seconds,
-                " sec",
+                self.render_numeric_value(
+                    NumericField::SuspensionThawDuration,
+                    format!(
+                        "{} sec",
+                        self.settings.app_suspension.temporary_thaw_duration_seconds
+                    ),
+                    self.settings
+                        .app_suspension
+                        .temporary_thaw_duration_seconds
+                        .to_string(),
+                    cx,
+                ),
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                     app.settings.app_suspension.temporary_thaw_duration_seconds = apply_u64_step(
                         app.settings.app_suspension.temporary_thaw_duration_seconds,
@@ -2127,7 +2320,18 @@ impl PowerLeafApp {
                 "suspension-audio-refreeze",
                 &t!("suspension.audio_refreeze"),
                 self.settings.app_suspension.audio_wake_duration_seconds,
-                " sec quiet",
+                self.render_numeric_value(
+                    NumericField::SuspensionAudioRefreeze,
+                    format!(
+                        "{} sec quiet",
+                        self.settings.app_suspension.audio_wake_duration_seconds
+                    ),
+                    self.settings
+                        .app_suspension
+                        .audio_wake_duration_seconds
+                        .to_string(),
+                    cx,
+                ),
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                     app.settings.app_suspension.audio_wake_duration_seconds = apply_u64_step(
                         app.settings.app_suspension.audio_wake_duration_seconds,
@@ -2151,7 +2355,18 @@ impl PowerLeafApp {
                 "suspension-network-refreeze",
                 &t!("suspension.network_refreeze"),
                 self.settings.app_suspension.network_wake_duration_seconds,
-                " sec quiet",
+                self.render_numeric_value(
+                    NumericField::SuspensionNetworkRefreeze,
+                    format!(
+                        "{} sec quiet",
+                        self.settings.app_suspension.network_wake_duration_seconds
+                    ),
+                    self.settings
+                        .app_suspension
+                        .network_wake_duration_seconds
+                        .to_string(),
+                    cx,
+                ),
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                     app.settings.app_suspension.network_wake_duration_seconds = apply_u64_step(
                         app.settings.app_suspension.network_wake_duration_seconds,
@@ -2208,52 +2423,48 @@ impl PowerLeafApp {
                         .unwrap_or_else(|| t!("common.none").to_string()),
                 ),
             ]))
+            .child(section_header(
+                &t!("suspension.suspendable_apps"),
+                t!("suspension.suspendable_help").to_string(),
+            ))
             .child(
-                section_card(&t!("suspension.suspendable_apps"))
-                    .child(text_muted(t!("suspension.suspendable_help").to_string()))
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "suspension-suggestion",
+                        &self.inputs.suspension_process,
+                        SuggestionTarget::Suspension,
+                        window,
+                        cx,
+                    ))
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .items_start()
-                            .flex_wrap()
-                            .child(self.render_process_picker(
-                                "suspension-suggestion",
-                                &self.inputs.suspension_process,
-                                SuggestionTarget::Suspension,
-                                window,
-                                cx,
+                        Button::new("add-suspension-process")
+                            .small()
+                            .label(t!("common.add").to_string())
+                            .disabled(!can_add_suspension_process(
+                                &self.settings.app_suspension,
+                                &input_value,
                             ))
-                            .child(
-                                Button::new("add-suspension-process")
-                                    .small()
-                                    .label(t!("common.add").to_string())
-                                    .disabled(!can_add_suspension_process(
-                                        &self.settings.app_suspension,
-                                        &input_value,
-                                    ))
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        let process = app
-                                            .inputs
-                                            .suspension_process
-                                            .read(cx)
-                                            .value()
-                                            .to_string();
-                                        if can_add_suspension_process(
-                                            &app.settings.app_suspension,
-                                            &process,
-                                        ) {
-                                            app.settings
-                                                .app_suspension
-                                                .suspendable_apps
-                                                .push(new_suspension_rule(&process));
-                                            clear_input(&app.inputs.suspension_process, window, cx);
-                                        }
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(self.render_suspendable_apps(cx)),
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.suspension_process.read(cx).value().to_string();
+                                if can_add_suspension_process(
+                                    &app.settings.app_suspension,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .app_suspension
+                                        .suspendable_apps
+                                        .push(new_suspension_rule(&process));
+                                    clear_input(&app.inputs.suspension_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
             )
+            .child(self.render_suspendable_apps(cx))
             .into_any_element()
     }
 
@@ -2422,52 +2633,45 @@ impl PowerLeafApp {
                         .unwrap_or_else(|| t!("common.none").to_string()),
                 ),
             ]))
+            .child(section_header(
+                &t!("affinity.rules"),
+                t!("affinity.rules_help").to_string(),
+            ))
             .child(
-                section_card(&t!("affinity.rules"))
-                    .child(text_muted(t!("affinity.rules_help").to_string()))
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "affinity-suggestion",
+                        &self.inputs.affinity_process,
+                        SuggestionTarget::Affinity,
+                        window,
+                        cx,
+                    ))
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .items_start()
-                            .flex_wrap()
-                            .child(self.render_process_picker(
-                                "affinity-suggestion",
-                                &self.inputs.affinity_process,
-                                SuggestionTarget::Affinity,
-                                window,
-                                cx,
+                        Button::new("add-affinity-process")
+                            .small()
+                            .label(t!("common.add").to_string())
+                            .disabled(!can_add_affinity_process(
+                                &self.settings.cpu_affinity,
+                                &input_value,
                             ))
-                            .child(
-                                Button::new("add-affinity-process")
-                                    .small()
-                                    .label(t!("common.add").to_string())
-                                    .disabled(!can_add_affinity_process(
-                                        &self.settings.cpu_affinity,
-                                        &input_value,
-                                    ))
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        let process = app
-                                            .inputs
-                                            .affinity_process
-                                            .read(cx)
-                                            .value()
-                                            .to_string();
-                                        if can_add_affinity_process(
-                                            &app.settings.cpu_affinity,
-                                            &process,
-                                        ) {
-                                            app.settings
-                                                .cpu_affinity
-                                                .rules
-                                                .push(new_affinity_rule(&process));
-                                            clear_input(&app.inputs.affinity_process, window, cx);
-                                        }
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(self.render_affinity_rules(cx)),
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.affinity_process.read(cx).value().to_string();
+                                if can_add_affinity_process(&app.settings.cpu_affinity, &process) {
+                                    app.settings
+                                        .cpu_affinity
+                                        .rules
+                                        .push(new_affinity_rule(&process));
+                                    clear_input(&app.inputs.affinity_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
             )
+            .child(self.render_affinity_rules(cx))
             .into_any_element()
     }
 
@@ -2609,6 +2813,41 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
+    fn render_numeric_value(
+        &self,
+        field: NumericField,
+        display_value: String,
+        edit_value: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.editing_numeric == Some(field) {
+            return h_flex()
+                .id(SharedString::from(format!("numeric-editor-{field:?}")))
+                .w(px(96.0))
+                .items_center()
+                .on_click(|_, _, cx| {
+                    cx.stop_propagation();
+                })
+                .on_action(cx.listener(|app, _: &InputEscape, _, cx| {
+                    app.finish_numeric_edit(cx);
+                }))
+                .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                    app.finish_numeric_edit(cx);
+                }))
+                .child(Input::new(&self.inputs.numeric_value).w_full())
+                .into_any_element();
+        }
+
+        h_flex()
+            .id(SharedString::from(format!("numeric-value-{field:?}")))
+            .cursor_pointer()
+            .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
+                app.begin_numeric_edit(field, edit_value.clone(), window, cx);
+            }))
+            .child(value_pill(display_value))
+            .into_any_element()
+    }
+
     fn render_network_threshold(
         &self,
         _index: usize,
@@ -2643,7 +2882,12 @@ impl PowerLeafApp {
                             cx.notify();
                         })),
                 )
-                .child(value_pill(value_label))
+                .child(self.render_numeric_value(
+                    NumericField::NetworkThreshold(field),
+                    value_label,
+                    network_threshold_edit_value(threshold_bytes, unit),
+                    cx,
+                ))
                 .child(
                     Button::new(SharedString::from(format!("threshold-up-{:?}", field)))
                         .small()
@@ -3246,10 +3490,25 @@ enum RuleCardTarget {
     Affinity(String),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ThresholdField {
     Download(usize),
     Upload(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum NumericField {
+    ActivityIdleTimeout,
+    GeneralCheckInterval,
+    SuspensionBackgroundDelay,
+    SuspensionThawInterval,
+    SuspensionThawDuration,
+    SuspensionAudioRefreeze,
+    SuspensionNetworkRefreeze,
+    CpuThreshold(usize),
+    CpuUpperThreshold(usize),
+    CpuDuration(usize),
+    NetworkThreshold(ThresholdField),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3362,6 +3621,21 @@ fn section_card(title: &str) -> GroupBox {
     GroupBox::new()
         .outline()
         .title(Label::new(title.to_owned()))
+}
+
+fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(16.0))
+                .line_height(px(22.0))
+                .font_weight(gpui::FontWeight::BOLD)
+                .child(title.to_owned()),
+        )
+        .child(text_muted(help))
 }
 
 fn rule_card(
@@ -3924,7 +4198,7 @@ fn stepper_u64(
     id: impl Into<SharedString>,
     label: &str,
     value: u64,
-    suffix: &'static str,
+    value_element: AnyElement,
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> gpui::Div {
     let id: SharedString = id.into();
@@ -3951,7 +4225,7 @@ fn stepper_u64(
                         )
                     }),
             )
-            .child(value_pill(format!("{value}{suffix}")))
+            .child(value_element)
             .child(
                 Button::new((gpui::ElementId::from(id), "up"))
                     .small()
@@ -3974,8 +4248,8 @@ fn stepper_u64(
 fn stepper_u8(
     id: impl Into<SharedString>,
     label: &str,
-    value: u8,
-    suffix: &'static str,
+    _value: u8,
+    value_element: AnyElement,
     handler: impl Fn(&StepChange<u8>, &mut Window, &mut App) + 'static,
 ) -> gpui::Div {
     let id: SharedString = id.into();
@@ -4002,7 +4276,7 @@ fn stepper_u8(
                         )
                     }),
             )
-            .child(value_pill(format!("{value}{suffix}")))
+            .child(value_element)
             .child(
                 Button::new((gpui::ElementId::from(id), "up"))
                     .small()
@@ -4048,6 +4322,10 @@ fn apply_u8_step(current: u8, change: &StepChange<u8>, min: u8, max: u8) -> u8 {
         current.saturating_sub(change.delta)
     };
     next.clamp(min, max)
+}
+
+fn parse_u64_input(value: &str, min: u64, max: u64) -> Option<u64> {
+    value.parse::<u64>().ok().map(|value| value.clamp(min, max))
 }
 
 fn cpu_usage_label(percent: Option<f32>) -> String {
@@ -4382,6 +4660,14 @@ fn network_threshold_step(unit: NetworkThresholdUnit) -> f64 {
         NetworkThresholdUnit::Gigabytes | NetworkThresholdUnit::Gigabits => 0.01,
         NetworkThresholdUnit::Bits => 512.0,
     }
+}
+
+fn network_threshold_edit_value(threshold_bytes: u64, unit: NetworkThresholdUnit) -> String {
+    let value = unit.threshold_value_from_bytes(threshold_bytes);
+    format!("{value:.3}")
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_owned()
 }
 
 #[derive(Debug, Clone, Copy)]
