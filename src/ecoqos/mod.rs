@@ -66,8 +66,8 @@ pub struct EcoQosManager {
     throttled: BTreeMap<u32, ThrottledProcess>,
 }
 
-#[derive(Clone, Copy)]
 struct ThrottledProcess {
+    process_name: String,
     previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     previous_priority: Option<u32>,
 }
@@ -83,8 +83,9 @@ impl EcoQosManager {
             let failed = self.clear_all();
             return EcoQosSnapshot {
                 enabled: false,
-                failed_processes: failed,
+                failed_processes: failed.count,
                 message: "Automation disabled.".to_owned(),
+                last_error: failed.last_error,
                 ..Default::default()
             };
         }
@@ -93,8 +94,9 @@ impl EcoQosManager {
             let failed = self.clear_all();
             return EcoQosSnapshot {
                 enabled: false,
-                failed_processes: failed,
+                failed_processes: failed.count,
                 message: "Efficiency Mode disabled.".to_owned(),
+                last_error: failed.last_error,
                 ..Default::default()
             };
         }
@@ -103,8 +105,9 @@ impl EcoQosManager {
             let failed = self.clear_all();
             return EcoQosSnapshot {
                 enabled: true,
-                failed_processes: failed,
+                failed_processes: failed.count,
                 message: "Paused: foreground app is unknown.".to_owned(),
+                last_error: failed.last_error,
                 ..Default::default()
             };
         }
@@ -114,8 +117,9 @@ impl EcoQosManager {
             let failed = self.clear_all();
             return EcoQosSnapshot {
                 enabled: true,
-                failed_processes: failed,
+                failed_processes: failed.count,
                 message: "Paused: current Windows session is unknown.".to_owned(),
+                last_error: failed.last_error,
                 ..Default::default()
             };
         };
@@ -126,8 +130,9 @@ impl EcoQosManager {
                 let failed = self.clear_all();
                 return EcoQosSnapshot {
                     enabled: true,
-                    failed_processes: failed,
+                    failed_processes: failed.count,
                     message: err,
+                    last_error: failed.last_error,
                     ..Default::default()
                 };
             }
@@ -169,20 +174,19 @@ impl EcoQosManager {
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
-        let mut failed_processes = self.release_non_targets(&target_ids);
-        let mut last_error = None;
+        let mut failures = self.release_non_targets(&target_ids);
         let mut unsupported = false;
 
-        for (process_id, _name) in target_processes {
+        for (process_id, name) in target_processes {
             if self.throttled.contains_key(&process_id) {
                 continue;
             }
 
-            match enable_efficiency_mode(process_id) {
+            match enable_efficiency_mode(process_id, name.clone()) {
                 Ok(process) => {
                     self.throttled.insert(process_id, process);
                 }
-                Err(EcoQosError::AccessDenied) => {
+                Err(EcoQosError::AccessDenied | EcoQosError::ProcessExited) => {
                     skipped_processes += 1;
                 }
                 Err(EcoQosError::Unsupported) => {
@@ -190,10 +194,7 @@ impl EcoQosManager {
                     unsupported = true;
                 }
                 Err(EcoQosError::Failed(err)) => {
-                    failed_processes += 1;
-                    if last_error.is_none() {
-                        last_error = Some(err);
-                    }
+                    failures.record_message("Apply", process_id, &name, err);
                 }
             }
         }
@@ -204,13 +205,13 @@ impl EcoQosManager {
             scanned_processes,
             throttled_processes: self.throttled.len(),
             skipped_processes,
-            failed_processes,
+            failed_processes: failures.count,
             message: "Efficiency Mode active.".to_owned(),
-            last_error,
+            last_error: failures.last_error,
         }
     }
 
-    fn release_non_targets(&mut self, target_ids: &BTreeSet<u32>) -> usize {
+    fn release_non_targets(&mut self, target_ids: &BTreeSet<u32>) -> EcoQosFailures {
         let process_ids = self
             .throttled
             .keys()
@@ -221,21 +222,24 @@ impl EcoQosManager {
         self.release_processes(&process_ids)
     }
 
-    fn clear_all(&mut self) -> usize {
+    fn clear_all(&mut self) -> EcoQosFailures {
         let process_ids = self.throttled.keys().copied().collect::<Vec<_>>();
         self.release_processes(&process_ids)
     }
 
-    fn release_processes(&mut self, process_ids: &[u32]) -> usize {
-        let mut failed = 0;
+    fn release_processes(&mut self, process_ids: &[u32]) -> EcoQosFailures {
+        let mut failures = EcoQosFailures::default();
         for process_id in process_ids {
             if let Some(process) = self.throttled.remove(process_id) {
-                if restore_efficiency_mode(*process_id, process).is_err() {
-                    failed += 1;
+                let process_name = process.process_name.clone();
+                if let Err(err) = restore_efficiency_mode(*process_id, process) {
+                    if !matches!(err, EcoQosError::ProcessExited) {
+                        failures.record_error("Restore", *process_id, &process_name, err);
+                    }
                 }
             }
         }
-        failed
+        failures
     }
 }
 
@@ -292,11 +296,66 @@ fn process_session_id(process_id: u32) -> Option<u32> {
 
 enum EcoQosError {
     AccessDenied,
+    ProcessExited,
     Unsupported,
     Failed(String),
 }
 
-fn enable_efficiency_mode(process_id: u32) -> Result<ThrottledProcess, EcoQosError> {
+#[derive(Default)]
+struct EcoQosFailures {
+    count: usize,
+    last_error: Option<String>,
+}
+
+impl EcoQosFailures {
+    fn record_error(
+        &mut self,
+        action: &str,
+        process_id: u32,
+        process_name: &str,
+        error: EcoQosError,
+    ) {
+        let message = match error {
+            EcoQosError::AccessDenied => "Access denied.".to_owned(),
+            EcoQosError::ProcessExited => "Process exited.".to_owned(),
+            EcoQosError::Unsupported => "Operation unsupported.".to_owned(),
+            EcoQosError::Failed(message) => message,
+        };
+        self.record_message(action, process_id, process_name, message);
+    }
+
+    fn record_message(
+        &mut self,
+        action: &str,
+        process_id: u32,
+        process_name: &str,
+        message: String,
+    ) {
+        self.count += 1;
+        if self.last_error.is_none() {
+            self.last_error = Some(process_failure_message(
+                action,
+                process_id,
+                process_name,
+                &message,
+            ));
+        }
+    }
+}
+
+fn process_failure_message(
+    action: &str,
+    process_id: u32,
+    process_name: &str,
+    message: &str,
+) -> String {
+    format!("{action} {process_name} ({process_id}): {message}")
+}
+
+fn enable_efficiency_mode(
+    process_id: u32,
+    process_name: String,
+) -> Result<ThrottledProcess, EcoQosError> {
     let process = ProcessHandle::open(process_id)?;
     let previous_state = process.power_throttling_state().ok();
     let previous_priority = process.priority_class().ok();
@@ -314,6 +373,7 @@ fn enable_efficiency_mode(process_id: u32) -> Result<ThrottledProcess, EcoQosErr
     }
 
     Ok(ThrottledProcess {
+        process_name,
         previous_state,
         previous_priority,
     })
@@ -374,13 +434,7 @@ impl ProcessHandle {
             last_open_error = last_error();
         }
 
-        if last_open_error == ERROR_ACCESS_DENIED {
-            Err(EcoQosError::AccessDenied)
-        } else {
-            Err(EcoQosError::Failed(format!(
-                "OpenProcess({process_id}) failed with error {last_open_error}."
-            )))
-        }
+        Err(open_process_error(process_id, last_open_error))
     }
 
     fn power_throttling_state(&self) -> Result<PROCESS_POWER_THROTTLING_STATE, EcoQosError> {
@@ -465,6 +519,16 @@ fn process_power_throttling_error(operation: &str, error: u32) -> EcoQosError {
     }
 }
 
+fn open_process_error(process_id: u32, error: u32) -> EcoQosError {
+    match error {
+        ERROR_ACCESS_DENIED => EcoQosError::AccessDenied,
+        ERROR_INVALID_PARAMETER => EcoQosError::ProcessExited,
+        _ => EcoQosError::Failed(format!(
+            "OpenProcess({process_id}) failed with error {error}."
+        )),
+    }
+}
+
 fn last_error() -> u32 {
     unsafe { GetLastError() }
 }
@@ -497,6 +561,22 @@ mod tests {
         assert!(matches!(
             process_power_throttling_error("SetProcessInformation", ERROR_INVALID_PARAMETER),
             EcoQosError::Unsupported
+        ));
+    }
+
+    #[test]
+    fn process_failure_message_includes_action_name_pid_and_error() {
+        assert_eq!(
+            process_failure_message("Restore", 42, "browser.exe", "OpenProcess failed."),
+            "Restore browser.exe (42): OpenProcess failed."
+        );
+    }
+
+    #[test]
+    fn open_process_invalid_parameter_means_process_exited() {
+        assert!(matches!(
+            open_process_error(42, ERROR_INVALID_PARAMETER),
+            EcoQosError::ProcessExited
         ));
     }
 
