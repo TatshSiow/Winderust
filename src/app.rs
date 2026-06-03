@@ -16,7 +16,7 @@ use gpui_component::{
     h_flex,
     input::{Escape as InputEscape, Input, InputEvent, InputState},
     scroll::ScrollableElement,
-    v_flex, Disableable, Sizable,
+    v_flex, Disableable, Icon, IconNamed, Sizable,
 };
 
 use crate::{
@@ -3437,7 +3437,7 @@ fn nav_row(page: Page, selected: bool) -> gpui::Stateful<gpui::Div> {
 
     h_flex()
         .id(SharedString::from(format!("nav-row-{:?}", page)))
-        .h(px(30.0))
+        .h(px(32.0))
         .w_full()
         .items_center()
         .gap_2()
@@ -3448,7 +3448,80 @@ fn nav_row(page: Page, selected: bool) -> gpui::Stateful<gpui::Div> {
         .hover(|style| style.bg(rgb(COLOR_PANEL_ALT)))
         .cursor_pointer()
         .child(div().w(px(2.0)).h(px(16.0)).rounded_sm().bg(rgb(indicator)))
-        .child(div().flex_1().text_sm().child(page.label()))
+        .child(nav_icon(page, selected))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .text_sm()
+                .truncate()
+                .child(page.label()),
+        )
+}
+
+fn nav_icon(page: Page, selected: bool) -> AnyElement {
+    let color = if selected { COLOR_ACCENT } else { COLOR_DIM };
+
+    div()
+        .w(px(18.0))
+        .h(px(18.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .child(
+            Icon::new(nav_icon_name(page))
+                .with_size(px(16.0))
+                .text_color(rgb(color)),
+        )
+        .into_any_element()
+}
+
+fn nav_icon_name(page: Page) -> NavIcon {
+    match page {
+        Page::Dashboard => NavIcon::Dashboard,
+        Page::Activity => NavIcon::Activity,
+        Page::CpuUsage => NavIcon::Chart,
+        Page::EfficiencyMode => NavIcon::Zap,
+        Page::AppSuspension => NavIcon::PauseCircle,
+        Page::CpuAffinity => NavIcon::Chip,
+        Page::ForegroundRules => NavIcon::Frame,
+        Page::Schedule => NavIcon::Calendar,
+        Page::Settings => NavIcon::Settings,
+        Page::About => NavIcon::Info,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NavIcon {
+    Activity,
+    Calendar,
+    Chart,
+    Chip,
+    Dashboard,
+    Frame,
+    Info,
+    PauseCircle,
+    Settings,
+    Zap,
+}
+
+impl IconNamed for NavIcon {
+    fn path(self) -> SharedString {
+        match self {
+            Self::Activity => "icons/activity.svg",
+            Self::Calendar => "icons/calendar.svg",
+            Self::Chart => "icons/chart.svg",
+            Self::Chip => "icons/chip.svg",
+            Self::Dashboard => "icons/dashboard.svg",
+            Self::Frame => "icons/frame.svg",
+            Self::Info => "icons/info.svg",
+            Self::PauseCircle => "icons/pause-circle.svg",
+            Self::Settings => "icons/settings.svg",
+            Self::Zap => "icons/zap.svg",
+        }
+        .into()
+    }
 }
 
 fn toggle_button(
