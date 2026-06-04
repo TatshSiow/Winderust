@@ -33,11 +33,14 @@ use windows_sys::Win32::{
     },
     Networking::WinSock::{AF_INET, AF_INET6, IN6_ADDR, IN6_ADDR_0},
     System::{
-        JobObjects::{AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject},
+        JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, SetInformationJobObject,
+        },
         RemoteDesktop::ProcessIdToSessionId,
         Threading::{
-            GetCurrentProcessId, OpenProcess, WaitForSingleObject, PROCESS_SET_QUOTA,
-            PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+            GetCurrentProcessId, OpenProcess, WaitForSingleObject,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE,
+            PROCESS_TERMINATE,
         },
     },
 };
@@ -1724,11 +1727,13 @@ impl ProcessFreezer {
         let assigned = unsafe { AssignProcessToJobObject(job_handle, process_handle) != 0 };
         if !assigned {
             let error = last_error();
+            let assignment_error =
+                assign_process_to_job_error_with_context(process_id, process_handle, error);
             unsafe {
                 CloseHandle(job_handle);
                 CloseHandle(process_handle);
             }
-            return Err(assign_process_to_job_error(process_id, error));
+            return Err(assignment_error);
         }
 
         Ok(Self {
@@ -1793,6 +1798,11 @@ fn null_mut_handle() -> HANDLE {
 
 fn open_process_for_job_assignment(process_id: u32) -> Result<(HANDLE, bool), SuspensionError> {
     let access_masks = [
+        PROCESS_SET_QUOTA
+            | PROCESS_TERMINATE
+            | PROCESS_SYNCHRONIZE
+            | PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
         PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
         PROCESS_SET_QUOTA | PROCESS_TERMINATE,
     ];
@@ -1827,6 +1837,26 @@ fn assign_process_to_job_error(process_id: u32, error: u32) -> SuspensionError {
             "AssignProcessToJobObject({process_id}) failed with error {error}."
         )),
     }
+}
+
+fn assign_process_to_job_error_with_context(
+    process_id: u32,
+    process_handle: HANDLE,
+    error: u32,
+) -> SuspensionError {
+    if process_is_in_job(process_handle) == Some(true) {
+        return SuspensionError::Failed(format!(
+            "AssignProcessToJobObject({process_id}) failed with error {error}; process is already in a job object."
+        ));
+    }
+
+    assign_process_to_job_error(process_id, error)
+}
+
+fn process_is_in_job(process_handle: HANDLE) -> Option<bool> {
+    let mut in_job = 0;
+    let ok = unsafe { IsProcessInJob(process_handle, null_mut_handle(), &mut in_job) };
+    (ok != 0).then_some(in_job != 0)
 }
 
 fn job_freeze_error(frozen: bool, error: u32) -> SuspensionError {

@@ -81,6 +81,27 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 | `OpenProcess` | Opens target processes with query and set-information access rights. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
 | Process Security and Access Rights | Documents access flags such as `PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_INFORMATION`, and `PROCESS_SET_LIMITED_INFORMATION`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
 
+## CPU Affinity
+
+PowerLeaf CPU Affinity can apply hard process affinity masks or soft Windows CPU Sets to selected current-session processes. On systems with more than one processor group, the status message warns that hard affinity uses the process primary processor group.
+
+Implementation entry point:
+
+- `src/affinity/mod.rs`
+
+### CPU Affinity APIs
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `GetProcessAffinityMask` | Reads the current process and system affinity masks before PowerLeaf changes them. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessaffinitymask |
+| `SetProcessAffinityMask` | Applies the configured hard affinity mask to a target process. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessaffinitymask |
+| `GetSystemCpuSetInformation` | Maps selected logical CPUs to Windows CPU Set IDs for soft affinity mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
+| `GetProcessDefaultCpuSets` | Reads existing process default CPU Set IDs so soft mode can restore them later. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
+| `SetProcessDefaultCpuSets` | Applies or clears process default CPU Set IDs for soft affinity mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets |
+| `GetActiveProcessorGroupCount` | Detects multi-group systems where single-mask affinity APIs are group-relative. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount |
+| Processor Groups | Explains why hard affinity masks are group-relative and why multi-group systems need special handling. | https://learn.microsoft.com/en-us/windows/win32/procthread/processor-groups |
+| CPU Sets | Explains soft processor preference while remaining more compatible with OS power management. | https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets |
+
 ## App Suspension
 
 PowerLeaf App Suspension is manual Win32 Job Object freezing. It is not the same as Windows-managed UWP app suspension shown by Task Manager for some Store apps.
@@ -103,6 +124,7 @@ User-facing behavior:
 | `OpenProcess` | Opens a process handle with the rights needed for job assignment and process liveness checks. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
 | `CreateJobObjectW` | Creates the private job object used to isolate one target process. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw |
 | `AssignProcessToJobObject` | Assigns the target process to PowerLeaf's private job object. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject |
+| `IsProcessInJob` | Adds context to assignment failures when the target process is already in a job object. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi/nf-jobapi-isprocessinjob |
 | `SetInformationJobObject` | Freezes or thaws the private job object using the Windows Job Object freeze information class. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject |
 | Job Objects | Explains Windows job objects and process grouping behavior. | https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects |
 

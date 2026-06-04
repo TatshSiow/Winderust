@@ -158,6 +158,22 @@ Current behavior:
 
 Avoid copying EnergyStarX code into this project. If EcoQoS behavior needs to change, implement against Microsoft Win32 documentation directly.
 
+## CPU Affinity
+
+`src/affinity/mod.rs` owns optional process affinity controls.
+
+Current behavior:
+
+- Settings live in `settings.cpu_affinity`.
+- The feature is disabled by default.
+- CPU Affinity activation and target changes apply only after Save; disabling CPU Affinity takes effect immediately.
+- `BackgroundAutomation` runs the `CpuAffinityManager` every second while the app is visible or hidden to tray.
+- Each rule can use hard affinity through `SetProcessAffinityMask` or soft CPU Sets through `SetProcessDefaultCpuSets`.
+- Hard mode preserves each process's previous affinity mask when possible, then restores that mask when the process is no longer targeted.
+- Soft mode preserves each process's previous default CPU Set IDs when possible, then restores those IDs when the process is no longer targeted.
+- It detects multi-processor-group systems with `GetActiveProcessorGroupCount` and warns that hard affinity uses the process primary processor group.
+- Built-in exclusions cover Windows shell/input/UWP lifecycle processes such as `explorer.exe`, `dwm.exe`, `searchapp.exe`, `searchhost.exe`, `systemsettings.exe`, and `textinputhost.exe`.
+
 ## App Suspension
 
 `src/suspension/mod.rs` owns optional process suspension.
@@ -178,7 +194,8 @@ Current behavior:
 - It never targets the PowerLeaf process, current foreground process, or matching executable processes for the current foreground app.
 - Taskbar and tray shell clicks temporarily thaw suspended top-level window owner processes only, which lets minimized and tray-hidden apps restore without thawing unrelated non-window worker processes. These shell-intent checks are rate-limited and do not extend an already active user-intent thaw.
 - Built-in exclusions cover Windows shell/input/UWP lifecycle processes such as `explorer.exe`, `dwm.exe`, `searchapp.exe`, `searchhost.exe`, `systemsettings.exe`, and `textinputhost.exe`.
-- Access-denied process opens and job-assignment failures are counted as skipped, not failed. This is expected for protected/elevated Windows processes.
+- Job-assignment failures include extra context when `IsProcessInJob` reports that the target process is already in a job object.
+- Access-denied process opens are counted as skipped, not failed. This is expected for protected/elevated Windows processes.
 - Suspendable Apps are edited with the same searchable running-app dropdown pattern as Foreground Rules and are persisted to TOML/INI.
 
 Keep this feature opt-in and narrow. Do not add broad "suspend all background apps" behavior without explicit user direction and additional safeguards.

@@ -31,9 +31,10 @@ use crate::{
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
-        self, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode, CpuAffinityRule,
-        CpuAffinitySettings, CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundRule,
-        ForegroundRules, NetworkThresholdUnit, ScheduleRule, Settings, WeekdaySetting,
+        self, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode, CpuAffinityMode,
+        CpuAffinityRule, CpuAffinitySettings, CpuUsageComparison, CpuUsageRule, EcoQosSettings,
+        ForegroundRule, ForegroundRules, NetworkThresholdUnit, ScheduleRule, Settings,
+        WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{self, EcoQosSnapshot},
@@ -2931,6 +2932,9 @@ impl PowerLeafApp {
                         status_pill(indicator.label, indicator.bg, indicator.fg),
                         text_muted(indicator.hover).into_any_element(),
                     ]))
+                    .child(rule_card_body_row(vec![
+                        self.render_affinity_mode_selector(index, rule.mode, cx)
+                    ]))
                     .child(rule_card_body_row(vec![value_pill(affinity_mask_label(
                         rule.core_mask,
                     ))
@@ -2962,6 +2966,42 @@ impl PowerLeafApp {
             list = list.child(text_muted(t!("affinity.no_rules").to_string()));
         }
         list.into_any_element()
+    }
+
+    fn render_affinity_mode_selector(
+        &self,
+        index: usize,
+        selected_mode: CpuAffinityMode,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = h_flex().gap_1().flex_wrap();
+        for mode in CpuAffinityMode::ALL {
+            let (label, tooltip) = match mode {
+                CpuAffinityMode::Hard => (
+                    t!("affinity.mode_hard").to_string(),
+                    t!("affinity.mode_hard_help").to_string(),
+                ),
+                CpuAffinityMode::Soft => (
+                    t!("affinity.mode_soft").to_string(),
+                    t!("affinity.mode_soft_help").to_string(),
+                ),
+            };
+            row = row.child(
+                toggle_button(
+                    format!("affinity-mode-{index}-{mode:?}"),
+                    label,
+                    selected_mode == mode,
+                )
+                .tooltip(tooltip)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                        rule.mode = mode;
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        labeled_element(&t!("affinity.mode"), row.into_any_element()).into_any_element()
     }
 
     fn render_affinity_core_selector(
@@ -4838,6 +4878,7 @@ fn new_suspension_rule(process: &str) -> AppSuspensionRule {
 fn new_affinity_rule(process: &str) -> CpuAffinityRule {
     CpuAffinityRule {
         enabled: true,
+        mode: CpuAffinityMode::Hard,
         process_name: process.trim().to_ascii_lowercase(),
         core_mask: default_affinity_mask(),
     }

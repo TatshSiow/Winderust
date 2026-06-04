@@ -218,8 +218,22 @@ pub struct CpuAffinitySettings {
 pub struct CpuAffinityRule {
     #[serde(default = "default_rule_enabled")]
     pub enabled: bool,
+    #[serde(default)]
+    pub mode: CpuAffinityMode,
     pub process_name: String,
     pub core_mask: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CpuAffinityMode {
+    #[default]
+    Hard,
+    Soft,
+}
+
+impl CpuAffinityMode {
+    pub const ALL: [Self; 2] = [Self::Hard, Self::Soft];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

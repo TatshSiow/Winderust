@@ -10,19 +10,21 @@ use windows_sys::Win32::{
     System::{
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::{
-            GetLogicalProcessorInformationEx, RelationProcessorCore, GROUP_AFFINITY,
-            LOGICAL_PROCESSOR_RELATIONSHIP, PROCESSOR_RELATIONSHIP,
-            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
+            GetLogicalProcessorInformationEx, GetSystemCpuSetInformation, RelationProcessorCore,
+            GROUP_AFFINITY, LOGICAL_PROCESSOR_RELATIONSHIP, PROCESSOR_RELATIONSHIP,
+            SYSTEM_CPU_SET_INFORMATION, SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX,
         },
         Threading::{
-            GetCurrentProcessId, GetProcessAffinityMask, OpenProcess, SetProcessAffinityMask,
-            PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+            GetActiveProcessorGroupCount, GetCurrentProcessId, GetProcessAffinityMask,
+            GetProcessDefaultCpuSets, OpenProcess, SetProcessAffinityMask,
+            SetProcessDefaultCpuSets, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SET_INFORMATION,
         },
     },
 };
 
 use crate::{
-    config::{CpuAffinityRule, CpuAffinitySettings},
+    config::{CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings},
     foreground::list_processes,
 };
 
@@ -37,6 +39,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "lsaiso.exe",
     "lsass.exe",
     "registry",
+    "searchapp.exe",
     "searchhost.exe",
     "securityhealthservice.exe",
     "securityhealthsystray.exe",
@@ -45,6 +48,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "sihost.exe",
     "smss.exe",
     "startmenuexperiencehost.exe",
+    "systemsettings.exe",
     "system",
     "taskmgr.exe",
     "textinputhost.exe",
@@ -87,6 +91,13 @@ struct LogicalProcessorInformationHeader {
     size: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CpuSetInformationHeader {
+    size: u32,
+    cpu_set_type: u32,
+}
+
 #[derive(Default)]
 pub struct CpuAffinityManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
@@ -95,8 +106,19 @@ pub struct CpuAffinityManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
-    previous_affinity: usize,
-    applied_affinity: usize,
+    adjustment: AffinityAdjustment,
+}
+
+#[derive(Clone)]
+enum AffinityAdjustment {
+    Hard {
+        previous_affinity: usize,
+        applied_affinity: usize,
+    },
+    Soft {
+        previous_cpu_set_ids: Vec<u32>,
+        applied_cpu_set_ids: Vec<u32>,
+    },
 }
 
 impl CpuAffinityManager {
@@ -196,7 +218,7 @@ impl CpuAffinityManager {
             }
 
             if let Some(rule) = matching_rule(settings, &process.name) {
-                target_processes.insert(process.id, (process.name, rule.core_mask));
+                target_processes.insert(process.id, (process.name, rule.mode, rule.core_mask));
             }
         }
 
@@ -205,10 +227,11 @@ impl CpuAffinityManager {
         let mut skipped_processes = 0;
         let mut last_error = None;
 
-        for (process_id, (process_name, rule_mask)) in target_processes {
+        for (process_id, (process_name, mode, rule_mask)) in target_processes {
             match apply_affinity(
                 process_id,
                 process_name,
+                mode,
                 rule_mask,
                 self.adjusted.get(&process_id),
             ) {
@@ -241,7 +264,7 @@ impl CpuAffinityManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
-            message: "CPU Affinity active.".to_owned(),
+            message: cpu_affinity_message(settings),
             last_error,
         }
     }
@@ -323,6 +346,29 @@ pub fn contains_process(list: &[String], process_name: &str) -> bool {
 
 pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
     logical_processors_from_topology().unwrap_or_else(fallback_logical_processors)
+}
+
+fn cpu_affinity_message(settings: &CpuAffinitySettings) -> String {
+    cpu_affinity_message_for_group_count(
+        active_processor_group_count(),
+        settings
+            .rules
+            .iter()
+            .any(|rule| rule.enabled && rule.mode == CpuAffinityMode::Hard),
+    )
+}
+
+fn cpu_affinity_message_for_group_count(group_count: u16, has_hard_rules: bool) -> String {
+    if group_count > 1 && has_hard_rules {
+        "CPU Affinity active. Multi-group CPU detected: hard affinity uses the process primary processor group."
+            .to_owned()
+    } else {
+        "CPU Affinity active.".to_owned()
+    }
+}
+
+fn active_processor_group_count() -> u16 {
+    unsafe { GetActiveProcessorGroupCount() }
 }
 
 fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
@@ -519,19 +565,57 @@ enum AffinityError {
 fn apply_affinity(
     process_id: u32,
     process_name: String,
+    mode: CpuAffinityMode,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let process = ProcessHandle::open(process_id)?;
+    let reusable_existing = existing
+        .filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name))
+        .filter(|adjusted| adjusted.adjustment.mode() == mode);
+
+    if let Some(adjusted) = existing {
+        if !adjusted.process_name.eq_ignore_ascii_case(&process_name)
+            || adjusted.adjustment.mode() != mode
+        {
+            restore_adjustment(&process, &adjusted.adjustment)?;
+        }
+    }
+
+    match mode {
+        CpuAffinityMode::Hard => {
+            apply_hard_affinity(&process, process_name, rule_mask, reusable_existing)
+        }
+        CpuAffinityMode::Soft => {
+            apply_soft_affinity(&process, process_name, rule_mask, reusable_existing)
+        }
+    }
+}
+
+fn restore_affinity(process_id: u32, process_state: AdjustedProcess) -> Result<(), AffinityError> {
+    let process = ProcessHandle::open(process_id)?;
+    restore_adjustment(&process, &process_state.adjustment)
+}
+
+fn apply_hard_affinity(
+    process: &ProcessHandle,
+    process_name: String,
+    rule_mask: u64,
+    existing: Option<&AdjustedProcess>,
+) -> Result<Option<AdjustedProcess>, AffinityError> {
     let (current_affinity, system_affinity) = process.affinity_mask()?;
     let Some(target_affinity) = target_affinity_mask(rule_mask, system_affinity) else {
         return Ok(None);
     };
 
     if existing.is_some_and(|adjusted| {
-        adjusted.process_name.eq_ignore_ascii_case(&process_name)
-            && adjusted.applied_affinity == target_affinity
-            && current_affinity == target_affinity
+        matches!(
+            adjusted.adjustment,
+            AffinityAdjustment::Hard {
+                applied_affinity,
+                ..
+            } if applied_affinity == target_affinity
+        ) && current_affinity == target_affinity
     }) {
         return Ok(existing.cloned());
     }
@@ -539,20 +623,89 @@ fn apply_affinity(
     process.set_affinity_mask(target_affinity)?;
 
     let previous_affinity = existing
-        .filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name))
-        .map(|adjusted| adjusted.previous_affinity)
+        .and_then(|adjusted| match adjusted.adjustment {
+            AffinityAdjustment::Hard {
+                previous_affinity, ..
+            } => Some(previous_affinity),
+            AffinityAdjustment::Soft { .. } => None,
+        })
         .unwrap_or(current_affinity);
 
     Ok(Some(AdjustedProcess {
         process_name,
-        previous_affinity,
-        applied_affinity: target_affinity,
+        adjustment: AffinityAdjustment::Hard {
+            previous_affinity,
+            applied_affinity: target_affinity,
+        },
     }))
 }
 
-fn restore_affinity(process_id: u32, process_state: AdjustedProcess) -> Result<(), AffinityError> {
-    let process = ProcessHandle::open(process_id)?;
-    process.set_affinity_mask(process_state.previous_affinity)
+fn apply_soft_affinity(
+    process: &ProcessHandle,
+    process_name: String,
+    rule_mask: u64,
+    existing: Option<&AdjustedProcess>,
+) -> Result<Option<AdjustedProcess>, AffinityError> {
+    let Some(target_cpu_set_ids) = target_cpu_set_ids(rule_mask)? else {
+        return Ok(None);
+    };
+    let current_cpu_set_ids = process.default_cpu_set_ids()?;
+
+    if existing.is_some_and(|adjusted| {
+        matches!(
+            &adjusted.adjustment,
+            AffinityAdjustment::Soft {
+                applied_cpu_set_ids,
+                ..
+            } if *applied_cpu_set_ids == target_cpu_set_ids
+        ) && current_cpu_set_ids == target_cpu_set_ids
+    }) {
+        return Ok(existing.cloned());
+    }
+
+    process.set_default_cpu_set_ids(&target_cpu_set_ids)?;
+
+    let previous_cpu_set_ids = existing
+        .and_then(|adjusted| match &adjusted.adjustment {
+            AffinityAdjustment::Soft {
+                previous_cpu_set_ids,
+                ..
+            } => Some(previous_cpu_set_ids.clone()),
+            AffinityAdjustment::Hard { .. } => None,
+        })
+        .unwrap_or(current_cpu_set_ids);
+
+    Ok(Some(AdjustedProcess {
+        process_name,
+        adjustment: AffinityAdjustment::Soft {
+            previous_cpu_set_ids,
+            applied_cpu_set_ids: target_cpu_set_ids,
+        },
+    }))
+}
+
+fn restore_adjustment(
+    process: &ProcessHandle,
+    adjustment: &AffinityAdjustment,
+) -> Result<(), AffinityError> {
+    match adjustment {
+        AffinityAdjustment::Hard {
+            previous_affinity, ..
+        } => process.set_affinity_mask(*previous_affinity),
+        AffinityAdjustment::Soft {
+            previous_cpu_set_ids,
+            ..
+        } => process.set_default_cpu_set_ids(previous_cpu_set_ids),
+    }
+}
+
+impl AffinityAdjustment {
+    fn mode(&self) -> CpuAffinityMode {
+        match self {
+            Self::Hard { .. } => CpuAffinityMode::Hard,
+            Self::Soft { .. } => CpuAffinityMode::Soft,
+        }
+    }
 }
 
 fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize> {
@@ -561,6 +714,80 @@ fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize>
         mask &= system_affinity;
     }
     (mask != 0).then_some(mask)
+}
+
+fn target_cpu_set_ids(rule_mask: u64) -> Result<Option<Vec<u32>>, AffinityError> {
+    let mut ids = system_cpu_set_ids_for_mask(rule_mask)?;
+    ids.sort_unstable();
+    ids.dedup();
+    Ok((!ids.is_empty()).then_some(ids))
+}
+
+fn system_cpu_set_ids_for_mask(rule_mask: u64) -> Result<Vec<u32>, AffinityError> {
+    let mut returned_length = 0;
+    unsafe {
+        GetSystemCpuSetInformation(null_mut(), 0, &mut returned_length, null_mut(), 0);
+    }
+
+    if returned_length == 0 {
+        return Ok(Vec::new());
+    }
+
+    let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
+    let mut buffer = vec![0_usize; word_count];
+    let ok = unsafe {
+        GetSystemCpuSetInformation(
+            buffer.as_mut_ptr() as *mut SYSTEM_CPU_SET_INFORMATION,
+            returned_length,
+            &mut returned_length,
+            null_mut(),
+            0,
+        )
+    };
+    if ok == 0 {
+        return Err(AffinityError::Failed(format!(
+            "GetSystemCpuSetInformation failed with error {}.",
+            last_error()
+        )));
+    }
+
+    Ok(cpu_set_ids_for_mask_from_bytes(
+        unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) },
+        rule_mask,
+    ))
+}
+
+fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
+    let mut ids = Vec::new();
+    let mut offset = 0;
+    let header_size = size_of::<CpuSetInformationHeader>();
+
+    while offset + header_size <= buffer.len() {
+        let header = unsafe {
+            read_unaligned(buffer.as_ptr().add(offset) as *const CpuSetInformationHeader)
+        };
+        let record_size = header.size as usize;
+        if record_size < header_size || offset + record_size > buffer.len() {
+            break;
+        }
+
+        if header.cpu_set_type == 0 && record_size >= size_of::<SYSTEM_CPU_SET_INFORMATION>() {
+            let info = unsafe {
+                read_unaligned(buffer.as_ptr().add(offset) as *const SYSTEM_CPU_SET_INFORMATION)
+            };
+            let cpu_set = unsafe { info.Anonymous.CpuSet };
+            if cpu_set.Group == 0 && cpu_set.LogicalProcessorIndex < 64 {
+                let bit = 1_u64 << cpu_set.LogicalProcessorIndex;
+                if (rule_mask & bit) != 0 {
+                    ids.push(cpu_set.Id);
+                }
+            }
+        }
+
+        offset += record_size;
+    }
+
+    ids
 }
 
 fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
@@ -625,6 +852,52 @@ impl ProcessHandle {
             Ok(())
         }
     }
+
+    fn default_cpu_set_ids(&self) -> Result<Vec<u32>, AffinityError> {
+        let mut required_id_count = 0;
+        unsafe {
+            GetProcessDefaultCpuSets(self.0, null_mut(), 0, &mut required_id_count);
+        }
+        if required_id_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut ids = vec![0_u32; required_id_count as usize];
+        let ok = unsafe {
+            GetProcessDefaultCpuSets(
+                self.0,
+                ids.as_mut_ptr(),
+                ids.len() as u32,
+                &mut required_id_count,
+            )
+        };
+        if ok == 0 {
+            Err(AffinityError::Failed(format!(
+                "GetProcessDefaultCpuSets failed with error {}.",
+                last_error()
+            )))
+        } else {
+            ids.truncate(required_id_count as usize);
+            Ok(ids)
+        }
+    }
+
+    fn set_default_cpu_set_ids(&self, ids: &[u32]) -> Result<(), AffinityError> {
+        let (ptr, count) = if ids.is_empty() {
+            (null_mut(), 0)
+        } else {
+            (ids.as_ptr() as *mut u32, ids.len() as u32)
+        };
+        let ok = unsafe { SetProcessDefaultCpuSets(self.0, ptr, count) };
+        if ok == 0 {
+            Err(AffinityError::Failed(format!(
+                "SetProcessDefaultCpuSets failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Drop for ProcessHandle {
@@ -651,16 +924,19 @@ mod tests {
             rules: vec![
                 CpuAffinityRule {
                     enabled: false,
+                    mode: CpuAffinityMode::Hard,
                     process_name: "browser.exe".to_owned(),
                     core_mask: 1,
                 },
                 CpuAffinityRule {
                     enabled: true,
+                    mode: CpuAffinityMode::Hard,
                     process_name: "backup.exe".to_owned(),
                     core_mask: 0,
                 },
                 CpuAffinityRule {
                     enabled: true,
+                    mode: CpuAffinityMode::Soft,
                     process_name: " Worker.EXE ".to_owned(),
                     core_mask: 0b11,
                 },
@@ -673,10 +949,43 @@ mod tests {
     }
 
     #[test]
+    fn builtin_exclusions_cover_sensitive_windows_shell_processes() {
+        for process_name in [
+            "explorer.exe",
+            "SearchApp.exe",
+            "SearchHost.exe",
+            "SystemSettings.exe",
+            "TextInputHost.exe",
+        ] {
+            assert!(is_builtin_excluded(process_name), "{process_name}");
+        }
+
+        assert!(!is_builtin_excluded("chat.exe"));
+    }
+
+    #[test]
+    fn cpu_affinity_message_warns_on_multiple_processor_groups() {
+        assert_eq!(
+            cpu_affinity_message_for_group_count(1, true),
+            "CPU Affinity active."
+        );
+        assert_eq!(
+            cpu_affinity_message_for_group_count(2, false),
+            "CPU Affinity active."
+        );
+        assert!(cpu_affinity_message_for_group_count(2, true).contains("Multi-group CPU detected"));
+    }
+
+    #[test]
     fn target_mask_intersects_system_affinity() {
         assert_eq!(target_affinity_mask(0b1110, 0b0110), Some(0b0110));
         assert_eq!(target_affinity_mask(0b1000, 0b0111), None);
         assert_eq!(target_affinity_mask(0, 0b0111), None);
+    }
+
+    #[test]
+    fn target_cpu_set_ids_empty_when_mask_selects_no_known_cpus() {
+        assert!(cpu_set_ids_for_mask_from_bytes(&[], 0b11).is_empty());
     }
 
     #[test]

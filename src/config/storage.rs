@@ -115,10 +115,10 @@ mod tests {
     use super::*;
     use crate::config::{
         ActivityModeSettings, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
-        CpuAffinityRule, CpuAffinitySettings, CpuUsageComparison, CpuUsageModeSettings,
-        CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules, GeneralSettings,
-        InputDetectionSettings, ManualOverride, NetworkThresholdUnit, PowerPlanSettings,
-        ScheduleModeSettings, ScheduleRule, WeekdaySetting,
+        CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, CpuUsageComparison,
+        CpuUsageModeSettings, CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules,
+        GeneralSettings, InputDetectionSettings, ManualOverride, NetworkThresholdUnit,
+        PowerPlanSettings, ScheduleModeSettings, ScheduleRule, WeekdaySetting,
     };
 
     #[test]
@@ -247,11 +247,13 @@ mod tests {
                 rules: vec![
                     CpuAffinityRule {
                         enabled: true,
+                        mode: CpuAffinityMode::Hard,
                         process_name: "backup.exe".to_owned(),
                         core_mask: 0b0011,
                     },
                     CpuAffinityRule {
                         enabled: false,
+                        mode: CpuAffinityMode::Soft,
                         process_name: "indexer.exe".to_owned(),
                         core_mask: 0b1100,
                     },
