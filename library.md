@@ -83,7 +83,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 
 ## App Suspension
 
-PowerLeaf App Suspension is manual Win32 thread suspension. It is not the same as Windows-managed UWP app suspension shown by Task Manager for some Store apps.
+PowerLeaf App Suspension is manual Win32 Job Object freezing. It is not the same as Windows-managed UWP app suspension shown by Task Manager for some Store apps.
 
 Implementation entry point:
 
@@ -123,3 +123,5 @@ PowerLeaf keeps App Suspension opt-in and limited to explicitly selected apps be
 | Topic | Why it matters | Reference |
 | --- | --- | --- |
 | UWP app lifecycle | Explains Windows-managed UWP app suspension. This is the yellow pause/suspended state Task Manager can show for Store/UWP apps. PowerLeaf App Suspension is different. | https://learn.microsoft.com/en-us/windows/uwp/launch-resume/app-lifecycle |
+| UWP lifecycle and Job Object abuse | Security-hardening reference for why PowerLeaf keeps App Suspension opt-in, excludes sensitive shell/UWP lifecycle processes, and avoids broad background freezing. | https://www.orangecyberdefense.com/global/blog/threat/attack-technique-abuse-of-the-uwp-lifecycle-and-windows-job-objects |
+| Remote thread hijacking | Security-hardening reference for why PowerLeaf's suspension logic should avoid memory writing, thread context mutation, or injection-adjacent behavior. | https://www.ired.team/offensive-security/code-injection-process-injection/injecting-to-remote-process-via-thread-hijacking |

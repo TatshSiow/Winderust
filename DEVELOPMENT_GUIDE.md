@@ -183,6 +183,11 @@ Current behavior:
 
 Keep this feature opt-in and narrow. Do not add broad "suspend all background apps" behavior without explicit user direction and additional safeguards.
 
+Security-hardening references:
+
+- UWP lifecycle and Job Object abuse: https://www.orangecyberdefense.com/global/blog/threat/attack-technique-abuse-of-the-uwp-lifecycle-and-windows-job-objects
+- Remote thread hijacking: https://www.ired.team/offensive-security/code-injection-process-injection/injecting-to-remote-process-via-thread-hijacking
+
 ## Foreground Rules
 
 `src/ui/rules_page.rs` owns this page.
