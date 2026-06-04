@@ -36,6 +36,7 @@ const ICON_ASSETS: &[(&str, &str)] = &[
     ("icons/dashboard.svg", DASHBOARD),
     ("icons/frame.svg", FRAME),
     ("icons/info.svg", INFO),
+    ("icons/palette.svg", PALETTE),
     ("icons/pause-circle.svg", PAUSE_CIRCLE),
     ("icons/settings.svg", SETTINGS),
     ("icons/zap.svg", ZAP),
@@ -60,3 +61,5 @@ const CALENDAR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 
 const SETTINGS: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9.7 4.1a2.3 2.3 0 0 1 4.6 0 2.3 2.3 0 0 0 3.3 1.9 2.3 2.3 0 0 1 2.3 4 2.3 2.3 0 0 0 0 3.9 2.3 2.3 0 0 1-2.3 4 2.3 2.3 0 0 0-3.3 1.9 2.3 2.3 0 0 1-4.6 0 2.3 2.3 0 0 0-3.3-1.9 2.3 2.3 0 0 1-2.3-4 2.3 2.3 0 0 0 0-3.9 2.3 2.3 0 0 1 2.3-4 2.3 2.3 0 0 0 3.3-1.9Z"/><circle cx="12" cy="12" r="3"/></svg>"##;
 
 const INFO: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 10v6"/><path d="M12 7h.01"/></svg>"##;
+
+const PALETTE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 0 0 0 18h1.2a2.1 2.1 0 0 0 1.5-3.6 1.5 1.5 0 0 1 1.1-2.6H17a6 6 0 0 0 0-12h-5Z"/><circle cx="7.8" cy="10" r=".9"/><circle cx="10.6" cy="7.5" r=".9"/><circle cx="14" cy="7.5" r=".9"/><circle cx="16.7" cy="10.2" r=".9"/></svg>"##;

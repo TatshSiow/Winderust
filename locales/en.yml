@@ -52,6 +52,14 @@ theme:
   light: "Light"
   dark: "Dark"
 
+accent:
+  source: "Accent color"
+  windows: "Windows"
+  custom: "Custom"
+  palette: "Palette"
+  edit_color: "Edit color"
+  remove_color: "Remove"
+
 language:
   english: "English"
   zh_tw: "Chinese (Traditional, Taiwan)"

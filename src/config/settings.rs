@@ -29,6 +29,8 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub theme_mode: AppThemeMode,
     #[serde(default)]
+    pub accent: AccentSettings,
+    #[serde(default)]
     pub language: AppLanguage,
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
@@ -47,6 +49,42 @@ pub enum AppThemeMode {
 
 impl AppThemeMode {
     pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccentSettings {
+    #[serde(default)]
+    pub source: AccentColorSource,
+    #[serde(default = "default_custom_accent_color")]
+    pub custom_color: u32,
+    #[serde(default)]
+    pub custom_colors: Vec<u32>,
+}
+
+impl Default for AccentSettings {
+    fn default() -> Self {
+        Self {
+            source: AccentColorSource::Windows,
+            custom_color: default_custom_accent_color(),
+            custom_colors: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccentColorSource {
+    #[default]
+    Windows,
+    Custom,
+}
+
+impl AccentColorSource {
+    pub const ALL: [Self; 2] = [Self::Windows, Self::Custom];
+}
+
+fn default_custom_accent_color() -> u32 {
+    0x4cc2ff
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,6 +362,7 @@ impl Default for Settings {
                 start_minimized: false,
                 hide_to_tray: false,
                 theme_mode: AppThemeMode::System,
+                accent: AccentSettings::default(),
                 language: AppLanguage::English,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,

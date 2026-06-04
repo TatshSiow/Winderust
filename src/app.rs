@@ -1,9 +1,12 @@
 use std::{
     collections::{HashSet, VecDeque},
     ffi::{OsStr, OsString},
+    mem::size_of,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
+    ptr::{null, null_mut},
     rc::Rc,
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     time::{Duration, Instant},
 };
 
@@ -11,7 +14,7 @@ use rust_i18n::t;
 
 use gpui::{
     deferred, div, prelude::*, px, rgb, AnyElement, App, Context, Entity, Focusable, IntoElement,
-    SharedString, Subscription, Task, Timer, Window, WindowControlArea,
+    MouseButton, SharedString, Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
     badge::Badge,
@@ -23,6 +26,7 @@ use gpui_component::{
     label::Label,
     scroll::ScrollableElement,
     tag::Tag,
+    theme::Colorize,
     v_flex, ActiveTheme, Disableable, Icon, IconNamed, Sizable,
 };
 
@@ -31,10 +35,10 @@ use crate::{
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
-        self, AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode, CpuAffinityMode,
-        CpuAffinityRule, CpuAffinitySettings, CpuUsageComparison, CpuUsageRule, EcoQosSettings,
-        ForegroundRule, ForegroundRules, NetworkThresholdUnit, ScheduleRule, Settings,
-        WeekdaySetting,
+        self, AccentColorSource, AccentSettings, AppLanguage, AppSuspensionRule,
+        AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
+        CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules,
+        NetworkThresholdUnit, ScheduleRule, Settings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{self, EcoQosSnapshot},
@@ -51,10 +55,20 @@ use crate::{
     tray::{self, TrayIcon},
     ui::{self, Page},
 };
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, POINT, RECT, WPARAM};
+use windows_sys::Win32::System::Registry::{
+    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+    REG_BINARY, REG_DWORD,
+};
 use windows_sys::Win32::UI::Controls::Dialogs::{
-    CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY,
-    OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    ChooseColorW, CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, CC_ENABLEHOOK,
+    CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR,
+    OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, GetWindowRect, SetForegroundWindow,
+    SetWindowPos, TrackPopupMenu, MF_STRING, SWP_NOSIZE, SWP_NOZORDER, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WM_INITDIALOG,
 };
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -65,24 +79,36 @@ const CPU_USAGE_HISTORY_LEN: usize = 36;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TITLE_BAR_HEIGHT: f32 = 36.0;
 const PAGE_HEADER_HEIGHT: f32 = 42.0;
+const CONTENT_MAX_WIDTH: f32 = 1000.0;
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
 const RULE_TITLE_TEXT_SIZE: f32 = 15.0;
 const RULE_TITLE_LINE_HEIGHT: f32 = 21.0;
+const MAX_CUSTOM_ACCENT_COLORS: usize = 8;
 
+const COLOR_SETTINGS_CARD: u32 = 0x2b2b2b;
+const COLOR_SETTINGS_CARD_HOVER: u32 = 0x303030;
+const COLOR_SIDEBAR_SELECTED: u32 = 0x2f2f2f;
+const COLOR_SIDEBAR_HOVER: u32 = 0x292929;
 const COLOR_PANEL_ACTIVE: u32 = 0x454a56;
 const COLOR_BORDER: u32 = 0x464b57;
 const COLOR_TEXT: u32 = 0xdce0e5;
 const COLOR_MUTED: u32 = 0xa9afbc;
 const COLOR_DIM: u32 = 0x878a98;
 const COLOR_ACCENT: u32 = 0x74ade8;
-const COLOR_ACCENT_BG: u32 = 0x293b5b;
 const COLOR_SUCCESS: u32 = 0xa1c181;
 const COLOR_SUCCESS_BG: u32 = 0x38482f;
 const COLOR_WARNING: u32 = 0xdec184;
 const COLOR_WARNING_BG: u32 = 0x5d4c2f;
-const COLOR_DANGER: u32 = 0xd07277;
+
+const ACCENT_PALETTE: [u32; 12] = [
+    0x4cc2ff, 0x0078d4, 0x744da9, 0xc239b3, 0xe74856, 0xff8c00, 0xf7630c, 0xffb900, 0x13a10e,
+    0x00b7c3, 0x038387, 0x7a7574,
+];
+
+static UI_ACCENT_COLOR: AtomicU32 = AtomicU32::new(COLOR_ACCENT);
+static UI_DARK_MODE: AtomicBool = AtomicBool::new(true);
 
 pub struct PowerLeafApp {
     settings: Settings,
@@ -270,7 +296,7 @@ impl PowerLeafApp {
         let inputs = UiInputs::new(window, cx, &settings);
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
-        apply_theme_mode(settings.general.theme_mode, window, cx);
+        apply_appearance_settings(&settings.general, window, cx);
 
         let mut app = Self {
             saved_settings: settings.clone(),
@@ -722,7 +748,7 @@ impl PowerLeafApp {
                 Ok(settings) => {
                     self.settings = settings;
                     apply_language(self.settings.general.language);
-                    apply_theme_mode(self.settings.general.theme_mode, window, cx);
+                    apply_appearance_settings(&self.settings.general, window, cx);
                     match config::storage::save(&self.settings) {
                         Ok(()) => {
                             self.saved_settings = self.settings.clone();
@@ -900,7 +926,7 @@ impl PowerLeafApp {
     fn cancel_settings_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.settings = self.saved_settings.clone();
         apply_language(self.settings.general.language);
-        apply_theme_mode(self.settings.general.theme_mode, window, cx);
+        apply_appearance_settings(&self.settings.general, window, cx);
         self.status_message = t!("status.unsaved_canceled").to_string();
         self.editing_rule_title = None;
         self.collapsed_rule_cards.clear();
@@ -1315,9 +1341,7 @@ impl Render for PowerLeafApp {
                                     .min_w(px(0.0))
                                     .min_h(px(0.0))
                                     .overflow_y_scrollbar()
-                                    .p_4()
-                                    .gap_3()
-                                    .child(page),
+                                    .child(page_content_frame(page)),
                             )
                             .child(self.render_status_bar(cx)),
                     ),
@@ -1375,8 +1399,8 @@ impl PowerLeafApp {
 
     fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut nav = v_flex()
-            .w(px(258.0))
-            .min_w(px(258.0))
+            .w(px(276.0))
+            .min_w(px(276.0))
             .h_full()
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
@@ -1566,14 +1590,14 @@ impl PowerLeafApp {
             .py_2()
             .rounded_sm()
             .border_1()
-            .border_color(rgb(COLOR_BORDER));
+            .border_color(rgb(border_color()));
 
         if self.cpu_usage_history.is_empty() {
             graph = graph.child(
                 div()
                     .w_full()
                     .text_sm()
-                    .text_color(rgb(COLOR_MUTED))
+                    .text_color(rgb(muted_text_color()))
                     .child(t!("dashboard.collecting").to_string()),
             );
         } else {
@@ -1585,7 +1609,7 @@ impl PowerLeafApp {
                             .w_full()
                             .h(px(bar_height))
                             .rounded_sm()
-                            .bg(rgb(COLOR_ACCENT)),
+                            .bg(rgb(accent_color())),
                     ),
                 );
             }
@@ -1804,20 +1828,7 @@ impl PowerLeafApp {
 
     fn render_activity_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let enabled = self.settings.activity_mode.enabled;
-        page_shell(Page::Activity)
-            .child(info_card(vec![
-                t!("activity.intro_1").to_string(),
-                t!("activity.intro_2").to_string(),
-            ]))
-            .child(checkbox(
-                "activity-enabled",
-                t!("activity.enable").to_string(),
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.activity_mode.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
+        let body = feature_body(enabled)
             .child(text_muted(format!(
                 "{}",
                 t!(
@@ -1927,8 +1938,26 @@ impl PowerLeafApp {
                         apply_u64_step(app.settings.general.check_interval_ms, change, 250, 60_000);
                     cx.notify();
                 }),
-            ))
-            .into_any_element()
+            ));
+
+        page_shell_with_help(
+            Page::Activity,
+            Some(tooltip_lines(vec![
+                t!("activity.intro_1").to_string(),
+                t!("activity.intro_2").to_string(),
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "activity-enabled",
+            t!("activity.enable").to_string(),
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.activity_mode.enabled = *checked;
+                cx.notify();
+            }),
+        ))
+        .child(body)
+        .into_any_element()
     }
 
     fn render_foreground_rules_page(
@@ -1937,65 +1966,69 @@ impl PowerLeafApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let input_value = self.inputs.foreground_process.read(cx).value().to_string();
-        let mut content = page_shell(Page::ForegroundRules)
-            .child(info_card(vec![
+        let mut content = page_shell_with_help(
+            Page::ForegroundRules,
+            Some(tooltip_lines(vec![
                 t!("foreground.intro_1").to_string(),
                 t!("foreground.intro_2").to_string(),
-            ]))
-            .child(checkbox(
-                "foreground-enabled",
-                t!("foreground.enable").to_string(),
-                self.settings.foreground_rules.enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.foreground_rules.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_start()
-                    .flex_wrap()
-                    .child(self.render_process_picker(
-                        "foreground-suggestion",
-                        &self.inputs.foreground_process,
-                        SuggestionTarget::Foreground,
-                        window,
-                        cx,
-                    ))
-                    .child(
-                        Button::new("add-foreground-rule")
-                            .small()
-                            .primary()
-                            .label(t!("common.add").to_string())
-                            .disabled(!can_add_foreground_process(
-                                &self.settings.foreground_rules,
-                                &input_value,
-                            ))
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.foreground_process.read(cx).value().to_string();
-                                if can_add_foreground_process(
-                                    &app.settings.foreground_rules,
-                                    &process,
-                                ) {
-                                    app.settings
-                                        .foreground_rules
-                                        .rules
-                                        .push(app.new_foreground_rule(&process));
-                                    app.inputs.ensure_for_settings(window, cx, &app.settings);
-                                    clear_input(&app.inputs.foreground_process, window, cx);
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            );
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "foreground-enabled",
+            t!("foreground.enable").to_string(),
+            self.settings.foreground_rules.enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.foreground_rules.enabled = *checked;
+                cx.notify();
+            }),
+        ));
 
+        let mut body = feature_body(self.settings.foreground_rules.enabled).child(
+            h_flex()
+                .gap_2()
+                .items_start()
+                .flex_wrap()
+                .child(self.render_process_picker(
+                    "foreground-suggestion",
+                    &self.inputs.foreground_process,
+                    SuggestionTarget::Foreground,
+                    window,
+                    cx,
+                ))
+                .child(
+                    Button::new("add-foreground-rule")
+                        .small()
+                        .primary()
+                        .label(t!("common.add").to_string())
+                        .disabled(
+                            !self.settings.foreground_rules.enabled
+                                || !can_add_foreground_process(
+                                    &self.settings.foreground_rules,
+                                    &input_value,
+                                ),
+                        )
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            let process =
+                                app.inputs.foreground_process.read(cx).value().to_string();
+                            if can_add_foreground_process(&app.settings.foreground_rules, &process)
+                            {
+                                app.settings
+                                    .foreground_rules
+                                    .rules
+                                    .push(app.new_foreground_rule(&process));
+                                app.inputs.ensure_for_settings(window, cx, &app.settings);
+                                clear_input(&app.inputs.foreground_process, window, cx);
+                            }
+                            cx.notify();
+                        })),
+                ),
+        );
         let mut rules = rule_list();
         for (index, rule) in self.settings.foreground_rules.rules.iter().enumerate() {
             rules = rules.child(self.render_foreground_rule(index, rule, cx));
         }
-        content = content.child(rules);
+        body = body.child(rules);
+        content = content.child(body);
 
         content.into_any_element()
     }
@@ -2126,49 +2159,50 @@ impl PowerLeafApp {
     }
 
     fn render_schedule_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = page_shell(Page::Schedule)
-            .child(info_card(vec![
+        let mut content = page_shell_with_help(
+            Page::Schedule,
+            Some(tooltip_lines(vec![
                 t!("schedule.intro_1").to_string(),
                 t!("schedule.intro_2").to_string(),
-            ]))
-            .child(checkbox(
-                "schedule-enabled",
-                t!("schedule.enable").to_string(),
-                self.settings.schedule_mode.enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.schedule_mode.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(
-                Button::new("add-time-rule")
-                    .small()
-                    .primary()
-                    .label(t!("schedule.add_rule").to_string())
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.settings.schedule_mode.rules.push(ScheduleRule {
-                            enabled: true,
-                            name: t!("schedule.new_rule").to_string(),
-                            days: WeekdaySetting::all().to_vec(),
-                            start_time: "22:00".to_owned(),
-                            end_time: "08:00".to_owned(),
-                            power_plan_guid: app
-                                .current_plan
-                                .as_ref()
-                                .map(|plan| plan.guid.clone()),
-                            power_save_guid: None,
-                            performance_guid: None,
-                        });
-                        app.inputs.ensure_for_settings(window, cx, &app.settings);
-                        cx.notify();
-                    })),
-            );
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "schedule-enabled",
+            t!("schedule.enable").to_string(),
+            self.settings.schedule_mode.enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.schedule_mode.enabled = *checked;
+                cx.notify();
+            }),
+        ));
 
+        let mut body = feature_body(self.settings.schedule_mode.enabled).child(
+            Button::new("add-time-rule")
+                .small()
+                .primary()
+                .label(t!("schedule.add_rule").to_string())
+                .disabled(!self.settings.schedule_mode.enabled)
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.settings.schedule_mode.rules.push(ScheduleRule {
+                        enabled: true,
+                        name: t!("schedule.new_rule").to_string(),
+                        days: WeekdaySetting::all().to_vec(),
+                        start_time: "22:00".to_owned(),
+                        end_time: "08:00".to_owned(),
+                        power_plan_guid: app.current_plan.as_ref().map(|plan| plan.guid.clone()),
+                        power_save_guid: None,
+                        performance_guid: None,
+                    });
+                    app.inputs.ensure_for_settings(window, cx, &app.settings);
+                    cx.notify();
+                })),
+        );
         let mut rules = rule_list();
         for (index, rule) in self.settings.schedule_mode.rules.iter().enumerate() {
             rules = rules.child(self.render_schedule_rule(index, rule, window, cx));
         }
-        content = content.child(rules);
+        body = body.child(rules);
+        content = content.child(body);
 
         content.into_any_element()
     }
@@ -2271,54 +2305,55 @@ impl PowerLeafApp {
     }
 
     fn render_cpu_usage_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut content = page_shell(Page::CpuUsage)
-            .child(info_card(vec![
+        let mut content = page_shell_with_help(
+            Page::CpuUsage,
+            Some(tooltip_lines(vec![
                 t!("cpu_rules.intro_1").to_string(),
                 t!("cpu_rules.intro_2").to_string(),
-            ]))
-            .child(checkbox(
-                "cpu-usage-enabled",
-                t!("cpu_rules.enable").to_string(),
-                self.settings.cpu_usage_mode.enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_usage_mode.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(
-                Button::new("add-cpu-rule")
-                    .small()
-                    .primary()
-                    .label(t!("cpu_rules.add_rule").to_string())
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.settings.cpu_usage_mode.rules.push(CpuUsageRule {
-                            enabled: true,
-                            name: t!("cpu_rules.new_rule").to_string(),
-                            comparison: CpuUsageComparison::AtOrBelow,
-                            threshold_percent: 20,
-                            upper_threshold_percent: None,
-                            duration_seconds: 30,
-                            power_plan_guid: app
-                                .current_plan
-                                .as_ref()
-                                .map(|plan| plan.guid.clone()),
-                            else_enabled: false,
-                            else_power_plan_guid: app
-                                .current_plan
-                                .as_ref()
-                                .map(|plan| plan.guid.clone()),
-                            target: None,
-                        });
-                        app.inputs.ensure_for_settings(window, cx, &app.settings);
-                        cx.notify();
-                    })),
-            );
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "cpu-usage-enabled",
+            t!("cpu_rules.enable").to_string(),
+            self.settings.cpu_usage_mode.enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.cpu_usage_mode.enabled = *checked;
+                cx.notify();
+            }),
+        ));
 
+        let mut body = feature_body(self.settings.cpu_usage_mode.enabled).child(
+            Button::new("add-cpu-rule")
+                .small()
+                .primary()
+                .label(t!("cpu_rules.add_rule").to_string())
+                .disabled(!self.settings.cpu_usage_mode.enabled)
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.settings.cpu_usage_mode.rules.push(CpuUsageRule {
+                        enabled: true,
+                        name: t!("cpu_rules.new_rule").to_string(),
+                        comparison: CpuUsageComparison::AtOrBelow,
+                        threshold_percent: 20,
+                        upper_threshold_percent: None,
+                        duration_seconds: 30,
+                        power_plan_guid: app.current_plan.as_ref().map(|plan| plan.guid.clone()),
+                        else_enabled: false,
+                        else_power_plan_guid: app
+                            .current_plan
+                            .as_ref()
+                            .map(|plan| plan.guid.clone()),
+                        target: None,
+                    });
+                    app.inputs.ensure_for_settings(window, cx, &app.settings);
+                    cx.notify();
+                })),
+        );
         let mut rules = rule_list();
         for (index, rule) in self.settings.cpu_usage_mode.rules.iter().enumerate() {
             rules = rules.child(self.render_cpu_rule(index, rule, window, cx));
         }
-        content = content.child(rules);
+        body = body.child(rules);
+        content = content.child(body);
 
         content.into_any_element()
     }
@@ -2509,21 +2544,8 @@ impl PowerLeafApp {
 
     fn render_efficiency_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let input_value = self.inputs.eco_qos_exclusion.read(cx).value().to_string();
-        page_shell(Page::EfficiencyMode)
-            .child(info_card(vec![
-                t!("efficiency.intro_1").to_string(),
-                t!("efficiency.intro_2").to_string(),
-                t!("efficiency.intro_3").to_string(),
-            ]))
-            .child(checkbox(
-                "eco-qos-enabled",
-                t!("efficiency.enable").to_string(),
-                self.settings.eco_qos.enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.eco_qos.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
+        let enabled = self.settings.eco_qos.enabled;
+        let body = feature_body(enabled)
             .child(checkbox(
                 "eco-qos-foreground",
                 t!("efficiency.focus_detection").to_string(),
@@ -2583,10 +2605,13 @@ impl PowerLeafApp {
                         Button::new("add-eco-qos-exclusion")
                             .small()
                             .label(t!("common.add").to_string())
-                            .disabled(!can_add_eco_qos_process(
-                                &self.settings.eco_qos,
-                                &input_value,
-                            ))
+                            .disabled(
+                                !enabled
+                                    || !can_add_eco_qos_process(
+                                        &self.settings.eco_qos,
+                                        &input_value,
+                                    ),
+                            )
                             .on_click(cx.listener(|app, _, window, cx| {
                                 let process =
                                     app.inputs.eco_qos_exclusion.read(cx).value().to_string();
@@ -2601,8 +2626,27 @@ impl PowerLeafApp {
                             })),
                     ),
             )
-            .child(self.render_eco_qos_whitelist(cx))
-            .into_any_element()
+            .child(self.render_eco_qos_whitelist(cx));
+
+        page_shell_with_help(
+            Page::EfficiencyMode,
+            Some(tooltip_lines(vec![
+                t!("efficiency.intro_1").to_string(),
+                t!("efficiency.intro_2").to_string(),
+                t!("efficiency.intro_3").to_string(),
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "eco-qos-enabled",
+            t!("efficiency.enable").to_string(),
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.eco_qos.enabled = *checked;
+                cx.notify();
+            }),
+        ))
+        .child(body)
+        .into_any_element()
     }
 
     fn render_eco_qos_whitelist(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -2648,21 +2692,8 @@ impl PowerLeafApp {
 
     fn render_suspension_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let input_value = self.inputs.suspension_process.read(cx).value().to_string();
-        page_shell(Page::AppSuspension)
-            .child(info_card(vec![
-                t!("suspension.intro_1").to_string(),
-                t!("suspension.intro_2").to_string(),
-                t!("suspension.intro_3").to_string(),
-            ]))
-            .child(checkbox(
-                "app-suspension-enabled",
-                t!("suspension.enable").to_string(),
-                self.settings.app_suspension.enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.app_suspension.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
+        let enabled = self.settings.app_suspension.enabled;
+        let body = feature_body(enabled)
             .child(stepper_u64(
                 "suspension-background-delay",
                 &t!("suspension.background_delay"),
@@ -2886,10 +2917,13 @@ impl PowerLeafApp {
                         Button::new("add-suspension-process")
                             .small()
                             .label(t!("common.add").to_string())
-                            .disabled(!can_add_suspension_process(
-                                &self.settings.app_suspension,
-                                &input_value,
-                            ))
+                            .disabled(
+                                !enabled
+                                    || !can_add_suspension_process(
+                                        &self.settings.app_suspension,
+                                        &input_value,
+                                    ),
+                            )
                             .on_click(cx.listener(|app, _, window, cx| {
                                 let process =
                                     app.inputs.suspension_process.read(cx).value().to_string();
@@ -2907,8 +2941,27 @@ impl PowerLeafApp {
                             })),
                     ),
             )
-            .child(self.render_suspendable_apps(cx))
-            .into_any_element()
+            .child(self.render_suspendable_apps(cx));
+
+        page_shell_with_help(
+            Page::AppSuspension,
+            Some(tooltip_lines(vec![
+                t!("suspension.intro_1").to_string(),
+                t!("suspension.intro_2").to_string(),
+                t!("suspension.intro_3").to_string(),
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "app-suspension-enabled",
+            t!("suspension.enable").to_string(),
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.app_suspension.enabled = *checked;
+                cx.notify();
+            }),
+        ))
+        .child(body)
+        .into_any_element()
     }
 
     fn render_suspendable_apps(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3028,21 +3081,8 @@ impl PowerLeafApp {
 
     fn render_affinity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let input_value = self.inputs.affinity_process.read(cx).value().to_string();
-        page_shell(Page::CpuAffinity)
-            .child(info_card(vec![
-                t!("affinity.intro_1").to_string(),
-                t!("affinity.intro_2").to_string(),
-                t!("affinity.intro_3").to_string(),
-            ]))
-            .child(checkbox(
-                "cpu-affinity-enabled",
-                t!("affinity.enable").to_string(),
-                self.settings.cpu_affinity.enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_affinity.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
+        let enabled = self.settings.cpu_affinity.enabled;
+        let body = feature_body(enabled)
             .child(checkbox(
                 "cpu-affinity-foreground",
                 t!("affinity.focus_detection").to_string(),
@@ -3102,10 +3142,13 @@ impl PowerLeafApp {
                         Button::new("add-affinity-process")
                             .small()
                             .label(t!("common.add").to_string())
-                            .disabled(!can_add_affinity_process(
-                                &self.settings.cpu_affinity,
-                                &input_value,
-                            ))
+                            .disabled(
+                                !enabled
+                                    || !can_add_affinity_process(
+                                        &self.settings.cpu_affinity,
+                                        &input_value,
+                                    ),
+                            )
                             .on_click(cx.listener(|app, _, window, cx| {
                                 let process =
                                     app.inputs.affinity_process.read(cx).value().to_string();
@@ -3120,8 +3163,27 @@ impl PowerLeafApp {
                             })),
                     ),
             )
-            .child(self.render_affinity_rules(cx))
-            .into_any_element()
+            .child(self.render_affinity_rules(cx));
+
+        page_shell_with_help(
+            Page::CpuAffinity,
+            Some(tooltip_lines(vec![
+                t!("affinity.intro_1").to_string(),
+                t!("affinity.intro_2").to_string(),
+                t!("affinity.intro_3").to_string(),
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "cpu-affinity-enabled",
+            t!("affinity.enable").to_string(),
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.cpu_affinity.enabled = *checked;
+                cx.notify();
+            }),
+        ))
+        .child(body)
+        .into_any_element()
     }
 
     fn render_affinity_rules(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3484,7 +3546,7 @@ impl PowerLeafApp {
                 )
                 .on_click(cx.listener(move |app, _, window, cx| {
                     app.settings.general.theme_mode = mode;
-                    apply_theme_mode(mode, window, cx);
+                    apply_appearance_settings(&app.settings.general, window, cx);
                     cx.notify();
                 })),
             );
@@ -3509,6 +3571,195 @@ impl PowerLeafApp {
             );
         }
         labeled_element(&t!("common.language"), row.into_any_element()).into_any_element()
+    }
+
+    fn add_custom_accent_color(&mut self, color: u32, window: &mut Window, cx: &mut App) {
+        let color = color & 0x00ff_ffff;
+        self.settings.general.accent.source = AccentColorSource::Custom;
+        self.settings.general.accent.custom_color = color;
+        self.settings
+            .general
+            .accent
+            .custom_colors
+            .retain(|saved| !ACCENT_PALETTE.contains(saved) && *saved != color);
+
+        if !ACCENT_PALETTE.contains(&color) {
+            self.settings.general.accent.custom_colors.insert(0, color);
+            self.settings
+                .general
+                .accent
+                .custom_colors
+                .truncate(MAX_CUSTOM_ACCENT_COLORS);
+        }
+
+        apply_appearance_settings(&self.settings.general, window, cx);
+    }
+
+    fn update_custom_accent_color(
+        &mut self,
+        previous: u32,
+        color: u32,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let color = color & 0x00ff_ffff;
+        self.settings.general.accent.custom_colors.retain(|saved| {
+            *saved != previous && *saved != color && !ACCENT_PALETTE.contains(saved)
+        });
+
+        if !ACCENT_PALETTE.contains(&color) {
+            self.settings.general.accent.custom_colors.insert(0, color);
+        }
+        self.settings
+            .general
+            .accent
+            .custom_colors
+            .truncate(MAX_CUSTOM_ACCENT_COLORS);
+
+        self.settings.general.accent.source = AccentColorSource::Custom;
+        self.settings.general.accent.custom_color = color;
+        apply_appearance_settings(&self.settings.general, window, cx);
+    }
+
+    fn delete_custom_accent_color(&mut self, color: u32, window: &mut Window, cx: &mut App) {
+        self.settings
+            .general
+            .accent
+            .custom_colors
+            .retain(|saved| *saved != color);
+
+        if self.settings.general.accent.custom_color == color {
+            self.settings.general.accent.custom_color = self
+                .settings
+                .general
+                .accent
+                .custom_colors
+                .first()
+                .copied()
+                .unwrap_or(ACCENT_PALETTE[0]);
+        }
+
+        apply_appearance_settings(&self.settings.general, window, cx);
+    }
+
+    fn render_accent_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut source_row = h_flex().gap_1().flex_wrap();
+        for source in AccentColorSource::ALL {
+            let label = match source {
+                AccentColorSource::Windows => t!("accent.windows"),
+                AccentColorSource::Custom => t!("accent.custom"),
+            };
+            source_row = source_row.child(
+                toggle_button(
+                    format!("accent-source-{:?}", source),
+                    label.to_string(),
+                    self.settings.general.accent.source == source,
+                )
+                .on_click(cx.listener(move |app, _, window, cx| {
+                    app.settings.general.accent.source = source;
+                    apply_appearance_settings(&app.settings.general, window, cx);
+                    cx.notify();
+                })),
+            );
+        }
+
+        let mut palette = h_flex().gap_2().flex_wrap();
+        for color in ACCENT_PALETTE {
+            let selected = self.settings.general.accent.source == AccentColorSource::Custom
+                && self.settings.general.accent.custom_color == color;
+            palette = palette.child(accent_swatch(color, selected).on_click(cx.listener(
+                move |app, _, window, cx| {
+                    app.settings.general.accent.source = AccentColorSource::Custom;
+                    app.settings.general.accent.custom_color = color;
+                    apply_appearance_settings(&app.settings.general, window, cx);
+                    cx.notify();
+                },
+            )));
+        }
+
+        for color in self
+            .settings
+            .general
+            .accent
+            .custom_colors
+            .iter()
+            .copied()
+            .filter(|color| !ACCENT_PALETTE.contains(color))
+        {
+            let selected = self.settings.general.accent.source == AccentColorSource::Custom
+                && self.settings.general.accent.custom_color == color;
+            palette = palette.child(
+                accent_swatch(color, selected)
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        app.settings.general.accent.source = AccentColorSource::Custom;
+                        app.settings.general.accent.custom_color = color;
+                        apply_appearance_settings(&app.settings.general, window, cx);
+                        cx.notify();
+                    }))
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
+                            match show_accent_context_menu(app.hwnd) {
+                                AccentContextCommand::Edit => {
+                                    match choose_accent_color(
+                                        app.hwnd,
+                                        color,
+                                        &app.settings.general.accent.custom_colors,
+                                    ) {
+                                        Ok(Some(next_color)) => {
+                                            app.update_custom_accent_color(
+                                                color, next_color, window, cx,
+                                            );
+                                        }
+                                        Ok(None) => {}
+                                        Err(error) => {
+                                            app.status_message = error;
+                                        }
+                                    }
+                                }
+                                AccentContextCommand::Remove => {
+                                    app.delete_custom_accent_color(color, window, cx);
+                                }
+                                AccentContextCommand::None => {}
+                            }
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+
+        palette = palette.child(accent_picker_button().on_click(cx.listener(
+            |app, _, window, cx| {
+                match choose_accent_color(
+                    app.hwnd,
+                    app.settings.general.accent.custom_color,
+                    &app.settings.general.accent.custom_colors,
+                ) {
+                    Ok(Some(color)) => {
+                        app.add_custom_accent_color(color, window, cx);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        app.status_message = error;
+                    }
+                }
+                cx.notify();
+            },
+        )));
+
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .gap_2()
+            .child(labeled_element(
+                &t!("accent.source"),
+                source_row.into_any_element(),
+            ))
+            .child(labeled_element(
+                &t!("accent.palette"),
+                palette.into_any_element(),
+            ))
+            .into_any_element()
     }
 
     fn render_settings_page(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -3565,6 +3816,7 @@ impl PowerLeafApp {
             .child(
                 section_card(&t!("settings.appearance"))
                     .child(self.render_theme_selector(cx))
+                    .child(self.render_accent_selector(cx))
                     .child(self.render_language_selector(cx)),
             )
             .child(
@@ -4485,14 +4737,347 @@ fn clear_input_to(
     let _ = input.update(cx, |input, cx| input.set_value(value, window, cx));
 }
 
-fn apply_theme_mode(mode: AppThemeMode, window: &mut Window, cx: &mut App) {
-    match mode {
+fn apply_appearance_settings(general: &config::GeneralSettings, window: &mut Window, cx: &mut App) {
+    match general.theme_mode {
         AppThemeMode::System => gpui_component::Theme::sync_system_appearance(Some(window), cx),
         AppThemeMode::Light => {
             gpui_component::Theme::change(gpui_component::ThemeMode::Light, Some(window), cx)
         }
         AppThemeMode::Dark => {
             gpui_component::Theme::change(gpui_component::ThemeMode::Dark, Some(window), cx)
+        }
+    }
+    apply_accent_color(&general.accent, cx);
+    window.refresh();
+}
+
+fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
+    let accent_color = resolve_accent_color(settings);
+    UI_ACCENT_COLOR.store(accent_color, Ordering::Relaxed);
+    let accent: gpui::Hsla = rgb(accent_color).into();
+
+    let theme = gpui_component::Theme::global_mut(cx);
+    let is_dark = theme.is_dark();
+    UI_DARK_MODE.store(is_dark, Ordering::Relaxed);
+    let foreground = if !is_dark || accent_contrast_prefers_light(accent_color) {
+        rgb(0xffffff).into()
+    } else {
+        rgb(0x111111).into()
+    };
+
+    let hover = if is_dark {
+        accent.lighten(0.10)
+    } else {
+        accent.darken(0.10)
+    };
+    let active = if is_dark {
+        accent.darken(0.12)
+    } else {
+        accent.darken(0.18)
+    };
+
+    theme.primary = accent;
+    theme.primary_hover = hover;
+    theme.primary_active = active;
+    theme.primary_foreground = foreground;
+    if is_dark {
+        theme.secondary = rgb(0x3a3a3a).into();
+        theme.secondary_hover = rgb(0x454545).into();
+        theme.secondary_active = rgb(0x505050).into();
+        theme.secondary_foreground = rgb(0xf2f2f2).into();
+    } else {
+        theme.secondary = rgb(0xf3f3f3).into();
+        theme.secondary_hover = rgb(0xe9e9e9).into();
+        theme.secondary_active = rgb(0xdedede).into();
+        theme.secondary_foreground = rgb(0x1f1f1f).into();
+    }
+    theme.accent = accent;
+    theme.accent_foreground = foreground;
+    theme.sidebar_accent = accent;
+    theme.sidebar_accent_foreground = foreground;
+    theme.ring = accent;
+    theme.progress_bar = accent;
+    theme.slider_thumb = accent;
+    theme.caret = accent;
+    theme.selection = accent.opacity(0.26);
+    theme.input = accent.opacity(0.72);
+}
+
+fn resolve_accent_color(settings: &AccentSettings) -> u32 {
+    match settings.source {
+        AccentColorSource::Windows => windows_switch_accent_color().unwrap_or(COLOR_ACCENT),
+        AccentColorSource::Custom => settings.custom_color,
+    }
+}
+
+fn windows_accent_color() -> Option<u32> {
+    read_registry_dword(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
+        "AccentColorMenu",
+    )
+    .or_else(|| read_registry_dword(r"Software\Microsoft\Windows\DWM", "AccentColor"))
+    .map(bgr_dword_to_rgb)
+    .or_else(|| {
+        read_registry_dword(r"Software\Microsoft\Windows\DWM", "ColorizationColor")
+            .map(|color| color & 0x00ff_ffff)
+    })
+    .filter(|color| *color != 0)
+}
+
+fn windows_switch_accent_color() -> Option<u32> {
+    read_registry_bytes(
+        r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
+        "AccentPalette",
+    )
+    .and_then(|palette| accent_palette_rgb(&palette, 1))
+    .or_else(windows_accent_color)
+}
+
+fn bgr_dword_to_rgb(color: u32) -> u32 {
+    let red = color & 0xff;
+    let green = (color >> 8) & 0xff;
+    let blue = (color >> 16) & 0xff;
+    (red << 16) | (green << 8) | blue
+}
+
+fn accent_palette_rgb(palette: &[u8], index: usize) -> Option<u32> {
+    let offset = index.checked_mul(4)?;
+    let red = *palette.get(offset)? as u32;
+    let green = *palette.get(offset + 1)? as u32;
+    let blue = *palette.get(offset + 2)? as u32;
+    Some((red << 16) | (green << 8) | blue).filter(|color| *color != 0)
+}
+
+fn accent_contrast_prefers_light(color: u32) -> bool {
+    let red = ((color >> 16) & 0xff) as f32;
+    let green = ((color >> 8) & 0xff) as f32;
+    let blue = (color & 0xff) as f32;
+    (0.299 * red + 0.587 * green + 0.114 * blue) < 140.0
+}
+
+fn accent_color() -> u32 {
+    UI_ACCENT_COLOR.load(Ordering::Relaxed)
+}
+
+fn ui_is_dark() -> bool {
+    UI_DARK_MODE.load(Ordering::Relaxed)
+}
+
+fn settings_card_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_SETTINGS_CARD
+    } else {
+        0xf3f3f3
+    }
+}
+
+fn settings_card_hover_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_SETTINGS_CARD_HOVER
+    } else {
+        0xeaeaea
+    }
+}
+
+fn border_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_BORDER
+    } else {
+        0xd6d6d6
+    }
+}
+
+fn primary_text_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_TEXT
+    } else {
+        0x1f1f1f
+    }
+}
+
+fn muted_text_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_MUTED
+    } else {
+        0x5f5f5f
+    }
+}
+
+fn dim_text_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_DIM
+    } else {
+        0x777777
+    }
+}
+
+fn sidebar_selected_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_SIDEBAR_SELECTED
+    } else {
+        0xe9e9e9
+    }
+}
+
+fn sidebar_hover_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_SIDEBAR_HOVER
+    } else {
+        0xf0f0f0
+    }
+}
+
+fn panel_active_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_PANEL_ACTIVE
+    } else {
+        0xe7e7e7
+    }
+}
+
+fn success_bg_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_SUCCESS_BG
+    } else {
+        0xe7f3df
+    }
+}
+
+fn success_text_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_SUCCESS
+    } else {
+        0x0f6c0f
+    }
+}
+
+fn warning_bg_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_WARNING_BG
+    } else {
+        0xfff4ce
+    }
+}
+
+fn warning_text_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_WARNING
+    } else {
+        0x8a6d1d
+    }
+}
+
+fn accent_glyph_color(accent: u32) -> u32 {
+    if !ui_is_dark() || accent_contrast_prefers_light(accent) {
+        0xffffff
+    } else {
+        0x111111
+    }
+}
+
+fn switch_accent_color() -> u32 {
+    accent_color()
+}
+
+fn read_registry_dword(sub_key: &str, value_name: &str) -> Option<u32> {
+    let sub_key = wide_null(sub_key);
+    let value_name = wide_null(value_name);
+    let mut key: HKEY = null_mut();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            sub_key.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+
+    let key = RegistryKey(key);
+    let mut value_type = 0;
+    let mut value = 0_u32;
+    let mut value_size = size_of::<u32>() as u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key.0,
+            value_name.as_ptr(),
+            null_mut(),
+            &mut value_type,
+            &mut value as *mut u32 as *mut u8,
+            &mut value_size,
+        )
+    };
+
+    if status == ERROR_SUCCESS && value_type == REG_DWORD && value_size == size_of::<u32>() as u32 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn read_registry_bytes(sub_key: &str, value_name: &str) -> Option<Vec<u8>> {
+    let sub_key = wide_null(sub_key);
+    let value_name = wide_null(value_name);
+    let mut key: HKEY = null_mut();
+    let status = unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            sub_key.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+
+    let key = RegistryKey(key);
+    let mut value_type = 0;
+    let mut value_size = 0_u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key.0,
+            value_name.as_ptr(),
+            null_mut(),
+            &mut value_type,
+            null_mut(),
+            &mut value_size,
+        )
+    };
+    if status != ERROR_SUCCESS || value_type != REG_BINARY || value_size == 0 {
+        return None;
+    }
+
+    let mut value = vec![0_u8; value_size as usize];
+    let status = unsafe {
+        RegQueryValueExW(
+            key.0,
+            value_name.as_ptr(),
+            null_mut(),
+            &mut value_type,
+            value.as_mut_ptr(),
+            &mut value_size,
+        )
+    };
+
+    if status == ERROR_SUCCESS && value_type == REG_BINARY {
+        value.truncate(value_size as usize);
+        Some(value)
+    } else {
+        None
+    }
+}
+
+struct RegistryKey(HKEY);
+
+impl Drop for RegistryKey {
+    fn drop(&mut self) {
+        unsafe {
+            RegCloseKey(self.0);
         }
     }
 }
@@ -4502,43 +5087,84 @@ fn apply_language(language: AppLanguage) {
 }
 
 fn page_shell(page: Page) -> gpui::Div {
-    v_flex().w_full().min_w(px(0.0)).gap_3().child(
-        h_flex()
-            .w_full()
-            .min_h(px(PAGE_HEADER_HEIGHT))
-            .flex_shrink_0()
-            .items_center()
-            .gap_2()
-            .overflow_hidden()
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .text_size(px(24.0))
-                    .line_height(px(32.0))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .opacity(0.72)
-                    .truncate()
-                    .child(page.section_label()),
-            )
-            .child(
-                div()
-                    .text_size(px(22.0))
-                    .line_height(px(30.0))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .opacity(0.48)
-                    .child("›"),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .text_size(px(24.0))
-                    .line_height(px(32.0))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .truncate()
-                    .child(page.label()),
-            ),
-    )
+    page_shell_with_help(page, None)
+}
+
+fn page_content_frame(page: AnyElement) -> gpui::Div {
+    h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .justify_center()
+        .px(px(24.0))
+        .py(px(24.0))
+        .child(
+            div()
+                .w_full()
+                .max_w(px(CONTENT_MAX_WIDTH))
+                .min_w(px(0.0))
+                .child(page),
+        )
+}
+
+fn page_shell_with_help(page: Page, help: Option<SharedString>) -> gpui::Div {
+    let mut header = h_flex()
+        .w_full()
+        .min_h(px(PAGE_HEADER_HEIGHT))
+        .flex_shrink_0()
+        .items_center()
+        .gap_2()
+        .overflow_hidden()
+        .child(
+            div()
+                .min_w(px(0.0))
+                .text_size(px(24.0))
+                .line_height(px(32.0))
+                .font_weight(gpui::FontWeight::BOLD)
+                .opacity(0.72)
+                .truncate()
+                .child(page.section_label()),
+        )
+        .child(
+            div()
+                .text_size(px(22.0))
+                .line_height(px(30.0))
+                .font_weight(gpui::FontWeight::BOLD)
+                .opacity(0.48)
+                .child("›"),
+        )
+        .child(
+            div()
+                .min_w(px(0.0))
+                .text_size(px(24.0))
+                .line_height(px(32.0))
+                .font_weight(gpui::FontWeight::BOLD)
+                .truncate()
+                .child(page.label()),
+        );
+
+    if let Some(help) = help {
+        header = header.child(
+            Button::new(SharedString::from(format!("page-info-{page:?}")))
+                .small()
+                .label("i")
+                .primary()
+                .tooltip(help),
+        );
+    }
+
+    v_flex().w_full().min_w(px(0.0)).gap_3().child(header)
+}
+
+fn tooltip_lines(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> SharedString {
+    let mut tooltip = String::new();
+    for line in lines {
+        let line: SharedString = line.into();
+        if !tooltip.is_empty() {
+            tooltip.push('\n');
+        }
+        tooltip.push_str(line.as_ref());
+    }
+    tooltip.into()
 }
 
 fn section_card(title: &str) -> GroupBox {
@@ -4548,18 +5174,30 @@ fn section_card(title: &str) -> GroupBox {
 }
 
 fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
-    v_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .gap_1()
-        .child(
-            div()
-                .text_size(px(RULE_TITLE_TEXT_SIZE))
-                .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                .font_weight(gpui::FontWeight::BOLD)
-                .child(title.to_owned()),
-        )
-        .child(text_muted(help))
+    let help = help.into();
+
+    v_flex().w_full().min_w(px(0.0)).child(
+        h_flex()
+            .min_w(px(0.0))
+            .items_center()
+            .gap_1()
+            .child(
+                div()
+                    .min_w(px(0.0))
+                    .text_size(px(RULE_TITLE_TEXT_SIZE))
+                    .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .truncate()
+                    .child(title.to_owned()),
+            )
+            .child(
+                Button::new(SharedString::from(format!("section-info-{title}")))
+                    .small()
+                    .label("i")
+                    .primary()
+                    .tooltip(help),
+            ),
+    )
 }
 
 fn rule_card(
@@ -4578,7 +5216,7 @@ fn rule_card(
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().group_box)
-        .hover(|style| style.border_color(rgb(COLOR_DIM)))
+        .hover(|style| style.border_color(cx.theme().muted_foreground))
         .child(
             div()
                 .relative()
@@ -4640,6 +5278,14 @@ fn rule_list() -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
+fn feature_body(enabled: bool) -> gpui::Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .gap_3()
+        .when(!enabled, |body| body.opacity(0.42))
+}
+
 fn rule_card_body_row(children: Vec<AnyElement>) -> gpui::Div {
     let mut row = h_flex()
         .w_full()
@@ -4696,7 +5342,7 @@ fn compact_rule_row(cx: &mut Context<PowerLeafApp>) -> gpui::Div {
         .border_1()
         .border_color(cx.theme().border)
         .bg(cx.theme().group_box)
-        .hover(|style| style.border_color(rgb(COLOR_DIM)))
+        .hover(|style| style.border_color(cx.theme().muted_foreground))
 }
 
 fn stat_grid(rows: Vec<(String, String)>) -> GroupBox {
@@ -4759,19 +5405,6 @@ fn app_list_label(apps: &[String], count: usize) -> String {
     format!("{count}: {}", names.join(", "))
 }
 
-fn info_card(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> GroupBox {
-    let mut card = GroupBox::new().fill();
-    for line in lines {
-        card = card.child(
-            div()
-                .text_size(px(13.0))
-                .line_height(px(18.0))
-                .child(line.into()),
-        );
-    }
-    card
-}
-
 fn labeled_element(label: &str, element: AnyElement) -> gpui::Div {
     v_flex()
         .w_full()
@@ -4819,17 +5452,20 @@ fn static_rule_title(title: &str) -> AnyElement {
         .into_any_element()
 }
 
-fn status_pill(label: impl Into<SharedString>, _bg: u32, fg: u32) -> AnyElement {
+fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
     let label: SharedString = label.into();
-    let tag = match fg {
-        COLOR_SUCCESS => Tag::success(),
-        COLOR_WARNING => Tag::warning(),
-        COLOR_DANGER => Tag::danger(),
-        COLOR_ACCENT => Tag::info(),
-        _ => Tag::secondary(),
-    };
 
-    tag.flex_shrink_0().child(label).into_any_element()
+    div()
+        .flex_shrink_0()
+        .px_2()
+        .py(px(2.0))
+        .rounded_sm()
+        .bg(rgb(bg))
+        .text_color(rgb(fg))
+        .text_size(px(12.0))
+        .line_height(px(16.0))
+        .child(label)
+        .into_any_element()
 }
 
 fn rule_enable_checkbox(
@@ -4838,7 +5474,9 @@ fn rule_enable_checkbox(
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id: SharedString = id.into();
-    let border_color = if checked { COLOR_ACCENT } else { COLOR_BORDER };
+    let accent = accent_color();
+    let border_color = if checked { accent } else { border_color() };
+    let check_color = accent_glyph_color(accent);
 
     div()
         .id(id)
@@ -4859,13 +5497,14 @@ fn rule_enable_checkbox(
                 .rounded_sm()
                 .border_1()
                 .border_color(rgb(border_color))
+                .when(checked, |this| this.bg(rgb(accent)))
                 .when(checked, |this| {
                     this.child(
                         div()
                             .text_size(px(12.0))
                             .line_height(px(16.0))
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(COLOR_ACCENT))
+                            .text_color(rgb(check_color))
                             .child("✓"),
                     )
                 }),
@@ -4890,8 +5529,14 @@ fn checkbox(
 ) -> AnyElement {
     let id: SharedString = id.into();
     let label = label.into();
-    let border_color = if checked { COLOR_ACCENT } else { COLOR_BORDER };
-    let text_color = if checked { COLOR_TEXT } else { COLOR_MUTED };
+    let accent = accent_color();
+    let border_color = if checked { accent } else { border_color() };
+    let text_color = if checked {
+        primary_text_color()
+    } else {
+        muted_text_color()
+    };
+    let check_color = accent_glyph_color(accent);
 
     h_flex()
         .id(id)
@@ -4916,13 +5561,14 @@ fn checkbox(
                 .rounded_sm()
                 .border_1()
                 .border_color(rgb(border_color))
+                .when(checked, |this| this.bg(rgb(accent)))
                 .when(checked, |this| {
                     this.child(
                         div()
                             .text_size(px(12.0))
                             .line_height(px(16.0))
                             .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(COLOR_ACCENT))
+                            .text_color(rgb(check_color))
                             .child("✓"),
                     )
                 }),
@@ -5021,41 +5667,47 @@ fn nav_row(
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let row_bg = if selected {
-        cx.theme().sidebar_accent
+        rgb(sidebar_selected_color()).into()
     } else {
         cx.theme().transparent
     };
     let indicator = if selected {
-        cx.theme().sidebar_primary
+        rgb(accent_color()).into()
     } else {
         cx.theme().transparent
     };
     let text_color = if selected {
-        cx.theme().sidebar_accent_foreground
+        cx.theme().sidebar_foreground
     } else {
         cx.theme().sidebar_foreground
     };
-    let hover_bg = cx.theme().sidebar_accent;
+    let hover_bg: gpui::Hsla = if selected {
+        rgb(sidebar_selected_color()).into()
+    } else {
+        rgb(sidebar_hover_color()).into()
+    };
 
     let row = h_flex()
         .id(SharedString::from(format!("nav-row-{:?}", page)))
-        .h(px(32.0))
+        .h(px(40.0))
         .w_full()
         .items_center()
-        .gap_2()
-        .px_2()
+        .gap_3()
+        .pl(px(0.0))
+        .pr(px(12.0))
         .rounded_sm()
         .bg(row_bg)
         .text_color(text_color)
         .hover(move |style| style.bg(hover_bg))
         .cursor_pointer()
-        .child(div().w(px(2.0)).h(px(16.0)).rounded_sm().bg(indicator))
+        .child(div().w(px(3.0)).h(px(20.0)).rounded_sm().bg(indicator))
         .child(nav_icon(page, selected, cx))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .text_sm()
+                .text_size(px(14.0))
+                .line_height(px(20.0))
                 .truncate()
                 .child(page.label()),
         );
@@ -5113,21 +5765,21 @@ fn feature_nav_status(
 
 fn nav_icon(page: Page, selected: bool, cx: &mut Context<PowerLeafApp>) -> AnyElement {
     let color = if selected {
-        cx.theme().sidebar_primary
+        rgb(accent_color()).into()
     } else {
         cx.theme().muted_foreground
     };
 
     div()
-        .w(px(18.0))
-        .h(px(18.0))
+        .w(px(22.0))
+        .h(px(22.0))
         .flex()
         .items_center()
         .justify_center()
         .flex_shrink_0()
         .child(
             Icon::new(nav_icon_name(page))
-                .with_size(px(16.0))
+                .with_size(px(18.0))
                 .text_color(color),
         )
         .into_any_element()
@@ -5158,6 +5810,7 @@ enum NavIcon {
     Dashboard,
     Frame,
     Info,
+    Palette,
     PauseCircle,
     Settings,
     Zap,
@@ -5173,6 +5826,7 @@ impl IconNamed for NavIcon {
             Self::Dashboard => "icons/dashboard.svg",
             Self::Frame => "icons/frame.svg",
             Self::Info => "icons/info.svg",
+            Self::Palette => "icons/palette.svg",
             Self::PauseCircle => "icons/pause-circle.svg",
             Self::Settings => "icons/settings.svg",
             Self::Zap => "icons/zap.svg",
@@ -5191,6 +5845,130 @@ fn toggle_button(
         .label(label)
         .small()
         .when(selected, |button| button.primary())
+}
+
+fn accent_swatch(color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
+    let border = if selected {
+        primary_text_color()
+    } else {
+        border_color()
+    };
+
+    div()
+        .id(SharedString::from(format!("accent-swatch-{color:06x}")))
+        .size(px(30.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border))
+        .bg(rgb(settings_card_color()))
+        .hover(|style| style.border_color(rgb(dim_text_color())))
+        .cursor_pointer()
+        .child(div().size(px(20.0)).rounded_sm().bg(rgb(color)))
+}
+
+fn accent_picker_button() -> gpui::Stateful<gpui::Div> {
+    div()
+        .id("accent-picker")
+        .size(px(30.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .hover(|style| style.border_color(rgb(accent_color())))
+        .cursor_pointer()
+        .child(
+            Icon::new(NavIcon::Palette)
+                .with_size(px(16.0))
+                .text_color(rgb(accent_color())),
+        )
+}
+
+fn feature_toggle_switch(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let label = label.into();
+    let accent = switch_accent_color();
+    let switch_bg = if enabled {
+        accent
+    } else {
+        settings_card_color()
+    };
+    let switch_border = if enabled { accent } else { border_color() };
+    let knob_bg = if enabled {
+        accent_glyph_color(accent)
+    } else if ui_is_dark() {
+        0xd0d0d0
+    } else {
+        0x5f5f5f
+    };
+    let state_label = if enabled { "On" } else { "Off" };
+
+    h_flex()
+        .id(id)
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .py_3()
+        .px_4()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(13.0))
+        .line_height(px(18.0))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .cursor_pointer()
+        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+        .child(
+            h_flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .flex_shrink_0()
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .line_height(px(18.0))
+                        .text_color(rgb(primary_text_color()))
+                        .child(state_label),
+                )
+                .child(
+                    h_flex()
+                        .w(px(40.0))
+                        .h(px(20.0))
+                        .items_center()
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(rgb(switch_border))
+                        .bg(rgb(switch_bg))
+                        .px(px(4.0))
+                        .when(enabled, |track| track.justify_end())
+                        .when(!enabled, |track| track.justify_start())
+                        .child(div().size(px(12.0)).rounded_full().bg(rgb(knob_bg))),
+                ),
+        )
+        .on_click(move |_, window, cx| {
+            let next = !enabled;
+            handler(&next, window, cx);
+        })
+        .into_any_element()
 }
 
 fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
@@ -5436,92 +6214,96 @@ struct AffinityIndicator {
 }
 
 fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> SuspensionIndicator {
+    let accent = accent_color();
+    let accent_bg = settings_card_hover_color();
     if suspension::is_builtin_excluded(process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.protected").to_string(),
-            bg: COLOR_ACCENT_BG,
-            fg: COLOR_ACCENT,
+            bg: accent_bg,
+            fg: accent,
             hover: t!("suspension.indicator.protected_help").to_string(),
         }
     } else if suspension::contains_process(&status.network_wake_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.network").to_string(),
-            bg: COLOR_ACCENT_BG,
-            fg: COLOR_ACCENT,
+            bg: accent_bg,
+            fg: accent,
             hover: t!("suspension.indicator.network_help").to_string(),
         }
     } else if suspension::contains_process(&status.audio_wake_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.audio").to_string(),
-            bg: COLOR_ACCENT_BG,
-            fg: COLOR_ACCENT,
+            bg: accent_bg,
+            fg: accent,
             hover: t!("suspension.indicator.audio_help").to_string(),
         }
     } else if suspension::contains_process(&status.suspended_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.frozen").to_string(),
-            bg: COLOR_SUCCESS_BG,
-            fg: COLOR_SUCCESS,
+            bg: success_bg_color(),
+            fg: success_text_color(),
             hover: t!("suspension.indicator.frozen_help").to_string(),
         }
     } else if suspension::contains_process(&status.temporary_thawed_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.thawed").to_string(),
-            bg: COLOR_ACCENT_BG,
-            fg: COLOR_ACCENT,
+            bg: accent_bg,
+            fg: accent,
             hover: t!("suspension.indicator.thawed_help").to_string(),
         }
     } else if suspension::contains_process(&status.tracked_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.waiting").to_string(),
-            bg: COLOR_WARNING_BG,
-            fg: COLOR_WARNING,
+            bg: warning_bg_color(),
+            fg: warning_text_color(),
             hover: t!("suspension.indicator.waiting_help").to_string(),
         }
     } else if status.enabled {
         SuspensionIndicator {
             label: t!("suspension.indicator.not_suspended").to_string(),
-            bg: COLOR_PANEL_ACTIVE,
-            fg: COLOR_MUTED,
+            bg: panel_active_color(),
+            fg: muted_text_color(),
             hover: t!("suspension.indicator.not_suspended_help").to_string(),
         }
     } else {
         SuspensionIndicator {
             label: t!("suspension.indicator.off").to_string(),
-            bg: COLOR_PANEL_ACTIVE,
-            fg: COLOR_DIM,
+            bg: panel_active_color(),
+            fg: dim_text_color(),
             hover: t!("suspension.indicator.off_help").to_string(),
         }
     }
 }
 
 fn affinity_indicator(status: &CpuAffinitySnapshot, process: &str) -> AffinityIndicator {
+    let accent = accent_color();
+    let accent_bg = settings_card_hover_color();
     if affinity::is_builtin_excluded(process) {
         AffinityIndicator {
             label: t!("affinity.indicator.protected").to_string(),
-            bg: COLOR_ACCENT_BG,
-            fg: COLOR_ACCENT,
+            bg: accent_bg,
+            fg: accent,
             hover: t!("affinity.indicator.protected_help").to_string(),
         }
     } else if affinity::contains_process(&status.adjusted_apps, process) {
         AffinityIndicator {
             label: t!("affinity.indicator.pinned").to_string(),
-            bg: COLOR_SUCCESS_BG,
-            fg: COLOR_SUCCESS,
+            bg: success_bg_color(),
+            fg: success_text_color(),
             hover: t!("affinity.indicator.pinned_help").to_string(),
         }
     } else if status.enabled {
         AffinityIndicator {
             label: t!("affinity.indicator.ready").to_string(),
-            bg: COLOR_PANEL_ACTIVE,
-            fg: COLOR_MUTED,
+            bg: panel_active_color(),
+            fg: muted_text_color(),
             hover: t!("affinity.indicator.ready_help").to_string(),
         }
     } else {
         AffinityIndicator {
             label: t!("affinity.indicator.off").to_string(),
-            bg: COLOR_PANEL_ACTIVE,
-            fg: COLOR_DIM,
+            bg: panel_active_color(),
+            fg: dim_text_color(),
             hover: t!("affinity.indicator.off_help").to_string(),
         }
     }
@@ -5690,6 +6472,56 @@ enum FileDialogMode {
     Save,
 }
 
+enum AccentContextCommand {
+    None,
+    Edit,
+    Remove,
+}
+
+const ACCENT_CONTEXT_EDIT: usize = 1;
+const ACCENT_CONTEXT_REMOVE: usize = 2;
+
+fn show_accent_context_menu(hwnd: Option<HWND>) -> AccentContextCommand {
+    let hwnd = hwnd.unwrap_or_default();
+    if hwnd == null_mut() {
+        return AccentContextCommand::None;
+    }
+
+    let command = unsafe {
+        let menu = CreatePopupMenu();
+        if menu == null_mut() {
+            return AccentContextCommand::None;
+        }
+
+        let edit = wide_null(&t!("accent.edit_color").to_string());
+        let remove = wide_null(&t!("accent.remove_color").to_string());
+        AppendMenuW(menu, MF_STRING, ACCENT_CONTEXT_EDIT, edit.as_ptr());
+        AppendMenuW(menu, MF_STRING, ACCENT_CONTEXT_REMOVE, remove.as_ptr());
+
+        let mut point = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut point);
+        SetForegroundWindow(hwnd);
+
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            0,
+            hwnd,
+            null(),
+        );
+        DestroyMenu(menu);
+        command as usize
+    };
+
+    match command {
+        ACCENT_CONTEXT_EDIT => AccentContextCommand::Edit,
+        ACCENT_CONTEXT_REMOVE => AccentContextCommand::Remove,
+        _ => AccentContextCommand::None,
+    }
+}
+
 fn choose_settings_file(
     hwnd: Option<HWND>,
     mode: FileDialogMode,
@@ -5743,6 +6575,100 @@ fn choose_settings_file(
     } else {
         Err(format!("File dialog failed with error code {error}"))
     }
+}
+
+fn choose_accent_color(
+    hwnd: Option<HWND>,
+    current_color: u32,
+    saved_custom_colors: &[u32],
+) -> Result<Option<u32>, String> {
+    let mut custom_colors = [0_u32; 16];
+    let saved_colors = saved_custom_colors
+        .iter()
+        .copied()
+        .filter(|color| !ACCENT_PALETTE.contains(color));
+    for (target, source) in custom_colors
+        .iter_mut()
+        .zip(saved_colors.chain(ACCENT_PALETTE.iter().copied()))
+    {
+        *target = rgb_to_colorref(source);
+    }
+
+    let mut dialog = CHOOSECOLORW {
+        lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
+        hwndOwner: hwnd.unwrap_or_default(),
+        rgbResult: rgb_to_colorref(current_color),
+        lpCustColors: custom_colors.as_mut_ptr(),
+        Flags: CC_FULLOPEN | CC_RGBINIT | CC_ENABLEHOOK,
+        lpfnHook: Some(center_color_dialog_hook),
+        ..Default::default()
+    };
+
+    let selected = unsafe { ChooseColorW(&mut dialog) };
+    if selected != 0 {
+        return Ok(Some(colorref_to_rgb(dialog.rgbResult)));
+    }
+
+    let error = unsafe { CommDlgExtendedError() };
+    if error == 0 {
+        Ok(None)
+    } else {
+        Err(format!("Color picker failed with error code {error}"))
+    }
+}
+
+unsafe extern "system" fn center_color_dialog_hook(
+    dialog_hwnd: HWND,
+    message: u32,
+    _wparam: WPARAM,
+    lparam: LPARAM,
+) -> usize {
+    if message != WM_INITDIALOG || lparam == 0 {
+        return 0;
+    }
+
+    let choose_color = unsafe { &*(lparam as *const CHOOSECOLORW) };
+    let owner_hwnd = choose_color.hwndOwner;
+    if owner_hwnd == null_mut() {
+        return 0;
+    }
+
+    let mut owner_rect = RECT::default();
+    let mut dialog_rect = RECT::default();
+    let has_owner_rect = unsafe { GetWindowRect(owner_hwnd, &mut owner_rect) } != 0;
+    let has_dialog_rect = unsafe { GetWindowRect(dialog_hwnd, &mut dialog_rect) } != 0;
+    if !has_owner_rect || !has_dialog_rect {
+        return 0;
+    }
+
+    let owner_width = owner_rect.right - owner_rect.left;
+    let owner_height = owner_rect.bottom - owner_rect.top;
+    let dialog_width = dialog_rect.right - dialog_rect.left;
+    let dialog_height = dialog_rect.bottom - dialog_rect.top;
+    let x = owner_rect.left + (owner_width - dialog_width) / 2;
+    let y = owner_rect.top + (owner_height - dialog_height) / 2;
+
+    unsafe {
+        SetWindowPos(
+            dialog_hwnd,
+            null_mut(),
+            x.max(0),
+            y.max(0),
+            0,
+            0,
+            SWP_NOZORDER | SWP_NOSIZE,
+        );
+    }
+
+    0
+}
+
+fn rgb_to_colorref(color: u32) -> u32 {
+    ((color & 0xff0000) >> 16) | (color & 0x00ff00) | ((color & 0x0000ff) << 16)
+}
+
+fn colorref_to_rgb(color: u32) -> u32 {
+    ((color & 0x0000ff) << 16) | (color & 0x00ff00) | ((color & 0xff0000) >> 16)
 }
 
 fn path_to_wide_buffer(path: &Path, len: usize) -> Vec<u16> {

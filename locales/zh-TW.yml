@@ -52,6 +52,14 @@ theme:
   light: "淺色"
   dark: "深色"
 
+accent:
+  source: "Accent color"
+  windows: "Windows"
+  custom: "Custom"
+  palette: "Palette"
+  edit_color: "Edit color"
+  remove_color: "Remove"
+
 language:
   english: "英文"
   zh_tw: "繁體中文（台灣）"
