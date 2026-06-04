@@ -92,31 +92,21 @@ Implementation entry point:
 User-facing behavior:
 
 - PowerLeaf finds selected background apps from `Suspendable Apps`.
-- After the configured background delay, PowerLeaf enumerates the process threads.
-- It opens each thread with suspend/resume access.
-- It pauses the threads with `SuspendThread`.
-- It resumes those same threads with `ResumeThread` when the focused or clicked app needs to recover, when the process is removed from the list, App Suspension is disabled, automation is disabled, or PowerLeaf exits.
+- After the configured background delay, PowerLeaf opens the target process and assigns it to a private Windows Job Object.
+- It freezes that private job with `SetInformationJobObject` and thaws the same job when the focused or clicked app needs to recover, when the process is removed from the list, App Suspension is disabled, automation is disabled, or PowerLeaf exits.
 - Taskbar and tray shell clicks temporarily thaw suspended top-level window owner processes only, so minimized and tray-hidden apps can restore without thawing unrelated non-window worker processes. Repeated shell clicks do not keep extending the thaw window.
 
-### Thread Control APIs
+### Job Object Freeze APIs
 
 | API | Used for | Reference |
 | --- | --- | --- |
-| `OpenThread` | Opens a thread handle with `THREAD_SUSPEND_RESUME` access. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openthread |
-| `SuspendThread` | Increments a thread suspend count and stops that thread from running user-mode code. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-suspendthread |
-| `ResumeThread` | Decrements a thread suspend count and resumes the thread when the count reaches zero. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread |
-| `THREAD_SUSPEND_RESUME` | Required access right for suspending or resuming a thread. | https://learn.microsoft.com/en-us/windows/win32/procthread/thread-security-and-access-rights |
+| `OpenProcess` | Opens a process handle with the rights needed for job assignment and process liveness checks. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
+| `CreateJobObjectW` | Creates the private job object used to isolate one target process. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw |
+| `AssignProcessToJobObject` | Assigns the target process to PowerLeaf's private job object. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject |
+| `SetInformationJobObject` | Freezes or thaws the private job object using the Windows Job Object freeze information class. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject |
+| Job Objects | Explains Windows job objects and process grouping behavior. | https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects |
 
-Important note from Microsoft: `SuspendThread` is primarily designed for debuggers and is not intended for general thread synchronization. Suspending a thread that owns a mutex, critical section, or similar synchronization object can deadlock another thread that waits on it. This is why PowerLeaf keeps App Suspension opt-in and limited to explicitly selected apps.
-
-### Thread Enumeration APIs
-
-| API | Used for | Reference |
-| --- | --- | --- |
-| `CreateToolhelp32Snapshot` | Takes a system snapshot that can include threads. | https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot |
-| `Thread32First` | Reads the first thread entry from a snapshot. | https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32first |
-| `Thread32Next` | Reads subsequent thread entries from a snapshot. | https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32next |
-| `THREADENTRY32` | Snapshot entry structure that includes the owning process ID and thread ID. | https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-threadentry32 |
+PowerLeaf keeps App Suspension opt-in and limited to explicitly selected apps because freezing a process is disruptive by design. Built-in exclusions also block Windows shell/input/UWP lifecycle processes such as `SearchApp.exe`, `SearchHost.exe`, and `SystemSettings.exe`, even if they are added to Suspendable Apps.
 
 ### Safety And Filtering APIs
 
@@ -124,7 +114,8 @@ Important note from Microsoft: `SuspendThread` is primarily designed for debugge
 | --- | --- | --- |
 | `GetCurrentProcessId` | Gets PowerLeaf's own process ID so PowerLeaf never suspends itself. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentprocessid |
 | `ProcessIdToSessionId` | Checks the Windows session for a process so PowerLeaf only targets the current user session. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-processidtosessionid |
-| `CloseHandle` | Closes thread and snapshot handles after use. | https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle |
+| `WaitForSingleObject` | Checks whether a managed process has exited before reusing a cached freezer. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
+| `CloseHandle` | Closes process and job handles after use. | https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle |
 | `GetLastError` | Reads extended Win32 error codes after failed API calls. | https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror |
 
 ### Related Windows Behavior

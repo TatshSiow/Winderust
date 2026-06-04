@@ -56,6 +56,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "lsaiso.exe",
     "lsass.exe",
     "registry",
+    "searchapp.exe",
     "searchhost.exe",
     "securityhealthservice.exe",
     "securityhealthsystray.exe",
@@ -64,6 +65,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "sihost.exe",
     "smss.exe",
     "startmenuexperiencehost.exe",
+    "systemsettings.exe",
     "system",
     "taskmgr.exe",
     "textinputhost.exe",
@@ -1885,6 +1887,21 @@ mod tests {
 
         assert!(contains_process(&suspendable_apps, "CHAT.EXE"));
         assert!(!contains_process(&suspendable_apps, "browser.exe"));
+    }
+
+    #[test]
+    fn builtin_exclusions_cover_sensitive_windows_shell_processes() {
+        for process_name in [
+            "explorer.exe",
+            "SearchApp.exe",
+            "SearchHost.exe",
+            "SystemSettings.exe",
+            "TextInputHost.exe",
+        ] {
+            assert!(is_builtin_excluded(process_name), "{process_name}");
+        }
+
+        assert!(!is_builtin_excluded("chat.exe"));
     }
 
     #[test]
