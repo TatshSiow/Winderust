@@ -13,21 +13,23 @@ use std::{
 use rust_i18n::t;
 
 use gpui::{
-    deferred, div, prelude::*, px, rgb, AnyElement, App, Context, Entity, Focusable, IntoElement,
-    MouseButton, SharedString, Subscription, Task, Timer, Window, WindowControlArea,
+    deferred, div, prelude::*, px, rgb, AnyElement, App, Context, Entity, Focusable, Hsla,
+    IntoElement, MouseButton, SharedString, Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
     badge::Badge,
     button::{Button, ButtonVariants},
+    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     description_list::DescriptionList,
     group_box::{GroupBox, GroupBoxVariants},
     h_flex,
     input::{Escape as InputEscape, Input, InputEvent, InputState},
     label::Label,
-    scroll::ScrollableElement,
+    scroll::{Scrollable, ScrollableElement},
+    slider::{Slider, SliderEvent, SliderState},
     tag::Tag,
     theme::Colorize,
-    v_flex, ActiveTheme, Disableable, Icon, IconNamed, Sizable,
+    v_flex, ActiveTheme, Disableable, Icon, IconNamed, Sizable, Size,
 };
 
 use crate::{
@@ -55,20 +57,18 @@ use crate::{
     tray::{self, TrayIcon},
     ui::{self, Page},
 };
-use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND, LPARAM, POINT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND, POINT};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
     REG_BINARY, REG_DWORD,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::{
-    ChooseColorW, CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, CC_ENABLEHOOK,
-    CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR,
-    OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY,
+    OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, GetWindowRect, SetForegroundWindow,
-    SetWindowPos, TrackPopupMenu, MF_STRING, SWP_NOSIZE, SWP_NOZORDER, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WM_INITDIALOG,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, SetForegroundWindow, TrackPopupMenu,
+    MF_STRING, TPM_RETURNCMD, TPM_RIGHTBUTTON,
 };
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -83,9 +83,25 @@ const CONTENT_MAX_WIDTH: f32 = 1000.0;
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
-const RULE_TITLE_TEXT_SIZE: f32 = 15.0;
-const RULE_TITLE_LINE_HEIGHT: f32 = 21.0;
+const RULE_TITLE_TEXT_SIZE: f32 = 14.0;
+const RULE_TITLE_LINE_HEIGHT: f32 = 20.0;
 const MAX_CUSTOM_ACCENT_COLORS: usize = 8;
+const TEXT_PAGE_TITLE_SIZE: f32 = 28.0;
+const TEXT_PAGE_TITLE_LINE_HEIGHT: f32 = 36.0;
+const TEXT_PAGE_CRUMB_SIZE: f32 = 26.0;
+const TEXT_PAGE_CRUMB_LINE_HEIGHT: f32 = 34.0;
+const TEXT_SECTION_TITLE_SIZE: f32 = 16.0;
+const TEXT_SECTION_TITLE_LINE_HEIGHT: f32 = 22.0;
+const TEXT_HEADER_SIZE: f32 = RULE_TITLE_TEXT_SIZE;
+const TEXT_HEADER_LINE_HEIGHT: f32 = RULE_TITLE_LINE_HEIGHT;
+const TEXT_BODY_SIZE: f32 = 14.0;
+const TEXT_BODY_LINE_HEIGHT: f32 = 20.0;
+const TEXT_CONTROL_SIZE: f32 = 14.0;
+const TEXT_CONTROL_LINE_HEIGHT: f32 = 20.0;
+const TEXT_LABEL_SIZE: f32 = 12.0;
+const TEXT_LABEL_LINE_HEIGHT: f32 = 16.0;
+const TEXT_CAPTION_SIZE: f32 = 12.0;
+const TEXT_CAPTION_LINE_HEIGHT: f32 = 16.0;
 
 const COLOR_SETTINGS_CARD: u32 = 0x2b2b2b;
 const COLOR_SETTINGS_CARD_HOVER: u32 = 0x303030;
@@ -156,9 +172,13 @@ pub struct PowerLeafApp {
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
     editing_numeric: Option<NumericField>,
+    editing_accent_color: Option<u32>,
     collapsed_rule_cards: HashSet<RuleCardTarget>,
     _rule_title_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
+    _processor_power_slider_subscriptions: Vec<Subscription>,
+    accent_color_picker: Entity<ColorPickerState>,
+    _accent_color_picker_subscription: Subscription,
     inputs: UiInputs,
     _tick_task: Task<()>,
 }
@@ -175,6 +195,12 @@ struct UiInputs {
     suspension_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
+    processor_power_ac_core_parking_min: Entity<SliderState>,
+    processor_power_ac_performance_min: Entity<SliderState>,
+    processor_power_ac_performance_max: Entity<SliderState>,
+    processor_power_dc_core_parking_min: Entity<SliderState>,
+    processor_power_dc_performance_min: Entity<SliderState>,
+    processor_power_dc_performance_max: Entity<SliderState>,
 }
 
 enum TickOutcome {
@@ -226,6 +252,12 @@ impl UiInputs {
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
+            processor_power_ac_core_parking_min: make_processor_power_slider(cx, 50),
+            processor_power_ac_performance_min: make_processor_power_slider(cx, 5),
+            processor_power_ac_performance_max: make_processor_power_slider(cx, 100),
+            processor_power_dc_core_parking_min: make_processor_power_slider(cx, 50),
+            processor_power_dc_performance_min: make_processor_power_slider(cx, 5),
+            processor_power_dc_performance_max: make_processor_power_slider(cx, 100),
         }
     }
 
@@ -294,6 +326,26 @@ impl PowerLeafApp {
             Settings::default()
         });
         let inputs = UiInputs::new(window, cx, &settings);
+        let accent_color_picker = cx.new(|cx| {
+            ColorPickerState::new(window, cx)
+                .default_value(hsla_from_rgb(settings.general.accent.custom_color))
+        });
+        let accent_color_picker_subscription = cx.subscribe_in(
+            &accent_color_picker,
+            window,
+            |app, _, event: &ColorPickerEvent, window, cx| match event {
+                ColorPickerEvent::Change(Some(color)) => {
+                    let color = rgb_from_hsla(*color);
+                    if let Some(previous) = app.editing_accent_color.take() {
+                        app.update_custom_accent_color(previous, color, window, cx);
+                    } else {
+                        app.add_custom_accent_color(color, window, cx);
+                    }
+                    cx.notify();
+                }
+                ColorPickerEvent::Change(None) => {}
+            },
+        );
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
@@ -351,15 +403,20 @@ impl PowerLeafApp {
             start_minimized_applied: false,
             editing_rule_title: None,
             editing_numeric: None,
+            editing_accent_color: None,
             collapsed_rule_cards: HashSet::new(),
             _rule_title_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
+            _processor_power_slider_subscriptions: Vec::new(),
+            accent_color_picker,
+            _accent_color_picker_subscription: accent_color_picker_subscription,
             inputs,
             _tick_task: Task::ready(()),
         };
 
         app.rebuild_rule_title_input_subscriptions(window, cx);
         app.subscribe_to_numeric_input(window, cx);
+        app.subscribe_to_processor_power_sliders(window, cx);
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
         app.refresh_process_candidates(false);
@@ -534,6 +591,68 @@ impl PowerLeafApp {
         self.processor_power_dc_core_parking_min = values.dc.core_parking_min as u64;
         self.processor_power_dc_performance_min = values.dc.performance_min as u64;
         self.processor_power_dc_performance_max = values.dc.performance_max as u64;
+    }
+
+    fn set_processor_power_slider_value(&mut self, slider: ProcessorPowerSlider, value: u64) {
+        let value = value.min(100);
+        match slider {
+            ProcessorPowerSlider::AcCoreParkingMin => {
+                self.processor_power_ac_core_parking_min = value;
+            }
+            ProcessorPowerSlider::AcPerformanceMin => {
+                self.processor_power_ac_performance_min = value;
+            }
+            ProcessorPowerSlider::AcPerformanceMax => {
+                self.processor_power_ac_performance_max = value;
+            }
+            ProcessorPowerSlider::DcCoreParkingMin => {
+                self.processor_power_dc_core_parking_min = value;
+            }
+            ProcessorPowerSlider::DcPerformanceMin => {
+                self.processor_power_dc_performance_min = value;
+            }
+            ProcessorPowerSlider::DcPerformanceMax => {
+                self.processor_power_dc_performance_max = value;
+            }
+        }
+        self.processor_power_dirty = true;
+    }
+
+    fn sync_processor_power_slider_states(&self, window: &mut Window, cx: &mut Context<Self>) {
+        for (slider, value) in [
+            (
+                ProcessorPowerSlider::AcCoreParkingMin,
+                self.processor_power_ac_core_parking_min,
+            ),
+            (
+                ProcessorPowerSlider::AcPerformanceMin,
+                self.processor_power_ac_performance_min,
+            ),
+            (
+                ProcessorPowerSlider::AcPerformanceMax,
+                self.processor_power_ac_performance_max,
+            ),
+            (
+                ProcessorPowerSlider::DcCoreParkingMin,
+                self.processor_power_dc_core_parking_min,
+            ),
+            (
+                ProcessorPowerSlider::DcPerformanceMin,
+                self.processor_power_dc_performance_min,
+            ),
+            (
+                ProcessorPowerSlider::DcPerformanceMax,
+                self.processor_power_dc_performance_max,
+            ),
+        ] {
+            let input = processor_power_slider_input(&self.inputs, slider);
+            let value = value.min(100) as f32;
+            input.update(cx, |state, cx| {
+                if (state.value().end() - value).abs() > f32::EPSILON {
+                    state.set_value(value, window, cx);
+                }
+            });
+        }
     }
 
     fn refresh_processor_power_values(&mut self) {
@@ -711,6 +830,7 @@ impl PowerLeafApp {
         match config::storage::save(&self.settings) {
             Ok(()) => {
                 self.saved_settings = self.settings.clone();
+                self.editing_accent_color = None;
                 self.status_message = match startup::set_startup_with_windows(
                     self.saved_settings.general.startup_with_windows,
                 ) {
@@ -752,6 +872,7 @@ impl PowerLeafApp {
                     match config::storage::save(&self.settings) {
                         Ok(()) => {
                             self.saved_settings = self.settings.clone();
+                            self.editing_accent_color = None;
                             self.status_message = match startup::set_startup_with_windows(
                                 self.saved_settings.general.startup_with_windows,
                             ) {
@@ -761,6 +882,7 @@ impl PowerLeafApp {
                                     .to_string(),
                             };
                             self.rebuild_inputs(window, cx);
+                            self.sync_accent_color_picker(window, cx);
                         }
                         Err(err) => self.status_message = err,
                     }
@@ -929,16 +1051,26 @@ impl PowerLeafApp {
         apply_appearance_settings(&self.settings.general, window, cx);
         self.status_message = t!("status.unsaved_canceled").to_string();
         self.editing_rule_title = None;
+        self.editing_accent_color = None;
         self.collapsed_rule_cards.clear();
         self.rebuild_inputs(window, cx);
+        self.sync_accent_color_picker(window, cx);
     }
 
     fn rebuild_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings.clone();
         self.editing_rule_title = None;
+        self.editing_accent_color = None;
         self.collapsed_rule_cards.clear();
         self.inputs = UiInputs::new(window, cx, &settings);
         self.rebuild_rule_title_input_subscriptions(window, cx);
+    }
+
+    fn sync_accent_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let color = self.settings.general.accent.custom_color;
+        self.accent_color_picker.update(cx, |picker, cx| {
+            picker.set_value(hsla_from_rgb(color), window, cx);
+        });
     }
 
     fn rule_title_input_count(&self) -> usize {
@@ -1019,6 +1151,41 @@ impl PowerLeafApp {
                 app.handle_numeric_input_event(event, cx);
             },
         ));
+    }
+
+    fn subscribe_to_processor_power_sliders(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._processor_power_slider_subscriptions.clear();
+        for slider in [
+            ProcessorPowerSlider::AcCoreParkingMin,
+            ProcessorPowerSlider::AcPerformanceMin,
+            ProcessorPowerSlider::AcPerformanceMax,
+            ProcessorPowerSlider::DcCoreParkingMin,
+            ProcessorPowerSlider::DcPerformanceMin,
+            ProcessorPowerSlider::DcPerformanceMax,
+        ] {
+            let input = processor_power_slider_input(&self.inputs, slider);
+            self._processor_power_slider_subscriptions
+                .push(
+                    cx.subscribe_in(&input, window, move |app, _, event, _, cx| {
+                        app.handle_processor_power_slider_event(slider, event, cx);
+                    }),
+                );
+        }
+    }
+
+    fn handle_processor_power_slider_event(
+        &mut self,
+        slider: ProcessorPowerSlider,
+        event: &SliderEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let SliderEvent::Change(value) = event;
+        self.set_processor_power_slider_value(slider, value.end().round() as u64);
+        cx.notify();
     }
 
     fn handle_numeric_input_event(&mut self, event: &InputEvent, cx: &mut Context<Self>) {
@@ -1114,38 +1281,50 @@ impl PowerLeafApp {
             }
             NumericField::ProcessorAcCoreParkingMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.processor_power_ac_core_parking_min = value;
-                    self.processor_power_dirty = true;
+                    self.set_processor_power_slider_value(
+                        ProcessorPowerSlider::AcCoreParkingMin,
+                        value,
+                    );
                 }
             }
             NumericField::ProcessorAcPerformanceMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.processor_power_ac_performance_min = value;
-                    self.processor_power_dirty = true;
+                    self.set_processor_power_slider_value(
+                        ProcessorPowerSlider::AcPerformanceMin,
+                        value,
+                    );
                 }
             }
             NumericField::ProcessorAcPerformanceMax => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.processor_power_ac_performance_max = value;
-                    self.processor_power_dirty = true;
+                    self.set_processor_power_slider_value(
+                        ProcessorPowerSlider::AcPerformanceMax,
+                        value,
+                    );
                 }
             }
             NumericField::ProcessorDcCoreParkingMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.processor_power_dc_core_parking_min = value;
-                    self.processor_power_dirty = true;
+                    self.set_processor_power_slider_value(
+                        ProcessorPowerSlider::DcCoreParkingMin,
+                        value,
+                    );
                 }
             }
             NumericField::ProcessorDcPerformanceMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.processor_power_dc_performance_min = value;
-                    self.processor_power_dirty = true;
+                    self.set_processor_power_slider_value(
+                        ProcessorPowerSlider::DcPerformanceMin,
+                        value,
+                    );
                 }
             }
             NumericField::ProcessorDcPerformanceMax => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.processor_power_dc_performance_max = value;
-                    self.processor_power_dirty = true;
+                    self.set_processor_power_slider_value(
+                        ProcessorPowerSlider::DcPerformanceMax,
+                        value,
+                    );
                 }
             }
             NumericField::CpuThreshold(index) => {
@@ -1379,14 +1558,15 @@ impl PowerLeafApp {
                     .child(
                         div()
                             .flex_none()
-                            .text_sm()
-                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_size(px(TEXT_CONTROL_SIZE))
+                            .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
                             .text_color(cx.theme().foreground)
                             .child(t!("app.name").to_string()),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(TEXT_LABEL_SIZE))
+                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
                             .min_w(px(0.0))
                             .overflow_hidden()
                             .text_color(cx.theme().muted_foreground)
@@ -1414,8 +1594,8 @@ impl PowerLeafApp {
                 div()
                     .px_2()
                     .pt_1()
-                    .text_xs()
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_size(px(TEXT_LABEL_SIZE))
+                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
                     .text_color(cx.theme().muted_foreground)
                     .child(ui::section_label(section.label)),
             );
@@ -1448,7 +1628,8 @@ impl PowerLeafApp {
             .border_t_1()
             .border_color(cx.theme().title_bar_border)
             .bg(cx.theme().title_bar)
-            .text_sm()
+            .text_size(px(TEXT_BODY_SIZE))
+            .line_height(px(TEXT_BODY_LINE_HEIGHT))
             .child(text_muted(&self.status_message))
             .child(div().text_color(cx.theme().muted_foreground).child("|"))
             .child(text_muted(&self.decision.reason))
@@ -1469,16 +1650,14 @@ impl PowerLeafApp {
             .p_3()
             .rounded_md()
             .border_1()
-            .border_color(cx.theme().warning)
+            .border_color(rgb(accent_color()))
             .bg(cx.theme().popover)
             .child(
                 h_flex()
                     .items_center()
-                    .gap_2()
-                    .child(div().size(px(8.0)).rounded_full().bg(cx.theme().warning))
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::BOLD)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(cx.theme().popover_foreground)
                             .child(t!("unsaved.title").to_string()),
                     ),
@@ -1519,7 +1698,7 @@ impl PowerLeafApp {
             Page::ForegroundRules => self.render_foreground_rules_page(window, cx),
             Page::Schedule => self.render_schedule_page(window, cx),
             Page::CpuUsage => self.render_cpu_usage_page(window, cx),
-            Page::CoreParking => self.render_core_parking_page(cx),
+            Page::CoreParking => self.render_core_parking_page(window, cx),
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
@@ -1596,7 +1775,8 @@ impl PowerLeafApp {
             graph = graph.child(
                 div()
                     .w_full()
-                    .text_sm()
+                    .text_size(px(TEXT_BODY_SIZE))
+                    .line_height(px(TEXT_BODY_LINE_HEIGHT))
                     .text_color(rgb(muted_text_color()))
                     .child(t!("dashboard.collecting").to_string()),
             );
@@ -1956,7 +2136,7 @@ impl PowerLeafApp {
                 cx.notify();
             }),
         ))
-        .child(body)
+        .child(disabled_feature_body(body, enabled))
         .into_any_element()
     }
 
@@ -1966,6 +2146,7 @@ impl PowerLeafApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let input_value = self.inputs.foreground_process.read(cx).value().to_string();
+        let enabled = self.settings.foreground_rules.enabled;
         let mut content = page_shell_with_help(
             Page::ForegroundRules,
             Some(tooltip_lines(vec![
@@ -1976,14 +2157,14 @@ impl PowerLeafApp {
         .child(feature_toggle_switch(
             "foreground-enabled",
             t!("foreground.enable").to_string(),
-            self.settings.foreground_rules.enabled,
+            enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.foreground_rules.enabled = *checked;
                 cx.notify();
             }),
         ));
 
-        let mut body = feature_body(self.settings.foreground_rules.enabled).child(
+        let mut body = feature_body(enabled).child(
             h_flex()
                 .gap_2()
                 .items_start()
@@ -1996,9 +2177,7 @@ impl PowerLeafApp {
                     cx,
                 ))
                 .child(
-                    Button::new("add-foreground-rule")
-                        .small()
-                        .primary()
+                    control_button(Button::new("add-foreground-rule").primary())
                         .label(t!("common.add").to_string())
                         .disabled(
                             !self.settings.foreground_rules.enabled
@@ -2028,7 +2207,7 @@ impl PowerLeafApp {
             rules = rules.child(self.render_foreground_rule(index, rule, cx));
         }
         body = body.child(rules);
-        content = content.child(body);
+        content = content.child(disabled_feature_body(body, enabled));
 
         content.into_any_element()
     }
@@ -2056,7 +2235,7 @@ impl PowerLeafApp {
                     .min_w(px(160.0))
                     .text_size(px(RULE_TITLE_TEXT_SIZE))
                     .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .truncate()
                     .child(rule.process_name.clone()),
             )
@@ -2120,7 +2299,7 @@ impl PowerLeafApp {
                 .on_mouse_down_out(cx.listener(move |app, _: &gpui::MouseDownEvent, _, cx| {
                     app.finish_rule_title_edit(target, cx);
                 }))
-                .child(Input::new(input).w_full())
+                .child(app_input(input, true, cx))
                 .child(
                     Button::new(SharedString::from(format!(
                         "finish-rule-title-edit-{target:?}"
@@ -2151,7 +2330,7 @@ impl PowerLeafApp {
                     .whitespace_nowrap()
                     .text_size(px(RULE_TITLE_TEXT_SIZE))
                     .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .cursor_pointer()
                     .child(title.to_owned()),
             )
@@ -2159,6 +2338,7 @@ impl PowerLeafApp {
     }
 
     fn render_schedule_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = self.settings.schedule_mode.enabled;
         let mut content = page_shell_with_help(
             Page::Schedule,
             Some(tooltip_lines(vec![
@@ -2169,19 +2349,17 @@ impl PowerLeafApp {
         .child(feature_toggle_switch(
             "schedule-enabled",
             t!("schedule.enable").to_string(),
-            self.settings.schedule_mode.enabled,
+            enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.schedule_mode.enabled = *checked;
                 cx.notify();
             }),
         ));
 
-        let mut body = feature_body(self.settings.schedule_mode.enabled).child(
-            Button::new("add-time-rule")
-                .small()
-                .primary()
+        let mut body = feature_body(enabled).child(
+            control_button(Button::new("add-time-rule").primary())
                 .label(t!("schedule.add_rule").to_string())
-                .disabled(!self.settings.schedule_mode.enabled)
+                .disabled(!enabled)
                 .on_click(cx.listener(|app, _, window, cx| {
                     app.settings.schedule_mode.rules.push(ScheduleRule {
                         enabled: true,
@@ -2202,7 +2380,7 @@ impl PowerLeafApp {
             rules = rules.child(self.render_schedule_rule(index, rule, window, cx));
         }
         body = body.child(rules);
-        content = content.child(body);
+        content = content.child(disabled_feature_body(body, enabled));
 
         content.into_any_element()
     }
@@ -2211,7 +2389,7 @@ impl PowerLeafApp {
         &self,
         index: usize,
         rule: &ScheduleRule,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(name_input) = self.inputs.schedule_rule_names.get(index).cloned() else {
@@ -2264,11 +2442,23 @@ impl PowerLeafApp {
                     labeled_element(&t!("schedule.days"), days.into_any_element())
                         .into_any_element(),
                     match self.inputs.schedule_start_times.get(index).cloned() {
-                        Some(input) => input_row(&t!("schedule.start"), input).into_any_element(),
+                        Some(input) => input_row(
+                            &t!("schedule.start"),
+                            input.clone(),
+                            input.read(cx).focus_handle(cx).is_focused(window),
+                            cx,
+                        )
+                        .into_any_element(),
                         None => syncing_input_message().into_any_element(),
                     },
                     match self.inputs.schedule_end_times.get(index).cloned() {
-                        Some(input) => input_row(&t!("schedule.end"), input).into_any_element(),
+                        Some(input) => input_row(
+                            &t!("schedule.end"),
+                            input.clone(),
+                            input.read(cx).focus_handle(cx).is_focused(window),
+                            cx,
+                        )
+                        .into_any_element(),
                         None => syncing_input_message().into_any_element(),
                     },
                     if rule.parsed_times().is_none() {
@@ -2305,6 +2495,7 @@ impl PowerLeafApp {
     }
 
     fn render_cpu_usage_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = self.settings.cpu_usage_mode.enabled;
         let mut content = page_shell_with_help(
             Page::CpuUsage,
             Some(tooltip_lines(vec![
@@ -2315,19 +2506,17 @@ impl PowerLeafApp {
         .child(feature_toggle_switch(
             "cpu-usage-enabled",
             t!("cpu_rules.enable").to_string(),
-            self.settings.cpu_usage_mode.enabled,
+            enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.cpu_usage_mode.enabled = *checked;
                 cx.notify();
             }),
         ));
 
-        let mut body = feature_body(self.settings.cpu_usage_mode.enabled).child(
-            Button::new("add-cpu-rule")
-                .small()
-                .primary()
+        let mut body = feature_body(enabled).child(
+            control_button(Button::new("add-cpu-rule").primary())
                 .label(t!("cpu_rules.add_rule").to_string())
-                .disabled(!self.settings.cpu_usage_mode.enabled)
+                .disabled(!enabled)
                 .on_click(cx.listener(|app, _, window, cx| {
                     app.settings.cpu_usage_mode.rules.push(CpuUsageRule {
                         enabled: true,
@@ -2353,7 +2542,7 @@ impl PowerLeafApp {
             rules = rules.child(self.render_cpu_rule(index, rule, window, cx));
         }
         body = body.child(rules);
-        content = content.child(body);
+        content = content.child(disabled_feature_body(body, enabled));
 
         content.into_any_element()
     }
@@ -2602,8 +2791,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        Button::new("add-eco-qos-exclusion")
-                            .small()
+                        control_button(Button::new("add-eco-qos-exclusion"))
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -2645,7 +2833,7 @@ impl PowerLeafApp {
                 cx.notify();
             }),
         ))
-        .child(body)
+        .child(disabled_feature_body(body, enabled))
         .into_any_element()
     }
 
@@ -2666,7 +2854,7 @@ impl PowerLeafApp {
                             .min_w(px(160.0))
                             .text_size(px(RULE_TITLE_TEXT_SIZE))
                             .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                            .font_weight(gpui::FontWeight::BOLD)
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .truncate()
                             .child(process.clone()),
                     )
@@ -2914,8 +3102,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        Button::new("add-suspension-process")
-                            .small()
+                        control_button(Button::new("add-suspension-process"))
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -2960,7 +3147,7 @@ impl PowerLeafApp {
                 cx.notify();
             }),
         ))
-        .child(body)
+        .child(disabled_feature_body(body, enabled))
         .into_any_element()
     }
 
@@ -3139,8 +3326,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        Button::new("add-affinity-process")
-                            .small()
+                        control_button(Button::new("add-affinity-process"))
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -3182,7 +3368,7 @@ impl PowerLeafApp {
                 cx.notify();
             }),
         ))
-        .child(body)
+        .child(disabled_feature_body(body, enabled))
         .into_any_element()
     }
 
@@ -3384,10 +3570,11 @@ impl PowerLeafApp {
         edit_value: String,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let width = numeric_value_width(field);
         if self.editing_numeric == Some(field) {
             return h_flex()
                 .id(SharedString::from(format!("numeric-editor-{field:?}")))
-                .w(px(96.0))
+                .w(px(width))
                 .items_center()
                 .on_click(|_, _, cx| {
                     cx.stop_propagation();
@@ -3398,17 +3585,18 @@ impl PowerLeafApp {
                 .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
                     app.finish_numeric_edit(cx);
                 }))
-                .child(Input::new(&self.inputs.numeric_value).w_full())
+                .child(app_input(&self.inputs.numeric_value, true, cx))
                 .into_any_element();
         }
 
         h_flex()
             .id(SharedString::from(format!("numeric-value-{field:?}")))
+            .w(px(width))
             .cursor_pointer()
             .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
                 app.begin_numeric_edit(field, edit_value.clone(), window, cx);
             }))
-            .child(value_pill(display_value))
+            .child(value_pill(display_value).w_full())
             .into_any_element()
     }
 
@@ -3506,13 +3694,17 @@ impl PowerLeafApp {
         selected: NetworkThresholdUnit,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = h_flex().gap_1().flex_wrap();
+        let picker_id = format!("network-unit-{field:?}");
+        let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id.as_str());
+        let mut options = dropdown_surface(cx);
+
         for unit in NetworkThresholdUnit::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("network-unit-{:?}-{}", field, unit.label()),
-                    unit.label(),
+            options = options.child(
+                dropdown_option_row(
+                    SharedString::from(format!("{picker_id}-{}", unit.label())),
+                    unit.label().to_string(),
                     selected == unit,
+                    cx,
                 )
                 .on_click(cx.listener(move |app, _, _, cx| {
                     if let Some(rule) = app.threshold_rule_mut(field) {
@@ -3523,11 +3715,74 @@ impl PowerLeafApp {
                             ThresholdField::Upload(_) => rule.network_upload_threshold_unit = unit,
                         }
                     }
+                    app.active_power_plan_picker = None;
                     cx.notify();
                 })),
             );
         }
-        row.into_any_element()
+
+        let control_id = SharedString::from(format!("{picker_id}-control"));
+        let toggle_picker_id = picker_id.clone();
+
+        v_flex()
+            .w(px(132.0))
+            .min_w(px(0.0))
+            .relative()
+            .min_h(px(32.0))
+            .child(
+                h_flex()
+                    .id(control_id)
+                    .h(px(32.0))
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .rounded_sm()
+                    .bg(rgb(dropdown_control_color()))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .text_color(cx.theme().foreground)
+                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(selected.label().to_string()),
+                    )
+                    .child(dropdown_chevron(cx))
+                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                        app.active_power_plan_picker =
+                            (app.active_power_plan_picker.as_deref()
+                                != Some(toggle_picker_id.as_str()))
+                            .then_some(toggle_picker_id.clone());
+                        cx.notify();
+                    })),
+            )
+            .child(if is_open {
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(34.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(
+                            |app, _: &gpui::MouseDownEvent, _, cx| {
+                                app.active_power_plan_picker = None;
+                                cx.notify();
+                            },
+                        ))
+                        .child(options),
+                )
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            .into_any_element()
     }
 
     fn render_theme_selector(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3656,6 +3911,7 @@ impl PowerLeafApp {
                     self.settings.general.accent.source == source,
                 )
                 .on_click(cx.listener(move |app, _, window, cx| {
+                    app.editing_accent_color = None;
                     app.settings.general.accent.source = source;
                     apply_appearance_settings(&app.settings.general, window, cx);
                     cx.notify();
@@ -3669,6 +3925,7 @@ impl PowerLeafApp {
                 && self.settings.general.accent.custom_color == color;
             palette = palette.child(accent_swatch(color, selected).on_click(cx.listener(
                 move |app, _, window, cx| {
+                    app.editing_accent_color = None;
                     app.settings.general.accent.source = AccentColorSource::Custom;
                     app.settings.general.accent.custom_color = color;
                     apply_appearance_settings(&app.settings.general, window, cx);
@@ -3691,6 +3948,7 @@ impl PowerLeafApp {
             palette = palette.child(
                 accent_swatch(color, selected)
                     .on_click(cx.listener(move |app, _, window, cx| {
+                        app.editing_accent_color = None;
                         app.settings.general.accent.source = AccentColorSource::Custom;
                         app.settings.general.accent.custom_color = color;
                         apply_appearance_settings(&app.settings.general, window, cx);
@@ -3701,21 +3959,10 @@ impl PowerLeafApp {
                         cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
                             match show_accent_context_menu(app.hwnd) {
                                 AccentContextCommand::Edit => {
-                                    match choose_accent_color(
-                                        app.hwnd,
-                                        color,
-                                        &app.settings.general.accent.custom_colors,
-                                    ) {
-                                        Ok(Some(next_color)) => {
-                                            app.update_custom_accent_color(
-                                                color, next_color, window, cx,
-                                            );
-                                        }
-                                        Ok(None) => {}
-                                        Err(error) => {
-                                            app.status_message = error;
-                                        }
-                                    }
+                                    app.editing_accent_color = Some(color);
+                                    app.accent_color_picker.update(cx, |picker, cx| {
+                                        picker.set_value(hsla_from_rgb(color), window, cx);
+                                    });
                                 }
                                 AccentContextCommand::Remove => {
                                     app.delete_custom_accent_color(color, window, cx);
@@ -3728,24 +3975,29 @@ impl PowerLeafApp {
             );
         }
 
-        palette = palette.child(accent_picker_button().on_click(cx.listener(
-            |app, _, window, cx| {
-                match choose_accent_color(
-                    app.hwnd,
-                    app.settings.general.accent.custom_color,
-                    &app.settings.general.accent.custom_colors,
-                ) {
-                    Ok(Some(color)) => {
-                        app.add_custom_accent_color(color, window, cx);
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        app.status_message = error;
-                    }
-                }
-                cx.notify();
-            },
-        )));
+        let featured_colors = self
+            .settings
+            .general
+            .accent
+            .custom_colors
+            .iter()
+            .copied()
+            .filter(|color| !ACCENT_PALETTE.contains(color))
+            .chain(ACCENT_PALETTE)
+            .map(hsla_from_rgb)
+            .collect::<Vec<_>>();
+        palette = palette.child(
+            ColorPicker::new(&self.accent_color_picker)
+                .featured_colors(featured_colors)
+                .icon(Icon::new(NavIcon::Palette).with_size(px(16.0)))
+                .with_size(Size::Size(px(30.0)))
+                .size(px(30.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .into_any_element(),
+        );
 
         v_flex()
             .w_full()
@@ -3847,13 +4099,19 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_core_parking_page(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_core_parking_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         page_shell(Page::CoreParking)
-            .child(self.render_processor_power_card(cx))
+            .child(self.render_processor_power_card(window, cx))
             .into_any_element()
     }
 
-    fn render_processor_power_card(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_processor_power_card(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.sync_processor_power_slider_states(window, cx);
+        let has_current_plan = self.current_plan.is_some();
         let mut preset_row = h_flex().gap_1().flex_wrap();
         for preset in [
             ProcessorPowerPreset::Performance,
@@ -3877,132 +4135,179 @@ impl PowerLeafApp {
         section_card(&t!("processor_power.title"))
             .child(text_muted(t!("processor_power.help").to_string()))
             .child(self.render_processor_power_plan_picker(cx))
-            .child(stepper_u64(
-                "processor-power-ac-core-parking-min",
-                &format!(
-                    "{} {}",
-                    t!("processor_power.ac_values"),
-                    t!("processor_power.core_parking_min")
-                ),
-                self.processor_power_ac_core_parking_min,
-                self.render_numeric_value(
-                    NumericField::ProcessorAcCoreParkingMin,
-                    format!("{}%", self.processor_power_ac_core_parking_min),
-                    self.processor_power_ac_core_parking_min.to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.processor_power_ac_core_parking_min =
-                        apply_u64_step(app.processor_power_ac_core_parking_min, change, 0, 100);
-                    app.processor_power_dirty = true;
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "processor-power-ac-performance-min",
-                &format!(
-                    "{} {}",
-                    t!("processor_power.ac_values"),
-                    t!("processor_power.processor_min")
-                ),
-                self.processor_power_ac_performance_min,
-                self.render_numeric_value(
-                    NumericField::ProcessorAcPerformanceMin,
-                    format!("{}%", self.processor_power_ac_performance_min),
-                    self.processor_power_ac_performance_min.to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.processor_power_ac_performance_min =
-                        apply_u64_step(app.processor_power_ac_performance_min, change, 0, 100);
-                    app.processor_power_dirty = true;
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "processor-power-ac-performance-max",
-                &format!(
-                    "{} {}",
-                    t!("processor_power.ac_values"),
-                    t!("processor_power.processor_max")
-                ),
-                self.processor_power_ac_performance_max,
-                self.render_numeric_value(
-                    NumericField::ProcessorAcPerformanceMax,
-                    format!("{}%", self.processor_power_ac_performance_max),
-                    self.processor_power_ac_performance_max.to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.processor_power_ac_performance_max =
-                        apply_u64_step(app.processor_power_ac_performance_max, change, 0, 100);
-                    app.processor_power_dirty = true;
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "processor-power-dc-core-parking-min",
-                &format!(
-                    "{} {}",
-                    t!("processor_power.dc_values"),
-                    t!("processor_power.core_parking_min")
-                ),
-                self.processor_power_dc_core_parking_min,
-                self.render_numeric_value(
-                    NumericField::ProcessorDcCoreParkingMin,
-                    format!("{}%", self.processor_power_dc_core_parking_min),
-                    self.processor_power_dc_core_parking_min.to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.processor_power_dc_core_parking_min =
-                        apply_u64_step(app.processor_power_dc_core_parking_min, change, 0, 100);
-                    app.processor_power_dirty = true;
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "processor-power-dc-performance-min",
-                &format!(
-                    "{} {}",
-                    t!("processor_power.dc_values"),
-                    t!("processor_power.processor_min")
-                ),
-                self.processor_power_dc_performance_min,
-                self.render_numeric_value(
-                    NumericField::ProcessorDcPerformanceMin,
-                    format!("{}%", self.processor_power_dc_performance_min),
-                    self.processor_power_dc_performance_min.to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.processor_power_dc_performance_min =
-                        apply_u64_step(app.processor_power_dc_performance_min, change, 0, 100);
-                    app.processor_power_dirty = true;
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "processor-power-dc-performance-max",
-                &format!(
-                    "{} {}",
-                    t!("processor_power.dc_values"),
-                    t!("processor_power.processor_max")
-                ),
-                self.processor_power_dc_performance_max,
-                self.render_numeric_value(
-                    NumericField::ProcessorDcPerformanceMax,
-                    format!("{}%", self.processor_power_dc_performance_max),
-                    self.processor_power_dc_performance_max.to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.processor_power_dc_performance_max =
-                        apply_u64_step(app.processor_power_dc_performance_max, change, 0, 100);
-                    app.processor_power_dirty = true;
-                    cx.notify();
-                }),
-            ))
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap_3()
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .gap_1()
+                            .child(processor_power_column_header(
+                                t!("processor_power.ac_values").to_string(),
+                            ))
+                            .child(processor_power_slider(
+                                "processor-power-ac-core-parking-min",
+                                &t!("processor_power.core_parking_min"),
+                                self.processor_power_ac_core_parking_min,
+                                self.render_numeric_value(
+                                    NumericField::ProcessorAcCoreParkingMin,
+                                    format!("{}%", self.processor_power_ac_core_parking_min),
+                                    self.processor_power_ac_core_parking_min.to_string(),
+                                    cx,
+                                ),
+                                &self.inputs.processor_power_ac_core_parking_min,
+                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                                    let value = apply_u64_step(
+                                        app.processor_power_ac_core_parking_min,
+                                        change,
+                                        0,
+                                        100,
+                                    );
+                                    app.set_processor_power_slider_value(
+                                        ProcessorPowerSlider::AcCoreParkingMin,
+                                        value,
+                                    );
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(processor_power_slider(
+                                "processor-power-ac-performance-min",
+                                &t!("processor_power.processor_min"),
+                                self.processor_power_ac_performance_min,
+                                self.render_numeric_value(
+                                    NumericField::ProcessorAcPerformanceMin,
+                                    format!("{}%", self.processor_power_ac_performance_min),
+                                    self.processor_power_ac_performance_min.to_string(),
+                                    cx,
+                                ),
+                                &self.inputs.processor_power_ac_performance_min,
+                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                                    let value = apply_u64_step(
+                                        app.processor_power_ac_performance_min,
+                                        change,
+                                        0,
+                                        100,
+                                    );
+                                    app.set_processor_power_slider_value(
+                                        ProcessorPowerSlider::AcPerformanceMin,
+                                        value,
+                                    );
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(processor_power_slider(
+                                "processor-power-ac-performance-max",
+                                &t!("processor_power.processor_max"),
+                                self.processor_power_ac_performance_max,
+                                self.render_numeric_value(
+                                    NumericField::ProcessorAcPerformanceMax,
+                                    format!("{}%", self.processor_power_ac_performance_max),
+                                    self.processor_power_ac_performance_max.to_string(),
+                                    cx,
+                                ),
+                                &self.inputs.processor_power_ac_performance_max,
+                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                                    let value = apply_u64_step(
+                                        app.processor_power_ac_performance_max,
+                                        change,
+                                        0,
+                                        100,
+                                    );
+                                    app.set_processor_power_slider_value(
+                                        ProcessorPowerSlider::AcPerformanceMax,
+                                        value,
+                                    );
+                                    cx.notify();
+                                }),
+                            )),
+                    )
+                    .child(
+                        v_flex()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .gap_1()
+                            .child(processor_power_column_header(
+                                t!("processor_power.dc_values").to_string(),
+                            ))
+                            .child(processor_power_slider(
+                                "processor-power-dc-core-parking-min",
+                                &t!("processor_power.core_parking_min"),
+                                self.processor_power_dc_core_parking_min,
+                                self.render_numeric_value(
+                                    NumericField::ProcessorDcCoreParkingMin,
+                                    format!("{}%", self.processor_power_dc_core_parking_min),
+                                    self.processor_power_dc_core_parking_min.to_string(),
+                                    cx,
+                                ),
+                                &self.inputs.processor_power_dc_core_parking_min,
+                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                                    let value = apply_u64_step(
+                                        app.processor_power_dc_core_parking_min,
+                                        change,
+                                        0,
+                                        100,
+                                    );
+                                    app.set_processor_power_slider_value(
+                                        ProcessorPowerSlider::DcCoreParkingMin,
+                                        value,
+                                    );
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(processor_power_slider(
+                                "processor-power-dc-performance-min",
+                                &t!("processor_power.processor_min"),
+                                self.processor_power_dc_performance_min,
+                                self.render_numeric_value(
+                                    NumericField::ProcessorDcPerformanceMin,
+                                    format!("{}%", self.processor_power_dc_performance_min),
+                                    self.processor_power_dc_performance_min.to_string(),
+                                    cx,
+                                ),
+                                &self.inputs.processor_power_dc_performance_min,
+                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                                    let value = apply_u64_step(
+                                        app.processor_power_dc_performance_min,
+                                        change,
+                                        0,
+                                        100,
+                                    );
+                                    app.set_processor_power_slider_value(
+                                        ProcessorPowerSlider::DcPerformanceMin,
+                                        value,
+                                    );
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(processor_power_slider(
+                                "processor-power-dc-performance-max",
+                                &t!("processor_power.processor_max"),
+                                self.processor_power_dc_performance_max,
+                                self.render_numeric_value(
+                                    NumericField::ProcessorDcPerformanceMax,
+                                    format!("{}%", self.processor_power_dc_performance_max),
+                                    self.processor_power_dc_performance_max.to_string(),
+                                    cx,
+                                ),
+                                &self.inputs.processor_power_dc_performance_max,
+                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                                    let value = apply_u64_step(
+                                        app.processor_power_dc_performance_max,
+                                        change,
+                                        0,
+                                        100,
+                                    );
+                                    app.set_processor_power_slider_value(
+                                        ProcessorPowerSlider::DcPerformanceMax,
+                                        value,
+                                    );
+                                    cx.notify();
+                                }),
+                            )),
+                    ),
+            )
             .child(labeled_element(
                 &t!("processor_power.presets"),
                 preset_row.into_any_element(),
@@ -4012,8 +4317,7 @@ impl PowerLeafApp {
                     .gap_2()
                     .justify_end()
                     .child(
-                        Button::new("processor-power-refresh-values")
-                            .small()
+                        control_button(Button::new("processor-power-refresh-values"))
                             .label(t!("processor_power.refresh_values").to_string())
                             .disabled(self.current_plan.is_none())
                             .on_click(cx.listener(|app, _, _, cx| {
@@ -4022,11 +4326,13 @@ impl PowerLeafApp {
                             })),
                     )
                     .child(
-                        Button::new("processor-power-apply-custom")
-                            .small()
-                            .primary()
+                        control_button(
+                            Button::new("processor-power-apply-custom")
+                                .primary()
+                                .text_color(cx.theme().primary_foreground),
+                        )
                             .label(t!("processor_power.apply_custom").to_string())
-                            .disabled(self.current_plan.is_none())
+                            .disabled(!has_current_plan)
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.apply_processor_power_custom();
                                 cx.notify();
@@ -4052,26 +4358,13 @@ impl PowerLeafApp {
             .map(PowerPlan::display_name)
             .unwrap_or_else(|| t!("processor_power.no_active_plan").to_string());
 
-        let mut options = v_flex()
-            .w_full()
-            .max_h(px(244.0))
-            .overflow_y_scrollbar()
-            .gap_1()
-            .p_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover);
+        let mut options = dropdown_surface(cx);
 
         if self.plans.is_empty() {
-            options = options.child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(t!("common.no_power_plans_loaded").to_string()),
-            );
+            options = options.child(dropdown_empty_row(
+                t!("common.no_power_plans_loaded").to_string(),
+                cx,
+            ));
         } else {
             for plan in &self.plans {
                 let selected =
@@ -4101,17 +4394,16 @@ impl PowerLeafApp {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .px_2()
+                    .px_3()
                     .rounded_sm()
-                    .border_1()
-                    .border_color(cx.theme().input)
-                    .bg(cx.theme().background)
-                    .text_sm()
+                    .bg(rgb(dropdown_control_color()))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
                     .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(cx.theme().secondary_hover))
+                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
                     .cursor_pointer()
                     .child(div().flex_1().min_w(px(0.0)).child(selected_text))
-                    .child(div().text_color(cx.theme().muted_foreground).child("v"))
+                    .child(dropdown_chevron(cx))
                     .on_click(cx.listener(|app, _: &gpui::ClickEvent, _, cx| {
                         app.refresh_power_plans();
                         app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
@@ -4182,16 +4474,7 @@ impl PowerLeafApp {
             None => t!("common.use_inherited_default_plan").to_string(),
         };
 
-        let mut options = v_flex()
-            .w_full()
-            .max_h(px(244.0))
-            .overflow_y_scrollbar()
-            .gap_1()
-            .p_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover);
+        let mut options = dropdown_surface(cx);
 
         options = options.child(power_plan_option_row(
             format!("{id}-default"),
@@ -4203,14 +4486,10 @@ impl PowerLeafApp {
         ));
 
         if self.plans.is_empty() {
-            options = options.child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(t!("common.no_power_plans_loaded").to_string()),
-            );
+            options = options.child(dropdown_empty_row(
+                t!("common.no_power_plans_loaded").to_string(),
+                cx,
+            ));
         } else {
             for plan in &self.plans {
                 let selected = selected_guid
@@ -4242,17 +4521,16 @@ impl PowerLeafApp {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .px_2()
+                    .px_3()
                     .rounded_sm()
-                    .border_1()
-                    .border_color(cx.theme().input)
-                    .bg(cx.theme().background)
-                    .text_sm()
+                    .bg(rgb(dropdown_control_color()))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
                     .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(cx.theme().secondary_hover))
+                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
                     .cursor_pointer()
                     .child(div().flex_1().min_w(px(0.0)).child(selected_text))
-                    .child(div().text_color(cx.theme().muted_foreground).child("v"))
+                    .child(dropdown_chevron(cx))
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                         app.refresh_power_plans();
                         app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
@@ -4303,16 +4581,7 @@ impl PowerLeafApp {
             None => t!("common.use_inherited_default_plan").to_string(),
         };
 
-        let mut options = v_flex()
-            .w_full()
-            .max_h(px(244.0))
-            .overflow_y_scrollbar()
-            .gap_1()
-            .p_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover);
+        let mut options = dropdown_surface(cx);
 
         options = options.child(power_plan_option_row(
             format!("{id}-default"),
@@ -4324,14 +4593,10 @@ impl PowerLeafApp {
         ));
 
         if self.plans.is_empty() {
-            options = options.child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(t!("common.no_power_plans_loaded").to_string()),
-            );
+            options = options.child(dropdown_empty_row(
+                t!("common.no_power_plans_loaded").to_string(),
+                cx,
+            ));
         } else {
             for plan in &self.plans {
                 let selected = selected_guid
@@ -4362,14 +4627,13 @@ impl PowerLeafApp {
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .px_2()
+                    .px_3()
                     .rounded_sm()
-                    .border_1()
-                    .border_color(cx.theme().input)
-                    .bg(cx.theme().background)
-                    .text_sm()
+                    .bg(rgb(dropdown_control_color()))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
                     .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(cx.theme().secondary_hover))
+                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
                     .cursor_pointer()
                     .child(
                         div()
@@ -4378,7 +4642,7 @@ impl PowerLeafApp {
                             .truncate()
                             .child(selected_text),
                     )
-                    .child(div().text_color(cx.theme().muted_foreground).child("v"))
+                    .child(dropdown_chevron(cx))
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                         app.refresh_power_plans();
                         app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
@@ -4463,47 +4727,25 @@ impl PowerLeafApp {
             .collect::<Vec<_>>();
         matches.sort();
 
-        let mut suggestions = v_flex()
-            .w_full()
-            .max_h(px(244.0))
-            .overflow_y_scrollbar()
-            .gap_1()
-            .p_1()
-            .rounded_sm()
-            .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover);
+        let mut suggestions = dropdown_surface(cx);
         if matches.is_empty() {
-            suggestions = suggestions.child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(if self.process_candidates.is_empty() {
-                        t!("common.no_running_apps_loaded").to_string()
-                    } else {
-                        t!("common.no_matching_apps").to_string()
-                    }),
-            );
+            suggestions = suggestions.child(dropdown_empty_row(
+                if self.process_candidates.is_empty() {
+                    t!("common.no_running_apps_loaded").to_string()
+                } else {
+                    t!("common.no_matching_apps").to_string()
+                },
+                cx,
+            ));
         }
         for (count, process) in matches.into_iter().enumerate() {
             suggestions = suggestions.child(
-                h_flex()
-                    .id(SharedString::from(format!("{id}-{count}")))
-                    .h(px(24.0))
-                    .items_center()
-                    .px_2()
-                    .rounded_sm()
-                    .text_sm()
-                    .text_color(cx.theme().popover_foreground)
-                    .when(count == 0, |row| {
-                        row.bg(cx.theme().accent)
-                            .text_color(cx.theme().accent_foreground)
-                    })
-                    .hover(|style| style.bg(cx.theme().secondary_hover))
-                    .cursor_pointer()
-                    .child(process.clone())
+                dropdown_option_row(
+                    SharedString::from(format!("{id}-{count}")),
+                    process.clone(),
+                    count == 0,
+                    cx,
+                )
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
                         app.apply_process_suggestion(target, &process, window, cx);
                         window.blur();
@@ -4538,7 +4780,7 @@ impl PowerLeafApp {
             .min_w(px(0.0))
             .relative()
             .min_h(px(32.0))
-            .child(Input::new(input).w_full())
+            .child(app_input(input, is_open, cx))
             .child(if is_open {
                 deferred(
                     div()
@@ -4611,31 +4853,103 @@ fn power_plan_option_row(
     field: PowerPlanField,
     cx: &mut Context<PowerLeafApp>,
 ) -> AnyElement {
-    let text_color = cx.theme().popover_foreground;
-    let selected_bg = cx.theme().accent;
-    let selected_text_color = cx.theme().accent_foreground;
-    let hover_bg = cx.theme().secondary_hover;
-
-    h_flex()
-        .id(SharedString::from(id))
-        .h(px(24.0))
-        .items_center()
-        .px_2()
-        .rounded_sm()
-        .text_sm()
-        .text_color(text_color)
-        .when(selected, |row| {
-            row.bg(selected_bg).text_color(selected_text_color)
-        })
-        .hover(move |style| style.bg(hover_bg))
-        .cursor_pointer()
-        .child(label)
+    dropdown_option_row(SharedString::from(id), label, selected, cx)
         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
             app.set_power_plan_field(field, guid.clone());
             app.active_power_plan_picker = None;
             cx.notify();
         }))
         .into_any_element()
+}
+
+fn dropdown_surface(cx: &mut Context<PowerLeafApp>) -> Scrollable<gpui::Div> {
+    v_flex()
+        .w_full()
+        .max_h(px(324.0))
+        .overflow_y_scrollbar()
+        .gap_1()
+        .p_2()
+        .rounded_sm()
+        .border_1()
+        .border_color(cx.theme().border)
+        .bg(rgb(dropdown_surface_color()))
+}
+
+fn dropdown_option_row(
+    id: SharedString,
+    label: String,
+    selected: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(SharedString::from(id))
+        .relative()
+        .min_h(px(40.0))
+        .items_center()
+        .pl_3()
+        .pr_3()
+        .rounded_sm()
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+        .text_color(cx.theme().popover_foreground)
+        .when(selected, |row| {
+            row.bg(rgb(dropdown_selected_color())).child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(11.0))
+                    .bottom(px(11.0))
+                    .w(px(3.0))
+                    .rounded_sm()
+                    .bg(cx.theme().accent),
+            )
+        })
+        .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
+        .cursor_pointer()
+        .child(label)
+}
+
+fn dropdown_empty_row(message: String, cx: &mut Context<PowerLeafApp>) -> gpui::Div {
+    div()
+        .min_h(px(40.0))
+        .px_3()
+        .flex()
+        .relative()
+        .items_center()
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .text_color(cx.theme().muted_foreground)
+        .child(message)
+}
+
+fn dropdown_chevron(cx: &mut Context<PowerLeafApp>) -> AnyElement {
+    div()
+        .flex_none()
+        .text_color(cx.theme().muted_foreground)
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+        .child("v")
+        .into_any_element()
+}
+
+fn dropdown_control_color() -> u32 {
+    if ui_is_dark() { 0x383838 } else { 0xf1f1f1 }
+}
+
+fn dropdown_control_hover_color() -> u32 {
+    if ui_is_dark() { 0x404040 } else { 0xe8e8e8 }
+}
+
+fn dropdown_surface_color() -> u32 {
+    if ui_is_dark() { 0x2b2b2b } else { 0xffffff }
+}
+
+fn dropdown_selected_color() -> u32 {
+    if ui_is_dark() { 0x353535 } else { 0xe8f3ff }
+}
+
+fn dropdown_option_hover_color() -> u32 {
+    if ui_is_dark() { 0x383838 } else { 0xf2f2f2 }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4687,6 +5001,16 @@ enum NumericField {
     NetworkThreshold(ThresholdField),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ProcessorPowerSlider {
+    AcCoreParkingMin,
+    AcPerformanceMin,
+    AcPerformanceMax,
+    DcCoreParkingMin,
+    DcPerformanceMin,
+    DcPerformanceMax,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct StepChange<T> {
     delta: T,
@@ -4706,6 +5030,34 @@ fn make_input(
             .default_value(value)
             .placeholder(placeholder)
     })
+}
+
+fn make_processor_power_slider(cx: &mut Context<PowerLeafApp>, value: u64) -> Entity<SliderState> {
+    cx.new(|_| {
+        SliderState::new()
+            .min(0.0)
+            .max(100.0)
+            .step(1.0)
+            .default_value(value.min(100) as f32)
+    })
+}
+
+fn processor_power_slider_input(
+    inputs: &UiInputs,
+    slider: ProcessorPowerSlider,
+) -> Entity<SliderState> {
+    match slider {
+        ProcessorPowerSlider::AcCoreParkingMin => {
+            inputs.processor_power_ac_core_parking_min.clone()
+        }
+        ProcessorPowerSlider::AcPerformanceMin => inputs.processor_power_ac_performance_min.clone(),
+        ProcessorPowerSlider::AcPerformanceMax => inputs.processor_power_ac_performance_max.clone(),
+        ProcessorPowerSlider::DcCoreParkingMin => {
+            inputs.processor_power_dc_core_parking_min.clone()
+        }
+        ProcessorPowerSlider::DcPerformanceMin => inputs.processor_power_dc_performance_min.clone(),
+        ProcessorPowerSlider::DcPerformanceMax => inputs.processor_power_dc_performance_max.clone(),
+    }
 }
 
 fn sync_input_vec(
@@ -4810,6 +5162,18 @@ fn resolve_accent_color(settings: &AccentSettings) -> u32 {
     }
 }
 
+fn hsla_from_rgb(color: u32) -> Hsla {
+    Hsla::from(rgb(color & 0x00ff_ffff))
+}
+
+fn rgb_from_hsla(color: Hsla) -> u32 {
+    let rgba = color.to_rgb();
+    let r = (rgba.r.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let g = (rgba.g.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let b = (rgba.b.clamp(0.0, 1.0) * 255.0).round() as u32;
+    (r << 16) | (g << 8) | b
+}
+
 fn windows_accent_color() -> Option<u32> {
     read_registry_dword(
         r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
@@ -4876,6 +5240,30 @@ fn settings_card_hover_color() -> u32 {
         COLOR_SETTINGS_CARD_HOVER
     } else {
         0xeaeaea
+    }
+}
+
+fn windows_control_row_color() -> u32 {
+    if ui_is_dark() {
+        0x292929
+    } else {
+        0xf7f7f7
+    }
+}
+
+fn row_separator_color() -> u32 {
+    if ui_is_dark() {
+        0x1f1f1f
+    } else {
+        0xe5e5e5
+    }
+}
+
+fn windows_slider_thumb_color() -> u32 {
+    if ui_is_dark() {
+        0xd9d9d9
+    } else {
+        0xffffff
     }
 }
 
@@ -5117,8 +5505,8 @@ fn page_shell_with_help(page: Page, help: Option<SharedString>) -> gpui::Div {
         .child(
             div()
                 .min_w(px(0.0))
-                .text_size(px(24.0))
-                .line_height(px(32.0))
+                .text_size(px(TEXT_PAGE_TITLE_SIZE))
+                .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
                 .font_weight(gpui::FontWeight::BOLD)
                 .opacity(0.72)
                 .truncate()
@@ -5126,8 +5514,8 @@ fn page_shell_with_help(page: Page, help: Option<SharedString>) -> gpui::Div {
         )
         .child(
             div()
-                .text_size(px(22.0))
-                .line_height(px(30.0))
+                .text_size(px(TEXT_PAGE_CRUMB_SIZE))
+                .line_height(px(TEXT_PAGE_CRUMB_LINE_HEIGHT))
                 .font_weight(gpui::FontWeight::BOLD)
                 .opacity(0.48)
                 .child("›"),
@@ -5135,21 +5523,18 @@ fn page_shell_with_help(page: Page, help: Option<SharedString>) -> gpui::Div {
         .child(
             div()
                 .min_w(px(0.0))
-                .text_size(px(24.0))
-                .line_height(px(32.0))
+                .text_size(px(TEXT_PAGE_TITLE_SIZE))
+                .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
                 .font_weight(gpui::FontWeight::BOLD)
                 .truncate()
                 .child(page.label()),
         );
 
     if let Some(help) = help {
-        header = header.child(
-            Button::new(SharedString::from(format!("page-info-{page:?}")))
-                .small()
-                .label("i")
-                .primary()
-                .tooltip(help),
-        );
+        header = header.child(title_info_button(
+            SharedString::from(format!("page-info-{page:?}")),
+            help,
+        ));
     }
 
     v_flex().w_full().min_w(px(0.0)).gap_3().child(header)
@@ -5170,7 +5555,11 @@ fn tooltip_lines(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> Sh
 fn section_card(title: &str) -> GroupBox {
     GroupBox::new()
         .outline()
-        .title(Label::new(title.to_owned()))
+        .title(
+            Label::new(title.to_owned())
+                .text_size(px(TEXT_SECTION_TITLE_SIZE))
+                .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
+        )
 }
 
 fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
@@ -5184,20 +5573,26 @@ fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
             .child(
                 div()
                     .min_w(px(0.0))
-                    .text_size(px(RULE_TITLE_TEXT_SIZE))
-                    .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                    .text_size(px(TEXT_SECTION_TITLE_SIZE))
+                    .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT))
                     .font_weight(gpui::FontWeight::BOLD)
                     .truncate()
                     .child(title.to_owned()),
             )
-            .child(
-                Button::new(SharedString::from(format!("section-info-{title}")))
-                    .small()
-                    .label("i")
-                    .primary()
-                    .tooltip(help),
-            ),
+            .child(title_info_button(
+                SharedString::from(format!("section-info-{title}")),
+                help,
+            )),
     )
+}
+
+fn title_info_button(id: impl Into<SharedString>, tooltip: impl Into<SharedString>) -> Button {
+    Button::new(id.into())
+        .primary()
+        .rounded(px(999.0))
+        .with_size(px(26.0))
+        .icon(Icon::new(NavIcon::Info).with_size(px(14.0)))
+        .tooltip(tooltip)
 }
 
 fn rule_card(
@@ -5267,8 +5662,8 @@ fn rule_card_collapse_indicator(collapsed: bool) -> AnyElement {
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(14.0))
-        .line_height(px(18.0))
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
         .opacity(0.72)
         .child(if collapsed { ">" } else { "v" })
         .into_any_element()
@@ -5283,7 +5678,25 @@ fn feature_body(enabled: bool) -> gpui::Div {
         .w_full()
         .min_w(px(0.0))
         .gap_3()
-        .when(!enabled, |body| body.opacity(0.42))
+        .relative()
+        .when(!enabled, |body| {
+            body.opacity(0.42)
+                .cursor_default()
+        })
+}
+
+fn disabled_feature_body(body: gpui::Div, enabled: bool) -> gpui::Div {
+    body.when(!enabled, |body| body.child(disabled_interaction_shield()))
+}
+
+fn disabled_interaction_shield() -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .cursor_default()
+        .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
+        .capture_any_mouse_up(|_, _, cx| cx.stop_propagation())
+        .into_any_element()
 }
 
 fn rule_card_body_row(children: Vec<AnyElement>) -> gpui::Div {
@@ -5366,7 +5779,11 @@ fn titled_stat_grid(title: &str, rows: Vec<(String, String)>) -> GroupBox {
     }
     GroupBox::new()
         .outline()
-        .title(Label::new(title.to_owned()))
+        .title(
+            Label::new(title.to_owned())
+                .text_size(px(TEXT_SECTION_TITLE_SIZE))
+                .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
+        )
         .child(list)
 }
 
@@ -5410,18 +5827,97 @@ fn labeled_element(label: &str, element: AnyElement) -> gpui::Div {
         .w_full()
         .min_w(px(0.0))
         .gap_1()
-        .child(Label::new(label.to_owned()).text_size(px(12.0)))
+        .child(
+            Label::new(label.to_owned())
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                .font_weight(gpui::FontWeight::NORMAL),
+        )
         .child(element)
 }
 
-fn input_row(label: &str, input: Entity<InputState>) -> gpui::Div {
+fn input_row(
+    label: &str,
+    input: Entity<InputState>,
+    focused: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Div {
     labeled_element(
         label,
-        Input::new(&input)
-            .w_full()
+        app_input(&input, focused, cx)
             .max_w(px(320.0))
             .into_any_element(),
     )
+}
+
+fn app_input(
+    input: &Entity<InputState>,
+    focused: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Div {
+    div()
+        .w_full()
+        .h(px(32.0))
+        .flex()
+        .flex_col()
+        .relative()
+        .overflow_hidden()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(app_input_border_color(focused)))
+        .bg(rgb(app_input_color(focused)))
+        .hover(|style| style.border_color(rgb(app_input_hover_border_color())))
+        .child(
+            Input::new(input)
+                .appearance(false)
+                .bordered(false)
+                .focus_bordered(false)
+                .w_full()
+                .h_full()
+                .text_color(cx.theme().foreground)
+                .into_any_element(),
+        )
+        .child(
+            div()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .h(px(if focused { 1.5 } else { 1.0 }))
+                .bg(if focused {
+                    cx.theme().accent
+                } else {
+                    Hsla::from(rgb(app_input_bottom_line_color()))
+                }),
+        )
+}
+
+fn app_input_color(focused: bool) -> u32 {
+    if ui_is_dark() {
+        if focused { 0x202020 } else { 0x343434 }
+    } else if focused {
+        0xffffff
+    } else {
+        0xf8f8f8
+    }
+}
+
+fn app_input_border_color(focused: bool) -> u32 {
+    if ui_is_dark() {
+        if focused { 0x555555 } else { 0x3c3c3c }
+    } else if focused {
+        0x757575
+    } else {
+        0xd0d0d0
+    }
+}
+
+fn app_input_hover_border_color() -> u32 {
+    if ui_is_dark() { 0x5a5a5a } else { 0x9a9a9a }
+}
+
+fn app_input_bottom_line_color() -> u32 {
+    if ui_is_dark() { 0x8f8f8f } else { 0x6d6d6d }
 }
 
 fn syncing_rule_card(index: usize) -> AnyElement {
@@ -5445,9 +5941,9 @@ fn static_rule_title(title: &str) -> AnyElement {
         .min_w(px(0.0))
         .overflow_hidden()
         .whitespace_nowrap()
-        .text_size(px(RULE_TITLE_TEXT_SIZE))
-        .line_height(px(RULE_TITLE_LINE_HEIGHT))
-        .font_weight(gpui::FontWeight::BOLD)
+        .text_size(px(TEXT_HEADER_SIZE))
+        .line_height(px(TEXT_HEADER_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
         .child(title.to_owned())
         .into_any_element()
 }
@@ -5462,8 +5958,8 @@ fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
         .rounded_sm()
         .bg(rgb(bg))
         .text_color(rgb(fg))
-        .text_size(px(12.0))
-        .line_height(px(16.0))
+        .text_size(px(TEXT_LABEL_SIZE))
+        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
         .child(label)
         .into_any_element()
 }
@@ -5501,8 +5997,8 @@ fn rule_enable_checkbox(
                 .when(checked, |this| {
                     this.child(
                         div()
-                            .text_size(px(12.0))
-                            .line_height(px(16.0))
+                            .text_size(px(TEXT_LABEL_SIZE))
+                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(check_color))
                             .child("✓"),
@@ -5547,8 +6043,8 @@ fn checkbox(
         .px_1()
         .rounded_sm()
         .text_color(rgb(text_color))
-        .text_size(px(13.0))
-        .line_height(px(18.0))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .hover(|style| style.opacity(0.86))
         .cursor_pointer()
         .child(
@@ -5565,8 +6061,8 @@ fn checkbox(
                 .when(checked, |this| {
                     this.child(
                         div()
-                            .text_size(px(12.0))
-                            .line_height(px(16.0))
+                            .text_size(px(TEXT_LABEL_SIZE))
+                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
                             .font_weight(gpui::FontWeight::BOLD)
                             .text_color(rgb(check_color))
                             .child("✓"),
@@ -5652,7 +6148,8 @@ fn title_bar_control_button(
         .h(px(TITLE_BAR_HEIGHT))
         .items_center()
         .justify_center()
-        .text_size(px(10.0))
+        .text_size(px(TEXT_CAPTION_SIZE))
+        .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
         .text_color(cx.theme().muted_foreground)
         .hover(move |style| style.bg(hover_bg))
         .active(move |style| style.bg(active_bg))
@@ -5706,8 +6203,8 @@ fn nav_row(
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .text_size(px(14.0))
-                .line_height(px(20.0))
+                .text_size(px(TEXT_CONTROL_SIZE))
+                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
                 .truncate()
                 .child(page.label()),
         );
@@ -5847,48 +6344,32 @@ fn toggle_button(
         .when(selected, |button| button.primary())
 }
 
+fn control_button(button: Button) -> Button {
+    button
+        .small()
+        .h(px(32.0))
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+}
+
 fn accent_swatch(color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
     let border = if selected {
         primary_text_color()
     } else {
-        border_color()
+        color
     };
 
     div()
         .id(SharedString::from(format!("accent-swatch-{color:06x}")))
         .size(px(30.0))
-        .flex()
-        .items_center()
-        .justify_center()
         .flex_shrink_0()
         .rounded_sm()
         .border_1()
         .border_color(rgb(border))
-        .bg(rgb(settings_card_color()))
-        .hover(|style| style.border_color(rgb(dim_text_color())))
+        .bg(rgb(color))
+        .hover(|style| style.border_color(rgb(primary_text_color())))
         .cursor_pointer()
-        .child(div().size(px(20.0)).rounded_sm().bg(rgb(color)))
-}
-
-fn accent_picker_button() -> gpui::Stateful<gpui::Div> {
-    div()
-        .id("accent-picker")
-        .size(px(30.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .flex_shrink_0()
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(border_color()))
-        .bg(rgb(settings_card_color()))
-        .hover(|style| style.border_color(rgb(accent_color())))
-        .cursor_pointer()
-        .child(
-            Icon::new(NavIcon::Palette)
-                .with_size(px(16.0))
-                .text_color(rgb(accent_color())),
-        )
+        .when(selected, |style| style.border_2())
 }
 
 fn feature_toggle_switch(
@@ -5930,8 +6411,8 @@ fn feature_toggle_switch(
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
-        .text_size(px(13.0))
-        .line_height(px(18.0))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .hover(|style| style.bg(rgb(settings_card_hover_color())))
         .cursor_pointer()
         .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
@@ -5943,8 +6424,8 @@ fn feature_toggle_switch(
                 .flex_shrink_0()
                 .child(
                     div()
-                        .text_size(px(13.0))
-                        .line_height(px(18.0))
+                        .text_size(px(TEXT_BODY_SIZE))
+                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
                         .text_color(rgb(primary_text_color()))
                         .child(state_label),
                 )
@@ -5972,18 +6453,48 @@ fn feature_toggle_switch(
 }
 
 fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
-    div().child(
-        Tag::info()
-            .outline()
-            .text_size(px(13.0))
-            .child(value.into()),
-    )
+    div()
+        .min_w(px(56.0))
+        .h(px(32.0))
+        .px_3()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(app_input_border_color(false)))
+        .bg(rgb(app_input_color(false)))
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+        .text_color(rgb(primary_text_color()))
+        .child(value.into())
+        .child(
+            div()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .h(px(1.0))
+                .bg(rgb(app_input_bottom_line_color())),
+        )
+}
+
+fn numeric_value_width(field: NumericField) -> f32 {
+    match field {
+        NumericField::ProcessorAcCoreParkingMin
+        | NumericField::ProcessorAcPerformanceMin
+        | NumericField::ProcessorAcPerformanceMax
+        | NumericField::ProcessorDcCoreParkingMin
+        | NumericField::ProcessorDcPerformanceMin
+        | NumericField::ProcessorDcPerformanceMax => 76.0,
+        _ => 96.0,
+    }
 }
 
 fn text_muted(value: impl Into<SharedString>) -> gpui::Div {
     div()
-        .text_size(px(13.0))
-        .line_height(px(18.0))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .opacity(0.72)
         .child(value.into())
 }
@@ -5992,9 +6503,111 @@ fn text_danger(value: impl Into<SharedString>) -> gpui::Div {
     div().child(
         Tag::danger()
             .outline()
-            .text_size(px(13.0))
+            .text_size(px(TEXT_BODY_SIZE))
             .child(value.into()),
     )
+}
+
+fn processor_power_column_header(value: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .px_4()
+        .pb_1()
+        .text_size(px(TEXT_LABEL_SIZE))
+        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgb(muted_text_color()))
+        .child(value.into())
+}
+
+fn processor_power_slider(
+    id: impl Into<SharedString>,
+    label: &str,
+    _value: u64,
+    value_element: AnyElement,
+    state: &Entity<SliderState>,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
+    let down = Rc::clone(&handler);
+
+    h_flex()
+        .id(id.clone())
+        .w_full()
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(row_separator_color()))
+        .bg(rgb(windows_control_row_color()))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(148.0))
+                .truncate()
+                .text_size(px(TEXT_BODY_SIZE))
+                .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                .text_color(rgb(primary_text_color()))
+                .child(label.to_owned()),
+        )
+        .child(
+            h_flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .min_w(px(0.0))
+                .flex_shrink_0()
+                .child(
+                    control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                        .label("-")
+                        .on_click(move |_, window, cx| {
+                            down(
+                                &StepChange {
+                                    delta: 1,
+                                    increase: false,
+                                },
+                                window,
+                                cx,
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .w(px(220.0))
+                        .px(px(8.0))
+                        .flex_none()
+                        .child(
+                            Slider::new(state)
+                                .horizontal()
+                                .w_full()
+                                .h(px(24.0))
+                                .flex_none()
+                                .bg(rgb(accent_color()))
+                                .text_color(rgb(windows_slider_thumb_color()))
+                                .rounded_full(),
+                        ),
+                )
+                .child(
+                    control_button(Button::new((gpui::ElementId::from(id), "up")))
+                        .label("+")
+                        .on_click(move |_, window, cx| {
+                            handler(
+                                &StepChange {
+                                    delta: 1,
+                                    increase: true,
+                                },
+                                window,
+                                cx,
+                            )
+                        }),
+                )
+                .child(value_element),
+        )
+        .into_any_element()
 }
 
 fn stepper_u64(
@@ -6014,8 +6627,7 @@ fn stepper_u64(
             .items_center()
             .flex_wrap()
             .child(
-                Button::new((gpui::ElementId::from(id.clone()), "down"))
-                    .small()
+                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
                     .label("-")
                     .on_click(move |_, window, cx| {
                         down(
@@ -6030,8 +6642,7 @@ fn stepper_u64(
             )
             .child(value_element)
             .child(
-                Button::new((gpui::ElementId::from(id), "up"))
-                    .small()
+                control_button(Button::new((gpui::ElementId::from(id), "up")))
                     .label("+")
                     .on_click(move |_, window, cx| {
                         handler(
@@ -6065,8 +6676,7 @@ fn stepper_u8(
             .items_center()
             .flex_wrap()
             .child(
-                Button::new((gpui::ElementId::from(id.clone()), "down"))
-                    .small()
+                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
                     .label("-")
                     .on_click(move |_, window, cx| {
                         down(
@@ -6081,8 +6691,7 @@ fn stepper_u8(
             )
             .child(value_element)
             .child(
-                Button::new((gpui::ElementId::from(id), "up"))
-                    .small()
+                control_button(Button::new((gpui::ElementId::from(id), "up")))
                     .label("+")
                     .on_click(move |_, window, cx| {
                         handler(
@@ -6575,100 +7184,6 @@ fn choose_settings_file(
     } else {
         Err(format!("File dialog failed with error code {error}"))
     }
-}
-
-fn choose_accent_color(
-    hwnd: Option<HWND>,
-    current_color: u32,
-    saved_custom_colors: &[u32],
-) -> Result<Option<u32>, String> {
-    let mut custom_colors = [0_u32; 16];
-    let saved_colors = saved_custom_colors
-        .iter()
-        .copied()
-        .filter(|color| !ACCENT_PALETTE.contains(color));
-    for (target, source) in custom_colors
-        .iter_mut()
-        .zip(saved_colors.chain(ACCENT_PALETTE.iter().copied()))
-    {
-        *target = rgb_to_colorref(source);
-    }
-
-    let mut dialog = CHOOSECOLORW {
-        lStructSize: std::mem::size_of::<CHOOSECOLORW>() as u32,
-        hwndOwner: hwnd.unwrap_or_default(),
-        rgbResult: rgb_to_colorref(current_color),
-        lpCustColors: custom_colors.as_mut_ptr(),
-        Flags: CC_FULLOPEN | CC_RGBINIT | CC_ENABLEHOOK,
-        lpfnHook: Some(center_color_dialog_hook),
-        ..Default::default()
-    };
-
-    let selected = unsafe { ChooseColorW(&mut dialog) };
-    if selected != 0 {
-        return Ok(Some(colorref_to_rgb(dialog.rgbResult)));
-    }
-
-    let error = unsafe { CommDlgExtendedError() };
-    if error == 0 {
-        Ok(None)
-    } else {
-        Err(format!("Color picker failed with error code {error}"))
-    }
-}
-
-unsafe extern "system" fn center_color_dialog_hook(
-    dialog_hwnd: HWND,
-    message: u32,
-    _wparam: WPARAM,
-    lparam: LPARAM,
-) -> usize {
-    if message != WM_INITDIALOG || lparam == 0 {
-        return 0;
-    }
-
-    let choose_color = unsafe { &*(lparam as *const CHOOSECOLORW) };
-    let owner_hwnd = choose_color.hwndOwner;
-    if owner_hwnd == null_mut() {
-        return 0;
-    }
-
-    let mut owner_rect = RECT::default();
-    let mut dialog_rect = RECT::default();
-    let has_owner_rect = unsafe { GetWindowRect(owner_hwnd, &mut owner_rect) } != 0;
-    let has_dialog_rect = unsafe { GetWindowRect(dialog_hwnd, &mut dialog_rect) } != 0;
-    if !has_owner_rect || !has_dialog_rect {
-        return 0;
-    }
-
-    let owner_width = owner_rect.right - owner_rect.left;
-    let owner_height = owner_rect.bottom - owner_rect.top;
-    let dialog_width = dialog_rect.right - dialog_rect.left;
-    let dialog_height = dialog_rect.bottom - dialog_rect.top;
-    let x = owner_rect.left + (owner_width - dialog_width) / 2;
-    let y = owner_rect.top + (owner_height - dialog_height) / 2;
-
-    unsafe {
-        SetWindowPos(
-            dialog_hwnd,
-            null_mut(),
-            x.max(0),
-            y.max(0),
-            0,
-            0,
-            SWP_NOZORDER | SWP_NOSIZE,
-        );
-    }
-
-    0
-}
-
-fn rgb_to_colorref(color: u32) -> u32 {
-    ((color & 0xff0000) >> 16) | (color & 0x00ff00) | ((color & 0x0000ff) << 16)
-}
-
-fn colorref_to_rgb(color: u32) -> u32 {
-    ((color & 0x0000ff) << 16) | (color & 0x00ff00) | ((color & 0xff0000) >> 16)
 }
 
 fn path_to_wide_buffer(path: &Path, len: usize) -> Vec<u16> {
