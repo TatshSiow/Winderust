@@ -158,7 +158,7 @@ Current behavior:
 
 Avoid copying EnergyStarX code into this project. If EcoQoS behavior needs to change, implement against Microsoft Win32 documentation directly.
 
-## CPU Affinity
+## Core Steering
 
 `src/affinity/mod.rs` owns optional process affinity controls.
 
@@ -166,11 +166,12 @@ Current behavior:
 
 - Settings live in `settings.cpu_affinity`.
 - The feature is disabled by default.
-- CPU Affinity activation and target changes apply only after Save; disabling CPU Affinity takes effect immediately.
+- Core Steering activation and target changes apply only after Save; disabling Core Steering takes effect immediately.
 - `BackgroundAutomation` runs the `CpuAffinityManager` every second while the app is visible or hidden to tray.
-- Each rule can use hard affinity through `SetProcessAffinityMask` or soft CPU Sets through `SetProcessDefaultCpuSets`.
+- Each rule can use hard affinity through `SetProcessAffinityMask`, soft CPU Sets through `SetProcessDefaultCpuSets`, or Efficiency Mode OFF through `SetProcessInformation(ProcessPowerThrottling)`.
 - Hard mode preserves each process's previous affinity mask when possible, then restores that mask when the process is no longer targeted.
 - Soft mode preserves each process's previous default CPU Set IDs when possible, then restores those IDs when the process is no longer targeted.
+- Efficiency Mode OFF preserves each process's previous `PROCESS_POWER_THROTTLING_STATE` when possible, then restores that state when the process is no longer targeted.
 - It detects multi-processor-group systems with `GetActiveProcessorGroupCount` and warns that hard affinity uses the process primary processor group.
 - Built-in exclusions cover Windows shell/input/UWP lifecycle processes such as `explorer.exe`, `dwm.exe`, `searchapp.exe`, `searchhost.exe`, `systemsettings.exe`, and `textinputhost.exe`.
 

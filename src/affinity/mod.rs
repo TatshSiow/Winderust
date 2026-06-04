@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::c_void,
     mem::size_of,
     ptr::{null_mut, read_unaligned},
     slice,
@@ -16,9 +17,11 @@ use windows_sys::Win32::{
         },
         Threading::{
             GetActiveProcessorGroupCount, GetCurrentProcessId, GetProcessAffinityMask,
-            GetProcessDefaultCpuSets, OpenProcess, SetProcessAffinityMask,
-            SetProcessDefaultCpuSets, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION,
+            GetProcessDefaultCpuSets, GetProcessInformation, OpenProcess, ProcessPowerThrottling,
+            SetProcessAffinityMask, SetProcessDefaultCpuSets, SetProcessInformation,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_INFORMATION,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
         },
     },
 };
@@ -118,6 +121,9 @@ enum AffinityAdjustment {
     Soft {
         previous_cpu_set_ids: Vec<u32>,
         applied_cpu_set_ids: Vec<u32>,
+    },
+    EfficiencyOff {
+        previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     },
 }
 
@@ -543,12 +549,16 @@ fn matching_rule<'a>(
 ) -> Option<&'a CpuAffinityRule> {
     settings.rules.iter().find(|rule| {
         rule.enabled
-            && rule.core_mask != 0
+            && rule_has_target(rule)
             && rule
                 .process_name
                 .trim()
                 .eq_ignore_ascii_case(process_name.trim())
     })
+}
+
+fn rule_has_target(rule: &CpuAffinityRule) -> bool {
+    rule.mode == CpuAffinityMode::EfficiencyOff || rule.core_mask != 0
 }
 
 fn process_session_id(process_id: u32) -> Option<u32> {
@@ -589,6 +599,9 @@ fn apply_affinity(
         CpuAffinityMode::Soft => {
             apply_soft_affinity(&process, process_name, rule_mask, reusable_existing)
         }
+        CpuAffinityMode::EfficiencyOff => {
+            apply_efficiency_mode_off(&process, process_name, reusable_existing)
+        }
     }
 }
 
@@ -627,7 +640,7 @@ fn apply_hard_affinity(
             AffinityAdjustment::Hard {
                 previous_affinity, ..
             } => Some(previous_affinity),
-            AffinityAdjustment::Soft { .. } => None,
+            AffinityAdjustment::Soft { .. } | AffinityAdjustment::EfficiencyOff { .. } => None,
         })
         .unwrap_or(current_affinity);
 
@@ -671,7 +684,7 @@ fn apply_soft_affinity(
                 previous_cpu_set_ids,
                 ..
             } => Some(previous_cpu_set_ids.clone()),
-            AffinityAdjustment::Hard { .. } => None,
+            AffinityAdjustment::Hard { .. } | AffinityAdjustment::EfficiencyOff { .. } => None,
         })
         .unwrap_or(current_cpu_set_ids);
 
@@ -681,6 +694,41 @@ fn apply_soft_affinity(
             previous_cpu_set_ids,
             applied_cpu_set_ids: target_cpu_set_ids,
         },
+    }))
+}
+
+fn apply_efficiency_mode_off(
+    process: &ProcessHandle,
+    process_name: String,
+    existing: Option<&AdjustedProcess>,
+) -> Result<Option<AdjustedProcess>, AffinityError> {
+    let current_state = process.power_throttling_state().ok();
+
+    if existing.is_some_and(|adjusted| {
+        matches!(
+            adjusted.adjustment,
+            AffinityAdjustment::EfficiencyOff { .. }
+        ) && current_state.is_some_and(|state| !power_throttling_execution_enabled(state))
+    }) {
+        return Ok(existing.cloned());
+    }
+
+    let mut next_state = current_state.unwrap_or_else(power_throttling_disabled_state);
+    next_state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    next_state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    next_state.StateMask &= !PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    process.set_power_throttling_state(next_state)?;
+
+    let previous_state = existing
+        .and_then(|adjusted| match adjusted.adjustment {
+            AffinityAdjustment::EfficiencyOff { previous_state } => previous_state,
+            AffinityAdjustment::Hard { .. } | AffinityAdjustment::Soft { .. } => None,
+        })
+        .or(current_state);
+
+    Ok(Some(AdjustedProcess {
+        process_name,
+        adjustment: AffinityAdjustment::EfficiencyOff { previous_state },
     }))
 }
 
@@ -696,6 +744,9 @@ fn restore_adjustment(
             previous_cpu_set_ids,
             ..
         } => process.set_default_cpu_set_ids(previous_cpu_set_ids),
+        AffinityAdjustment::EfficiencyOff { previous_state } => process.set_power_throttling_state(
+            previous_state.unwrap_or_else(power_throttling_disabled_state),
+        ),
     }
 }
 
@@ -704,8 +755,21 @@ impl AffinityAdjustment {
         match self {
             Self::Hard { .. } => CpuAffinityMode::Hard,
             Self::Soft { .. } => CpuAffinityMode::Soft,
+            Self::EfficiencyOff { .. } => CpuAffinityMode::EfficiencyOff,
         }
     }
+}
+
+fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
+    PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: 0,
+    }
+}
+
+fn power_throttling_execution_enabled(state: PROCESS_POWER_THROTTLING_STATE) -> bool {
+    (state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) != 0
 }
 
 fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize> {
@@ -898,6 +962,48 @@ impl ProcessHandle {
             Ok(())
         }
     }
+
+    fn power_throttling_state(&self) -> Result<PROCESS_POWER_THROTTLING_STATE, AffinityError> {
+        let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+        let ok = unsafe {
+            GetProcessInformation(
+                self.0,
+                ProcessPowerThrottling,
+                &mut state as *mut _ as *mut c_void,
+                size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            )
+        };
+        if ok == 0 {
+            Err(AffinityError::Failed(format!(
+                "GetProcessInformation ProcessPowerThrottling failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(state)
+        }
+    }
+
+    fn set_power_throttling_state(
+        &self,
+        state: PROCESS_POWER_THROTTLING_STATE,
+    ) -> Result<(), AffinityError> {
+        let ok = unsafe {
+            SetProcessInformation(
+                self.0,
+                ProcessPowerThrottling,
+                &state as *const _ as *const c_void,
+                size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            )
+        };
+        if ok == 0 {
+            Err(AffinityError::Failed(format!(
+                "SetProcessInformation ProcessPowerThrottling failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Drop for ProcessHandle {
@@ -940,10 +1046,17 @@ mod tests {
                     process_name: " Worker.EXE ".to_owned(),
                     core_mask: 0b11,
                 },
+                CpuAffinityRule {
+                    enabled: true,
+                    mode: CpuAffinityMode::EfficiencyOff,
+                    process_name: "Game.EXE".to_owned(),
+                    core_mask: 0,
+                },
             ],
         };
 
         assert!(matching_rule(&settings, "worker.exe").is_some());
+        assert!(matching_rule(&settings, "game.exe").is_some());
         assert!(matching_rule(&settings, "browser.exe").is_none());
         assert!(matching_rule(&settings, "backup.exe").is_none());
     }
@@ -986,6 +1099,15 @@ mod tests {
     #[test]
     fn target_cpu_set_ids_empty_when_mask_selects_no_known_cpus() {
         assert!(cpu_set_ids_for_mask_from_bytes(&[], 0b11).is_empty());
+    }
+
+    #[test]
+    fn power_throttling_execution_flag_detection() {
+        let mut state = power_throttling_disabled_state();
+        assert!(!power_throttling_execution_enabled(state));
+
+        state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+        assert!(power_throttling_execution_enabled(state));
     }
 
     #[test]

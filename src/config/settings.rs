@@ -230,10 +230,11 @@ pub enum CpuAffinityMode {
     #[default]
     Hard,
     Soft,
+    EfficiencyOff,
 }
 
 impl CpuAffinityMode {
-    pub const ALL: [Self; 2] = [Self::Hard, Self::Soft];
+    pub const ALL: [Self; 3] = [Self::Hard, Self::Soft, Self::EfficiencyOff];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

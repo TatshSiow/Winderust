@@ -257,6 +257,12 @@ mod tests {
                         process_name: "indexer.exe".to_owned(),
                         core_mask: 0b1100,
                     },
+                    CpuAffinityRule {
+                        enabled: true,
+                        mode: CpuAffinityMode::EfficiencyOff,
+                        process_name: "game.exe".to_owned(),
+                        core_mask: 0,
+                    },
                 ],
             },
         };

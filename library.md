@@ -81,15 +81,15 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 | `OpenProcess` | Opens target processes with query and set-information access rights. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
 | Process Security and Access Rights | Documents access flags such as `PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_INFORMATION`, and `PROCESS_SET_LIMITED_INFORMATION`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
 
-## CPU Affinity
+## Core Steering
 
-PowerLeaf CPU Affinity can apply hard process affinity masks or soft Windows CPU Sets to selected current-session processes. On systems with more than one processor group, the status message warns that hard affinity uses the process primary processor group.
+PowerLeaf Core Steering can apply hard process affinity masks, soft Windows CPU Sets, or Efficiency Mode OFF to selected current-session processes. On systems with more than one processor group, the status message warns that hard affinity uses the process primary processor group.
 
 Implementation entry point:
 
 - `src/affinity/mod.rs`
 
-### CPU Affinity APIs
+### Core Steering APIs
 
 | API | Used for | Reference |
 | --- | --- | --- |
@@ -98,6 +98,7 @@ Implementation entry point:
 | `GetSystemCpuSetInformation` | Maps selected logical CPUs to Windows CPU Set IDs for soft affinity mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
 | `GetProcessDefaultCpuSets` | Reads existing process default CPU Set IDs so soft mode can restore them later. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
 | `SetProcessDefaultCpuSets` | Applies or clears process default CPU Set IDs for soft affinity mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets |
+| `GetProcessInformation` / `SetProcessInformation` | Reads and clears `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` for Efficiency Mode OFF rules. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation |
 | `GetActiveProcessorGroupCount` | Detects multi-group systems where single-mask affinity APIs are group-relative. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount |
 | Processor Groups | Explains why hard affinity masks are group-relative and why multi-group systems need special handling. | https://learn.microsoft.com/en-us/windows/win32/procthread/processor-groups |
 | CPU Sets | Explains soft processor preference while remaining more compatible with OS power management. | https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets |

@@ -2939,9 +2939,11 @@ impl PowerLeafApp {
                         rule.core_mask,
                     ))
                     .into_any_element()]))
-                    .child(rule_card_body_row(vec![
-                        self.render_affinity_core_selector(index, rule.core_mask, cx)
-                    ]))
+                    .when(rule.mode != CpuAffinityMode::EfficiencyOff, |card| {
+                        card.child(rule_card_body_row(vec![
+                            self.render_affinity_core_selector(index, rule.core_mask, cx)
+                        ]))
+                    })
                     .child(rule_card_body_action(
                         Button::new(SharedString::from(format!("remove-affinity-{index}")))
                             .small()
@@ -2984,6 +2986,10 @@ impl PowerLeafApp {
                 CpuAffinityMode::Soft => (
                     t!("affinity.mode_soft").to_string(),
                     t!("affinity.mode_soft_help").to_string(),
+                ),
+                CpuAffinityMode::EfficiencyOff => (
+                    t!("affinity.mode_efficiency_off").to_string(),
+                    t!("affinity.mode_efficiency_off_help").to_string(),
                 ),
             };
             row = row.child(
