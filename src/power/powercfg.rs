@@ -5,13 +5,14 @@ use windows_sys::{
     Win32::{
         Foundation::{LocalFree, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
         System::Power::{
-            PowerEnumerate, PowerGetActiveScheme, PowerReadFriendlyName, PowerSetActiveScheme,
-            ACCESS_SCHEME,
+            PowerEnumerate, PowerGetActiveScheme, PowerReadACValueIndex, PowerReadDCValueIndex,
+            PowerReadFriendlyName, PowerSetActiveScheme, PowerWriteACValueIndex,
+            PowerWriteDCValueIndex, ACCESS_SCHEME,
         },
     },
 };
 
-use super::PowerPlan;
+use super::{PowerPlan, ProcessorPowerAcDcValues, ProcessorPowerValues};
 
 #[derive(Debug, Default)]
 pub struct PowerPlanManager;
@@ -66,6 +67,196 @@ impl PowerPlanManager {
                 "PowerSetActiveScheme failed with error code {result}."
             ))
         }
+    }
+
+    pub fn apply_processor_power_values(
+        &self,
+        guid: &str,
+        values: ProcessorPowerAcDcValues,
+    ) -> Result<(), String> {
+        let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+        let values = values.normalized();
+
+        write_ac_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_CORE_PARKING_MIN_CORES,
+            values.ac.core_parking_min,
+        )?;
+        write_dc_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_CORE_PARKING_MIN_CORES,
+            values.dc.core_parking_min,
+        )?;
+        write_ac_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_PROCESSOR_PERFORMANCE_MIN,
+            values.ac.performance_min,
+        )?;
+        write_dc_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_PROCESSOR_PERFORMANCE_MIN,
+            values.dc.performance_min,
+        )?;
+        write_ac_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_PROCESSOR_PERFORMANCE_MAX,
+            values.ac.performance_max,
+        )?;
+        write_dc_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_PROCESSOR_PERFORMANCE_MAX,
+            values.dc.performance_max,
+        )?;
+
+        if active_scheme_guid()
+            .ok()
+            .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(guid))
+        {
+            self.set_active(guid)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn read_processor_power_values(
+        &self,
+        guid: &str,
+    ) -> Result<ProcessorPowerAcDcValues, String> {
+        let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+        Ok(ProcessorPowerAcDcValues::new(
+            ProcessorPowerValues::new(
+                read_ac_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_CORE_PARKING_MIN_CORES,
+                )?,
+                read_ac_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_PROCESSOR_PERFORMANCE_MIN,
+                )?,
+                read_ac_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_PROCESSOR_PERFORMANCE_MAX,
+                )?,
+            )
+            .normalized(),
+            ProcessorPowerValues::new(
+                read_dc_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_CORE_PARKING_MIN_CORES,
+                )?,
+                read_dc_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_PROCESSOR_PERFORMANCE_MIN,
+                )?,
+                read_dc_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_PROCESSOR_PERFORMANCE_MAX,
+                )?,
+            )
+            .normalized(),
+        ))
+    }
+}
+
+const GUID_PROCESSOR_SETTINGS_SUBGROUP: GUID = GUID {
+    data1: 0x54533251,
+    data2: 0x82be,
+    data3: 0x4824,
+    data4: [0x96, 0xc1, 0x47, 0xb6, 0x0b, 0x74, 0x0d, 0x00],
+};
+
+const GUID_CORE_PARKING_MIN_CORES: GUID = GUID {
+    data1: 0x0cc5b647,
+    data2: 0xc1df,
+    data3: 0x4637,
+    data4: [0x89, 0x1a, 0xde, 0xc3, 0x5c, 0x31, 0x85, 0x83],
+};
+
+const GUID_PROCESSOR_PERFORMANCE_MIN: GUID = GUID {
+    data1: 0x893dee8e,
+    data2: 0x2bef,
+    data3: 0x41e0,
+    data4: [0x89, 0xc6, 0xb5, 0x5d, 0x09, 0x29, 0x96, 0x4c],
+};
+
+const GUID_PROCESSOR_PERFORMANCE_MAX: GUID = GUID {
+    data1: 0xbc5038f7,
+    data2: 0x23e0,
+    data3: 0x4960,
+    data4: [0x96, 0xda, 0x33, 0xab, 0xaf, 0x59, 0x35, 0xec],
+};
+
+fn write_ac_value(
+    scheme: &GUID,
+    subgroup: &GUID,
+    setting: &GUID,
+    value: u32,
+) -> Result<(), String> {
+    let ac_result = unsafe { PowerWriteACValueIndex(null_mut(), scheme, subgroup, setting, value) };
+    if ac_result != ERROR_SUCCESS {
+        return Err(format!(
+            "PowerWriteACValueIndex({}) failed with error code {ac_result}.",
+            format_guid(setting)
+        ));
+    }
+
+    Ok(())
+}
+
+fn write_dc_value(
+    scheme: &GUID,
+    subgroup: &GUID,
+    setting: &GUID,
+    value: u32,
+) -> Result<(), String> {
+    let dc_result = unsafe { PowerWriteDCValueIndex(null_mut(), scheme, subgroup, setting, value) };
+    if dc_result != ERROR_SUCCESS {
+        return Err(format!(
+            "PowerWriteDCValueIndex({}) failed with error code {dc_result}.",
+            format_guid(setting)
+        ));
+    }
+
+    Ok(())
+}
+
+fn read_ac_value(scheme: &GUID, subgroup: &GUID, setting: &GUID) -> Result<u32, String> {
+    let mut value = 0;
+    let result =
+        unsafe { PowerReadACValueIndex(null_mut(), scheme, subgroup, setting, &mut value) };
+    if result == ERROR_SUCCESS {
+        Ok(value)
+    } else {
+        Err(format!(
+            "PowerReadACValueIndex({}) failed with error code {result}.",
+            format_guid(setting)
+        ))
+    }
+}
+
+fn read_dc_value(scheme: &GUID, subgroup: &GUID, setting: &GUID) -> Result<u32, String> {
+    let mut value = 0;
+    let result =
+        unsafe { PowerReadDCValueIndex(null_mut(), scheme, subgroup, setting, &mut value) };
+    if result == ERROR_SUCCESS {
+        Ok(value)
+    } else {
+        Err(format!(
+            "PowerReadDCValueIndex({}) failed with error code {result}.",
+            format_guid(setting)
+        ))
     }
 }
 
@@ -216,6 +407,8 @@ fn format_guid(guid: &GUID) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::power::ProcessorPowerPreset;
+
     use super::*;
 
     #[test]
@@ -224,5 +417,43 @@ mod tests {
         let guid = parse_guid(raw).unwrap();
 
         assert_eq!(format_guid(&guid), raw);
+    }
+
+    #[test]
+    fn processor_power_presets_use_explicit_percentages() {
+        let performance = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Performance);
+        assert_eq!(performance.core_parking_min, 100);
+        assert_eq!(performance.performance_min, 100);
+        assert_eq!(performance.performance_max, 100);
+
+        let saver = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver);
+        assert_eq!(saver.core_parking_min, 0);
+        assert_eq!(saver.performance_min, 5);
+        assert_eq!(saver.performance_max, 80);
+    }
+
+    #[test]
+    fn processor_power_values_normalize_to_valid_percentages() {
+        let values = ProcessorPowerValues::new(140, 75, 20).normalized();
+
+        assert_eq!(values.core_parking_min, 100);
+        assert_eq!(values.performance_min, 75);
+        assert_eq!(values.performance_max, 75);
+    }
+
+    #[test]
+    fn processor_power_ac_dc_values_normalize_each_power_source() {
+        let values = ProcessorPowerAcDcValues::new(
+            ProcessorPowerValues::new(120, 90, 80),
+            ProcessorPowerValues::new(10, 20, 15),
+        )
+        .normalized();
+
+        assert_eq!(values.ac.core_parking_min, 100);
+        assert_eq!(values.ac.performance_min, 90);
+        assert_eq!(values.ac.performance_max, 90);
+        assert_eq!(values.dc.core_parking_min, 10);
+        assert_eq!(values.dc.performance_min, 20);
+        assert_eq!(values.dc.performance_max, 20);
     }
 }

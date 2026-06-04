@@ -5,6 +5,7 @@ pub enum Page {
     Dashboard,
     Activity,
     CpuUsage,
+    CoreParking,
     EfficiencyMode,
     AppSuspension,
     CpuAffinity,
@@ -26,10 +27,10 @@ const AUTOMATION_RULE_PAGES: [Page; 4] = [
     Page::Schedule,
     Page::ForegroundRules,
 ];
-const PROCESS_CONTROL_PAGES: [Page; 3] =
-    [Page::EfficiencyMode, Page::AppSuspension, Page::CpuAffinity];
+const CPU_CONTROL_PAGES: [Page; 2] = [Page::CoreParking, Page::CpuAffinity];
+const PROCESS_CONTROL_PAGES: [Page; 2] = [Page::EfficiencyMode, Page::AppSuspension];
 const APP_PAGES: [Page; 2] = [Page::Settings, Page::About];
-const PAGE_SECTIONS: [PageSection; 4] = [
+const PAGE_SECTIONS: [PageSection; 5] = [
     PageSection {
         label: "Overview",
         pages: &OVERVIEW_PAGES,
@@ -37,6 +38,10 @@ const PAGE_SECTIONS: [PageSection; 4] = [
     PageSection {
         label: "Power Plan Controls",
         pages: &AUTOMATION_RULE_PAGES,
+    },
+    PageSection {
+        label: "CPU Controls",
+        pages: &CPU_CONTROL_PAGES,
     },
     PageSection {
         label: "Process Controls",
@@ -54,6 +59,7 @@ impl Page {
             Self::Dashboard => t!("nav.dashboard"),
             Self::Activity => t!("nav.activity"),
             Self::CpuUsage => t!("nav.cpu_usage"),
+            Self::CoreParking => t!("nav.core_parking"),
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
@@ -71,9 +77,8 @@ impl Page {
             Self::Activity | Self::CpuUsage | Self::Schedule | Self::ForegroundRules => {
                 t!("nav.power_plan_controls")
             }
-            Self::EfficiencyMode | Self::AppSuspension | Self::CpuAffinity => {
-                t!("nav.process_controls")
-            }
+            Self::CoreParking | Self::CpuAffinity => t!("nav.cpu_controls"),
+            Self::EfficiencyMode | Self::AppSuspension => t!("nav.process_controls"),
             Self::Settings | Self::About => t!("nav.app"),
         }
         .to_string()
@@ -88,6 +93,7 @@ pub fn section_label(label: &str) -> String {
     match label {
         "Overview" => t!("nav.overview"),
         "Power Plan Controls" => t!("nav.power_plan_controls"),
+        "CPU Controls" => t!("nav.cpu_controls"),
         "Process Controls" => t!("nav.process_controls"),
         "App" => t!("nav.app"),
         _ => label.into(),

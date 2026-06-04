@@ -81,6 +81,22 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 | `OpenProcess` | Opens target processes with query and set-information access rights. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
 | Process Security and Access Rights | Documents access flags such as `PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_INFORMATION`, and `PROCESS_SET_LIMITED_INFORMATION`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
 
+## Processor Power Plan Tuning
+
+PowerLeaf can apply separate AC and battery processor-power percentages to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process Core Steering.
+
+Implementation entry point:
+
+- `src/power/powercfg.rs`
+
+| API / Setting | Used for | Reference |
+| --- | --- | --- |
+| `PowerWriteACValueIndex` / `PowerWriteDCValueIndex` | Writes separate AC and battery processor setting percentages in the selected power plan. | https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerwriteacvalueindex |
+| `PowerReadACValueIndex` / `PowerReadDCValueIndex` | Reads the selected power plan's AC and battery processor setting percentages so the UI can reflect current Windows values. | https://learn.microsoft.com/en-us/windows/win32/api/powrprof/nf-powrprof-powerreadacvalueindex |
+| Processor settings subgroup | Contains core parking and processor performance settings. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configuration-for-processor-power-management-settings |
+| Core parking minimum cores | Sets the percentage of logical processors that must remain unparked. | https://bitsum.com/parkcontrol/ |
+| Processor performance min/max | Sets minimum and maximum processor performance percentages. | https://bitsum.com/parkcontrol/ |
+
 ## Core Steering
 
 PowerLeaf Core Steering can apply hard process affinity masks, soft Windows CPU Sets, or Efficiency Mode OFF to selected current-session processes. On systems with more than one processor group, the status message warns that hard affinity uses the process primary processor group.

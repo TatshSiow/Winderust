@@ -39,7 +39,10 @@ use crate::{
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{self, EcoQosSnapshot},
     foreground::{list_process_names, ForegroundDetector},
-    power::{PowerPlan, PowerPlanManager},
+    power::{
+        PowerPlan, PowerPlanManager, ProcessorPowerAcDcValues, ProcessorPowerPreset,
+        ProcessorPowerValues,
+    },
     power_source,
     rules::{DecisionEngine, DecisionInput, DecisionOutcome, DecisionState},
     scheduler::{CpuUsageScheduler, Scheduler},
@@ -115,6 +118,15 @@ pub struct PowerLeafApp {
     status_message: String,
     process_candidates: Vec<String>,
     active_power_plan_picker: Option<String>,
+    processor_power_ac_core_parking_min: u64,
+    processor_power_ac_performance_min: u64,
+    processor_power_ac_performance_max: u64,
+    processor_power_dc_core_parking_min: u64,
+    processor_power_dc_performance_min: u64,
+    processor_power_dc_performance_max: u64,
+    processor_power_target_plan_guid: Option<String>,
+    processor_power_loaded_plan_guid: Option<String>,
+    processor_power_dirty: bool,
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
     editing_numeric: Option<NumericField>,
@@ -301,6 +313,15 @@ impl PowerLeafApp {
             status_message: t!("status.ready").to_string(),
             process_candidates: Vec::new(),
             active_power_plan_picker: None,
+            processor_power_ac_core_parking_min: 50,
+            processor_power_ac_performance_min: 5,
+            processor_power_ac_performance_max: 100,
+            processor_power_dc_core_parking_min: 50,
+            processor_power_dc_performance_min: 5,
+            processor_power_dc_performance_max: 100,
+            processor_power_target_plan_guid: None,
+            processor_power_loaded_plan_guid: None,
+            processor_power_dirty: false,
             start_minimized_applied: false,
             editing_rule_title: None,
             editing_numeric: None,
@@ -359,6 +380,8 @@ impl PowerLeafApp {
                 self.next_active_plan_refresh = Instant::now() + ACTIVE_PLAN_REFRESH_INTERVAL;
                 self.status_message =
                     t!("status.loaded_power_plans", count = self.plans.len()).to_string();
+                self.ensure_processor_power_target_plan();
+                self.sync_processor_power_values_from_target_plan(false);
             }
             Err(err) => self.status_message = err,
         }
@@ -380,7 +403,151 @@ impl PowerLeafApp {
                         .find(|plan| plan.guid.eq_ignore_ascii_case(&active_guid))
                         .cloned()
                         .or(Some(active));
+                    self.ensure_processor_power_target_plan();
+                    self.sync_processor_power_values_from_target_plan(false);
                 }
+            }
+            Err(err) => self.status_message = err,
+        }
+    }
+
+    fn ensure_processor_power_target_plan(&mut self) {
+        let target_still_available = self
+            .processor_power_target_plan_guid
+            .as_deref()
+            .is_some_and(|target| {
+                self.plans
+                    .iter()
+                    .any(|plan| plan.guid.eq_ignore_ascii_case(target))
+            });
+        if target_still_available {
+            return;
+        }
+
+        self.processor_power_target_plan_guid = self
+            .current_plan
+            .as_ref()
+            .or_else(|| self.plans.first())
+            .map(|plan| plan.guid.clone());
+    }
+
+    fn processor_power_target_plan(&self) -> Option<PowerPlan> {
+        self.processor_power_target_plan_guid
+            .as_deref()
+            .and_then(|target| {
+                self.plans
+                    .iter()
+                    .find(|plan| plan.guid.eq_ignore_ascii_case(target))
+            })
+            .cloned()
+            .or_else(|| self.current_plan.clone())
+    }
+
+    fn set_processor_power_target_plan(&mut self, guid: String) {
+        self.processor_power_target_plan_guid = Some(guid);
+        self.active_power_plan_picker = None;
+        self.sync_processor_power_values_from_target_plan(true);
+    }
+
+    fn set_processor_power_target_plan_option(&mut self, guid: Option<String>) {
+        if let Some(guid) = guid {
+            self.set_processor_power_target_plan(guid);
+        } else {
+            self.active_power_plan_picker = None;
+        }
+    }
+
+    fn sync_processor_power_values_from_target_plan(&mut self, force: bool) -> bool {
+        let Some(plan) = self.processor_power_target_plan() else {
+            self.processor_power_loaded_plan_guid = None;
+            return false;
+        };
+        let same_plan = self
+            .processor_power_loaded_plan_guid
+            .as_deref()
+            .is_some_and(|guid| guid.eq_ignore_ascii_case(&plan.guid));
+        if !force && same_plan && self.processor_power_dirty {
+            return true;
+        }
+
+        match self.power.read_processor_power_values(&plan.guid) {
+            Ok(values) => {
+                self.set_processor_power_values(values.normalized());
+                self.processor_power_loaded_plan_guid = Some(plan.guid);
+                self.processor_power_dirty = false;
+                true
+            }
+            Err(err) => {
+                self.status_message = err;
+                false
+            }
+        }
+    }
+
+    fn processor_power_values(&self) -> ProcessorPowerAcDcValues {
+        ProcessorPowerAcDcValues::new(
+            ProcessorPowerValues::new(
+                self.processor_power_ac_core_parking_min as u32,
+                self.processor_power_ac_performance_min as u32,
+                self.processor_power_ac_performance_max as u32,
+            ),
+            ProcessorPowerValues::new(
+                self.processor_power_dc_core_parking_min as u32,
+                self.processor_power_dc_performance_min as u32,
+                self.processor_power_dc_performance_max as u32,
+            ),
+        )
+        .normalized()
+    }
+
+    fn set_processor_power_values(&mut self, values: ProcessorPowerAcDcValues) {
+        let values = values.normalized();
+        self.processor_power_ac_core_parking_min = values.ac.core_parking_min as u64;
+        self.processor_power_ac_performance_min = values.ac.performance_min as u64;
+        self.processor_power_ac_performance_max = values.ac.performance_max as u64;
+        self.processor_power_dc_core_parking_min = values.dc.core_parking_min as u64;
+        self.processor_power_dc_performance_min = values.dc.performance_min as u64;
+        self.processor_power_dc_performance_max = values.dc.performance_max as u64;
+    }
+
+    fn refresh_processor_power_values(&mut self) {
+        let Some(plan) = self.processor_power_target_plan() else {
+            self.status_message = t!("processor_power.no_active_plan").to_string();
+            return;
+        };
+        if self.sync_processor_power_values_from_target_plan(true) {
+            self.status_message =
+                t!("processor_power.loaded_values", plan = plan.display_name()).to_string();
+        }
+    }
+
+    fn fill_processor_power_preset(&mut self, preset: ProcessorPowerPreset) {
+        let values = ProcessorPowerValues::for_preset(preset);
+        self.set_processor_power_values(ProcessorPowerAcDcValues::same(values));
+        self.processor_power_dirty = true;
+        self.status_message = t!(
+            "processor_power.loaded_preset",
+            preset = processor_power_preset_label(preset)
+        )
+        .to_string();
+    }
+
+    fn apply_processor_power_custom(&mut self) {
+        let Some(plan) = self.processor_power_target_plan() else {
+            self.status_message = t!("processor_power.no_active_plan").to_string();
+            return;
+        };
+
+        let values = self.processor_power_values();
+        self.set_processor_power_values(values);
+
+        match self.power.apply_processor_power_values(&plan.guid, values) {
+            Ok(()) => {
+                self.processor_power_loaded_plan_guid = Some(plan.guid.clone());
+                self.processor_power_dirty = false;
+                self.status_message =
+                    t!("processor_power.applied_custom", plan = plan.display_name()).to_string();
+                self.refresh_active_plan();
             }
             Err(err) => self.status_message = err,
         }
@@ -919,6 +1086,42 @@ impl PowerLeafApp {
                     self.settings.app_suspension.network_wake_duration_seconds = value;
                 }
             }
+            NumericField::ProcessorAcCoreParkingMin => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.processor_power_ac_core_parking_min = value;
+                    self.processor_power_dirty = true;
+                }
+            }
+            NumericField::ProcessorAcPerformanceMin => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.processor_power_ac_performance_min = value;
+                    self.processor_power_dirty = true;
+                }
+            }
+            NumericField::ProcessorAcPerformanceMax => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.processor_power_ac_performance_max = value;
+                    self.processor_power_dirty = true;
+                }
+            }
+            NumericField::ProcessorDcCoreParkingMin => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.processor_power_dc_core_parking_min = value;
+                    self.processor_power_dirty = true;
+                }
+            }
+            NumericField::ProcessorDcPerformanceMin => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.processor_power_dc_performance_min = value;
+                    self.processor_power_dirty = true;
+                }
+            }
+            NumericField::ProcessorDcPerformanceMax => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.processor_power_dc_performance_max = value;
+                    self.processor_power_dirty = true;
+                }
+            }
             NumericField::CpuThreshold(index) => {
                 if let (Some(rule), Some(value)) = (
                     self.settings.cpu_usage_mode.rules.get_mut(index),
@@ -1045,6 +1248,7 @@ impl PowerLeafApp {
                 }
             }
             Page::CpuUsage => Some(enabled_nav_status(settings.cpu_usage_mode.enabled)),
+            Page::CoreParking => None,
             Page::EfficiencyMode => Some(feature_nav_status(
                 settings.eco_qos.enabled,
                 self.eco_qos_status.unsupported,
@@ -1291,6 +1495,7 @@ impl PowerLeafApp {
             Page::ForegroundRules => self.render_foreground_rules_page(window, cx),
             Page::Schedule => self.render_schedule_page(window, cx),
             Page::CpuUsage => self.render_cpu_usage_page(window, cx),
+            Page::CoreParking => self.render_core_parking_page(cx),
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
@@ -1446,6 +1651,10 @@ impl PowerLeafApp {
                 ),
             ),
             (
+                t!("nav.core_parking").to_string(),
+                self.processor_power_summary_label(),
+            ),
+            (
                 t!("nav.activity").to_string(),
                 active_rule_label(
                     matches!(
@@ -1463,6 +1672,18 @@ impl PowerLeafApp {
                 ),
             ),
         ]
+    }
+
+    fn processor_power_summary_label(&self) -> String {
+        format!(
+            "AC {} / {}-{}%; Battery {} / {}-{}%",
+            self.processor_power_ac_core_parking_min,
+            self.processor_power_ac_performance_min,
+            self.processor_power_ac_performance_max,
+            self.processor_power_dc_core_parking_min,
+            self.processor_power_dc_performance_min,
+            self.processor_power_dc_performance_max
+        )
     }
 
     fn dashboard_process_control_rows(&self) -> Vec<(String, String)> {
@@ -3374,6 +3595,305 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
+    fn render_core_parking_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        page_shell(Page::CoreParking)
+            .child(self.render_processor_power_card(cx))
+            .into_any_element()
+    }
+
+    fn render_processor_power_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut preset_row = h_flex().gap_1().flex_wrap();
+        for preset in [
+            ProcessorPowerPreset::Performance,
+            ProcessorPowerPreset::Balanced,
+            ProcessorPowerPreset::Saver,
+        ] {
+            preset_row = preset_row.child(
+                Button::new(SharedString::from(format!(
+                    "processor-power-preset-{preset:?}"
+                )))
+                .small()
+                .label(processor_power_preset_label(preset))
+                .tooltip(processor_power_preset_help(preset))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.fill_processor_power_preset(preset);
+                    cx.notify();
+                })),
+            );
+        }
+
+        section_card(&t!("processor_power.title"))
+            .child(text_muted(t!("processor_power.help").to_string()))
+            .child(self.render_processor_power_plan_picker(cx))
+            .child(stepper_u64(
+                "processor-power-ac-core-parking-min",
+                &format!(
+                    "{} {}",
+                    t!("processor_power.ac_values"),
+                    t!("processor_power.core_parking_min")
+                ),
+                self.processor_power_ac_core_parking_min,
+                self.render_numeric_value(
+                    NumericField::ProcessorAcCoreParkingMin,
+                    format!("{}%", self.processor_power_ac_core_parking_min),
+                    self.processor_power_ac_core_parking_min.to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.processor_power_ac_core_parking_min =
+                        apply_u64_step(app.processor_power_ac_core_parking_min, change, 0, 100);
+                    app.processor_power_dirty = true;
+                    cx.notify();
+                }),
+            ))
+            .child(stepper_u64(
+                "processor-power-ac-performance-min",
+                &format!(
+                    "{} {}",
+                    t!("processor_power.ac_values"),
+                    t!("processor_power.processor_min")
+                ),
+                self.processor_power_ac_performance_min,
+                self.render_numeric_value(
+                    NumericField::ProcessorAcPerformanceMin,
+                    format!("{}%", self.processor_power_ac_performance_min),
+                    self.processor_power_ac_performance_min.to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.processor_power_ac_performance_min =
+                        apply_u64_step(app.processor_power_ac_performance_min, change, 0, 100);
+                    app.processor_power_dirty = true;
+                    cx.notify();
+                }),
+            ))
+            .child(stepper_u64(
+                "processor-power-ac-performance-max",
+                &format!(
+                    "{} {}",
+                    t!("processor_power.ac_values"),
+                    t!("processor_power.processor_max")
+                ),
+                self.processor_power_ac_performance_max,
+                self.render_numeric_value(
+                    NumericField::ProcessorAcPerformanceMax,
+                    format!("{}%", self.processor_power_ac_performance_max),
+                    self.processor_power_ac_performance_max.to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.processor_power_ac_performance_max =
+                        apply_u64_step(app.processor_power_ac_performance_max, change, 0, 100);
+                    app.processor_power_dirty = true;
+                    cx.notify();
+                }),
+            ))
+            .child(stepper_u64(
+                "processor-power-dc-core-parking-min",
+                &format!(
+                    "{} {}",
+                    t!("processor_power.dc_values"),
+                    t!("processor_power.core_parking_min")
+                ),
+                self.processor_power_dc_core_parking_min,
+                self.render_numeric_value(
+                    NumericField::ProcessorDcCoreParkingMin,
+                    format!("{}%", self.processor_power_dc_core_parking_min),
+                    self.processor_power_dc_core_parking_min.to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.processor_power_dc_core_parking_min =
+                        apply_u64_step(app.processor_power_dc_core_parking_min, change, 0, 100);
+                    app.processor_power_dirty = true;
+                    cx.notify();
+                }),
+            ))
+            .child(stepper_u64(
+                "processor-power-dc-performance-min",
+                &format!(
+                    "{} {}",
+                    t!("processor_power.dc_values"),
+                    t!("processor_power.processor_min")
+                ),
+                self.processor_power_dc_performance_min,
+                self.render_numeric_value(
+                    NumericField::ProcessorDcPerformanceMin,
+                    format!("{}%", self.processor_power_dc_performance_min),
+                    self.processor_power_dc_performance_min.to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.processor_power_dc_performance_min =
+                        apply_u64_step(app.processor_power_dc_performance_min, change, 0, 100);
+                    app.processor_power_dirty = true;
+                    cx.notify();
+                }),
+            ))
+            .child(stepper_u64(
+                "processor-power-dc-performance-max",
+                &format!(
+                    "{} {}",
+                    t!("processor_power.dc_values"),
+                    t!("processor_power.processor_max")
+                ),
+                self.processor_power_dc_performance_max,
+                self.render_numeric_value(
+                    NumericField::ProcessorDcPerformanceMax,
+                    format!("{}%", self.processor_power_dc_performance_max),
+                    self.processor_power_dc_performance_max.to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.processor_power_dc_performance_max =
+                        apply_u64_step(app.processor_power_dc_performance_max, change, 0, 100);
+                    app.processor_power_dirty = true;
+                    cx.notify();
+                }),
+            ))
+            .child(labeled_element(
+                &t!("processor_power.presets"),
+                preset_row.into_any_element(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new("processor-power-refresh-values")
+                            .small()
+                            .label(t!("processor_power.refresh_values").to_string())
+                            .disabled(self.current_plan.is_none())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.refresh_processor_power_values();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("processor-power-apply-custom")
+                            .small()
+                            .primary()
+                            .label(t!("processor_power.apply_custom").to_string())
+                            .disabled(self.current_plan.is_none())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.apply_processor_power_custom();
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_processor_power_plan_picker(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let id = "processor-power-target-plan";
+        let is_open = self.active_power_plan_picker.as_deref() == Some(id);
+        let selected_guid = self
+            .processor_power_target_plan_guid
+            .as_deref()
+            .or_else(|| self.current_plan.as_ref().map(|plan| plan.guid.as_str()));
+        let selected_text = selected_guid
+            .and_then(|guid| {
+                self.plans
+                    .iter()
+                    .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
+            })
+            .map(PowerPlan::display_name)
+            .unwrap_or_else(|| t!("processor_power.no_active_plan").to_string());
+
+        let mut options = v_flex()
+            .w_full()
+            .max_h(px(244.0))
+            .overflow_y_scrollbar()
+            .gap_1()
+            .p_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover);
+
+        if self.plans.is_empty() {
+            options = options.child(
+                div()
+                    .px_2()
+                    .py_2()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("common.no_power_plans_loaded").to_string()),
+            );
+        } else {
+            for plan in &self.plans {
+                let selected =
+                    selected_guid.is_some_and(|selected| selected.eq_ignore_ascii_case(&plan.guid));
+                options = options.child(power_plan_option_row(
+                    format!("{id}-{}", plan.guid),
+                    plan.display_name(),
+                    selected,
+                    Some(plan.guid.clone()),
+                    PowerPlanField::ProcessorPowerTarget,
+                    cx,
+                ));
+            }
+        }
+
+        let picker = v_flex()
+            .w_full()
+            .max_w(px(372.0))
+            .min_w(px(0.0))
+            .relative()
+            .min_h(px(32.0))
+            .child(
+                h_flex()
+                    .id("processor-power-target-plan-control")
+                    .h(px(32.0))
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_2()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(cx.theme().input)
+                    .bg(cx.theme().background)
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .hover(|style| style.bg(cx.theme().secondary_hover))
+                    .cursor_pointer()
+                    .child(div().flex_1().min_w(px(0.0)).child(selected_text))
+                    .child(div().text_color(cx.theme().muted_foreground).child("v"))
+                    .on_click(cx.listener(|app, _: &gpui::ClickEvent, _, cx| {
+                        app.refresh_power_plans();
+                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                            != Some("processor-power-target-plan"))
+                        .then_some("processor-power-target-plan".to_owned());
+                        cx.notify();
+                    })),
+            )
+            .child(if is_open {
+                deferred(
+                    div()
+                        .absolute()
+                        .top(px(34.0))
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
+                        .child(options),
+                )
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+            } else {
+                div().into_any_element()
+            });
+
+        labeled_element(
+            &t!("processor_power.target_plan"),
+            picker.into_any_element(),
+        )
+    }
+
     fn render_about_page(&self) -> AnyElement {
         page_shell(Page::About)
             .child(section_header(
@@ -3665,6 +4185,9 @@ impl PowerLeafApp {
                     rule.else_power_plan_guid = guid;
                 }
             }
+            PowerPlanField::ProcessorPowerTarget => {
+                self.set_processor_power_target_plan_option(guid);
+            }
         }
     }
 
@@ -3825,6 +4348,7 @@ enum PowerPlanField {
     ScheduleRule(usize),
     CpuRule(usize),
     CpuRuleElse(usize),
+    ProcessorPowerTarget,
 }
 
 fn power_plan_option_row(
@@ -3899,6 +4423,12 @@ enum NumericField {
     SuspensionThawDuration,
     SuspensionAudioRefreeze,
     SuspensionNetworkRefreeze,
+    ProcessorAcCoreParkingMin,
+    ProcessorAcPerformanceMin,
+    ProcessorAcPerformanceMax,
+    ProcessorDcCoreParkingMin,
+    ProcessorDcPerformanceMin,
+    ProcessorDcPerformanceMax,
     CpuThreshold(usize),
     CpuUpperThreshold(usize),
     CpuDuration(usize),
@@ -4608,6 +5138,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::Dashboard => NavIcon::Dashboard,
         Page::Activity => NavIcon::Activity,
         Page::CpuUsage => NavIcon::Chart,
+        Page::CoreParking => NavIcon::Chip,
         Page::EfficiencyMode => NavIcon::Zap,
         Page::AppSuspension => NavIcon::PauseCircle,
         Page::CpuAffinity => NavIcon::Chip,
@@ -5116,6 +5647,22 @@ fn affinity_processor_tooltip(processor: &LogicalProcessorInfo) -> String {
             class = processor.efficiency_class
         )
         .to_string()
+    }
+}
+
+fn processor_power_preset_label(preset: ProcessorPowerPreset) -> String {
+    match preset {
+        ProcessorPowerPreset::Performance => t!("processor_power.performance").to_string(),
+        ProcessorPowerPreset::Balanced => t!("processor_power.balanced").to_string(),
+        ProcessorPowerPreset::Saver => t!("processor_power.saver").to_string(),
+    }
+}
+
+fn processor_power_preset_help(preset: ProcessorPowerPreset) -> String {
+    match preset {
+        ProcessorPowerPreset::Performance => t!("processor_power.performance_help").to_string(),
+        ProcessorPowerPreset::Balanced => t!("processor_power.balanced_help").to_string(),
+        ProcessorPowerPreset::Saver => t!("processor_power.saver_help").to_string(),
     }
 }
 

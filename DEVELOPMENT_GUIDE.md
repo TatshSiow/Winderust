@@ -158,6 +158,23 @@ Current behavior:
 
 Avoid copying EnergyStarX code into this project. If EcoQoS behavior needs to change, implement against Microsoft Win32 documentation directly.
 
+## Processor Power Plan Tuning
+
+`src/power/powercfg.rs` owns Windows power plan enumeration, switching, and processor-power tuning writes.
+
+Current behavior:
+
+- The UI lives on the Core Parking page under Power Plan Controls, not on the general Settings page.
+- Processor power tuning is applied directly to the selected Windows power plan.
+- These settings are persisted by Windows in the power plan, not stored in `settings.toml`.
+- Custom AC values are written with `PowerWriteACValueIndex`; custom battery values are written with `PowerWriteDCValueIndex`.
+- Active-plan AC and battery values are read back with `PowerReadACValueIndex` and `PowerReadDCValueIndex`.
+- The UI exposes AC and battery core parking minimum cores, minimum processor performance, and maximum processor performance as free 0-100% values.
+- Automatic active-plan refresh will not overwrite unsaved processor tuning edits for the same plan; use Refresh values to discard local edits and reload from Windows.
+- Presets are quick-fill values only and fill both AC and battery: Performance uses 100/100/100, Balanced uses 50/5/100, and Saver uses 0/5/80.
+- Maximum processor performance is normalized to be at least the configured minimum processor performance before writing.
+- Do not add a "restore defaults" action unless it uses an explicit Windows default-restore path; OEM and plan defaults vary.
+
 ## Core Steering
 
 `src/affinity/mod.rs` owns optional process affinity controls.
