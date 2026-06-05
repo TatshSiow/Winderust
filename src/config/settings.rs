@@ -270,6 +270,14 @@ pub struct ForegroundResponsivenessSettings {
     #[serde(default = "default_lower_background_apps")]
     pub lower_background_apps: bool,
     #[serde(default)]
+    pub auto_balance_enabled: bool,
+    #[serde(default = "default_auto_balance_threshold_percent")]
+    pub auto_balance_threshold_percent: u8,
+    #[serde(default = "default_auto_balance_sustain_seconds")]
+    pub auto_balance_sustain_seconds: u64,
+    #[serde(default = "default_auto_balance_cooldown_seconds")]
+    pub auto_balance_cooldown_seconds: u64,
+    #[serde(default)]
     pub boost_foreground_app: bool,
     #[serde(default)]
     pub foreground_boost: ForegroundBoostPriority,
@@ -528,6 +536,18 @@ const fn default_lower_background_apps() -> bool {
     true
 }
 
+const fn default_auto_balance_threshold_percent() -> u8 {
+    25
+}
+
+const fn default_auto_balance_sustain_seconds() -> u64 {
+    2
+}
+
+const fn default_auto_balance_cooldown_seconds() -> u64 {
+    10
+}
+
 const fn default_foreground_stability_delay_ms() -> u64 {
     750
 }
@@ -661,6 +681,10 @@ impl Default for ForegroundResponsivenessSettings {
         Self {
             enabled: false,
             lower_background_apps: default_lower_background_apps(),
+            auto_balance_enabled: false,
+            auto_balance_threshold_percent: default_auto_balance_threshold_percent(),
+            auto_balance_sustain_seconds: default_auto_balance_sustain_seconds(),
+            auto_balance_cooldown_seconds: default_auto_balance_cooldown_seconds(),
             boost_foreground_app: false,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
             foreground_stability_delay_ms: default_foreground_stability_delay_ms(),

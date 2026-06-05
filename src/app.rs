@@ -101,6 +101,10 @@ const ACTIVITY_CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
 const ACTIVITY_CHECK_INTERVAL_STEP_MS: u64 = 250;
 const FOREGROUND_STABILITY_DELAY_MIN_MS: u64 = 0;
 const FOREGROUND_STABILITY_DELAY_MAX_MS: u64 = 10_000;
+const AUTO_BALANCE_THRESHOLD_MIN_PERCENT: u64 = 1;
+const AUTO_BALANCE_THRESHOLD_MAX_PERCENT: u64 = 100;
+const AUTO_BALANCE_SECONDS_MIN: u64 = 1;
+const AUTO_BALANCE_SECONDS_MAX: u64 = 3_600;
 const RULE_TITLE_TEXT_SIZE: f32 = 14.0;
 const RULE_TITLE_LINE_HEIGHT: f32 = 20.0;
 const MAX_CUSTOM_ACCENT_COLORS: usize = 8;
@@ -1690,6 +1694,35 @@ impl PowerLeafApp {
                     self.settings
                         .foreground_responsiveness
                         .foreground_stability_delay_ms = value;
+                }
+            }
+            NumericField::AutoBalanceThreshold => {
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                    AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                ) {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_threshold_percent = value as u8;
+                }
+            }
+            NumericField::AutoBalanceSustain => {
+                if let Some(value) =
+                    parse_u64_input(&value, AUTO_BALANCE_SECONDS_MIN, AUTO_BALANCE_SECONDS_MAX)
+                {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_sustain_seconds = value;
+                }
+            }
+            NumericField::AutoBalanceCooldown => {
+                if let Some(value) =
+                    parse_u64_input(&value, AUTO_BALANCE_SECONDS_MIN, AUTO_BALANCE_SECONDS_MAX)
+                {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_cooldown_seconds = value;
                 }
             }
             NumericField::ProcessorAcCoreParkingMin => {
@@ -3922,6 +3955,122 @@ impl PowerLeafApp {
                 }),
             ))
             .child(checkbox(
+                "responsiveness-auto-balance",
+                t!("responsiveness.auto_balance").to_string(),
+                self.settings.foreground_responsiveness.auto_balance_enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.foreground_responsiveness.auto_balance_enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(setting_stepper_card_u64(
+                "responsiveness-auto-threshold",
+                t!("responsiveness.auto_balance_threshold").to_string(),
+                u64::from(
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_threshold_percent,
+                ),
+                self.render_numeric_value(
+                    NumericField::AutoBalanceThreshold,
+                    format!(
+                        "{}%",
+                        self.settings
+                            .foreground_responsiveness
+                            .auto_balance_threshold_percent
+                    ),
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_threshold_percent
+                        .to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    let current = u64::from(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_threshold_percent,
+                    );
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_threshold_percent = apply_u64_step(
+                        current,
+                        change,
+                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                    ) as u8;
+                    cx.notify();
+                }),
+            ))
+            .child(setting_stepper_card_u64(
+                "responsiveness-auto-sustain",
+                t!("responsiveness.auto_balance_sustain").to_string(),
+                self.settings
+                    .foreground_responsiveness
+                    .auto_balance_sustain_seconds,
+                self.render_numeric_value(
+                    NumericField::AutoBalanceSustain,
+                    format!(
+                        "{} sec",
+                        self.settings
+                            .foreground_responsiveness
+                            .auto_balance_sustain_seconds
+                    ),
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_sustain_seconds
+                        .to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_sustain_seconds = apply_u64_step(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_sustain_seconds,
+                        change,
+                        AUTO_BALANCE_SECONDS_MIN,
+                        AUTO_BALANCE_SECONDS_MAX,
+                    );
+                    cx.notify();
+                }),
+            ))
+            .child(setting_stepper_card_u64(
+                "responsiveness-auto-cooldown",
+                t!("responsiveness.auto_balance_cooldown").to_string(),
+                self.settings
+                    .foreground_responsiveness
+                    .auto_balance_cooldown_seconds,
+                self.render_numeric_value(
+                    NumericField::AutoBalanceCooldown,
+                    format!(
+                        "{} sec",
+                        self.settings
+                            .foreground_responsiveness
+                            .auto_balance_cooldown_seconds
+                    ),
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_cooldown_seconds
+                        .to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_cooldown_seconds = apply_u64_step(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_cooldown_seconds,
+                        change,
+                        AUTO_BALANCE_SECONDS_MIN,
+                        AUTO_BALANCE_SECONDS_MAX,
+                    );
+                    cx.notify();
+                }),
+            ))
+            .child(checkbox(
                 "responsiveness-boost-foreground",
                 t!("responsiveness.boost_foreground_app").to_string(),
                 self.settings.foreground_responsiveness.boost_foreground_app,
@@ -3974,6 +4123,12 @@ impl PowerLeafApp {
                     t!("responsiveness.background_adjusted").to_string(),
                     self.foreground_responsiveness_status
                         .background_adjusted_processes
+                        .to_string(),
+                ),
+                (
+                    t!("responsiveness.auto_balanced").to_string(),
+                    self.foreground_responsiveness_status
+                        .auto_balanced_processes
                         .to_string(),
                 ),
                 (
@@ -6010,6 +6165,9 @@ enum NumericField {
     SuspensionAudioRefreeze,
     SuspensionNetworkRefreeze,
     ForegroundStabilityDelay,
+    AutoBalanceThreshold,
+    AutoBalanceSustain,
+    AutoBalanceCooldown,
     ProcessorAcCoreParkingMin,
     ProcessorAcPerformanceMin,
     ProcessorAcPerformanceMax,

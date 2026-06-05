@@ -271,6 +271,10 @@ mod tests {
             foreground_responsiveness: ForegroundResponsivenessSettings {
                 enabled: true,
                 lower_background_apps: true,
+                auto_balance_enabled: true,
+                auto_balance_threshold_percent: 25,
+                auto_balance_sustain_seconds: 2,
+                auto_balance_cooldown_seconds: 10,
                 boost_foreground_app: true,
                 foreground_boost: ForegroundBoostPriority::AboveNormal,
                 foreground_stability_delay_ms: 750,
