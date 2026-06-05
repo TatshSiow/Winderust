@@ -105,10 +105,10 @@ impl AppLanguage {
         }
     }
 
-    pub const fn label_key(self) -> &'static str {
+    pub const fn native_label(self) -> &'static str {
         match self {
-            Self::English => "language.english",
-            Self::ZhTw => "language.zh_tw",
+            Self::English => "English",
+            Self::ZhTw => "繁體中文（台灣）",
         }
     }
 }

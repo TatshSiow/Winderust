@@ -149,7 +149,7 @@ impl CpuAffinityManager {
             return CpuAffinitySnapshot {
                 enabled: false,
                 failed_processes: failed,
-                message: "CPU Affinity disabled.".to_owned(),
+                message: "Core Steering disabled.".to_owned(),
                 ..Default::default()
             };
         }
@@ -332,7 +332,7 @@ impl Default for CpuAffinitySnapshot {
             skipped_processes: 0,
             failed_processes: 0,
             adjusted_apps: Vec::new(),
-            message: "CPU Affinity disabled.".to_owned(),
+            message: "Core Steering disabled.".to_owned(),
             last_error: None,
         }
     }
@@ -366,10 +366,10 @@ fn cpu_affinity_message(settings: &CpuAffinitySettings) -> String {
 
 fn cpu_affinity_message_for_group_count(group_count: u16, has_hard_rules: bool) -> String {
     if group_count > 1 && has_hard_rules {
-        "CPU Affinity active. Multi-group CPU detected: hard affinity uses the process primary processor group."
+        "Core Steering active. Multi-group CPU detected: hard steering uses the process primary processor group."
             .to_owned()
     } else {
-        "CPU Affinity active.".to_owned()
+        "Core Steering active.".to_owned()
     }
 }
 
@@ -1080,11 +1080,11 @@ mod tests {
     fn cpu_affinity_message_warns_on_multiple_processor_groups() {
         assert_eq!(
             cpu_affinity_message_for_group_count(1, true),
-            "CPU Affinity active."
+            "Core Steering active."
         );
         assert_eq!(
             cpu_affinity_message_for_group_count(2, false),
-            "CPU Affinity active."
+            "Core Steering active."
         );
         assert!(cpu_affinity_message_for_group_count(2, true).contains("Multi-group CPU detected"));
     }

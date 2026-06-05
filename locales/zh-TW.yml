@@ -24,6 +24,7 @@ nav:
 
 common:
   add: "新增"
+  create: "建立"
   discard: "放棄"
   done: "完成"
   edit: "編輯"
@@ -53,12 +54,12 @@ theme:
   dark: "深色"
 
 accent:
-  source: "Accent color"
-  windows: "Windows"
-  custom: "Custom"
-  palette: "Palette"
-  edit_color: "Edit color"
-  remove_color: "Remove"
+  source: "色彩來源"
+  windows: "系統"
+  custom: "自訂"
+  palette: "調色盤"
+  edit_color: "編輯顏色"
+  remove_color: "移除"
 
 language:
   english: "英文"
@@ -154,8 +155,8 @@ activity:
   current_active_plan: "目前作用中的電源計畫：%{plan}"
   idle_plan: "閒置電源計畫"
   active_plan: "活動電源計畫"
-  keyboard_input: "鍵盤輸入"
-  mouse_input: "滑鼠輸入"
+  keyboard_input: "鍵盤輸入偵測"
+  mouse_input: "滑鼠輸入偵測"
   idle_timeout: "閒置逾時"
   check_interval: "檢查間隔"
 
@@ -172,6 +173,7 @@ schedule:
   intro_1: "時間規則會根據目前日期與時間切換電源計畫。"
   intro_2: "每個規則都可使用自己的目標電源計畫，並支援跨夜時段。"
   enable: "啟用時間規則"
+  rule_title: "時間規則"
   add_rule: "新增時間規則"
   new_rule: "新增時間規則"
   days: "日期"
@@ -182,8 +184,9 @@ schedule:
 
 cpu_rules:
   intro_1: "CPU 負載規則會在處理器使用率超過門檻並持續一段時間後切換電源計畫。"
-  intro_2: "當 CPU 規則不再作用時，可使用 Else 電源計畫作為回退行為。"
+  intro_2: "當 CPU 規則不再作用時，可使用「否則」電源計畫作為回退行為。"
   enable: "啟用 CPU 負載規則"
+  rule_title: "CPU 負載規則"
   add_rule: "新增 CPU 負載規則"
   new_rule: "新增 CPU 負載規則"
   when_cpu_load: "當 CPU 負載"
@@ -191,8 +194,8 @@ cpu_rules:
   upper_threshold: "上限門檻"
   duration: "持續時間"
   use: "使用"
-  else: "Else"
-  else_use: "Else 使用"
+  else: "否則"
+  else_use: "否則使用"
 
 efficiency:
   intro_1: "效率模式會對背景應用程式套用 Windows EcoQoS，以降低 CPU 耗電。"
@@ -213,7 +216,7 @@ suspension:
   intro_2: "當你切回暫停的應用程式或退出 PowerLeaf 時，系統會自動恢復它們。"
   intro_3: "請只對適合在背景暫停的應用程式使用此功能。"
   enable: "啟用應用程式暫停"
-  background_delay: "背景延遲"
+  background_delay: "背景暫停延遲"
   temporary_thaw: "暫時解凍備援"
   thaw_every: "每隔多久解凍"
   thaw_duration: "解凍時間"
@@ -252,25 +255,25 @@ suspension:
     off_help: "應用程式暫停已停用。"
 
 affinity:
-  intro_1: "CPU 親和性會限制選取的背景應用程式只能在特定邏輯 CPU 上執行。"
+  intro_1: "核心導向會控制選取的背景應用程式如何分配到邏輯 CPU 上執行。"
   intro_2: "這是進階相容性控制；如果遮罩太窄，可能降低回應速度。"
-  intro_3: "當規則不再適用時，PowerLeaf 會還原原本的親和性。"
-  enable: "啟用 CPU 親和性規則"
+  intro_3: "當規則不再適用時，PowerLeaf 會還原應用程式原本的 CPU 配置。"
+  enable: "啟用核心導向"
   focus_detection: "應用程式焦點偵測"
   adjusted_processes: "已調整程序"
   scanned_processes: "已掃描程序"
   skipped_processes: "已略過程序"
   failed_actions: "失敗動作"
-  rules: "親和性規則"
+  rules: "核心導向規則"
   rules_help: "新增程序後，選擇它可執行的邏輯 CPU。"
-  no_rules: "尚未設定 CPU 親和性規則。"
-  mode: "親和性模式"
-  mode_hard: "硬性親和性"
+  no_rules: "尚未設定核心導向規則。"
+  mode: "導向模式"
+  mode_hard: "硬性導向"
   mode_hard_help: "使用 SetProcessAffinityMask 限制程序。"
   mode_soft: "軟性 CPU Sets"
   mode_soft_help: "使用 Windows CPU Sets 偏好選取的 CPU，保留更多排程彈性。"
-  mode_efficiency_off: "關閉效率模式"
-  mode_efficiency_off_help: "清除程序 EcoQoS，避免 Windows 將此應用程式導向效率模式。"
+  mode_efficiency_off: "繞過效率模式"
+  mode_efficiency_off_help: "清除程序 EcoQoS，讓 Windows 不會將此應用程式放入效率模式。"
   all: "全部"
   all_help: "允許 Windows 回報的所有邏輯 CPU。"
   p_cores: "P 核心"
@@ -292,13 +295,13 @@ affinity:
   hybrid_cpu_tooltip: "%{kind} 邏輯 CPU %{index}，位於實體核心 %{core}（效率等級 %{class}）"
   indicator:
     protected: "受保護"
-    protected_help: "PowerLeaf 不會變更此 Windows 程序的親和性。"
+    protected_help: "PowerLeaf 不會變更此 Windows 程序的核心導向設定。"
     pinned: "已固定"
-    pinned_help: "PowerLeaf 已將此親和性規則套用到至少一個程序。"
+    pinned_help: "PowerLeaf 已將此核心導向規則套用到至少一個程序。"
     ready: "就緒"
     ready_help: "PowerLeaf 正在監看相符的背景程序。"
     off: "關閉"
-    off_help: "CPU 親和性已停用。"
+    off_help: "核心導向已停用。"
 
 about:
   intro_1: "PowerLeaf 是本機 Windows 電源自動化工具。"

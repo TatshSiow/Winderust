@@ -1,5 +1,6 @@
 use std::{
-    collections::{HashSet, VecDeque},
+    cell::RefCell,
+    collections::{HashMap, HashSet, VecDeque},
     ffi::{OsStr, OsString},
     mem::size_of,
     os::windows::ffi::{OsStrExt, OsStringExt},
@@ -13,11 +14,11 @@ use std::{
 use rust_i18n::t;
 
 use gpui::{
-    deferred, div, prelude::*, px, rgb, AnyElement, App, Context, Entity, Focusable, Hsla,
-    IntoElement, MouseButton, SharedString, Subscription, Task, Timer, Window, WindowControlArea,
+    canvas, deferred, div, prelude::*, px, relative, rgb, AnyElement, App, Bounds, Context,
+    DragMoveEvent, Empty, Entity, EntityId, Focusable, Hsla, IntoElement, MouseButton, Pixels,
+    Point, Render, SharedString, Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
-    badge::Badge,
     button::{Button, ButtonVariants},
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     description_list::DescriptionList,
@@ -26,7 +27,7 @@ use gpui_component::{
     input::{Escape as InputEscape, Input, InputEvent, InputState},
     label::Label,
     scroll::{Scrollable, ScrollableElement},
-    slider::{Slider, SliderEvent, SliderState},
+    slider::{SliderEvent, SliderState, SliderValue},
     tag::Tag,
     theme::Colorize,
     v_flex, ActiveTheme, Disableable, Icon, IconNamed, Sizable, Size,
@@ -77,19 +78,32 @@ const HIDDEN_APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_HISTORY_LEN: usize = 36;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-const TITLE_BAR_HEIGHT: f32 = 36.0;
-const PAGE_HEADER_HEIGHT: f32 = 42.0;
-const CONTENT_MAX_WIDTH: f32 = 1000.0;
+const TITLE_BAR_HEIGHT: f32 = 40.0;
+const PAGE_HEADER_HEIGHT: f32 = 48.0;
+const CONTENT_MAX_WIDTH: f32 = 1040.0;
+const NAV_PANE_WIDTH: f32 = 276.0;
+const FLUENT_RADIUS_CONTROL: f32 = 4.0;
+const FLUENT_RADIUS_OVERLAY: f32 = 8.0;
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
+const DROPDOWN_OPTION_ROW_HEIGHT: f32 = 40.0;
+const DROPDOWN_SURFACE_VERTICAL_PADDING: f32 = 16.0;
+const DROPDOWN_OPTION_GAP: f32 = 4.0;
+const DROPDOWN_MENU_OFFSET: f32 = 34.0;
+const DROPDOWN_VIEWPORT_MARGIN: f32 = 12.0;
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
+const ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS: u64 = 1;
+const ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS: u64 = 60 * 60;
+const ACTIVITY_CHECK_INTERVAL_MIN_MS: u64 = 250;
+const ACTIVITY_CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
+const ACTIVITY_CHECK_INTERVAL_STEP_MS: u64 = 250;
 const RULE_TITLE_TEXT_SIZE: f32 = 14.0;
 const RULE_TITLE_LINE_HEIGHT: f32 = 20.0;
 const MAX_CUSTOM_ACCENT_COLORS: usize = 8;
 const TEXT_PAGE_TITLE_SIZE: f32 = 28.0;
 const TEXT_PAGE_TITLE_LINE_HEIGHT: f32 = 36.0;
-const TEXT_PAGE_CRUMB_SIZE: f32 = 26.0;
-const TEXT_PAGE_CRUMB_LINE_HEIGHT: f32 = 34.0;
+const TEXT_PAGE_CRUMB_SIZE: f32 = 20.0;
+const TEXT_PAGE_CRUMB_LINE_HEIGHT: f32 = 28.0;
 const TEXT_SECTION_TITLE_SIZE: f32 = 16.0;
 const TEXT_SECTION_TITLE_LINE_HEIGHT: f32 = 22.0;
 const TEXT_HEADER_SIZE: f32 = RULE_TITLE_TEXT_SIZE;
@@ -104,19 +118,25 @@ const TEXT_CAPTION_SIZE: f32 = 12.0;
 const TEXT_CAPTION_LINE_HEIGHT: f32 = 16.0;
 
 const COLOR_SETTINGS_CARD: u32 = 0x2b2b2b;
-const COLOR_SETTINGS_CARD_HOVER: u32 = 0x303030;
-const COLOR_SIDEBAR_SELECTED: u32 = 0x2f2f2f;
-const COLOR_SIDEBAR_HOVER: u32 = 0x292929;
-const COLOR_PANEL_ACTIVE: u32 = 0x454a56;
-const COLOR_BORDER: u32 = 0x464b57;
-const COLOR_TEXT: u32 = 0xdce0e5;
-const COLOR_MUTED: u32 = 0xa9afbc;
-const COLOR_DIM: u32 = 0x878a98;
-const COLOR_ACCENT: u32 = 0x74ade8;
-const COLOR_SUCCESS: u32 = 0xa1c181;
-const COLOR_SUCCESS_BG: u32 = 0x38482f;
-const COLOR_WARNING: u32 = 0xdec184;
-const COLOR_WARNING_BG: u32 = 0x5d4c2f;
+const COLOR_SETTINGS_CARD_HOVER: u32 = 0x333333;
+const COLOR_SIDEBAR_SELECTED: u32 = 0x303030;
+const COLOR_SIDEBAR_HOVER: u32 = 0x2a2a2a;
+const COLOR_PANEL_ACTIVE: u32 = 0x3a3a3a;
+const COLOR_BORDER: u32 = 0x3f3f3f;
+const COLOR_TEXT: u32 = 0xf3f3f3;
+const COLOR_MUTED: u32 = 0xc8c8c8;
+const COLOR_DIM: u32 = 0x8f8f8f;
+const COLOR_ACCENT: u32 = 0x0078d4;
+const COLOR_SUCCESS: u32 = 0x8fd17f;
+const COLOR_SUCCESS_BG: u32 = 0x263b22;
+const COLOR_WARNING: u32 = 0xf2cc60;
+const COLOR_WARNING_BG: u32 = 0x4a3b18;
+
+#[derive(Clone, Copy)]
+struct DropdownPlacement {
+    open_up: bool,
+    max_height: Pixels,
+}
 
 const ACCENT_PALETTE: [u32; 12] = [
     0x4cc2ff, 0x0078d4, 0x744da9, 0xc239b3, 0xe74856, 0xff8c00, 0xf7630c, 0xffb900, 0x13a10e,
@@ -173,10 +193,14 @@ pub struct PowerLeafApp {
     editing_rule_title: Option<RuleTitleTarget>,
     editing_numeric: Option<NumericField>,
     editing_accent_color: Option<u32>,
-    collapsed_rule_cards: HashSet<RuleCardTarget>,
+    expanded_rule_cards: HashSet<RuleCardTarget>,
+    expanded_setting_groups: HashSet<SettingGroupTarget>,
+    dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     _rule_title_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
+    _cpu_threshold_slider_subscriptions: Vec<Subscription>,
+    _activity_slider_subscriptions: Vec<Subscription>,
     accent_color_picker: Entity<ColorPickerState>,
     _accent_color_picker_subscription: Subscription,
     inputs: UiInputs,
@@ -185,6 +209,8 @@ pub struct PowerLeafApp {
 
 struct UiInputs {
     cpu_rule_names: Vec<Entity<InputState>>,
+    cpu_rule_thresholds: Vec<Entity<SliderState>>,
+    cpu_rule_upper_thresholds: Vec<Entity<SliderState>>,
     schedule_rule_names: Vec<Entity<InputState>>,
     schedule_start_times: Vec<Entity<InputState>>,
     schedule_end_times: Vec<Entity<InputState>>,
@@ -195,6 +221,8 @@ struct UiInputs {
     suspension_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
+    activity_idle_timeout: Entity<SliderState>,
+    activity_check_interval: Entity<SliderState>,
     processor_power_ac_core_parking_min: Entity<SliderState>,
     processor_power_ac_performance_min: Entity<SliderState>,
     processor_power_ac_performance_max: Entity<SliderState>,
@@ -203,19 +231,57 @@ struct UiInputs {
     processor_power_dc_performance_max: Entity<SliderState>,
 }
 
+struct InitialProcessorPowerState {
+    plans: Vec<PowerPlan>,
+    current_plan: Option<PowerPlan>,
+    values: ProcessorPowerAcDcValues,
+    target_plan_guid: Option<String>,
+    loaded_plan_guid: Option<String>,
+    status_message: String,
+}
+
+#[derive(Clone)]
+struct DragStableSlider(EntityId);
+
+impl Render for DragStableSlider {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
 enum TickOutcome {
     Continue { changed: bool },
     Stop,
 }
 
 impl UiInputs {
-    fn new(window: &mut Window, cx: &mut Context<PowerLeafApp>, settings: &Settings) -> Self {
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<PowerLeafApp>,
+        settings: &Settings,
+        processor_power_values: ProcessorPowerAcDcValues,
+    ) -> Self {
+        let processor_power_values = processor_power_values.normalized();
         Self {
             cpu_rule_names: settings
                 .cpu_usage_mode
                 .rules
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.name, "Rule name"))
+                .collect(),
+            cpu_rule_thresholds: settings
+                .cpu_usage_mode
+                .rules
+                .iter()
+                .map(|rule| make_percent_slider(cx, rule.threshold_percent as u64))
+                .collect(),
+            cpu_rule_upper_thresholds: settings
+                .cpu_usage_mode
+                .rules
+                .iter()
+                .map(|rule| {
+                    make_percent_slider(cx, rule.upper_threshold_percent.unwrap_or(100) as u64)
+                })
                 .collect(),
             schedule_rule_names: settings
                 .schedule_mode
@@ -252,12 +318,44 @@ impl UiInputs {
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
-            processor_power_ac_core_parking_min: make_processor_power_slider(cx, 50),
-            processor_power_ac_performance_min: make_processor_power_slider(cx, 5),
-            processor_power_ac_performance_max: make_processor_power_slider(cx, 100),
-            processor_power_dc_core_parking_min: make_processor_power_slider(cx, 50),
-            processor_power_dc_performance_min: make_processor_power_slider(cx, 5),
-            processor_power_dc_performance_max: make_processor_power_slider(cx, 100),
+            activity_idle_timeout: make_range_slider(
+                cx,
+                settings.activity_mode.idle_timeout_seconds,
+                ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+                ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
+                1,
+            ),
+            activity_check_interval: make_range_slider(
+                cx,
+                settings.general.check_interval_ms,
+                ACTIVITY_CHECK_INTERVAL_MIN_MS,
+                ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                ACTIVITY_CHECK_INTERVAL_STEP_MS,
+            ),
+            processor_power_ac_core_parking_min: make_processor_power_slider(
+                cx,
+                processor_power_values.ac.core_parking_min as u64,
+            ),
+            processor_power_ac_performance_min: make_processor_power_slider(
+                cx,
+                processor_power_values.ac.performance_min as u64,
+            ),
+            processor_power_ac_performance_max: make_processor_power_slider(
+                cx,
+                processor_power_values.ac.performance_max as u64,
+            ),
+            processor_power_dc_core_parking_min: make_processor_power_slider(
+                cx,
+                processor_power_values.dc.core_parking_min as u64,
+            ),
+            processor_power_dc_performance_min: make_processor_power_slider(
+                cx,
+                processor_power_values.dc.performance_min as u64,
+            ),
+            processor_power_dc_performance_max: make_processor_power_slider(
+                cx,
+                processor_power_values.dc.performance_max as u64,
+            ),
         }
     }
 
@@ -274,6 +372,22 @@ impl UiInputs {
             cx,
             |index| settings.cpu_usage_mode.rules[index].name.clone(),
             "Rule name",
+        );
+        sync_slider_vec(
+            &mut self.cpu_rule_thresholds,
+            settings.cpu_usage_mode.rules.len(),
+            cx,
+            |index| settings.cpu_usage_mode.rules[index].threshold_percent as u64,
+        );
+        sync_slider_vec(
+            &mut self.cpu_rule_upper_thresholds,
+            settings.cpu_usage_mode.rules.len(),
+            cx,
+            |index| {
+                settings.cpu_usage_mode.rules[index]
+                    .upper_threshold_percent
+                    .unwrap_or(100) as u64
+            },
         );
         sync_input_vec(
             &mut self.schedule_rule_names,
@@ -318,6 +432,50 @@ impl UiInputs {
     }
 }
 
+fn default_processor_power_values() -> ProcessorPowerAcDcValues {
+    ProcessorPowerAcDcValues::same(ProcessorPowerValues::for_preset(
+        ProcessorPowerPreset::Balanced,
+    ))
+    .normalized()
+}
+
+fn load_initial_processor_power_state(power: &PowerPlanManager) -> InitialProcessorPowerState {
+    let fallback_values = default_processor_power_values();
+
+    match power.list_plans() {
+        Ok(plans) => {
+            let current_plan = plans.iter().find(|plan| plan.active).cloned();
+            let target_plan = current_plan.as_ref().or_else(|| plans.first()).cloned();
+            let status_loaded = t!("status.loaded_power_plans", count = plans.len()).to_string();
+
+            let (values, loaded_plan_guid, status_message) = match target_plan.as_ref() {
+                Some(plan) => match power.read_processor_power_values(&plan.guid) {
+                    Ok(values) => (values.normalized(), Some(plan.guid.clone()), status_loaded),
+                    Err(err) => (fallback_values, None, err),
+                },
+                None => (fallback_values, None, status_loaded),
+            };
+
+            InitialProcessorPowerState {
+                plans,
+                current_plan,
+                values,
+                target_plan_guid: target_plan.map(|plan| plan.guid),
+                loaded_plan_guid,
+                status_message,
+            }
+        }
+        Err(err) => InitialProcessorPowerState {
+            plans: Vec::new(),
+            current_plan: None,
+            values: fallback_values,
+            target_plan_guid: None,
+            loaded_plan_guid: None,
+            status_message: err,
+        },
+    }
+}
+
 impl PowerLeafApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let hwnd = tray::hwnd_from_window(window);
@@ -325,7 +483,6 @@ impl PowerLeafApp {
             eprintln!("{err}");
             Settings::default()
         });
-        let inputs = UiInputs::new(window, cx, &settings);
         let accent_color_picker = cx.new(|cx| {
             ColorPickerState::new(window, cx)
                 .default_value(hsla_from_rgb(settings.general.accent.custom_color))
@@ -349,13 +506,16 @@ impl PowerLeafApp {
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
+        let power = PowerPlanManager;
+        let initial_processor_power = load_initial_processor_power_state(&power);
+        let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
 
         let mut app = Self {
             saved_settings: settings.clone(),
             settings,
             page: Page::Dashboard,
-            plans: Vec::new(),
-            current_plan: None,
+            plans: initial_processor_power.plans,
+            current_plan: initial_processor_power.current_plan,
             activity: ActivitySnapshot {
                 state: ActivityState::Unknown,
                 idle_for: None,
@@ -377,7 +537,7 @@ impl PowerLeafApp {
             next_cpu_usage_refresh: Instant::now(),
             next_process_refresh: Instant::now(),
             last_switch_attempt: None,
-            power: PowerPlanManager,
+            power,
             background_automation,
             cpu_monitor: CpuUsageMonitor::default(),
             idle_detector: IdleDetector,
@@ -388,26 +548,36 @@ impl PowerLeafApp {
             decision_engine: DecisionEngine,
             hwnd,
             tray_icon: None,
-            status_message: t!("status.ready").to_string(),
+            status_message: initial_processor_power.status_message,
             process_candidates: Vec::new(),
             active_power_plan_picker: None,
-            processor_power_ac_core_parking_min: 50,
-            processor_power_ac_performance_min: 5,
-            processor_power_ac_performance_max: 100,
-            processor_power_dc_core_parking_min: 50,
-            processor_power_dc_performance_min: 5,
-            processor_power_dc_performance_max: 100,
-            processor_power_target_plan_guid: None,
-            processor_power_loaded_plan_guid: None,
+            processor_power_ac_core_parking_min: initial_processor_power.values.ac.core_parking_min
+                as u64,
+            processor_power_ac_performance_min: initial_processor_power.values.ac.performance_min
+                as u64,
+            processor_power_ac_performance_max: initial_processor_power.values.ac.performance_max
+                as u64,
+            processor_power_dc_core_parking_min: initial_processor_power.values.dc.core_parking_min
+                as u64,
+            processor_power_dc_performance_min: initial_processor_power.values.dc.performance_min
+                as u64,
+            processor_power_dc_performance_max: initial_processor_power.values.dc.performance_max
+                as u64,
+            processor_power_target_plan_guid: initial_processor_power.target_plan_guid,
+            processor_power_loaded_plan_guid: initial_processor_power.loaded_plan_guid,
             processor_power_dirty: false,
             start_minimized_applied: false,
             editing_rule_title: None,
             editing_numeric: None,
             editing_accent_color: None,
-            collapsed_rule_cards: HashSet::new(),
+            expanded_rule_cards: HashSet::new(),
+            expanded_setting_groups: HashSet::new(),
+            dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             _rule_title_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
+            _cpu_threshold_slider_subscriptions: Vec::new(),
+            _activity_slider_subscriptions: Vec::new(),
             accent_color_picker,
             _accent_color_picker_subscription: accent_color_picker_subscription,
             inputs,
@@ -417,11 +587,13 @@ impl PowerLeafApp {
         app.rebuild_rule_title_input_subscriptions(window, cx);
         app.subscribe_to_numeric_input(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
+        app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
+        app.subscribe_to_activity_sliders(window, cx);
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
         app.refresh_process_candidates(false);
-        app.refresh_power_plans();
         app.run_check();
+        app.sync_processor_power_slider_states(window, cx);
         app.install_input_hook();
         app.schedule_tick(window, cx);
         app
@@ -647,6 +819,103 @@ impl PowerLeafApp {
         ] {
             let input = processor_power_slider_input(&self.inputs, slider);
             let value = value.min(100) as f32;
+            input.update(cx, |state, cx| {
+                if (state.value().end() - value).abs() > f32::EPSILON {
+                    state.set_value(value, window, cx);
+                }
+            });
+        }
+    }
+
+    fn set_cpu_threshold_slider_value(&mut self, slider: CpuThresholdSlider, value: u8) {
+        let value = value.min(100);
+        match slider {
+            CpuThresholdSlider::Lower(index) => {
+                if let Some(rule) = self.settings.cpu_usage_mode.rules.get_mut(index) {
+                    rule.threshold_percent = value;
+                }
+            }
+            CpuThresholdSlider::Upper(index) => {
+                if let Some(rule) = self.settings.cpu_usage_mode.rules.get_mut(index) {
+                    rule.upper_threshold_percent = Some(value);
+                }
+            }
+        }
+    }
+
+    fn sync_cpu_threshold_slider_states(&self, window: &mut Window, cx: &mut Context<Self>) {
+        for (index, rule) in self.settings.cpu_usage_mode.rules.iter().enumerate() {
+            self.sync_cpu_threshold_slider_state(
+                CpuThresholdSlider::Lower(index),
+                rule.threshold_percent,
+                window,
+                cx,
+            );
+            self.sync_cpu_threshold_slider_state(
+                CpuThresholdSlider::Upper(index),
+                rule.upper_threshold_percent.unwrap_or(100),
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn sync_cpu_threshold_slider_state(
+        &self,
+        slider: CpuThresholdSlider,
+        value: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(input) = cpu_threshold_slider_input(&self.inputs, slider) else {
+            return;
+        };
+        let value = value.min(100) as f32;
+        input.update(cx, |state, cx| {
+            if (state.value().end() - value).abs() > f32::EPSILON {
+                state.set_value(value, window, cx);
+            }
+        });
+    }
+
+    fn set_activity_slider_value(&mut self, slider: ActivitySlider, value: u64) {
+        match slider {
+            ActivitySlider::IdleTimeout => {
+                self.settings.activity_mode.idle_timeout_seconds = value.clamp(
+                    ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+                    ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
+                );
+            }
+            ActivitySlider::CheckInterval => {
+                self.settings.general.check_interval_ms =
+                    snap_to_step(value, ACTIVITY_CHECK_INTERVAL_STEP_MS).clamp(
+                        ACTIVITY_CHECK_INTERVAL_MIN_MS,
+                        ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                    );
+            }
+        }
+    }
+
+    fn sync_activity_slider_states(&self, window: &mut Window, cx: &mut Context<Self>) {
+        for (slider, input, value) in [
+            (
+                ActivitySlider::IdleTimeout,
+                self.inputs.activity_idle_timeout.clone(),
+                self.settings.activity_mode.idle_timeout_seconds.clamp(
+                    ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+                    ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
+                ),
+            ),
+            (
+                ActivitySlider::CheckInterval,
+                self.inputs.activity_check_interval.clone(),
+                self.settings.general.check_interval_ms.clamp(
+                    ACTIVITY_CHECK_INTERVAL_MIN_MS,
+                    ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                ),
+            ),
+        ] {
+            let value = activity_slider_normalized_value(slider, value) as f32;
             input.update(cx, |state, cx| {
                 if (state.value().end() - value).abs() > f32::EPSILON {
                     state.set_value(value, window, cx);
@@ -1024,7 +1293,12 @@ impl PowerLeafApp {
         if should_check_now {
             changed |= self.run_check_changed();
             self.next_check = Instant::now()
-                + Duration::from_millis(self.settings.general.check_interval_ms.max(250));
+                + Duration::from_millis(
+                    self.settings
+                        .general
+                        .check_interval_ms
+                        .max(ACTIVITY_CHECK_INTERVAL_MIN_MS),
+                );
         }
 
         let tray_present = self.tray_icon.is_some();
@@ -1052,18 +1326,22 @@ impl PowerLeafApp {
         self.status_message = t!("status.unsaved_canceled").to_string();
         self.editing_rule_title = None;
         self.editing_accent_color = None;
-        self.collapsed_rule_cards.clear();
+        self.expanded_rule_cards.clear();
         self.rebuild_inputs(window, cx);
         self.sync_accent_color_picker(window, cx);
     }
 
     fn rebuild_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let settings = self.settings.clone();
+        let processor_power_values = self.processor_power_values();
         self.editing_rule_title = None;
         self.editing_accent_color = None;
-        self.collapsed_rule_cards.clear();
-        self.inputs = UiInputs::new(window, cx, &settings);
+        self.expanded_rule_cards.clear();
+        self.inputs = UiInputs::new(window, cx, &settings, processor_power_values);
         self.rebuild_rule_title_input_subscriptions(window, cx);
+        self.subscribe_to_processor_power_sliders(window, cx);
+        self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
+        self.subscribe_to_activity_sliders(window, cx);
     }
 
     fn sync_accent_color_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1188,6 +1466,102 @@ impl PowerLeafApp {
         cx.notify();
     }
 
+    fn cpu_threshold_slider_input_count(&self) -> usize {
+        self.inputs.cpu_rule_thresholds.len() + self.inputs.cpu_rule_upper_thresholds.len()
+    }
+
+    fn ensure_cpu_threshold_slider_subscriptions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self._cpu_threshold_slider_subscriptions.len() != self.cpu_threshold_slider_input_count()
+        {
+            self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
+        }
+    }
+
+    fn rebuild_cpu_threshold_slider_subscriptions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut inputs = Vec::new();
+        inputs.extend(
+            self.inputs
+                .cpu_rule_thresholds
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, input)| (input, CpuThresholdSlider::Lower(index))),
+        );
+        inputs.extend(
+            self.inputs
+                .cpu_rule_upper_thresholds
+                .iter()
+                .cloned()
+                .enumerate()
+                .map(|(index, input)| (input, CpuThresholdSlider::Upper(index))),
+        );
+
+        self._cpu_threshold_slider_subscriptions.clear();
+        for (input, slider) in inputs {
+            self._cpu_threshold_slider_subscriptions
+                .push(cx.subscribe_in(
+                    &input,
+                    window,
+                    move |app, _, event: &SliderEvent, _, cx| {
+                        app.handle_cpu_threshold_slider_event(slider, event, cx);
+                    },
+                ));
+        }
+    }
+
+    fn handle_cpu_threshold_slider_event(
+        &mut self,
+        slider: CpuThresholdSlider,
+        event: &SliderEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let SliderEvent::Change(value) = event;
+        let value = value.end().round().clamp(0.0, 100.0) as u8;
+        self.set_cpu_threshold_slider_value(slider, value);
+        cx.notify();
+    }
+
+    fn subscribe_to_activity_sliders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._activity_slider_subscriptions.clear();
+        for (slider, input) in [
+            (
+                ActivitySlider::IdleTimeout,
+                self.inputs.activity_idle_timeout.clone(),
+            ),
+            (
+                ActivitySlider::CheckInterval,
+                self.inputs.activity_check_interval.clone(),
+            ),
+        ] {
+            self._activity_slider_subscriptions.push(cx.subscribe_in(
+                &input,
+                window,
+                move |app, _, event: &SliderEvent, _, cx| {
+                    app.handle_activity_slider_event(slider, event, cx);
+                },
+            ));
+        }
+    }
+
+    fn handle_activity_slider_event(
+        &mut self,
+        slider: ActivitySlider,
+        event: &SliderEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let SliderEvent::Change(value) = event;
+        self.set_activity_slider_value(slider, value.end().round() as u64);
+        cx.notify();
+    }
+
     fn handle_numeric_input_event(&mut self, event: &InputEvent, cx: &mut Context<Self>) {
         if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
             self.finish_numeric_edit(cx);
@@ -1245,13 +1619,21 @@ impl PowerLeafApp {
         let value = value.trim().replace(',', "");
         match field {
             NumericField::ActivityIdleTimeout => {
-                if let Some(value) = parse_u64_input(&value, 1, 7_200) {
-                    self.settings.activity_mode.idle_timeout_seconds = value;
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+                    ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
+                ) {
+                    self.set_activity_slider_value(ActivitySlider::IdleTimeout, value);
                 }
             }
             NumericField::GeneralCheckInterval => {
-                if let Some(value) = parse_u64_input(&value, 250, 60_000) {
-                    self.settings.general.check_interval_ms = value;
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    ACTIVITY_CHECK_INTERVAL_MIN_MS,
+                    ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                ) {
+                    self.set_activity_slider_value(ActivitySlider::CheckInterval, value);
                 }
             }
             NumericField::SuspensionBackgroundDelay => {
@@ -1328,19 +1710,19 @@ impl PowerLeafApp {
                 }
             }
             NumericField::CpuThreshold(index) => {
-                if let (Some(rule), Some(value)) = (
-                    self.settings.cpu_usage_mode.rules.get_mut(index),
-                    parse_u64_input(&value, 0, 100),
-                ) {
-                    rule.threshold_percent = value as u8;
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.set_cpu_threshold_slider_value(
+                        CpuThresholdSlider::Lower(index),
+                        value as u8,
+                    );
                 }
             }
             NumericField::CpuUpperThreshold(index) => {
-                if let (Some(rule), Some(value)) = (
-                    self.settings.cpu_usage_mode.rules.get_mut(index),
-                    parse_u64_input(&value, 0, 100),
-                ) {
-                    rule.upper_threshold_percent = Some(value as u8);
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.set_cpu_threshold_slider_value(
+                        CpuThresholdSlider::Upper(index),
+                        value as u8,
+                    );
                 }
             }
             NumericField::CpuDuration(index) => {
@@ -1384,14 +1766,54 @@ impl PowerLeafApp {
     }
 
     fn is_rule_card_collapsed(&self, target: &RuleCardTarget) -> bool {
-        self.collapsed_rule_cards.contains(target)
+        !self.expanded_rule_cards.contains(target)
     }
 
     fn toggle_rule_card(&mut self, target: RuleCardTarget, cx: &mut Context<Self>) {
-        if !self.collapsed_rule_cards.remove(&target) {
-            self.collapsed_rule_cards.insert(target);
+        if !self.expanded_rule_cards.remove(&target) {
+            self.expanded_rule_cards.insert(target);
         }
         cx.notify();
+    }
+
+    fn is_setting_group_collapsed(&self, target: SettingGroupTarget) -> bool {
+        !self.expanded_setting_groups.contains(&target)
+    }
+
+    fn toggle_setting_group(&mut self, target: SettingGroupTarget, cx: &mut Context<Self>) {
+        if !self.expanded_setting_groups.remove(&target) {
+            self.expanded_setting_groups.insert(target);
+        }
+        cx.notify();
+    }
+
+    fn dropdown_placement(
+        &self,
+        id: &str,
+        full_list_height: Pixels,
+        window: &Window,
+    ) -> DropdownPlacement {
+        let margin = px(DROPDOWN_VIEWPORT_MARGIN);
+        let offset = px(DROPDOWN_MENU_OFFSET);
+        let fallback_max_height =
+            (window.viewport_size().height - offset - margin).max(Pixels::ZERO);
+        let Some(bounds) = self.dropdown_anchor_bounds.borrow().get(id).copied() else {
+            return DropdownPlacement {
+                open_up: false,
+                max_height: fallback_max_height,
+            };
+        };
+
+        let below =
+            (window.viewport_size().height - bounds.top() - offset - margin).max(Pixels::ZERO);
+        let above = (bounds.bottom() - offset - margin).max(Pixels::ZERO);
+        let open_up = full_list_height > below && above > below;
+        let available_height = if open_up { above } else { below };
+
+        DropdownPlacement {
+            open_up,
+            max_height: available_height,
+        }
     }
 
     fn sync_input_values(&mut self, cx: &mut Context<Self>) {
@@ -1482,6 +1904,7 @@ impl Render for PowerLeafApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.inputs.ensure_for_settings(window, cx, &self.settings);
         self.ensure_rule_title_input_subscriptions(window, cx);
+        self.ensure_cpu_threshold_slider_subscriptions(window, cx);
         self.sync_input_values(cx);
 
         let page = self.render_page(window, cx);
@@ -1494,6 +1917,7 @@ impl Render for PowerLeafApp {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .font_family("Segoe UI Variable")
             .child(self.render_title_bar(window, cx))
             .child(
                 div()
@@ -1560,6 +1984,7 @@ impl PowerLeafApp {
                             .flex_none()
                             .text_size(px(TEXT_CONTROL_SIZE))
                             .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(cx.theme().foreground)
                             .child(t!("app.name").to_string()),
                     )
@@ -1579,14 +2004,47 @@ impl PowerLeafApp {
 
     fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut nav = v_flex()
-            .w(px(276.0))
-            .min_w(px(276.0))
+            .w(px(NAV_PANE_WIDTH))
+            .min_w(px(NAV_PANE_WIDTH))
             .h_full()
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
             .bg(cx.theme().sidebar);
 
-        let mut drawer = v_flex().gap_3().p_2();
+        let header = v_flex()
+            .flex_shrink_0()
+            .px_3()
+            .pt_3()
+            .pb_2()
+            .gap_1()
+            .child(
+                div()
+                    .text_size(px(TEXT_BODY_SIZE))
+                    .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                    .text_color(cx.theme().sidebar_foreground)
+                    .child(t!("app.name").to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(TEXT_LABEL_SIZE))
+                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(t!("app.description").to_string()),
+            );
+
+        let mut drawer = v_flex()
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_3()
+            .p_2()
+            .overflow_y_scrollbar();
+        let mut footer = v_flex()
+            .flex_shrink_0()
+            .gap_1()
+            .p_2()
+            .border_t_1()
+            .border_color(cx.theme().sidebar_border);
 
         for section in Page::sections() {
             let mut group = v_flex().gap_1();
@@ -1612,10 +2070,14 @@ impl PowerLeafApp {
                         .into_any_element(),
                 );
             }
-            drawer = drawer.child(group);
+            if section.label == "App" {
+                footer = footer.child(group);
+            } else {
+                drawer = drawer.child(group);
+            }
         }
 
-        nav = nav.child(drawer);
+        nav = nav.child(header).child(drawer).child(footer);
         nav.into_any_element()
     }
 
@@ -1648,19 +2110,17 @@ impl PowerLeafApp {
             })
             .gap_2()
             .p_3()
-            .rounded_md()
+            .rounded(px(FLUENT_RADIUS_OVERLAY))
             .border_1()
             .border_color(rgb(accent_color()))
             .bg(cx.theme().popover)
             .child(
-                h_flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().popover_foreground)
-                            .child(t!("unsaved.title").to_string()),
-                    ),
+                h_flex().items_center().child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(cx.theme().popover_foreground)
+                        .child(t!("unsaved.title").to_string()),
+                ),
             )
             .child(text_muted(t!("unsaved.message").to_string()))
             .child(
@@ -1694,7 +2154,7 @@ impl PowerLeafApp {
     fn render_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.page {
             Page::Dashboard => self.render_dashboard(),
-            Page::Activity => self.render_activity_page(cx),
+            Page::Activity => self.render_activity_page(window, cx),
             Page::ForegroundRules => self.render_foreground_rules_page(window, cx),
             Page::Schedule => self.render_schedule_page(window, cx),
             Page::CpuUsage => self.render_cpu_usage_page(window, cx),
@@ -2006,48 +2466,41 @@ impl PowerLeafApp {
         ]
     }
 
-    fn render_activity_page(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_activity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.sync_activity_slider_states(window, cx);
         let enabled = self.settings.activity_mode.enabled;
         let body = feature_body(enabled)
-            .child(text_muted(format!(
-                "{}",
-                t!(
-                    "activity.current_active_plan",
-                    plan = self
-                        .current_plan
-                        .as_ref()
-                        .map(|plan| plan.name.as_str())
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| t!("common.unknown").to_string())
-                )
-            )))
-            .child(
-                self.render_power_plan_picker(
+            .child(setting_action_card(
+                "activity-idle-plan-card",
+                t!("activity.idle_plan").to_string(),
+                self.render_inline_power_plan_picker(
                     "activity-idle-plan",
-                    &t!("activity.idle_plan"),
                     self.settings
                         .activity_mode
                         .power_plans
                         .power_save_guid
                         .clone(),
                     PowerPlanField::ActivityKind(PowerPlanKind::Idle),
+                    window,
                     cx,
                 ),
-            )
-            .child(
-                self.render_power_plan_picker(
+            ))
+            .child(setting_action_card(
+                "activity-active-plan-card",
+                t!("activity.active_plan").to_string(),
+                self.render_inline_power_plan_picker(
                     "activity-active-plan",
-                    &t!("activity.active_plan"),
                     self.settings
                         .activity_mode
                         .power_plans
                         .performance_guid
                         .clone(),
                     PowerPlanField::ActivityKind(PowerPlanKind::Active),
+                    window,
                     cx,
                 ),
-            )
-            .child(checkbox(
+            ))
+            .child(feature_toggle_switch(
                 "keyboard-input",
                 t!("activity.keyboard_input").to_string(),
                 self.settings.activity_mode.input_detection.keyboard,
@@ -2065,7 +2518,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(checkbox(
+            .child(feature_toggle_switch(
                 "mouse-input",
                 t!("activity.mouse_input").to_string(),
                 self.settings.activity_mode.input_detection.mouse,
@@ -2083,39 +2536,57 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(stepper_u64(
+            .child(activity_slider_card(
                 "activity-idle-timeout",
                 &t!("activity.idle_timeout"),
-                self.settings.activity_mode.idle_timeout_seconds,
                 self.render_numeric_value(
                     NumericField::ActivityIdleTimeout,
-                    format!("{} sec", self.settings.activity_mode.idle_timeout_seconds),
+                    seconds_label(self.settings.activity_mode.idle_timeout_seconds),
                     self.settings.activity_mode.idle_timeout_seconds.to_string(),
                     cx,
                 ),
+                &self.inputs.activity_idle_timeout,
+                enabled,
+                ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+                ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
+                1,
+                window,
+                cx,
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.activity_mode.idle_timeout_seconds = apply_u64_step(
+                    let value = apply_u64_step(
                         app.settings.activity_mode.idle_timeout_seconds,
                         change,
-                        1,
-                        7_200,
+                        ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+                        ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
                     );
+                    app.set_activity_slider_value(ActivitySlider::IdleTimeout, value);
                     cx.notify();
                 }),
             ))
-            .child(stepper_u64(
+            .child(activity_slider_card(
                 "general-check-interval",
                 &t!("activity.check_interval"),
-                self.settings.general.check_interval_ms,
                 self.render_numeric_value(
                     NumericField::GeneralCheckInterval,
-                    format!("{} ms", self.settings.general.check_interval_ms),
+                    milliseconds_label(self.settings.general.check_interval_ms),
                     self.settings.general.check_interval_ms.to_string(),
                     cx,
                 ),
+                &self.inputs.activity_check_interval,
+                enabled,
+                ACTIVITY_CHECK_INTERVAL_MIN_MS,
+                ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                ACTIVITY_CHECK_INTERVAL_STEP_MS,
+                window,
+                cx,
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.general.check_interval_ms =
-                        apply_u64_step(app.settings.general.check_interval_ms, change, 250, 60_000);
+                    let value = apply_u64_step(
+                        app.settings.general.check_interval_ms,
+                        change,
+                        ACTIVITY_CHECK_INTERVAL_MIN_MS,
+                        ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                    );
+                    app.set_activity_slider_value(ActivitySlider::CheckInterval, value);
                     cx.notify();
                 }),
             ));
@@ -2177,7 +2648,7 @@ impl PowerLeafApp {
                     cx,
                 ))
                 .child(
-                    control_button(Button::new("add-foreground-rule").primary())
+                    primary_control_button(Button::new("add-foreground-rule"), cx)
                         .label(t!("common.add").to_string())
                         .disabled(
                             !self.settings.foreground_rules.enabled
@@ -2204,7 +2675,7 @@ impl PowerLeafApp {
         );
         let mut rules = rule_list();
         for (index, rule) in self.settings.foreground_rules.rules.iter().enumerate() {
-            rules = rules.child(self.render_foreground_rule(index, rule, cx));
+            rules = rules.child(self.render_foreground_rule(index, rule, window, cx));
         }
         body = body.child(rules);
         content = content.child(disabled_feature_body(body, enabled));
@@ -2216,6 +2687,7 @@ impl PowerLeafApp {
         &self,
         index: usize,
         rule: &ForegroundRule,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         compact_rule_row(cx)
@@ -2235,7 +2707,6 @@ impl PowerLeafApp {
                     .min_w(px(160.0))
                     .text_size(px(RULE_TITLE_TEXT_SIZE))
                     .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .truncate()
                     .child(rule.process_name.clone()),
             )
@@ -2243,21 +2714,20 @@ impl PowerLeafApp {
                 format!("foreground-rule-plan-{index}"),
                 rule.power_plan_guid.clone(),
                 PowerPlanField::ForegroundRule(index),
+                window,
                 cx,
             ))
             .child(
-                Button::new(SharedString::from(format!(
+                danger_control_button(Button::new(SharedString::from(format!(
                     "remove-foreground-rule-{index}"
-                )))
-                .small()
-                .danger()
+                ))))
                 .label(t!("common.remove").to_string())
                 .on_click(cx.listener(move |app, _, _, cx| {
                     if index < app.settings.foreground_rules.rules.len() {
                         app.settings.foreground_rules.rules.remove(index);
                     }
                     app.editing_rule_title = None;
-                    app.collapsed_rule_cards.clear();
+                    app.expanded_rule_cards.clear();
                     cx.notify();
                 }))
                 .into_any_element(),
@@ -2330,7 +2800,6 @@ impl PowerLeafApp {
                     .whitespace_nowrap()
                     .text_size(px(RULE_TITLE_TEXT_SIZE))
                     .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .cursor_pointer()
                     .child(title.to_owned()),
             )
@@ -2356,9 +2825,11 @@ impl PowerLeafApp {
             }),
         ));
 
-        let mut body = feature_body(enabled).child(
-            control_button(Button::new("add-time-rule").primary())
-                .label(t!("schedule.add_rule").to_string())
+        let mut body = feature_body(enabled).child(create_rule_card(
+            "create-time-rule-card",
+            t!("schedule.rule_title").to_string(),
+            primary_control_button(Button::new("add-time-rule"), cx)
+                .label(t!("common.create").to_string())
                 .disabled(!enabled)
                 .on_click(cx.listener(|app, _, window, cx| {
                     app.settings.schedule_mode.rules.push(ScheduleRule {
@@ -2373,8 +2844,9 @@ impl PowerLeafApp {
                     });
                     app.inputs.ensure_for_settings(window, cx, &app.settings);
                     cx.notify();
-                })),
-        );
+                }))
+                .into_any_element(),
+        ));
         let mut rules = rule_list();
         for (index, rule) in self.settings.schedule_mode.rules.iter().enumerate() {
             rules = rules.child(self.render_schedule_rule(index, rule, window, cx));
@@ -2395,7 +2867,7 @@ impl PowerLeafApp {
         let Some(name_input) = self.inputs.schedule_rule_names.get(index).cloned() else {
             return syncing_rule_card(index);
         };
-        let mut days = h_flex().gap_1().flex_wrap();
+        let mut days = h_flex().gap_1().items_center().justify_end().flex_none();
         for day in WeekdaySetting::all() {
             let selected = rule.days.contains(&day);
             days = days.child(
@@ -2437,64 +2909,90 @@ impl PowerLeafApp {
             cx,
         );
         if !collapsed {
+            let mut condition_fields = vec![
+                rule_action_row(
+                    format!("schedule-rule-days-{index}"),
+                    t!("schedule.days").to_string(),
+                    days.into_any_element(),
+                )
+                .into_any_element(),
+                match self.inputs.schedule_start_times.get(index).cloned() {
+                    Some(input) => {
+                        let focused = input.read(cx).focus_handle(cx).is_focused(window);
+                        setting_input_card(
+                            format!("schedule-rule-start-{index}"),
+                            t!("schedule.start").to_string(),
+                            input,
+                            focused,
+                            cx,
+                        )
+                        .into_any_element()
+                    }
+                    None => syncing_rule_card(index),
+                },
+                match self.inputs.schedule_end_times.get(index).cloned() {
+                    Some(input) => {
+                        let focused = input.read(cx).focus_handle(cx).is_focused(window);
+                        setting_input_card(
+                            format!("schedule-rule-end-{index}"),
+                            t!("schedule.end").to_string(),
+                            input,
+                            focused,
+                            cx,
+                        )
+                        .into_any_element()
+                    }
+                    None => syncing_rule_card(index),
+                },
+            ];
+
+            if rule.parsed_times().is_none() {
+                condition_fields.push(
+                    setting_notice_card(
+                        format!("schedule-rule-time-format-{index}"),
+                        text_danger(t!("schedule.use_hhmm").to_string()).into_any_element(),
+                    )
+                    .into_any_element(),
+                );
+            }
+
             card = card
-                .child(rule_card_body_row(vec![
-                    labeled_element(&t!("schedule.days"), days.into_any_element())
-                        .into_any_element(),
-                    match self.inputs.schedule_start_times.get(index).cloned() {
-                        Some(input) => input_row(
-                            &t!("schedule.start"),
-                            input.clone(),
-                            input.read(cx).focus_handle(cx).is_focused(window),
-                            cx,
-                        )
-                        .into_any_element(),
-                        None => syncing_input_message().into_any_element(),
-                    },
-                    match self.inputs.schedule_end_times.get(index).cloned() {
-                        Some(input) => input_row(
-                            &t!("schedule.end"),
-                            input.clone(),
-                            input.read(cx).focus_handle(cx).is_focused(window),
-                            cx,
-                        )
-                        .into_any_element(),
-                        None => syncing_input_message().into_any_element(),
-                    },
-                    if rule.parsed_times().is_none() {
-                        text_danger(t!("schedule.use_hhmm").to_string()).into_any_element()
-                    } else {
-                        div().into_any_element()
-                    },
-                ]))
-                .child(rule_card_body_row(vec![self.render_power_plan_picker(
+                .child(rule_card_body_row(condition_fields))
+                .child(rule_card_body_row(vec![rule_action_row(
                     format!("schedule-rule-plan-{index}"),
-                    &t!("schedule.target_power_plan"),
-                    rule.power_plan_guid.clone(),
-                    PowerPlanField::ScheduleRule(index),
-                    cx,
-                )]))
+                    t!("schedule.target_power_plan").to_string(),
+                    self.render_inline_power_plan_picker(
+                        format!("schedule-rule-plan-{index}"),
+                        rule.power_plan_guid.clone(),
+                        PowerPlanField::ScheduleRule(index),
+                        window,
+                        cx,
+                    ),
+                )
+                .into_any_element()]))
                 .child(rule_card_body_actions(vec![
                     rename_rule_button(title_target, cx),
-                    Button::new(SharedString::from(format!("remove-schedule-rule-{index}")))
-                        .small()
-                        .danger()
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if index < app.settings.schedule_mode.rules.len() {
-                                app.settings.schedule_mode.rules.remove(index);
-                            }
-                            app.editing_rule_title = None;
-                            app.collapsed_rule_cards.clear();
-                            cx.notify();
-                        }))
-                        .into_any_element(),
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-schedule-rule-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        if index < app.settings.schedule_mode.rules.len() {
+                            app.settings.schedule_mode.rules.remove(index);
+                        }
+                        app.editing_rule_title = None;
+                        app.expanded_rule_cards.clear();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
                 ]));
         }
         card.into_any_element()
     }
 
     fn render_cpu_usage_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        self.sync_cpu_threshold_slider_states(window, cx);
+
         let enabled = self.settings.cpu_usage_mode.enabled;
         let mut content = page_shell_with_help(
             Page::CpuUsage,
@@ -2513,9 +3011,11 @@ impl PowerLeafApp {
             }),
         ));
 
-        let mut body = feature_body(enabled).child(
-            control_button(Button::new("add-cpu-rule").primary())
-                .label(t!("cpu_rules.add_rule").to_string())
+        let mut body = feature_body(enabled).child(create_rule_card(
+            "create-cpu-rule-card",
+            t!("cpu_rules.rule_title").to_string(),
+            primary_control_button(Button::new("add-cpu-rule"), cx)
+                .label(t!("common.create").to_string())
                 .disabled(!enabled)
                 .on_click(cx.listener(|app, _, window, cx| {
                     app.settings.cpu_usage_mode.rules.push(CpuUsageRule {
@@ -2535,11 +3035,12 @@ impl PowerLeafApp {
                     });
                     app.inputs.ensure_for_settings(window, cx, &app.settings);
                     cx.notify();
-                })),
-        );
+                }))
+                .into_any_element(),
+        ));
         let mut rules = rule_list();
         for (index, rule) in self.settings.cpu_usage_mode.rules.iter().enumerate() {
-            rules = rules.child(self.render_cpu_rule(index, rule, window, cx));
+            rules = rules.child(self.render_cpu_rule(index, rule, enabled, window, cx));
         }
         body = body.child(rules);
         content = content.child(disabled_feature_body(body, enabled));
@@ -2551,10 +3052,18 @@ impl PowerLeafApp {
         &self,
         index: usize,
         rule: &CpuUsageRule,
-        _window: &mut Window,
+        feature_enabled: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(name_input) = self.inputs.cpu_rule_names.get(index).cloned() else {
+            return syncing_rule_card(index);
+        };
+        let Some(threshold_state) = self.inputs.cpu_rule_thresholds.get(index).cloned() else {
+            return syncing_rule_card(index);
+        };
+        let Some(upper_threshold_state) = self.inputs.cpu_rule_upper_thresholds.get(index).cloned()
+        else {
             return syncing_rule_card(index);
         };
         let mut comparisons = h_flex().gap_1().flex_wrap();
@@ -2602,49 +3111,73 @@ impl PowerLeafApp {
             cx,
         );
         if !collapsed {
-            let mut condition_fields = vec![
-                labeled_element(
-                    &t!("cpu_rules.when_cpu_load"),
-                    comparisons.into_any_element(),
-                )
-                .into_any_element(),
-                stepper_u8(
-                    format!("cpu-rule-threshold-{index}"),
-                    &t!("cpu_rules.threshold"),
-                    rule.threshold_percent,
-                    self.render_numeric_value(
-                        NumericField::CpuThreshold(index),
-                        format!("{}%", rule.threshold_percent),
-                        rule.threshold_percent.to_string(),
+            let mut condition_fields =
+                vec![
+                    rule_action_row(
+                        format!("cpu-rule-comparison-{index}"),
+                        t!("cpu_rules.when_cpu_load").to_string(),
+                        comparisons.into_any_element(),
+                    )
+                    .into_any_element(),
+                    threshold_level_slider(
+                        format!("cpu-rule-threshold-{index}"),
+                        &t!("cpu_rules.threshold"),
+                        self.render_numeric_value(
+                            NumericField::CpuThreshold(index),
+                            format!("{}%", rule.threshold_percent),
+                            rule.threshold_percent.to_string(),
+                            cx,
+                        ),
+                        &threshold_state,
+                        feature_enabled,
+                        window,
                         cx,
-                    ),
-                    cx.listener(move |app, change: &StepChange<u8>, _, cx| {
-                        if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
-                            rule.threshold_percent =
-                                apply_u8_step(rule.threshold_percent, change, 0, 100);
-                        }
-                        cx.notify();
-                    }),
-                )
-                .into_any_element(),
-            ];
+                        cx.listener(move |app, change: &StepChange<u8>, _, cx| {
+                            if let Some(value) =
+                                app.settings.cpu_usage_mode.rules.get(index).map(|rule| {
+                                    apply_u8_step(rule.threshold_percent, change, 0, 100)
+                                })
+                            {
+                                app.set_cpu_threshold_slider_value(
+                                    CpuThresholdSlider::Lower(index),
+                                    value,
+                                );
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .into_any_element(),
+                ];
             if rule.comparison == CpuUsageComparison::Between {
                 condition_fields.push(
-                    stepper_u8(
+                    threshold_level_slider(
                         format!("cpu-rule-upper-threshold-{index}"),
                         &t!("cpu_rules.upper_threshold"),
-                        upper,
                         self.render_numeric_value(
                             NumericField::CpuUpperThreshold(index),
                             format!("{upper}%"),
                             upper.to_string(),
                             cx,
                         ),
+                        &upper_threshold_state,
+                        feature_enabled,
+                        window,
+                        cx,
                         cx.listener(move |app, change: &StepChange<u8>, _, cx| {
-                            if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
-                                let value = rule.upper_threshold_percent.unwrap_or(100);
-                                rule.upper_threshold_percent =
-                                    Some(apply_u8_step(value, change, 0, 100));
+                            if let Some(value) =
+                                app.settings.cpu_usage_mode.rules.get(index).map(|rule| {
+                                    apply_u8_step(
+                                        rule.upper_threshold_percent.unwrap_or(100),
+                                        change,
+                                        0,
+                                        100,
+                                    )
+                                })
+                            {
+                                app.set_cpu_threshold_slider_value(
+                                    CpuThresholdSlider::Upper(index),
+                                    value,
+                                );
                             }
                             cx.notify();
                         }),
@@ -2653,9 +3186,9 @@ impl PowerLeafApp {
                 );
             }
             condition_fields.push(
-                stepper_u64(
+                rule_stepper_row_u64(
                     format!("cpu-rule-duration-{index}"),
-                    &t!("cpu_rules.duration"),
+                    t!("cpu_rules.duration").to_string(),
                     rule.duration_seconds,
                     self.render_numeric_value(
                         NumericField::CpuDuration(index),
@@ -2675,14 +3208,19 @@ impl PowerLeafApp {
             );
 
             let mut plan_fields = vec![
-                self.render_power_plan_picker(
+                rule_action_row(
                     format!("cpu-rule-plan-{index}"),
-                    &t!("cpu_rules.use"),
-                    rule.power_plan_guid.clone(),
-                    PowerPlanField::CpuRule(index),
-                    cx,
-                ),
-                checkbox(
+                    t!("cpu_rules.use").to_string(),
+                    self.render_inline_power_plan_picker(
+                        format!("cpu-rule-plan-{index}"),
+                        rule.power_plan_guid.clone(),
+                        PowerPlanField::CpuRule(index),
+                        window,
+                        cx,
+                    ),
+                )
+                .into_any_element(),
+                rule_checkbox_row(
                     format!("cpu-rule-else-{index}"),
                     t!("cpu_rules.else").to_string(),
                     rule.else_enabled,
@@ -2699,13 +3237,20 @@ impl PowerLeafApp {
                 ),
             ];
             if rule.else_enabled {
-                plan_fields.push(self.render_power_plan_picker(
-                    format!("cpu-rule-else-plan-{index}"),
-                    &t!("cpu_rules.else_use"),
-                    rule.else_power_plan_guid.clone(),
-                    PowerPlanField::CpuRuleElse(index),
-                    cx,
-                ));
+                plan_fields.push(
+                    rule_action_row(
+                        format!("cpu-rule-else-plan-{index}"),
+                        t!("cpu_rules.else_use").to_string(),
+                        self.render_inline_power_plan_picker(
+                            format!("cpu-rule-else-plan-{index}"),
+                            rule.else_power_plan_guid.clone(),
+                            PowerPlanField::CpuRuleElse(index),
+                            window,
+                            cx,
+                        ),
+                    )
+                    .into_any_element(),
+                );
             }
 
             card = card
@@ -2713,19 +3258,19 @@ impl PowerLeafApp {
                 .child(rule_card_body_row(plan_fields))
                 .child(rule_card_body_actions(vec![
                     rename_rule_button(title_target, cx),
-                    Button::new(SharedString::from(format!("remove-cpu-rule-{index}")))
-                        .small()
-                        .danger()
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if index < app.settings.cpu_usage_mode.rules.len() {
-                                app.settings.cpu_usage_mode.rules.remove(index);
-                            }
-                            app.editing_rule_title = None;
-                            app.collapsed_rule_cards.clear();
-                            cx.notify();
-                        }))
-                        .into_any_element(),
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-cpu-rule-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        if index < app.settings.cpu_usage_mode.rules.len() {
+                            app.settings.cpu_usage_mode.rules.remove(index);
+                        }
+                        app.editing_rule_title = None;
+                        app.expanded_rule_cards.clear();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
                 ]));
         }
         card.into_any_element()
@@ -2854,21 +3399,20 @@ impl PowerLeafApp {
                             .min_w(px(160.0))
                             .text_size(px(RULE_TITLE_TEXT_SIZE))
                             .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .truncate()
                             .child(process.clone()),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("remove-eco-qos-{index}")))
-                            .small()
-                            .danger()
-                            .label(t!("common.remove").to_string())
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                if index < app.settings.eco_qos.efficiency_whitelist.len() {
-                                    app.settings.eco_qos.efficiency_whitelist.remove(index);
-                                }
-                                cx.notify();
-                            })),
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-eco-qos-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if index < app.settings.eco_qos.efficiency_whitelist.len() {
+                                app.settings.eco_qos.efficiency_whitelist.remove(index);
+                            }
+                            cx.notify();
+                        })),
                     ),
             );
         }
@@ -2881,10 +3425,16 @@ impl PowerLeafApp {
     fn render_suspension_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let input_value = self.inputs.suspension_process.read(cx).value().to_string();
         let enabled = self.settings.app_suspension.enabled;
+        let thaw_group_collapsed =
+            self.is_setting_group_collapsed(SettingGroupTarget::SuspensionThaw);
+        let audio_group_collapsed =
+            self.is_setting_group_collapsed(SettingGroupTarget::SuspensionAudio);
+        let network_group_collapsed =
+            self.is_setting_group_collapsed(SettingGroupTarget::SuspensionNetwork);
         let body = feature_body(enabled)
-            .child(stepper_u64(
+            .child(setting_stepper_card_u64(
                 "suspension-background-delay",
-                &t!("suspension.background_delay"),
+                t!("suspension.background_delay").to_string(),
                 self.settings.app_suspension.background_delay_seconds,
                 self.render_numeric_value(
                     NumericField::SuspensionBackgroundDelay,
@@ -2908,136 +3458,159 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(checkbox(
-                "temporary-thaw",
+            .child(setting_group(
+                SettingGroupTarget::SuspensionThaw,
                 t!("suspension.temporary_thaw").to_string(),
-                self.settings.app_suspension.temporary_thaw_enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.app_suspension.temporary_thaw_enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "suspension-thaw-interval",
-                &t!("suspension.thaw_every"),
-                self.settings.app_suspension.temporary_thaw_interval_seconds,
-                self.render_numeric_value(
-                    NumericField::SuspensionThawInterval,
-                    format!(
-                        "{} sec",
-                        self.settings.app_suspension.temporary_thaw_interval_seconds
-                    ),
-                    self.settings
-                        .app_suspension
-                        .temporary_thaw_interval_seconds
-                        .to_string(),
-                    cx,
+                setting_group_switch_action(
+                    "temporary-thaw",
+                    self.settings.app_suspension.temporary_thaw_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.app_suspension.temporary_thaw_enabled = *checked;
+                        cx.notify();
+                    }),
                 ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.temporary_thaw_interval_seconds = apply_u64_step(
-                        app.settings.app_suspension.temporary_thaw_interval_seconds,
-                        change,
-                        1,
-                        86_400,
-                    );
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "suspension-thaw-duration",
-                &t!("suspension.thaw_duration"),
-                self.settings.app_suspension.temporary_thaw_duration_seconds,
-                self.render_numeric_value(
-                    NumericField::SuspensionThawDuration,
-                    format!(
-                        "{} sec",
-                        self.settings.app_suspension.temporary_thaw_duration_seconds
+                thaw_group_collapsed,
+                vec![
+                    setting_group_stepper_row_u64(
+                        "suspension-thaw-interval",
+                        t!("suspension.thaw_every").to_string(),
+                        self.settings.app_suspension.temporary_thaw_interval_seconds,
+                        self.render_numeric_value(
+                            NumericField::SuspensionThawInterval,
+                            format!(
+                                "{} sec",
+                                self.settings.app_suspension.temporary_thaw_interval_seconds
+                            ),
+                            self.settings
+                                .app_suspension
+                                .temporary_thaw_interval_seconds
+                                .to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            app.settings.app_suspension.temporary_thaw_interval_seconds =
+                                apply_u64_step(
+                                    app.settings.app_suspension.temporary_thaw_interval_seconds,
+                                    change,
+                                    1,
+                                    86_400,
+                                );
+                            cx.notify();
+                        }),
                     ),
-                    self.settings
-                        .app_suspension
-                        .temporary_thaw_duration_seconds
-                        .to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.temporary_thaw_duration_seconds = apply_u64_step(
-                        app.settings.app_suspension.temporary_thaw_duration_seconds,
-                        change,
-                        1,
-                        3_600,
-                    );
-                    cx.notify();
-                }),
+                    setting_group_stepper_row_u64(
+                        "suspension-thaw-duration",
+                        t!("suspension.thaw_duration").to_string(),
+                        self.settings.app_suspension.temporary_thaw_duration_seconds,
+                        self.render_numeric_value(
+                            NumericField::SuspensionThawDuration,
+                            format!(
+                                "{} sec",
+                                self.settings.app_suspension.temporary_thaw_duration_seconds
+                            ),
+                            self.settings
+                                .app_suspension
+                                .temporary_thaw_duration_seconds
+                                .to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            app.settings.app_suspension.temporary_thaw_duration_seconds =
+                                apply_u64_step(
+                                    app.settings.app_suspension.temporary_thaw_duration_seconds,
+                                    change,
+                                    1,
+                                    3_600,
+                                );
+                            cx.notify();
+                        }),
+                    ),
+                ],
+                cx,
             ))
-            .child(checkbox(
-                "audio-wake",
+            .child(setting_group(
+                SettingGroupTarget::SuspensionAudio,
                 t!("suspension.audio_detection").to_string(),
-                self.settings.app_suspension.audio_wake_enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.app_suspension.audio_wake_enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "suspension-audio-refreeze",
-                &t!("suspension.audio_refreeze"),
-                self.settings.app_suspension.audio_wake_duration_seconds,
-                self.render_numeric_value(
-                    NumericField::SuspensionAudioRefreeze,
-                    format!(
-                        "{} sec quiet",
-                        self.settings.app_suspension.audio_wake_duration_seconds
-                    ),
-                    self.settings
-                        .app_suspension
-                        .audio_wake_duration_seconds
-                        .to_string(),
-                    cx,
+                setting_group_switch_action(
+                    "audio-wake",
+                    self.settings.app_suspension.audio_wake_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.app_suspension.audio_wake_enabled = *checked;
+                        cx.notify();
+                    }),
                 ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.audio_wake_duration_seconds = apply_u64_step(
-                        app.settings.app_suspension.audio_wake_duration_seconds,
-                        change,
-                        1,
-                        3_600,
-                    );
-                    cx.notify();
-                }),
+                audio_group_collapsed,
+                vec![setting_group_stepper_row_u64(
+                    "suspension-audio-refreeze",
+                    t!("suspension.audio_refreeze").to_string(),
+                    self.settings.app_suspension.audio_wake_duration_seconds,
+                    self.render_numeric_value(
+                        NumericField::SuspensionAudioRefreeze,
+                        format!(
+                            "{} sec quiet",
+                            self.settings.app_suspension.audio_wake_duration_seconds
+                        ),
+                        self.settings
+                            .app_suspension
+                            .audio_wake_duration_seconds
+                            .to_string(),
+                        cx,
+                    ),
+                    true,
+                    cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                        app.settings.app_suspension.audio_wake_duration_seconds = apply_u64_step(
+                            app.settings.app_suspension.audio_wake_duration_seconds,
+                            change,
+                            1,
+                            3_600,
+                        );
+                        cx.notify();
+                    }),
+                )],
+                cx,
             ))
-            .child(checkbox(
-                "network-wake",
+            .child(setting_group(
+                SettingGroupTarget::SuspensionNetwork,
                 t!("suspension.network_detection").to_string(),
-                self.settings.app_suspension.network_wake_enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.app_suspension.network_wake_enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(stepper_u64(
-                "suspension-network-refreeze",
-                &t!("suspension.network_refreeze"),
-                self.settings.app_suspension.network_wake_duration_seconds,
-                self.render_numeric_value(
-                    NumericField::SuspensionNetworkRefreeze,
-                    format!(
-                        "{} sec quiet",
-                        self.settings.app_suspension.network_wake_duration_seconds
-                    ),
-                    self.settings
-                        .app_suspension
-                        .network_wake_duration_seconds
-                        .to_string(),
-                    cx,
+                setting_group_switch_action(
+                    "network-wake",
+                    self.settings.app_suspension.network_wake_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.app_suspension.network_wake_enabled = *checked;
+                        cx.notify();
+                    }),
                 ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings.app_suspension.network_wake_duration_seconds = apply_u64_step(
-                        app.settings.app_suspension.network_wake_duration_seconds,
-                        change,
-                        1,
-                        3_600,
-                    );
-                    cx.notify();
-                }),
+                network_group_collapsed,
+                vec![setting_group_stepper_row_u64(
+                    "suspension-network-refreeze",
+                    t!("suspension.network_refreeze").to_string(),
+                    self.settings.app_suspension.network_wake_duration_seconds,
+                    self.render_numeric_value(
+                        NumericField::SuspensionNetworkRefreeze,
+                        format!(
+                            "{} sec quiet",
+                            self.settings.app_suspension.network_wake_duration_seconds
+                        ),
+                        self.settings
+                            .app_suspension
+                            .network_wake_duration_seconds
+                            .to_string(),
+                        cx,
+                    ),
+                    true,
+                    cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                        app.settings.app_suspension.network_wake_duration_seconds = apply_u64_step(
+                            app.settings.app_suspension.network_wake_duration_seconds,
+                            change,
+                            1,
+                            3_600,
+                        );
+                        cx.notify();
+                    }),
+                )],
+                cx,
             ))
             .child(stat_grid(vec![
                 (
@@ -3128,7 +3701,7 @@ impl PowerLeafApp {
                             })),
                     ),
             )
-            .child(self.render_suspendable_apps(cx));
+            .child(self.render_suspendable_apps(window, cx));
 
         page_shell_with_help(
             Page::AppSuspension,
@@ -3151,7 +3724,7 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
-    fn render_suspendable_apps(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_suspendable_apps(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list();
         for (index, rule) in self
             .settings
@@ -3164,9 +3737,29 @@ impl PowerLeafApp {
             let indicator = suspension_indicator(&self.app_suspension_status, &process);
             let card_target = RuleCardTarget::Suspension(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
-            let mut card = rule_card(
+            let network_thresholds_enabled =
+                self.settings.app_suspension.network_wake_enabled && rule.network_wake_enabled;
+            let freeze_action = control_button(Button::new(SharedString::from(format!(
+                "freeze-suspension-{index}"
+            ))))
+            .label(t!("suspension.freeze").to_string())
+            .disabled(!can_manual_freeze(&self.app_suspension_status, &process))
+            .on_click(cx.listener({
+                let process = process.clone();
+                move |app, _, _, cx| {
+                    cx.stop_propagation();
+                    app.background_automation
+                        .request_app_suspension_freeze(&process);
+                    app.status_message =
+                        t!("suspension.manual_freeze_requested", process = process).to_string();
+                    cx.notify();
+                }
+            }))
+            .into_any_element();
+            let mut card = rule_card_with_header_action(
                 static_rule_title(&process),
                 status_pill(indicator.label, indicator.bg, indicator.fg),
+                Some(freeze_action),
                 rule_card_collapse_indicator(collapsed),
                 card_target.clone(),
                 cx,
@@ -3174,39 +3767,7 @@ impl PowerLeafApp {
             if !collapsed {
                 card = card
                     .child(rule_card_body_row(vec![
-                        text_muted(indicator.hover).into_any_element()
-                    ]))
-                    .child(rule_card_body_row(vec![
-                        Button::new(SharedString::from(format!("freeze-suspension-{index}")))
-                            .small()
-                            .label(t!("suspension.freeze").to_string())
-                            .disabled(!can_manual_freeze(&self.app_suspension_status, &process))
-                            .on_click(cx.listener({
-                                let process = process.clone();
-                                move |app, _, _, cx| {
-                                    app.background_automation
-                                        .request_app_suspension_freeze(&process);
-                                    app.status_message =
-                                        t!("suspension.manual_freeze_requested", process = process)
-                                            .to_string();
-                                    cx.notify();
-                                }
-                            }))
-                            .into_any_element(),
-                        checkbox(
-                            format!("suspension-network-rule-{index}"),
-                            t!("suspension.network_detection").to_string(),
-                            rule.network_wake_enabled,
-                            cx.listener(move |app, checked, _, cx| {
-                                if let Some(rule) =
-                                    app.settings.app_suspension.suspendable_apps.get_mut(index)
-                                {
-                                    rule.network_wake_enabled = *checked;
-                                }
-                                cx.notify();
-                            }),
-                        ),
-                        checkbox(
+                        rule_toggle_switch(
                             format!("suspension-audio-rule-{index}"),
                             t!("suspension.audio_detection").to_string(),
                             rule.audio_wake_enabled,
@@ -3215,6 +3776,19 @@ impl PowerLeafApp {
                                     app.settings.app_suspension.suspendable_apps.get_mut(index)
                                 {
                                     rule.audio_wake_enabled = *checked;
+                                }
+                                cx.notify();
+                            }),
+                        ),
+                        rule_toggle_switch(
+                            format!("suspension-network-rule-{index}"),
+                            t!("suspension.network_detection").to_string(),
+                            rule.network_wake_enabled,
+                            cx.listener(move |app, checked, _, cx| {
+                                if let Some(rule) =
+                                    app.settings.app_suspension.suspendable_apps.get_mut(index)
+                                {
+                                    rule.network_wake_enabled = *checked;
                                 }
                                 cx.notify();
                             }),
@@ -3228,6 +3802,8 @@ impl PowerLeafApp {
                             rule.network_download_threshold_bytes,
                             rule.network_download_threshold_unit,
                             ThresholdField::Download(index),
+                            network_thresholds_enabled,
+                            window,
                             cx,
                         ),
                         self.render_network_threshold(
@@ -3237,25 +3813,27 @@ impl PowerLeafApp {
                             rule.network_upload_threshold_bytes,
                             rule.network_upload_threshold_unit,
                             ThresholdField::Upload(index),
+                            network_thresholds_enabled,
+                            window,
                             cx,
                         ),
                     ]))
                     .child(rule_card_body_action(
-                        Button::new(SharedString::from(format!("remove-suspension-{index}")))
-                            .small()
-                            .danger()
-                            .label(t!("common.remove").to_string())
-                            .on_click(cx.listener({
-                                let card_target = card_target.clone();
-                                move |app, _, _, cx| {
-                                    if index < app.settings.app_suspension.suspendable_apps.len() {
-                                        app.settings.app_suspension.suspendable_apps.remove(index);
-                                    }
-                                    app.collapsed_rule_cards.remove(&card_target);
-                                    cx.notify();
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-suspension-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener({
+                            let card_target = card_target.clone();
+                            move |app, _, _, cx| {
+                                if index < app.settings.app_suspension.suspendable_apps.len() {
+                                    app.settings.app_suspension.suspendable_apps.remove(index);
                                 }
-                            }))
-                            .into_any_element(),
+                                app.expanded_rule_cards.remove(&card_target);
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
                     ));
             }
             list = list.child(card);
@@ -3397,38 +3975,44 @@ impl PowerLeafApp {
             );
             if !collapsed {
                 card = card
-                    .child(rule_card_body_row(vec![
-                        status_pill(indicator.label, indicator.bg, indicator.fg),
-                        text_muted(indicator.hover).into_any_element(),
-                    ]))
+                    .child(rule_card_body_row(vec![rule_action_row(
+                        format!("affinity-rule-status-{index}"),
+                        t!("common.status").to_string(),
+                        h_flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_2()
+                            .min_w(px(0.0))
+                            .flex_wrap()
+                            .child(status_pill(indicator.label, indicator.bg, indicator.fg))
+                            .child(text_muted(indicator.hover))
+                            .into_any_element(),
+                    )
+                    .into_any_element()]))
                     .child(rule_card_body_row(vec![
                         self.render_affinity_mode_selector(index, rule.mode, cx)
                     ]))
-                    .child(rule_card_body_row(vec![value_pill(affinity_mask_label(
-                        rule.core_mask,
-                    ))
-                    .into_any_element()]))
                     .when(rule.mode != CpuAffinityMode::EfficiencyOff, |card| {
                         card.child(rule_card_body_row(vec![
                             self.render_affinity_core_selector(index, rule.core_mask, cx)
                         ]))
                     })
                     .child(rule_card_body_action(
-                        Button::new(SharedString::from(format!("remove-affinity-{index}")))
-                            .small()
-                            .danger()
-                            .label(t!("common.remove").to_string())
-                            .on_click(cx.listener({
-                                let card_target = card_target.clone();
-                                move |app, _, _, cx| {
-                                    if index < app.settings.cpu_affinity.rules.len() {
-                                        app.settings.cpu_affinity.rules.remove(index);
-                                    }
-                                    app.collapsed_rule_cards.remove(&card_target);
-                                    cx.notify();
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-affinity-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener({
+                            let card_target = card_target.clone();
+                            move |app, _, _, cx| {
+                                if index < app.settings.cpu_affinity.rules.len() {
+                                    app.settings.cpu_affinity.rules.remove(index);
                                 }
-                            }))
-                            .into_any_element(),
+                                app.expanded_rule_cards.remove(&card_target);
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
                     ));
             }
             list = list.child(card);
@@ -3476,7 +4060,12 @@ impl PowerLeafApp {
                 })),
             );
         }
-        labeled_element(&t!("affinity.mode"), row.into_any_element()).into_any_element()
+        rule_action_row(
+            format!("affinity-mode-row-{index}"),
+            t!("affinity.mode").to_string(),
+            row.into_any_element(),
+        )
+        .into_any_element()
     }
 
     fn render_affinity_core_selector(
@@ -3552,10 +4141,12 @@ impl PowerLeafApp {
             );
         }
 
-        labeled_element(
-            &t!("affinity.allowed_cpus"),
+        rule_action_row(
+            format!("affinity-core-row-{index}"),
+            t!("affinity.allowed_cpus").to_string(),
             v_flex()
                 .gap_2()
+                .items_end()
                 .child(presets)
                 .child(row)
                 .into_any_element(),
@@ -3608,50 +4199,66 @@ impl PowerLeafApp {
         threshold_bytes: u64,
         unit: NetworkThresholdUnit,
         field: ThresholdField,
+        enabled: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let value = unit.threshold_value_from_bytes(threshold_bytes);
         let value_label = if threshold_bytes == 0 {
             t!("affinity.unlimited").to_string()
         } else {
-            format!("{value:.3} {}", unit.label())
-                .trim_end_matches('0')
-                .trim_end_matches('.')
-                .to_owned()
+            network_threshold_value_label(value)
         };
-        labeled_element(
-            label,
+        rule_action_row(
+            format!("network-threshold-card-{field:?}"),
+            label.to_owned(),
             h_flex()
                 .gap_2()
                 .items_center()
                 .flex_wrap()
                 .child(
-                    Button::new(SharedString::from(format!("threshold-down-{:?}", field)))
-                        .small()
-                        .label("-")
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.adjust_threshold(field, false);
-                            cx.notify();
-                        })),
+                    control_button(Button::new(SharedString::from(format!(
+                        "threshold-down-{:?}",
+                        field
+                    ))))
+                    .label("-")
+                    .disabled(!enabled)
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.adjust_threshold(field, false);
+                        cx.notify();
+                    })),
                 )
-                .child(self.render_numeric_value(
-                    NumericField::NetworkThreshold(field),
-                    value_label,
-                    network_threshold_edit_value(threshold_bytes, unit),
-                    cx,
-                ))
+                .child(if enabled {
+                    self.render_numeric_value(
+                        NumericField::NetworkThreshold(field),
+                        value_label,
+                        network_threshold_edit_value(threshold_bytes, unit),
+                        cx,
+                    )
+                } else {
+                    h_flex()
+                        .w(px(numeric_value_width(NumericField::NetworkThreshold(
+                            field,
+                        ))))
+                        .child(value_pill(value_label).w_full())
+                        .into_any_element()
+                })
                 .child(
-                    Button::new(SharedString::from(format!("threshold-up-{:?}", field)))
-                        .small()
-                        .label("+")
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.adjust_threshold(field, true);
-                            cx.notify();
-                        })),
+                    control_button(Button::new(SharedString::from(format!(
+                        "threshold-up-{:?}",
+                        field
+                    ))))
+                    .label("+")
+                    .disabled(!enabled)
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.adjust_threshold(field, true);
+                        cx.notify();
+                    })),
                 )
-                .child(self.render_network_unit_picker(field, unit, cx))
+                .child(self.render_network_unit_picker(field, unit, enabled, window, cx))
                 .into_any_element(),
         )
+        .when(!enabled, |card| card.opacity(0.42).cursor_default())
         .into_any_element()
     }
 
@@ -3692,11 +4299,19 @@ impl PowerLeafApp {
         &self,
         field: ThresholdField,
         selected: NetworkThresholdUnit,
+        enabled: bool,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let picker_id = format!("network-unit-{field:?}");
-        let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id.as_str());
-        let mut options = dropdown_surface(cx);
+        let is_open =
+            enabled && self.active_power_plan_picker.as_deref() == Some(picker_id.as_str());
+        let placement = self.dropdown_placement(
+            &picker_id,
+            dropdown_list_height(NetworkThresholdUnit::ALL.len()),
+            window,
+        );
+        let mut options = dropdown_surface(cx, placement.max_height);
 
         for unit in NetworkThresholdUnit::ALL {
             options = options.child(
@@ -3725,7 +4340,7 @@ impl PowerLeafApp {
         let toggle_picker_id = picker_id.clone();
 
         v_flex()
-            .w(px(132.0))
+            .w(px(76.0))
             .min_w(px(0.0))
             .relative()
             .min_h(px(32.0))
@@ -3744,7 +4359,8 @@ impl PowerLeafApp {
                     .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
                     .text_color(cx.theme().foreground)
                     .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                    .cursor_pointer()
+                    .when(enabled, |style| style.cursor_pointer())
+                    .when(!enabled, |style| style.cursor_default().opacity(0.48))
                     .child(
                         div()
                             .flex_1()
@@ -3753,28 +4369,28 @@ impl PowerLeafApp {
                             .child(selected.label().to_string()),
                     )
                     .child(dropdown_chevron(cx))
-                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                        app.active_power_plan_picker =
-                            (app.active_power_plan_picker.as_deref()
-                                != Some(toggle_picker_id.as_str()))
-                            .then_some(toggle_picker_id.clone());
-                        cx.notify();
-                    })),
+                    .when(enabled, |control| {
+                        control.on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                            app.active_power_plan_picker =
+                                (app.active_power_plan_picker.as_deref()
+                                    != Some(toggle_picker_id.as_str()))
+                                .then_some(toggle_picker_id.clone());
+                            cx.notify();
+                        }))
+                    }),
             )
+            .child(dropdown_anchor_sensor(
+                picker_id.clone(),
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
             .child(if is_open {
                 deferred(
-                    div()
-                        .absolute()
-                        .top(px(34.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
+                    dropdown_popup_layer(placement)
                         .occlude()
-                        .on_mouse_down_out(cx.listener(
-                            |app, _: &gpui::MouseDownEvent, _, cx| {
-                                app.active_power_plan_picker = None;
-                                cx.notify();
-                            },
-                        ))
+                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
                         .child(options),
                 )
                 .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
@@ -3815,7 +4431,7 @@ impl PowerLeafApp {
             row = row.child(
                 toggle_button(
                     format!("language-{:?}", language),
-                    t!(language.label_key()).to_string(),
+                    language.native_label().to_string(),
                     self.settings.general.language == language,
                 )
                 .on_click(cx.listener(move |app, _, _, cx| {
@@ -3901,7 +4517,7 @@ impl PowerLeafApp {
         let mut source_row = h_flex().gap_1().flex_wrap();
         for source in AccentColorSource::ALL {
             let label = match source {
-                AccentColorSource::Windows => t!("accent.windows"),
+                AccentColorSource::Windows => t!("theme.system"),
                 AccentColorSource::Custom => t!("accent.custom"),
             };
             source_row = source_row.child(
@@ -4134,7 +4750,7 @@ impl PowerLeafApp {
 
         section_card(&t!("processor_power.title"))
             .child(text_muted(t!("processor_power.help").to_string()))
-            .child(self.render_processor_power_plan_picker(cx))
+            .child(self.render_processor_power_plan_picker(window, cx))
             .child(
                 v_flex()
                     .w_full()
@@ -4158,6 +4774,8 @@ impl PowerLeafApp {
                                     cx,
                                 ),
                                 &self.inputs.processor_power_ac_core_parking_min,
+                                window,
+                                cx,
                                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                                     let value = apply_u64_step(
                                         app.processor_power_ac_core_parking_min,
@@ -4183,6 +4801,8 @@ impl PowerLeafApp {
                                     cx,
                                 ),
                                 &self.inputs.processor_power_ac_performance_min,
+                                window,
+                                cx,
                                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                                     let value = apply_u64_step(
                                         app.processor_power_ac_performance_min,
@@ -4208,6 +4828,8 @@ impl PowerLeafApp {
                                     cx,
                                 ),
                                 &self.inputs.processor_power_ac_performance_max,
+                                window,
+                                cx,
                                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                                     let value = apply_u64_step(
                                         app.processor_power_ac_performance_max,
@@ -4242,6 +4864,8 @@ impl PowerLeafApp {
                                     cx,
                                 ),
                                 &self.inputs.processor_power_dc_core_parking_min,
+                                window,
+                                cx,
                                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                                     let value = apply_u64_step(
                                         app.processor_power_dc_core_parking_min,
@@ -4267,6 +4891,8 @@ impl PowerLeafApp {
                                     cx,
                                 ),
                                 &self.inputs.processor_power_dc_performance_min,
+                                window,
+                                cx,
                                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                                     let value = apply_u64_step(
                                         app.processor_power_dc_performance_min,
@@ -4292,6 +4918,8 @@ impl PowerLeafApp {
                                     cx,
                                 ),
                                 &self.inputs.processor_power_dc_performance_max,
+                                window,
+                                cx,
                                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                                     let value = apply_u64_step(
                                         app.processor_power_dc_performance_max,
@@ -4331,20 +4959,26 @@ impl PowerLeafApp {
                                 .primary()
                                 .text_color(cx.theme().primary_foreground),
                         )
-                            .label(t!("processor_power.apply_custom").to_string())
-                            .disabled(!has_current_plan)
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.apply_processor_power_custom();
-                                cx.notify();
-                            })),
+                        .label(t!("processor_power.apply_custom").to_string())
+                        .disabled(!has_current_plan)
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.apply_processor_power_custom();
+                            cx.notify();
+                        })),
                     ),
             )
             .into_any_element()
     }
 
-    fn render_processor_power_plan_picker(&self, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_processor_power_plan_picker(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         let id = "processor-power-target-plan";
         let is_open = self.active_power_plan_picker.as_deref() == Some(id);
+        let option_count = self.plans.len().max(1);
+        let placement = self.dropdown_placement(id, dropdown_list_height(option_count), window);
         let selected_guid = self
             .processor_power_target_plan_guid
             .as_deref()
@@ -4358,7 +4992,7 @@ impl PowerLeafApp {
             .map(PowerPlan::display_name)
             .unwrap_or_else(|| t!("processor_power.no_active_plan").to_string());
 
-        let mut options = dropdown_surface(cx);
+        let mut options = dropdown_surface(cx, placement.max_height);
 
         if self.plans.is_empty() {
             options = options.child(dropdown_empty_row(
@@ -4412,13 +5046,13 @@ impl PowerLeafApp {
                         cx.notify();
                     })),
             )
+            .child(dropdown_anchor_sensor(
+                id,
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
             .child(if is_open {
                 deferred(
-                    div()
-                        .absolute()
-                        .top(px(34.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
+                    dropdown_popup_layer(placement)
                         .occlude()
                         .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
                             app.active_power_plan_picker = None;
@@ -4454,123 +5088,18 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_power_plan_picker(
-        &self,
-        id: impl Into<String>,
-        label: &str,
-        selected_guid: Option<String>,
-        field: PowerPlanField,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id = id.into();
-        let is_open = self.active_power_plan_picker.as_deref() == Some(id.as_str());
-        let selected_text = match selected_guid.as_deref() {
-            Some(guid) => self
-                .plans
-                .iter()
-                .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
-                .map(PowerPlan::display_name)
-                .unwrap_or_else(|| t!("common.selected_plan_unavailable").to_string()),
-            None => t!("common.use_inherited_default_plan").to_string(),
-        };
-
-        let mut options = dropdown_surface(cx);
-
-        options = options.child(power_plan_option_row(
-            format!("{id}-default"),
-            t!("common.use_inherited_default_plan").to_string(),
-            selected_guid.is_none(),
-            None,
-            field,
-            cx,
-        ));
-
-        if self.plans.is_empty() {
-            options = options.child(dropdown_empty_row(
-                t!("common.no_power_plans_loaded").to_string(),
-                cx,
-            ));
-        } else {
-            for plan in &self.plans {
-                let selected = selected_guid
-                    .as_deref()
-                    .is_some_and(|selected| selected.eq_ignore_ascii_case(&plan.guid));
-                options = options.child(power_plan_option_row(
-                    format!("{id}-{}", plan.guid),
-                    plan.display_name(),
-                    selected,
-                    Some(plan.guid.clone()),
-                    field,
-                    cx,
-                ));
-            }
-        }
-
-        let control_id = id.clone();
-        let picker = v_flex()
-            .w_full()
-            .max_w(px(372.0))
-            .min_w(px(0.0))
-            .relative()
-            .min_h(px(32.0))
-            .child(
-                h_flex()
-                    .id(SharedString::from(format!("{id}-select-control")))
-                    .h(px(32.0))
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .rounded_sm()
-                    .bg(rgb(dropdown_control_color()))
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                    .cursor_pointer()
-                    .child(div().flex_1().min_w(px(0.0)).child(selected_text))
-                    .child(dropdown_chevron(cx))
-                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                        app.refresh_power_plans();
-                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                            != Some(control_id.as_str()))
-                        .then_some(control_id.clone());
-                        cx.notify();
-                    })),
-            )
-            .child(if is_open {
-                deferred(
-                    div()
-                        .absolute()
-                        .top(px(34.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        }))
-                        .child(options),
-                )
-                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-                .into_any_element()
-            } else {
-                div().into_any_element()
-            });
-
-        labeled_element(label, picker.into_any_element()).into_any_element()
-    }
-
     fn render_inline_power_plan_picker(
         &self,
         id: impl Into<String>,
         selected_guid: Option<String>,
         field: PowerPlanField,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = id.into();
         let is_open = self.active_power_plan_picker.as_deref() == Some(id.as_str());
+        let option_count = 1 + self.plans.len().max(1);
+        let placement = self.dropdown_placement(&id, dropdown_list_height(option_count), window);
         let selected_text = match selected_guid.as_deref() {
             Some(guid) => self
                 .plans
@@ -4581,7 +5110,7 @@ impl PowerLeafApp {
             None => t!("common.use_inherited_default_plan").to_string(),
         };
 
-        let mut options = dropdown_surface(cx);
+        let mut options = dropdown_surface(cx, placement.max_height);
 
         options = options.child(power_plan_option_row(
             format!("{id}-default"),
@@ -4651,13 +5180,13 @@ impl PowerLeafApp {
                         cx.notify();
                     })),
             )
+            .child(dropdown_anchor_sensor(
+                id.clone(),
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
             .child(if is_open {
                 deferred(
-                    div()
-                        .absolute()
-                        .top(px(34.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
+                    dropdown_popup_layer(placement)
                         .occlude()
                         .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
                             app.active_power_plan_picker = None;
@@ -4712,6 +5241,7 @@ impl PowerLeafApp {
         id: impl Into<String>,
         query: &str,
         target: SuggestionTarget,
+        max_height: Pixels,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = id.into();
@@ -4727,7 +5257,7 @@ impl PowerLeafApp {
             .collect::<Vec<_>>();
         matches.sort();
 
-        let mut suggestions = dropdown_surface(cx);
+        let mut suggestions = dropdown_surface(cx, max_height);
         if matches.is_empty() {
             suggestions = suggestions.child(dropdown_empty_row(
                 if self.process_candidates.is_empty() {
@@ -4746,11 +5276,13 @@ impl PowerLeafApp {
                     count == 0,
                     cx,
                 )
-                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
+                .on_click(cx.listener(
+                    move |app, _: &gpui::ClickEvent, window, cx| {
                         app.apply_process_suggestion(target, &process, window, cx);
                         window.blur();
                         cx.notify();
-                    })),
+                    },
+                )),
             );
         }
 
@@ -4773,6 +5305,21 @@ impl PowerLeafApp {
                 input.focus_handle(cx).is_focused(window),
             )
         };
+        let normalized_query = query.trim().to_ascii_lowercase();
+        let suggestion_count = self
+            .process_candidates
+            .iter()
+            .filter(|process| {
+                normalized_query.is_empty()
+                    || process
+                        .to_ascii_lowercase()
+                        .contains(normalized_query.as_str())
+            })
+            .filter(|process| process_target_can_accept(target, &self.settings, process))
+            .count()
+            .max(1);
+        let placement =
+            self.dropdown_placement(&id, dropdown_list_height(suggestion_count), window);
 
         v_flex()
             .w_full()
@@ -4781,13 +5328,13 @@ impl PowerLeafApp {
             .relative()
             .min_h(px(32.0))
             .child(app_input(input, is_open, cx))
+            .child(dropdown_anchor_sensor(
+                id.clone(),
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
             .child(if is_open {
                 deferred(
-                    div()
-                        .absolute()
-                        .top(px(34.0))
-                        .left(px(0.0))
-                        .right(px(0.0))
+                    dropdown_popup_layer(placement)
                         .occlude()
                         .on_mouse_down_out(cx.listener(
                             |_, _: &gpui::MouseDownEvent, window, cx| {
@@ -4795,7 +5342,13 @@ impl PowerLeafApp {
                                 cx.notify();
                             },
                         ))
-                        .child(self.render_process_suggestions(id, &query, target, cx)),
+                        .child(self.render_process_suggestions(
+                            id,
+                            &query,
+                            target,
+                            placement.max_height,
+                            cx,
+                        )),
                 )
                 .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
                 .into_any_element()
@@ -4862,10 +5415,43 @@ fn power_plan_option_row(
         .into_any_element()
 }
 
-fn dropdown_surface(cx: &mut Context<PowerLeafApp>) -> Scrollable<gpui::Div> {
+fn dropdown_list_height(row_count: usize) -> Pixels {
+    let row_count = row_count.max(1);
+    px(DROPDOWN_SURFACE_VERTICAL_PADDING
+        + (row_count as f32 * DROPDOWN_OPTION_ROW_HEIGHT)
+        + (row_count.saturating_sub(1) as f32 * DROPDOWN_OPTION_GAP))
+}
+
+fn dropdown_anchor_sensor(
+    id: impl Into<String>,
+    anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+) -> AnyElement {
+    let id = id.into();
+    canvas(
+        move |bounds, _, _| {
+            anchor_bounds.borrow_mut().insert(id, bounds);
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
+}
+
+fn dropdown_popup_layer(placement: DropdownPlacement) -> gpui::Div {
+    let layer = div().absolute().left(px(0.0)).right(px(0.0)).occlude();
+
+    if placement.open_up {
+        layer.bottom(px(DROPDOWN_MENU_OFFSET))
+    } else {
+        layer.top(px(DROPDOWN_MENU_OFFSET))
+    }
+}
+
+fn dropdown_surface(cx: &mut Context<PowerLeafApp>, max_height: Pixels) -> Scrollable<gpui::Div> {
     v_flex()
         .w_full()
-        .max_h(px(324.0))
+        .max_h(max_height)
         .overflow_y_scrollbar()
         .gap_1()
         .p_2()
@@ -4925,31 +5511,56 @@ fn dropdown_empty_row(message: String, cx: &mut Context<PowerLeafApp>) -> gpui::
 fn dropdown_chevron(cx: &mut Context<PowerLeafApp>) -> AnyElement {
     div()
         .flex_none()
-        .text_color(cx.theme().muted_foreground)
-        .text_size(px(TEXT_CONTROL_SIZE))
-        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-        .child("v")
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(18.0))
+        .child(
+            Icon::new(NavIcon::ChevronDown)
+                .with_size(px(16.0))
+                .text_color(cx.theme().muted_foreground),
+        )
         .into_any_element()
 }
 
 fn dropdown_control_color() -> u32 {
-    if ui_is_dark() { 0x383838 } else { 0xf1f1f1 }
+    if ui_is_dark() {
+        0x2f2f2f
+    } else {
+        0xffffff
+    }
 }
 
 fn dropdown_control_hover_color() -> u32 {
-    if ui_is_dark() { 0x404040 } else { 0xe8e8e8 }
+    if ui_is_dark() {
+        0x333333
+    } else {
+        0xf5f5f5
+    }
 }
 
 fn dropdown_surface_color() -> u32 {
-    if ui_is_dark() { 0x2b2b2b } else { 0xffffff }
+    if ui_is_dark() {
+        0x2b2b2b
+    } else {
+        0xffffff
+    }
 }
 
 fn dropdown_selected_color() -> u32 {
-    if ui_is_dark() { 0x353535 } else { 0xe8f3ff }
+    if ui_is_dark() {
+        0x303030
+    } else {
+        0xeaeaea
+    }
 }
 
 fn dropdown_option_hover_color() -> u32 {
-    if ui_is_dark() { 0x383838 } else { 0xf2f2f2 }
+    if ui_is_dark() {
+        0x333333
+    } else {
+        0xf5f5f5
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4972,6 +5583,13 @@ enum RuleCardTarget {
     Cpu(usize),
     Suspension(String),
     Affinity(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SettingGroupTarget {
+    SuspensionThaw,
+    SuspensionAudio,
+    SuspensionNetwork,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -5011,6 +5629,18 @@ enum ProcessorPowerSlider {
     DcPerformanceMax,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum CpuThresholdSlider {
+    Lower(usize),
+    Upper(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ActivitySlider {
+    IdleTimeout,
+    CheckInterval,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct StepChange<T> {
     delta: T,
@@ -5032,14 +5662,30 @@ fn make_input(
     })
 }
 
-fn make_processor_power_slider(cx: &mut Context<PowerLeafApp>, value: u64) -> Entity<SliderState> {
+fn make_percent_slider(cx: &mut Context<PowerLeafApp>, value: u64) -> Entity<SliderState> {
+    make_range_slider(cx, value, 0, 100, 1)
+}
+
+fn make_range_slider(
+    cx: &mut Context<PowerLeafApp>,
+    value: u64,
+    min: u64,
+    max: u64,
+    step: u64,
+) -> Entity<SliderState> {
+    let (min, max) = if min <= max { (min, max) } else { (max, min) };
+    let value = value.clamp(min, max);
     cx.new(|_| {
         SliderState::new()
-            .min(0.0)
-            .max(100.0)
-            .step(1.0)
-            .default_value(value.min(100) as f32)
+            .max(max as f32)
+            .min(min as f32)
+            .step(step.max(1) as f32)
+            .default_value(value as f32)
     })
+}
+
+fn make_processor_power_slider(cx: &mut Context<PowerLeafApp>, value: u64) -> Entity<SliderState> {
+    make_percent_slider(cx, value)
 }
 
 fn processor_power_slider_input(
@@ -5060,6 +5706,17 @@ fn processor_power_slider_input(
     }
 }
 
+fn cpu_threshold_slider_input(
+    inputs: &UiInputs,
+    slider: CpuThresholdSlider,
+) -> Option<Entity<SliderState>> {
+    match slider {
+        CpuThresholdSlider::Lower(index) => inputs.cpu_rule_thresholds.get(index),
+        CpuThresholdSlider::Upper(index) => inputs.cpu_rule_upper_thresholds.get(index),
+    }
+    .cloned()
+}
+
 fn sync_input_vec(
     inputs: &mut Vec<Entity<InputState>>,
     len: usize,
@@ -5071,6 +5728,19 @@ fn sync_input_vec(
     while inputs.len() < len {
         let index = inputs.len();
         inputs.push(make_input(window, cx, &value_at(index), placeholder));
+    }
+    inputs.truncate(len);
+}
+
+fn sync_slider_vec(
+    inputs: &mut Vec<Entity<SliderState>>,
+    len: usize,
+    cx: &mut Context<PowerLeafApp>,
+    value_at: impl Fn(usize) -> u64,
+) {
+    while inputs.len() < len {
+        let index = inputs.len();
+        inputs.push(make_percent_slider(cx, value_at(index)));
     }
     inputs.truncate(len);
 }
@@ -5128,6 +5798,37 @@ fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
         accent.darken(0.18)
     };
 
+    if is_dark {
+        theme.background = rgb(0x202020).into();
+        theme.foreground = rgb(COLOR_TEXT).into();
+        theme.muted_foreground = rgb(COLOR_MUTED).into();
+        theme.title_bar = rgb(0x202020).into();
+        theme.title_bar_border = rgb(0x303030).into();
+        theme.sidebar = rgb(0x202020).into();
+        theme.sidebar_foreground = rgb(COLOR_TEXT).into();
+        theme.sidebar_border = rgb(0x303030).into();
+        theme.group_box = rgb(COLOR_SETTINGS_CARD).into();
+        theme.border = rgb(COLOR_BORDER).into();
+        theme.popover = rgb(0x2b2b2b).into();
+        theme.popover_foreground = rgb(COLOR_TEXT).into();
+        theme.success_foreground = rgb(COLOR_SUCCESS).into();
+        theme.danger_foreground = rgb(0xff8a8a).into();
+    } else {
+        theme.background = rgb(0xf9f9f9).into();
+        theme.foreground = rgb(0x1f1f1f).into();
+        theme.muted_foreground = rgb(0x616161).into();
+        theme.title_bar = rgb(0xf3f3f3).into();
+        theme.title_bar_border = rgb(0xe5e5e5).into();
+        theme.sidebar = rgb(0xf3f3f3).into();
+        theme.sidebar_foreground = rgb(0x1f1f1f).into();
+        theme.sidebar_border = rgb(0xe5e5e5).into();
+        theme.group_box = rgb(0xffffff).into();
+        theme.border = rgb(0xdedede).into();
+        theme.popover = rgb(0xffffff).into();
+        theme.popover_foreground = rgb(0x1f1f1f).into();
+        theme.success_foreground = rgb(0x107c10).into();
+        theme.danger_foreground = rgb(0xc42b1c).into();
+    }
     theme.primary = accent;
     theme.primary_hover = hover;
     theme.primary_active = active;
@@ -5231,7 +5932,7 @@ fn settings_card_color() -> u32 {
     if ui_is_dark() {
         COLOR_SETTINGS_CARD
     } else {
-        0xf3f3f3
+        0xffffff
     }
 }
 
@@ -5239,23 +5940,7 @@ fn settings_card_hover_color() -> u32 {
     if ui_is_dark() {
         COLOR_SETTINGS_CARD_HOVER
     } else {
-        0xeaeaea
-    }
-}
-
-fn windows_control_row_color() -> u32 {
-    if ui_is_dark() {
-        0x292929
-    } else {
-        0xf7f7f7
-    }
-}
-
-fn row_separator_color() -> u32 {
-    if ui_is_dark() {
-        0x1f1f1f
-    } else {
-        0xe5e5e5
+        0xf5f5f5
     }
 }
 
@@ -5267,11 +5952,27 @@ fn windows_slider_thumb_color() -> u32 {
     }
 }
 
+fn disabled_slider_track_color() -> u32 {
+    if ui_is_dark() {
+        0x4a4a4a
+    } else {
+        0xd0d0d0
+    }
+}
+
+fn disabled_slider_thumb_color() -> u32 {
+    if ui_is_dark() {
+        0x707070
+    } else {
+        0xf2f2f2
+    }
+}
+
 fn border_color() -> u32 {
     if ui_is_dark() {
         COLOR_BORDER
     } else {
-        0xd6d6d6
+        0xdedede
     }
 }
 
@@ -5287,7 +5988,7 @@ fn muted_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_MUTED
     } else {
-        0x5f5f5f
+        0x616161
     }
 }
 
@@ -5303,7 +6004,7 @@ fn sidebar_selected_color() -> u32 {
     if ui_is_dark() {
         COLOR_SIDEBAR_SELECTED
     } else {
-        0xe9e9e9
+        0xeaeaea
     }
 }
 
@@ -5311,7 +6012,7 @@ fn sidebar_hover_color() -> u32 {
     if ui_is_dark() {
         COLOR_SIDEBAR_HOVER
     } else {
-        0xf0f0f0
+        0xf5f5f5
     }
 }
 
@@ -5319,7 +6020,7 @@ fn panel_active_color() -> u32 {
     if ui_is_dark() {
         COLOR_PANEL_ACTIVE
     } else {
-        0xe7e7e7
+        0xf3f3f3
     }
 }
 
@@ -5507,8 +6208,8 @@ fn page_shell_with_help(page: Page, help: Option<SharedString>) -> gpui::Div {
                 .min_w(px(0.0))
                 .text_size(px(TEXT_PAGE_TITLE_SIZE))
                 .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
-                .font_weight(gpui::FontWeight::BOLD)
-                .opacity(0.72)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .opacity(0.68)
                 .truncate()
                 .child(page.section_label()),
         )
@@ -5516,16 +6217,17 @@ fn page_shell_with_help(page: Page, help: Option<SharedString>) -> gpui::Div {
             div()
                 .text_size(px(TEXT_PAGE_CRUMB_SIZE))
                 .line_height(px(TEXT_PAGE_CRUMB_LINE_HEIGHT))
-                .font_weight(gpui::FontWeight::BOLD)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(rgb(dim_text_color()))
                 .opacity(0.48)
-                .child("›"),
+                .child(Icon::new(NavIcon::ChevronRight).with_size(px(16.0))),
         )
         .child(
             div()
                 .min_w(px(0.0))
                 .text_size(px(TEXT_PAGE_TITLE_SIZE))
                 .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
-                .font_weight(gpui::FontWeight::BOLD)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
                 .truncate()
                 .child(page.label()),
         );
@@ -5553,13 +6255,11 @@ fn tooltip_lines(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> Sh
 }
 
 fn section_card(title: &str) -> GroupBox {
-    GroupBox::new()
-        .outline()
-        .title(
-            Label::new(title.to_owned())
-                .text_size(px(TEXT_SECTION_TITLE_SIZE))
-                .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
-        )
+    GroupBox::new().outline().title(
+        Label::new(title.to_owned())
+            .text_size(px(TEXT_SECTION_TITLE_SIZE))
+            .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
+    )
 }
 
 fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
@@ -5586,13 +6286,26 @@ fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
     )
 }
 
-fn title_info_button(id: impl Into<SharedString>, tooltip: impl Into<SharedString>) -> Button {
-    Button::new(id.into())
-        .primary()
-        .rounded(px(999.0))
-        .with_size(px(26.0))
-        .icon(Icon::new(NavIcon::Info).with_size(px(14.0)))
-        .tooltip(tooltip)
+fn title_info_button(id: impl Into<SharedString>, tooltip: impl Into<SharedString>) -> AnyElement {
+    div()
+        .size(px(26.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .child(
+            Button::new(id.into())
+                .ghost()
+                .rounded(px(999.0))
+                .with_size(px(26.0))
+                .icon(
+                    Icon::new(NavIcon::Info)
+                        .with_size(px(14.0))
+                        .text_color(rgb(dim_text_color())),
+                )
+                .tooltip(tooltip),
+        )
+        .into_any_element()
 }
 
 fn rule_card(
@@ -5602,70 +6315,106 @@ fn rule_card(
     card_target: RuleCardTarget,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
+    rule_card_with_header_action(title, leading, None, collapse_indicator, card_target, cx)
+}
+
+fn rule_card_with_header_action(
+    title: AnyElement,
+    leading: AnyElement,
+    header_action: Option<AnyElement>,
+    collapse_indicator: AnyElement,
+    card_target: RuleCardTarget,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let header_padding = if header_action.is_some() {
+        px(134.0)
+    } else {
+        px(52.0)
+    };
+    let card_id = SharedString::from(format!("rule-card-{card_target:?}"));
+    let header_id = SharedString::from(format!("rule-card-header-{card_target:?}"));
+    let header_action_id = SharedString::from(format!("rule-card-header-action-{card_target:?}"));
+    let header_card_target = card_target.clone();
+    let trailing_card_target = card_target.clone();
+    let mut trailing = h_flex()
+        .id(SharedString::from(format!(
+            "rule-card-trailing-{card_target:?}"
+        )))
+        .absolute()
+        .top(px(0.0))
+        .right(px(0.0))
+        .h(px(58.0))
+        .items_center()
+        .gap_1()
+        .px_2()
+        .block_mouse_except_scroll()
+        .cursor_pointer()
+        .on_click(cx.listener(move |app, _, _, cx| {
+            app.toggle_rule_card(trailing_card_target.clone(), cx);
+        }));
+    if let Some(header_action) = header_action {
+        trailing = trailing.child(header_action);
+    }
+    trailing = trailing.child(collapse_indicator);
+
     v_flex()
-        .id(SharedString::from(format!("rule-card-{card_target:?}")))
+        .id(card_id)
         .w_full()
         .min_w(px(0.0))
         .overflow_hidden()
         .rounded_sm()
         .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().group_box)
-        .hover(|style| style.border_color(cx.theme().muted_foreground))
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .child(
             div()
                 .relative()
                 .w_full()
                 .min_w(px(0.0))
-                .min_h(px(38.0))
-                .id(SharedString::from(format!(
-                    "rule-card-header-{card_target:?}"
-                )))
+                .min_h(px(58.0))
+                .id(header_id)
                 .child(
                     h_flex()
                         .w_full()
                         .min_w(px(0.0))
+                        .h(px(58.0))
                         .items_center()
-                        .gap_2()
-                        .py_2()
-                        .pl_2()
-                        .pr(px(42.0))
-                        .id(SharedString::from(format!(
-                            "rule-card-header-action-{card_target:?}"
-                        )))
+                        .gap_4()
+                        .pl_4()
+                        .pr(header_padding)
+                        .id(header_action_id)
+                        .block_mouse_except_scroll()
                         .cursor_pointer()
-                        .hover(|style| style.bg(cx.theme().secondary_hover))
+                        .hover(|style| style.bg(rgb(settings_card_hover_color())))
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            app.toggle_rule_card(card_target.clone(), cx);
+                            app.toggle_rule_card(header_card_target.clone(), cx);
                         }))
                         .child(leading)
                         .child(title),
                 )
-                .child(
-                    h_flex()
-                        .absolute()
-                        .top(px(0.0))
-                        .right(px(0.0))
-                        .h(px(38.0))
-                        .items_center()
-                        .gap_1()
-                        .px_1()
-                        .child(collapse_indicator),
-                ),
+                .child(trailing),
         )
 }
 
 fn rule_card_collapse_indicator(collapsed: bool) -> AnyElement {
+    let icon = if collapsed {
+        NavIcon::ChevronRight
+    } else {
+        NavIcon::ChevronDown
+    };
+
     div()
         .w(px(28.0))
         .h(px(24.0))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(TEXT_CONTROL_SIZE))
-        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+        .text_color(rgb(dim_text_color()))
         .opacity(0.72)
-        .child(if collapsed { ">" } else { "v" })
+        .child(Icon::new(icon).with_size(px(16.0)))
         .into_any_element()
 }
 
@@ -5679,10 +6428,7 @@ fn feature_body(enabled: bool) -> gpui::Div {
         .min_w(px(0.0))
         .gap_3()
         .relative()
-        .when(!enabled, |body| {
-            body.opacity(0.42)
-                .cursor_default()
-        })
+        .when(!enabled, |body| body.opacity(0.42).cursor_default())
 }
 
 fn disabled_feature_body(body: gpui::Div, enabled: bool) -> gpui::Div {
@@ -5700,14 +6446,7 @@ fn disabled_interaction_shield() -> AnyElement {
 }
 
 fn rule_card_body_row(children: Vec<AnyElement>) -> gpui::Div {
-    let mut row = h_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .items_start()
-        .gap_3()
-        .flex_wrap()
-        .px_3()
-        .py_2();
+    let mut row = v_flex().w_full().min_w(px(0.0));
     for child in children {
         row = row.child(child);
     }
@@ -5726,10 +6465,15 @@ fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
 
     h_flex()
         .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
         .items_center()
         .justify_end()
-        .px_3()
-        .pb_3()
+        .gap_4()
+        .border_t_1()
+        .border_color(rgb(border_color()))
+        .px_4()
+        .py_3()
         .child(row)
 }
 
@@ -5744,18 +6488,504 @@ fn rename_rule_button(target: RuleTitleTarget, cx: &mut Context<PowerLeafApp>) -
         .into_any_element()
 }
 
-fn compact_rule_row(cx: &mut Context<PowerLeafApp>) -> gpui::Div {
+fn compact_rule_row(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
+        .min_h(px(58.0))
         .items_center()
-        .gap_2()
-        .p_2()
+        .justify_between()
+        .gap_4()
+        .py_3()
+        .px_4()
         .rounded_sm()
         .border_1()
-        .border_color(cx.theme().border)
-        .bg(cx.theme().group_box)
-        .hover(|style| style.border_color(cx.theme().muted_foreground))
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+}
+
+fn create_rule_card(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    action: AnyElement,
+) -> gpui::Stateful<gpui::Div> {
+    setting_action_card(id, title, action)
+}
+
+fn setting_group(
+    target: SettingGroupTarget,
+    title: impl Into<SharedString>,
+    action: AnyElement,
+    collapsed: bool,
+    rows: Vec<AnyElement>,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let title: SharedString = title.into();
+    let chevron_target = target;
+    let mut group = v_flex()
+        .id(SharedString::from(format!("setting-group-{target:?}")))
+        .w_full()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .child(
+            h_flex()
+                .id(SharedString::from(format!(
+                    "setting-group-header-{target:?}"
+                )))
+                .w_full()
+                .min_w(px(0.0))
+                .min_h(px(58.0))
+                .items_center()
+                .justify_between()
+                .gap_4()
+                .py_3()
+                .pl_4()
+                .pr_2()
+                .block_mouse_except_scroll()
+                .cursor_pointer()
+                .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.toggle_setting_group(target, cx);
+                }))
+                .child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "setting-group-title-{target:?}"
+                        )))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .child(title),
+                )
+                .child(
+                    h_flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_1()
+                        .min_w(px(0.0))
+                        .flex_shrink_0()
+                        .child(action)
+                        .child(setting_group_collapse_button(chevron_target, collapsed, cx)),
+                ),
+        );
+    if !collapsed {
+        for row in rows {
+            group = group.child(row);
+        }
+    }
+    group
+}
+
+fn setting_group_collapse_button(
+    target: SettingGroupTarget,
+    collapsed: bool,
+    _cx: &mut Context<PowerLeafApp>,
+) -> AnyElement {
+    let icon = if collapsed {
+        NavIcon::ChevronRight
+    } else {
+        NavIcon::ChevronDown
+    };
+
+    div()
+        .id(SharedString::from(format!(
+            "setting-group-chevron-{target:?}"
+        )))
+        .w(px(28.0))
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .rounded_sm()
+        .text_color(rgb(dim_text_color()))
+        .opacity(0.72)
+        .hover(|style| style.opacity(1.0))
+        .child(Icon::new(icon).with_size(px(16.0)))
+        .into_any_element()
+}
+
+fn setting_group_switch_action(
+    id: impl Into<SharedString>,
+    enabled: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    switch_toggle_action(id, enabled, handler)
+}
+
+fn setting_group_action_row(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    action: AnyElement,
+    divided: bool,
+) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(id.into())
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .py_3()
+        .px_4()
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .when(divided, |row| {
+            row.border_t_1().border_color(rgb(border_color()))
+        })
+        .child(div().flex_1().min_w(px(0.0)).truncate().child(title.into()))
+        .child(
+            h_flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .min_w(px(0.0))
+                .flex_shrink_0()
+                .child(action),
+        )
+}
+
+fn setting_group_stepper_row_u64(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    value: u64,
+    value_element: AnyElement,
+    divided: bool,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
+    let down = Rc::clone(&handler);
+    let delta = u64_step(value);
+
+    setting_group_action_row(
+        id.clone(),
+        title,
+        h_flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .min_w(px(0.0))
+            .flex_shrink_0()
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                    .label("-")
+                    .on_click(move |_, window, cx| {
+                        down(
+                            &StepChange {
+                                delta,
+                                increase: false,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .child(value_element)
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id), "up")))
+                    .label("+")
+                    .on_click(move |_, window, cx| {
+                        handler(
+                            &StepChange {
+                                delta,
+                                increase: true,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .into_any_element(),
+        divided,
+    )
+    .into_any_element()
+}
+
+fn rule_action_row(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    action: AnyElement,
+) -> gpui::Stateful<gpui::Div> {
+    rule_action_row_with_title_color(id, title, action, primary_text_color())
+}
+
+fn rule_action_row_with_title_color(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    action: AnyElement,
+    title_color: u32,
+) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(id.into())
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .border_t_1()
+        .border_color(rgb(border_color()))
+        .py_3()
+        .px_4()
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_color(rgb(title_color))
+                .child(title.into()),
+        )
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .child(action),
+        )
+}
+
+fn rule_stepper_row_u64(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    value: u64,
+    value_element: AnyElement,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
+    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
+    let down = Rc::clone(&handler);
+    let delta = u64_step(value);
+
+    rule_action_row(
+        id.clone(),
+        title,
+        h_flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .min_w(px(0.0))
+            .flex_shrink_0()
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                    .label("-")
+                    .on_click(move |_, window, cx| {
+                        down(
+                            &StepChange {
+                                delta,
+                                increase: false,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .child(value_element)
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id), "up")))
+                    .label("+")
+                    .on_click(move |_, window, cx| {
+                        handler(
+                            &StepChange {
+                                delta,
+                                increase: true,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .into_any_element(),
+    )
+}
+
+fn rule_checkbox_row(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    checked: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let handler: Rc<dyn Fn(&bool, &mut Window, &mut App)> = Rc::new(handler);
+    let checkbox_handler = Rc::clone(&handler);
+    let row_handler = Rc::clone(&handler);
+
+    rule_action_row(
+        id.clone(),
+        title,
+        rule_enable_checkbox(format!("{id}-check"), checked, move |next, window, cx| {
+            checkbox_handler(next, window, cx);
+        }),
+    )
+    .cursor_pointer()
+    .on_click(move |_, window, cx| {
+        let next = !checked;
+        row_handler(&next, window, cx);
+    })
+    .into_any_element()
+}
+
+fn rule_toggle_switch(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let id: SharedString = id.into();
+
+    rule_action_row(
+        id.clone(),
+        label,
+        switch_toggle_action(format!("{id}-switch"), enabled, handler),
+    )
+    .into_any_element()
+}
+
+fn rule_notice_row(id: impl Into<SharedString>, notice: AnyElement) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(id.into())
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .gap_4()
+        .border_t_1()
+        .border_color(rgb(border_color()))
+        .py_3()
+        .px_4()
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .child(notice)
+}
+
+fn setting_action_card(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    action: AnyElement,
+) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(id.into())
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .py_3()
+        .px_4()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .child(div().flex_1().min_w(px(0.0)).truncate().child(title.into()))
+        .child(
+            h_flex()
+                .items_center()
+                .justify_end()
+                .flex_shrink_0()
+                .child(action),
+        )
+}
+
+fn setting_stepper_card_u64(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    value: u64,
+    value_element: AnyElement,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
+    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
+    let down = Rc::clone(&handler);
+    let delta = u64_step(value);
+
+    setting_action_card(
+        id.clone(),
+        title,
+        h_flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .flex_shrink_0()
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                    .label("-")
+                    .on_click(move |_, window, cx| {
+                        down(
+                            &StepChange {
+                                delta,
+                                increase: false,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .child(value_element)
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id), "up")))
+                    .label("+")
+                    .on_click(move |_, window, cx| {
+                        handler(
+                            &StepChange {
+                                delta,
+                                increase: true,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .into_any_element(),
+    )
+}
+
+fn setting_input_card(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    input: Entity<InputState>,
+    focused: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    rule_action_row(
+        id,
+        title,
+        div()
+            .w(px(132.0))
+            .min_w(px(104.0))
+            .child(app_input(&input, focused, cx))
+            .into_any_element(),
+    )
+}
+
+fn setting_notice_card(
+    id: impl Into<SharedString>,
+    notice: AnyElement,
+) -> gpui::Stateful<gpui::Div> {
+    rule_notice_row(id, notice)
 }
 
 fn stat_grid(rows: Vec<(String, String)>) -> GroupBox {
@@ -5836,20 +7066,6 @@ fn labeled_element(label: &str, element: AnyElement) -> gpui::Div {
         .child(element)
 }
 
-fn input_row(
-    label: &str,
-    input: Entity<InputState>,
-    focused: bool,
-    cx: &mut Context<PowerLeafApp>,
-) -> gpui::Div {
-    labeled_element(
-        label,
-        app_input(&input, focused, cx)
-            .max_w(px(320.0))
-            .into_any_element(),
-    )
-}
-
 fn app_input(
     input: &Entity<InputState>,
     focused: bool,
@@ -5894,30 +7110,46 @@ fn app_input(
 
 fn app_input_color(focused: bool) -> u32 {
     if ui_is_dark() {
-        if focused { 0x202020 } else { 0x343434 }
+        if focused {
+            0x1f1f1f
+        } else {
+            0x2f2f2f
+        }
     } else if focused {
         0xffffff
     } else {
-        0xf8f8f8
+        0xffffff
     }
 }
 
 fn app_input_border_color(focused: bool) -> u32 {
     if ui_is_dark() {
-        if focused { 0x555555 } else { 0x3c3c3c }
+        if focused {
+            0x5c5c5c
+        } else {
+            COLOR_BORDER
+        }
     } else if focused {
         0x757575
     } else {
-        0xd0d0d0
+        0xdedede
     }
 }
 
 fn app_input_hover_border_color() -> u32 {
-    if ui_is_dark() { 0x5a5a5a } else { 0x9a9a9a }
+    if ui_is_dark() {
+        0x6a6a6a
+    } else {
+        0x9a9a9a
+    }
 }
 
 fn app_input_bottom_line_color() -> u32 {
-    if ui_is_dark() { 0x8f8f8f } else { 0x6d6d6d }
+    if ui_is_dark() {
+        0x9a9a9a
+    } else {
+        0x6d6d6d
+    }
 }
 
 fn syncing_rule_card(index: usize) -> AnyElement {
@@ -5943,7 +7175,6 @@ fn static_rule_title(title: &str) -> AnyElement {
         .whitespace_nowrap()
         .text_size(px(TEXT_HEADER_SIZE))
         .line_height(px(TEXT_HEADER_LINE_HEIGHT))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
         .child(title.to_owned())
         .into_any_element()
 }
@@ -6192,7 +7423,7 @@ fn nav_row(
         .gap_3()
         .pl(px(0.0))
         .pr(px(12.0))
-        .rounded_sm()
+        .rounded(px(FLUENT_RADIUS_CONTROL))
         .bg(row_bg)
         .text_color(text_color)
         .hover(move |style| style.bg(hover_bg))
@@ -6210,24 +7441,54 @@ fn nav_row(
         );
 
     if let Some(status) = status {
-        row.child(nav_status_indicator(status, cx))
+        row.child(nav_status_indicator(status))
     } else {
         row
     }
 }
 
-fn nav_status_indicator(status: NavStatus, cx: &mut Context<PowerLeafApp>) -> AnyElement {
-    let color = match status {
-        NavStatus::Enabled => cx.theme().success_foreground,
-        NavStatus::Failed => cx.theme().danger_foreground,
-        NavStatus::Disabled => cx.theme().muted_foreground,
-        NavStatus::Unsupported => cx.theme().muted_foreground,
+fn nav_status_indicator(status: NavStatus) -> AnyElement {
+    let (label, bg, fg, border) = match status {
+        NavStatus::Enabled => (
+            "ON",
+            success_bg_color(),
+            success_text_color(),
+            success_text_color(),
+        ),
+        NavStatus::Failed => (
+            "ERR",
+            if ui_is_dark() { 0x4a1f1f } else { 0xfde7e9 },
+            if ui_is_dark() { 0xff8a8a } else { 0xc42b1c },
+            if ui_is_dark() { 0x8f2f2f } else { 0xf1aeb5 },
+        ),
+        NavStatus::Disabled => (
+            "OFF",
+            if ui_is_dark() { 0x343434 } else { 0xf3f3f3 },
+            dim_text_color(),
+            border_color(),
+        ),
+        NavStatus::Unsupported => (
+            "N/A",
+            warning_bg_color(),
+            warning_text_color(),
+            warning_text_color(),
+        ),
     };
 
-    Badge::new()
-        .dot()
-        .color(color)
-        .child(div().size(px(8.0)))
+    h_flex()
+        .h(px(20.0))
+        .min_w(px(38.0))
+        .items_center()
+        .justify_center()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(rgb(border))
+        .bg(rgb(bg))
+        .px_2()
+        .text_size(px(TEXT_CAPTION_SIZE))
+        .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
+        .text_color(rgb(fg))
+        .child(label)
         .into_any_element()
 }
 
@@ -6303,6 +7564,8 @@ enum NavIcon {
     Activity,
     Calendar,
     Chart,
+    ChevronDown,
+    ChevronRight,
     Chip,
     Dashboard,
     Frame,
@@ -6319,6 +7582,8 @@ impl IconNamed for NavIcon {
             Self::Activity => "icons/activity.svg",
             Self::Calendar => "icons/calendar.svg",
             Self::Chart => "icons/chart.svg",
+            Self::ChevronDown => "icons/chevron-down.svg",
+            Self::ChevronRight => "icons/chevron-right.svg",
             Self::Chip => "icons/chip.svg",
             Self::Dashboard => "icons/dashboard.svg",
             Self::Frame => "icons/frame.svg",
@@ -6352,6 +7617,14 @@ fn control_button(button: Button) -> Button {
         .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
 }
 
+fn primary_control_button(button: Button, cx: &mut Context<PowerLeafApp>) -> Button {
+    control_button(button.primary()).text_color(cx.theme().primary_foreground)
+}
+
+fn danger_control_button(button: Button) -> Button {
+    control_button(button.danger()).text_color(rgb(0xffffff))
+}
+
 fn accent_swatch(color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
     let border = if selected {
         primary_text_color()
@@ -6380,6 +7653,53 @@ fn feature_toggle_switch(
 ) -> AnyElement {
     let id: SharedString = id.into();
     let label = label.into();
+
+    h_flex()
+        .id(id.clone())
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .py_3()
+        .px_4()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+        .child(switch_toggle_action(
+            format!("{id}-switch"),
+            enabled,
+            handler,
+        ))
+        .into_any_element()
+}
+
+fn switch_toggle_action(
+    id: impl Into<SharedString>,
+    enabled: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    h_flex()
+        .id(id.into())
+        .items_center()
+        .child(switch_indicator(enabled))
+        .cursor_pointer()
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            let next = !enabled;
+            handler(&next, window, cx);
+        })
+        .into_any_element()
+}
+
+fn switch_indicator(enabled: bool) -> gpui::Div {
     let accent = switch_accent_color();
     let switch_bg = if enabled {
         accent
@@ -6397,59 +7717,32 @@ fn feature_toggle_switch(
     let state_label = if enabled { "On" } else { "Off" };
 
     h_flex()
-        .id(id)
-        .w_full()
-        .min_w(px(0.0))
-        .min_h(px(58.0))
         .items_center()
-        .justify_between()
-        .gap_4()
-        .py_3()
-        .px_4()
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(border_color()))
-        .bg(rgb(settings_card_color()))
-        .text_color(rgb(primary_text_color()))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
-        .cursor_pointer()
-        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+        .justify_end()
+        .gap_2()
+        .flex_shrink_0()
+        .child(
+            div()
+                .text_size(px(TEXT_BODY_SIZE))
+                .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                .text_color(rgb(primary_text_color()))
+                .child(state_label),
+        )
         .child(
             h_flex()
+                .w(px(40.0))
+                .h(px(20.0))
                 .items_center()
-                .justify_end()
-                .gap_2()
                 .flex_shrink_0()
-                .child(
-                    div()
-                        .text_size(px(TEXT_BODY_SIZE))
-                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                        .text_color(rgb(primary_text_color()))
-                        .child(state_label),
-                )
-                .child(
-                    h_flex()
-                        .w(px(40.0))
-                        .h(px(20.0))
-                        .items_center()
-                        .flex_shrink_0()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(rgb(switch_border))
-                        .bg(rgb(switch_bg))
-                        .px(px(4.0))
-                        .when(enabled, |track| track.justify_end())
-                        .when(!enabled, |track| track.justify_start())
-                        .child(div().size(px(12.0)).rounded_full().bg(rgb(knob_bg))),
-                ),
+                .rounded_full()
+                .border_1()
+                .border_color(rgb(switch_border))
+                .bg(rgb(switch_bg))
+                .px(px(4.0))
+                .when(enabled, |track| track.justify_end())
+                .when(!enabled, |track| track.justify_start())
+                .child(div().size(px(12.0)).rounded_full().bg(rgb(knob_bg))),
         )
-        .on_click(move |_, window, cx| {
-            let next = !enabled;
-            handler(&next, window, cx);
-        })
-        .into_any_element()
 }
 
 fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
@@ -6514,7 +7807,6 @@ fn processor_power_column_header(value: impl Into<SharedString>) -> gpui::Div {
         .pb_1()
         .text_size(px(TEXT_LABEL_SIZE))
         .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(rgb(muted_text_color()))
         .child(value.into())
 }
@@ -6525,11 +7817,431 @@ fn processor_power_slider(
     _value: u64,
     value_element: AnyElement,
     state: &Entity<SliderState>,
+    window: &mut Window,
+    cx: &mut Context<PowerLeafApp>,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    percent_slider_row(
+        id,
+        label,
+        value_element,
+        state,
+        true,
+        1_u64,
+        window,
+        cx,
+        handler,
+    )
+}
+
+fn threshold_level_slider(
+    id: impl Into<SharedString>,
+    label: &str,
+    value_element: AnyElement,
+    state: &Entity<SliderState>,
+    enabled: bool,
+    window: &mut Window,
+    cx: &mut Context<PowerLeafApp>,
+    handler: impl Fn(&StepChange<u8>, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    rule_percent_slider_row(
+        id,
+        label,
+        value_element,
+        state,
+        enabled,
+        1_u8,
+        window,
+        cx,
+        handler,
+    )
+}
+
+fn stable_slider(
+    state: &Entity<SliderState>,
+    min: u64,
+    max: u64,
+    step: u64,
+    enabled: bool,
+    track_color: u32,
+    thumb_color: u32,
+    window: &mut Window,
+    cx: &mut Context<PowerLeafApp>,
+) -> AnyElement {
+    let value = state.read(cx).value().end();
+    let min = min.min(max);
+    let max = max.max(min + u64::from(max == min));
+    let step = step.max(1);
+    let percentage = stable_slider_percentage(value, min, max);
+    let track = Hsla::from(rgb(track_color));
+    let bounds = Rc::new(RefCell::new(Bounds::<Pixels>::default()));
+    let click_bounds = Rc::clone(&bounds);
+    let drag_bounds = Rc::clone(&bounds);
+    let canvas_bounds = Rc::clone(&bounds);
+    let click_state = state.clone();
+    let entity_id = state.entity_id();
+
+    div()
+        .id(("stable-slider", entity_id))
+        .relative()
+        .flex()
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .w_full()
+        .h(px(24.0))
+        .when(enabled, |slider| {
+            slider
+                .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                    cx.stop_propagation();
+                    let bounds = *click_bounds.borrow();
+                    click_state.update(cx, |state, cx| {
+                        update_stable_slider_from_position(
+                            state,
+                            bounds,
+                            event.position,
+                            min,
+                            max,
+                            step,
+                            window,
+                            cx,
+                        );
+                    });
+                })
+                .on_drag(DragStableSlider(entity_id), |drag, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.new(|_| drag.clone())
+                })
+                .on_drag_move(window.listener_for(
+                    state,
+                    move |state, event: &DragMoveEvent<DragStableSlider>, window, cx| {
+                        match event.drag(cx) {
+                            DragStableSlider(id) if *id == entity_id => {
+                                update_stable_slider_from_position(
+                                    state,
+                                    *drag_bounds.borrow(),
+                                    event.event.position,
+                                    min,
+                                    max,
+                                    step,
+                                    window,
+                                    cx,
+                                );
+                            }
+                            _ => {}
+                        }
+                    },
+                ))
+        })
+        .child(
+            div()
+                .relative()
+                .w_full()
+                .h_1p5()
+                .bg(track.opacity(0.2))
+                .rounded_full()
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(0.0))
+                        .bottom(px(0.0))
+                        .w(relative(percentage))
+                        .bg(rgb(track_color))
+                        .rounded_full(),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(-5.0))
+                        .left(relative(percentage))
+                        .ml(-px(8.0))
+                        .size_4()
+                        .p(px(1.0))
+                        .rounded_full()
+                        .bg(track.opacity(0.5))
+                        .child(div().size_full().rounded_full().bg(rgb(thumb_color))),
+                )
+                .child(
+                    canvas(
+                        move |bounds, _, _| {
+                            *canvas_bounds.borrow_mut() = bounds;
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                ),
+        )
+        .into_any_element()
+}
+
+fn stable_slider_percentage(value: f32, min: u64, max: u64) -> f32 {
+    let min = min as f32;
+    let max = max as f32;
+    let range = max - min;
+    if range <= 0.0 {
+        0.0
+    } else {
+        ((value.clamp(min, max) - min) / range).clamp(0.0, 1.0)
+    }
+}
+
+fn update_stable_slider_from_position(
+    state: &mut SliderState,
+    bounds: Bounds<Pixels>,
+    position: Point<Pixels>,
+    min: u64,
+    max: u64,
+    step: u64,
+    window: &mut Window,
+    cx: &mut Context<SliderState>,
+) {
+    let total_size = bounds.size.width;
+    if total_size <= px(0.0) {
+        return;
+    }
+
+    let percentage = (position.x - bounds.left()).clamp(px(0.0), total_size) / total_size;
+    let min = min as f32;
+    let max = max as f32;
+    let step = step.max(1) as f32;
+    let value = min + ((max - min) * percentage);
+    let value = (((value - min) / step).round() * step + min).clamp(min, max);
+
+    state.set_value(value, window, cx);
+    cx.emit(SliderEvent::Change(SliderValue::Single(value)));
+}
+
+fn activity_slider_card(
+    id: impl Into<SharedString>,
+    label: &str,
+    value_element: AnyElement,
+    state: &Entity<SliderState>,
+    enabled: bool,
+    min: u64,
+    max: u64,
+    delta: u64,
+    window: &mut Window,
+    cx: &mut Context<PowerLeafApp>,
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id: SharedString = id.into();
     let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
     let down = Rc::clone(&handler);
+    let slider_track_color = if enabled {
+        accent_color()
+    } else {
+        disabled_slider_track_color()
+    };
+    let slider_thumb_color = if enabled {
+        windows_slider_thumb_color()
+    } else {
+        disabled_slider_thumb_color()
+    };
+
+    setting_action_card(
+        id.clone(),
+        label.to_owned(),
+        h_flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .min_w(px(0.0))
+            .flex_shrink_0()
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                    .label("-")
+                    .disabled(!enabled)
+                    .on_click(move |_, window, cx| {
+                        down(
+                            &StepChange {
+                                delta,
+                                increase: false,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(260.0))
+                    .px(px(8.0))
+                    .flex_none()
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(stable_slider(
+                        state,
+                        min,
+                        max,
+                        delta,
+                        enabled,
+                        slider_track_color,
+                        slider_thumb_color,
+                        window,
+                        cx,
+                    )),
+            )
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id), "up")))
+                    .label("+")
+                    .disabled(!enabled)
+                    .on_click(move |_, window, cx| {
+                        handler(
+                            &StepChange {
+                                delta,
+                                increase: true,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .child(value_element)
+            .into_any_element(),
+    )
+    .into_any_element()
+}
+
+fn rule_percent_slider_row<T>(
+    id: impl Into<SharedString>,
+    label: &str,
+    value_element: AnyElement,
+    state: &Entity<SliderState>,
+    enabled: bool,
+    delta: T,
+    window: &mut Window,
+    cx: &mut Context<PowerLeafApp>,
+    handler: impl Fn(&StepChange<T>, &mut Window, &mut App) + 'static,
+) -> AnyElement
+where
+    T: Copy + 'static,
+{
+    let id: SharedString = id.into();
+    let handler: Rc<dyn Fn(&StepChange<T>, &mut Window, &mut App)> = Rc::new(handler);
+    let down = Rc::clone(&handler);
+    let down_delta = delta;
+    let up_delta = delta;
+    let label_color = if enabled {
+        primary_text_color()
+    } else {
+        dim_text_color()
+    };
+    let slider_track_color = if enabled {
+        accent_color()
+    } else {
+        disabled_slider_track_color()
+    };
+    let slider_thumb_color = if enabled {
+        windows_slider_thumb_color()
+    } else {
+        disabled_slider_thumb_color()
+    };
+
+    rule_action_row_with_title_color(
+        id.clone(),
+        label.to_owned(),
+        h_flex()
+            .items_center()
+            .justify_end()
+            .gap_2()
+            .min_w(px(0.0))
+            .flex_shrink_0()
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                    .label("-")
+                    .disabled(!enabled)
+                    .on_click(move |_, window, cx| {
+                        down(
+                            &StepChange {
+                                delta: down_delta,
+                                increase: false,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(220.0))
+                    .px(px(8.0))
+                    .flex_none()
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                        cx.stop_propagation();
+                    })
+                    .child(stable_slider(
+                        state,
+                        0,
+                        100,
+                        1,
+                        enabled,
+                        slider_track_color,
+                        slider_thumb_color,
+                        window,
+                        cx,
+                    )),
+            )
+            .child(
+                control_button(Button::new((gpui::ElementId::from(id), "up")))
+                    .label("+")
+                    .disabled(!enabled)
+                    .on_click(move |_, window, cx| {
+                        handler(
+                            &StepChange {
+                                delta: up_delta,
+                                increase: true,
+                            },
+                            window,
+                            cx,
+                        )
+                    }),
+            )
+            .child(value_element)
+            .into_any_element(),
+        label_color,
+    )
+    .into_any_element()
+}
+
+fn percent_slider_row<T>(
+    id: impl Into<SharedString>,
+    label: &str,
+    value_element: AnyElement,
+    state: &Entity<SliderState>,
+    enabled: bool,
+    delta: T,
+    window: &mut Window,
+    cx: &mut Context<PowerLeafApp>,
+    handler: impl Fn(&StepChange<T>, &mut Window, &mut App) + 'static,
+) -> AnyElement
+where
+    T: Copy + 'static,
+{
+    let id: SharedString = id.into();
+    let handler: Rc<dyn Fn(&StepChange<T>, &mut Window, &mut App)> = Rc::new(handler);
+    let down = Rc::clone(&handler);
+    let down_delta = delta;
+    let up_delta = delta;
+    let label_color = if enabled {
+        primary_text_color()
+    } else {
+        dim_text_color()
+    };
+    let slider_track_color = if enabled {
+        accent_color()
+    } else {
+        disabled_slider_track_color()
+    };
+    let slider_thumb_color = if enabled {
+        windows_slider_thumb_color()
+    } else {
+        disabled_slider_thumb_color()
+    };
 
     h_flex()
         .id(id.clone())
@@ -6537,21 +8249,23 @@ fn processor_power_slider(
         .min_h(px(58.0))
         .items_center()
         .justify_between()
-        .gap_2()
-        .px_3()
-        .py_2()
+        .gap_4()
+        .py_3()
+        .px_4()
         .rounded_sm()
         .border_1()
-        .border_color(rgb(row_separator_color()))
-        .bg(rgb(windows_control_row_color()))
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
         .child(
             div()
                 .flex_1()
-                .min_w(px(148.0))
+                .min_w(px(0.0))
                 .truncate()
-                .text_size(px(TEXT_BODY_SIZE))
-                .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                .text_color(rgb(primary_text_color()))
+                .text_color(rgb(label_color))
                 .child(label.to_owned()),
         )
         .child(
@@ -6564,10 +8278,11 @@ fn processor_power_slider(
                 .child(
                     control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
                         .label("-")
+                        .disabled(!enabled)
                         .on_click(move |_, window, cx| {
                             down(
                                 &StepChange {
-                                    delta: 1,
+                                    delta: down_delta,
                                     increase: false,
                                 },
                                 window,
@@ -6580,24 +8295,30 @@ fn processor_power_slider(
                         .w(px(220.0))
                         .px(px(8.0))
                         .flex_none()
-                        .child(
-                            Slider::new(state)
-                                .horizontal()
-                                .w_full()
-                                .h(px(24.0))
-                                .flex_none()
-                                .bg(rgb(accent_color()))
-                                .text_color(rgb(windows_slider_thumb_color()))
-                                .rounded_full(),
-                        ),
+                        .occlude()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                            cx.stop_propagation();
+                        })
+                        .child(stable_slider(
+                            state,
+                            0,
+                            100,
+                            1,
+                            enabled,
+                            slider_track_color,
+                            slider_thumb_color,
+                            window,
+                            cx,
+                        )),
                 )
                 .child(
                     control_button(Button::new((gpui::ElementId::from(id), "up")))
                         .label("+")
+                        .disabled(!enabled)
                         .on_click(move |_, window, cx| {
                             handler(
                                 &StepChange {
-                                    delta: 1,
+                                    delta: up_delta,
                                     increase: true,
                                 },
                                 window,
@@ -6608,104 +8329,6 @@ fn processor_power_slider(
                 .child(value_element),
         )
         .into_any_element()
-}
-
-fn stepper_u64(
-    id: impl Into<SharedString>,
-    label: &str,
-    value: u64,
-    value_element: AnyElement,
-    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
-) -> gpui::Div {
-    let id: SharedString = id.into();
-    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
-    let down = Rc::clone(&handler);
-    labeled_element(
-        label,
-        h_flex()
-            .gap_2()
-            .items_center()
-            .flex_wrap()
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
-                    .label("-")
-                    .on_click(move |_, window, cx| {
-                        down(
-                            &StepChange {
-                                delta: u64_step(value),
-                                increase: false,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .child(value_element)
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id), "up")))
-                    .label("+")
-                    .on_click(move |_, window, cx| {
-                        handler(
-                            &StepChange {
-                                delta: u64_step(value),
-                                increase: true,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .into_any_element(),
-    )
-}
-
-fn stepper_u8(
-    id: impl Into<SharedString>,
-    label: &str,
-    _value: u8,
-    value_element: AnyElement,
-    handler: impl Fn(&StepChange<u8>, &mut Window, &mut App) + 'static,
-) -> gpui::Div {
-    let id: SharedString = id.into();
-    let handler: Rc<dyn Fn(&StepChange<u8>, &mut Window, &mut App)> = Rc::new(handler);
-    let down = Rc::clone(&handler);
-    labeled_element(
-        label,
-        h_flex()
-            .gap_2()
-            .items_center()
-            .flex_wrap()
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
-                    .label("-")
-                    .on_click(move |_, window, cx| {
-                        down(
-                            &StepChange {
-                                delta: 1,
-                                increase: false,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .child(value_element)
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id), "up")))
-                    .label("+")
-                    .on_click(move |_, window, cx| {
-                        handler(
-                            &StepChange {
-                                delta: 1,
-                                increase: true,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .into_any_element(),
-    )
 }
 
 fn u64_step(value: u64) -> u64 {
@@ -6734,6 +8357,72 @@ fn apply_u8_step(current: u8, change: &StepChange<u8>, min: u8, max: u8) -> u8 {
         current.saturating_sub(change.delta)
     };
     next.clamp(min, max)
+}
+
+fn activity_slider_normalized_value(slider: ActivitySlider, value: u64) -> u64 {
+    match slider {
+        ActivitySlider::IdleTimeout => value.clamp(
+            ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+            ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
+        ),
+        ActivitySlider::CheckInterval => snap_to_step(value, ACTIVITY_CHECK_INTERVAL_STEP_MS)
+            .clamp(
+                ACTIVITY_CHECK_INTERVAL_MIN_MS,
+                ACTIVITY_CHECK_INTERVAL_MAX_MS,
+            ),
+    }
+}
+
+fn snap_to_step(value: u64, step: u64) -> u64 {
+    if step == 0 {
+        return value;
+    }
+    ((value + (step / 2)) / step) * step
+}
+
+fn seconds_label(seconds: u64) -> String {
+    duration_label_ms(
+        seconds
+            .clamp(
+                ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+                ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
+            )
+            .saturating_mul(1_000),
+    )
+}
+
+fn milliseconds_label(milliseconds: u64) -> String {
+    duration_label_ms(
+        snap_to_step(milliseconds, ACTIVITY_CHECK_INTERVAL_STEP_MS).clamp(
+            ACTIVITY_CHECK_INTERVAL_MIN_MS,
+            ACTIVITY_CHECK_INTERVAL_MAX_MS,
+        ),
+    )
+}
+
+fn duration_label_ms(milliseconds: u64) -> String {
+    if milliseconds < 1_000 {
+        return format!("{milliseconds} ms");
+    }
+
+    let (value, unit) = if milliseconds < 60_000 {
+        (milliseconds as f64 / 1_000.0, "sec")
+    } else if milliseconds < 3_600_000 {
+        (milliseconds as f64 / 60_000.0, "min")
+    } else {
+        (milliseconds as f64 / 3_600_000.0, "hr")
+    };
+
+    rounded_duration_value(value, unit)
+}
+
+fn rounded_duration_value(value: f64, unit: &str) -> String {
+    let rounded = (value * 10.0).round() / 10.0;
+    if (rounded - rounded.round()).abs() < f64::EPSILON {
+        format!("{} {unit}", rounded.round() as u64)
+    } else {
+        format!("{rounded:.1} {unit}")
+    }
 }
 
 fn parse_u64_input(value: &str, min: u64, max: u64) -> Option<u64> {
@@ -6812,7 +8501,6 @@ struct SuspensionIndicator {
     label: String,
     bg: u32,
     fg: u32,
-    hover: String,
 }
 
 struct AffinityIndicator {
@@ -6830,56 +8518,48 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
             label: t!("suspension.indicator.protected").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("suspension.indicator.protected_help").to_string(),
         }
     } else if suspension::contains_process(&status.network_wake_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.network").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("suspension.indicator.network_help").to_string(),
         }
     } else if suspension::contains_process(&status.audio_wake_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.audio").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("suspension.indicator.audio_help").to_string(),
         }
     } else if suspension::contains_process(&status.suspended_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.frozen").to_string(),
             bg: success_bg_color(),
             fg: success_text_color(),
-            hover: t!("suspension.indicator.frozen_help").to_string(),
         }
     } else if suspension::contains_process(&status.temporary_thawed_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.thawed").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("suspension.indicator.thawed_help").to_string(),
         }
     } else if suspension::contains_process(&status.tracked_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.waiting").to_string(),
             bg: warning_bg_color(),
             fg: warning_text_color(),
-            hover: t!("suspension.indicator.waiting_help").to_string(),
         }
     } else if status.enabled {
         SuspensionIndicator {
             label: t!("suspension.indicator.not_suspended").to_string(),
             bg: panel_active_color(),
             fg: muted_text_color(),
-            hover: t!("suspension.indicator.not_suspended_help").to_string(),
         }
     } else {
         SuspensionIndicator {
             label: t!("suspension.indicator.off").to_string(),
             bg: panel_active_color(),
             fg: dim_text_color(),
-            hover: t!("suspension.indicator.off_help").to_string(),
         }
     }
 }
@@ -6955,26 +8635,6 @@ fn toggle_affinity_core(mask: &mut u64, core: usize) {
         *mask |= bit;
     } else if mask.count_ones() > 1 {
         *mask &= !bit;
-    }
-}
-
-fn affinity_mask_label(mask: u64) -> String {
-    let processors = affinity::logical_processors();
-    let all_mask = affinity_processors_mask(&processors);
-    if all_mask != 0 && (mask & all_mask) == all_mask {
-        return t!("affinity.all_logical_cpus").to_string();
-    }
-
-    let cores = processors
-        .iter()
-        .filter(|processor| affinity_mask_contains(mask, processor.index))
-        .map(affinity_processor_label)
-        .collect::<Vec<_>>();
-
-    if cores.is_empty() {
-        t!("affinity.no_logical_cpus").to_string()
-    } else {
-        t!("affinity.logical_cpus", cores = cores.join(", ")).to_string()
     }
 }
 
@@ -7069,6 +8729,10 @@ fn network_threshold_step(unit: NetworkThresholdUnit) -> f64 {
 
 fn network_threshold_edit_value(threshold_bytes: u64, unit: NetworkThresholdUnit) -> String {
     let value = unit.threshold_value_from_bytes(threshold_bytes);
+    network_threshold_value_label(value)
+}
+
+fn network_threshold_value_label(value: f64) -> String {
     format!("{value:.3}")
         .trim_end_matches('0')
         .trim_end_matches('.')
