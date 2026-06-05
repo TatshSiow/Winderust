@@ -302,6 +302,8 @@ affinity:
   p_cores_help: "Allow only logical CPUs on performance cores."
   e_cores: "E-cores"
   e_cores_help: "Allow only logical CPUs on efficiency cores."
+  no_smt: "No SMT"
+  no_smt_help: "Allow one logical CPU per physical core."
   allowed_cpus: "Allowed logical CPUs"
   unlimited: "Unlimited"
   all_logical_cpus: "All logical CPUs"

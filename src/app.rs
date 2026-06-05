@@ -4470,6 +4470,7 @@ impl PowerLeafApp {
             affinity_processors_kind_mask(&processors, LogicalProcessorKind::Performance);
         let efficiency_mask =
             affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency);
+        let no_smt_mask = affinity_processors_no_smt_mask(&processors);
 
         let mut presets = h_flex().gap_1().flex_wrap();
         for (label, mask, tooltip, enabled) in [
@@ -4490,6 +4491,12 @@ impl PowerLeafApp {
                 efficiency_mask,
                 t!("affinity.e_cores_help").to_string(),
                 efficiency_mask != 0,
+            ),
+            (
+                t!("affinity.no_smt").to_string(),
+                no_smt_mask,
+                t!("affinity.no_smt_help").to_string(),
+                no_smt_mask != 0 && no_smt_mask != all_mask,
             ),
         ] {
             presets = presets.child(
@@ -8901,7 +8908,7 @@ fn new_suspension_rule(process: &str) -> AppSuspensionRule {
 fn new_affinity_rule(process: &str) -> CpuAffinityRule {
     CpuAffinityRule {
         enabled: true,
-        mode: CpuAffinityMode::Hard,
+        mode: CpuAffinityMode::Soft,
         process_name: process.trim().to_ascii_lowercase(),
         core_mask: default_affinity_mask(),
     }
@@ -9089,6 +9096,23 @@ fn affinity_processors_kind_mask(
         .filter(|processor| processor.kind == kind)
         .filter_map(|processor| affinity_processor_bit(processor.index))
         .fold(0, |mask, bit| mask | bit)
+}
+
+fn affinity_processors_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
+    let mut seen_cores = Vec::new();
+    let mut mask = 0;
+
+    for processor in processors {
+        if seen_cores.contains(&processor.core_index) {
+            continue;
+        }
+        seen_cores.push(processor.core_index);
+        if let Some(bit) = affinity_processor_bit(processor.index) {
+            mask |= bit;
+        }
+    }
+
+    mask
 }
 
 fn affinity_processor_bit(index: usize) -> Option<u64> {
@@ -9282,6 +9306,50 @@ fn choose_settings_file(
         Ok(None)
     } else {
         Err(format!("File dialog failed with error code {error}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
+        let processors = vec![
+            LogicalProcessorInfo {
+                index: 0,
+                core_index: 0,
+                kind: LogicalProcessorKind::Standard,
+                efficiency_class: 0,
+            },
+            LogicalProcessorInfo {
+                index: 1,
+                core_index: 0,
+                kind: LogicalProcessorKind::Standard,
+                efficiency_class: 0,
+            },
+            LogicalProcessorInfo {
+                index: 2,
+                core_index: 1,
+                kind: LogicalProcessorKind::Standard,
+                efficiency_class: 0,
+            },
+            LogicalProcessorInfo {
+                index: 3,
+                core_index: 1,
+                kind: LogicalProcessorKind::Standard,
+                efficiency_class: 0,
+            },
+        ];
+
+        assert_eq!(affinity_processors_no_smt_mask(&processors), 0b0101);
+    }
+
+    #[test]
+    fn new_core_steering_rules_default_to_soft_cpu_sets() {
+        let rule = new_affinity_rule("game.exe");
+
+        assert_eq!(rule.mode, CpuAffinityMode::Soft);
     }
 }
 

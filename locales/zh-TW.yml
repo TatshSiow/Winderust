@@ -302,6 +302,8 @@ affinity:
   p_cores_help: "只允許效能核心上的邏輯 CPU。"
   e_cores: "E 核心"
   e_cores_help: "只允許效率核心上的邏輯 CPU。"
+  no_smt: "停用 SMT"
+  no_smt_help: "每個實體核心只允許一個邏輯 CPU。"
   allowed_cpus: "允許的邏輯 CPU"
   unlimited: "無限制"
   all_logical_cpus: "所有邏輯 CPU"
