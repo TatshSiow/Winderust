@@ -279,7 +279,7 @@ responsiveness:
 affinity:
   intro_1: "核心導向會為選取的背景應用程式設定偏好的邏輯 CPU。"
   intro_2: "大多數應用程式建議使用軟性 CPU Sets，讓 Windows 保留更多排程彈性。"
-  intro_3: "導向可能影響已完全吃滿 CPU 的工作負載，或已自行管理執行緒的應用程式。"
+  intro_3: "導向可能影響已完全吃滿 CPU 的工作負載、已自行管理執行緒的應用程式，或在大型 CPU 上不支援處理器群組的應用程式。"
   enable: "啟用核心導向"
   focus_detection: "應用程式焦點偵測"
   adjusted_processes: "已調整程序"
@@ -291,7 +291,7 @@ affinity:
   no_rules: "尚未設定核心導向規則。"
   mode: "導向模式"
   mode_hard: "硬性導向"
-  mode_hard_help: "使用 SetProcessAffinityMask 限制程序。只有需要硬性限制時才使用。"
+  mode_hard_help: "使用 SetProcessAffinityMask 限制程序。在多處理器群組 CPU 上，這只涵蓋程序的主要群組。"
   mode_soft: "軟性 CPU Sets"
   mode_soft_help: "使用 Windows CPU Sets 偏好選取的 CPU，保留更多排程彈性。"
   mode_efficiency_off: "繞過效率模式"

@@ -279,7 +279,7 @@ responsiveness:
 affinity:
   intro_1: "Core Steering sets preferred logical CPUs for selected background apps."
   intro_2: "Soft CPU Sets are preferred for most apps because Windows keeps more scheduling flexibility."
-  intro_3: "Steering can hurt fully saturated workloads or apps that already manage their own threads."
+  intro_3: "Steering can hurt fully saturated workloads, apps that manage their own threads, or processor-group-unaware apps on very large CPUs."
   enable: "Enable Core Steering"
   focus_detection: "App focus detection"
   adjusted_processes: "Adjusted processes"
@@ -291,7 +291,7 @@ affinity:
   no_rules: "No Core Steering rules are configured."
   mode: "Steering mode"
   mode_hard: "Hard steering"
-  mode_hard_help: "Restrict the process with SetProcessAffinityMask. Use only when a hard limit is needed."
+  mode_hard_help: "Restrict the process with SetProcessAffinityMask. On multi-group CPUs this only covers the process primary group."
   mode_soft: "Soft CPU Sets"
   mode_soft_help: "Prefer selected CPUs with Windows CPU Sets while leaving more scheduling flexibility."
   mode_efficiency_off: "Bypass Efficiency Mode"

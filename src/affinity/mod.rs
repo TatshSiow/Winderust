@@ -366,7 +366,7 @@ fn cpu_affinity_message(settings: &CpuAffinitySettings) -> String {
 
 fn cpu_affinity_message_for_group_count(group_count: u16, has_hard_rules: bool) -> String {
     if group_count > 1 && has_hard_rules {
-        "Core Steering active. Multi-group CPU detected: hard steering uses the process primary processor group."
+        "Core Steering active. Multi-group CPU detected: hard steering can only control CPUs in the process primary processor group. Apps that are not processor-group-aware may not use the full CPU."
             .to_owned()
     } else {
         "Core Steering active.".to_owned()
@@ -1086,7 +1086,9 @@ mod tests {
             cpu_affinity_message_for_group_count(2, false),
             "Core Steering active."
         );
-        assert!(cpu_affinity_message_for_group_count(2, true).contains("Multi-group CPU detected"));
+        let message = cpu_affinity_message_for_group_count(2, true);
+        assert!(message.contains("Multi-group CPU detected"));
+        assert!(message.contains("processor-group-aware"));
     }
 
     #[test]
