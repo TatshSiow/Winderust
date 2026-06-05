@@ -13,6 +13,7 @@ use crate::{
     foreground::{top_level_window_process_ids, ForegroundDetector},
     power::PowerPlanManager,
     power_source,
+    responsiveness::{ForegroundResponsivenessManager, ForegroundResponsivenessSnapshot},
     rules::{DecisionEngine, DecisionInput, DecisionOutcome},
     scheduler::{CpuUsageScheduler, Scheduler},
     suspension::{AppSuspensionManager, AppSuspensionSnapshot},
@@ -26,6 +27,7 @@ const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL: Duration = Duration::from_millis(50);
 const APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL: Duration = Duration::from_millis(750);
 const CPU_AFFINITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const HIDDEN_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -45,6 +47,7 @@ struct AutomationWorkerState {
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     cpu_affinity_status: CpuAffinitySnapshot,
+    foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     app_suspension_freeze_requests: Vec<String>,
     stop_requested: bool,
 }
@@ -57,6 +60,7 @@ impl BackgroundAutomation {
                 eco_qos_status: EcoQosSnapshot::default(),
                 app_suspension_status: AppSuspensionSnapshot::default(),
                 cpu_affinity_status: CpuAffinitySnapshot::default(),
+                foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
                 app_suspension_freeze_requests: Vec::new(),
                 stop_requested: false,
             }),
@@ -105,6 +109,14 @@ impl BackgroundAutomation {
             .unwrap_or_default()
     }
 
+    pub fn foreground_responsiveness_status(&self) -> ForegroundResponsivenessSnapshot {
+        self.shared
+            .state
+            .lock()
+            .map(|state| state.foreground_responsiveness_status.clone())
+            .unwrap_or_default()
+    }
+
     pub fn request_app_suspension_freeze(&self, process_name: &str) {
         let process_name = process_name.trim().to_ascii_lowercase();
         if process_name.is_empty() {
@@ -138,6 +150,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_app_suspension_refresh = Instant::now();
     let mut next_app_suspension_foreground_release = Instant::now();
     let mut next_cpu_affinity_refresh = Instant::now();
+    let mut next_foreground_responsiveness_refresh = Instant::now();
 
     loop {
         let snapshot = match automation_snapshot(&shared) {
@@ -153,6 +166,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, APP_SUSPENSION_REFRESH_INTERVAL);
         let cpu_affinity_refresh_interval =
             automation_refresh_interval(hidden_to_tray, CPU_AFFINITY_REFRESH_INTERVAL);
+        let foreground_responsiveness_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL);
 
         if !app_suspension_freeze_requests.is_empty() {
             next_app_suspension_refresh = Instant::now();
@@ -172,6 +187,13 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             let eco_qos_status = runner.run_eco_qos_update(&settings);
             update_eco_qos_status(&shared, eco_qos_status);
             next_eco_qos_refresh = Instant::now() + eco_qos_refresh_interval;
+        }
+        if Instant::now() >= next_foreground_responsiveness_refresh {
+            let foreground_responsiveness_status =
+                runner.run_foreground_responsiveness_update(&settings);
+            update_foreground_responsiveness_status(&shared, foreground_responsiveness_status);
+            next_foreground_responsiveness_refresh =
+                Instant::now() + foreground_responsiveness_refresh_interval;
         }
         if Instant::now() >= next_app_suspension_refresh {
             let app_suspension_status =
@@ -205,6 +227,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 .min(next_eco_qos_refresh.saturating_duration_since(Instant::now()))
                 .min(next_app_suspension_refresh.saturating_duration_since(Instant::now()))
                 .min(next_cpu_affinity_refresh.saturating_duration_since(Instant::now()))
+                .min(
+                    next_foreground_responsiveness_refresh
+                        .saturating_duration_since(Instant::now()),
+                )
         } else {
             next_check = Instant::now();
             next_eco_qos_refresh
@@ -214,6 +240,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 .min(app_suspension_refresh_interval)
                 .min(next_cpu_affinity_refresh.saturating_duration_since(Instant::now()))
                 .min(cpu_affinity_refresh_interval)
+                .min(
+                    next_foreground_responsiveness_refresh
+                        .saturating_duration_since(Instant::now()),
+                )
+                .min(foreground_responsiveness_refresh_interval)
         };
         if runner.app_suspension_manager.has_suspended_processes() {
             wait_for = wait_for
@@ -232,6 +263,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_app_suspension_refresh = Instant::now();
                 next_app_suspension_foreground_release = Instant::now();
                 next_cpu_affinity_refresh = Instant::now();
+                next_foreground_responsiveness_refresh = Instant::now();
             }
             WorkerWake::Timeout => {}
         }
@@ -269,6 +301,15 @@ fn update_app_suspension_status(shared: &SharedAutomationState, status: AppSuspe
 fn update_cpu_affinity_status(shared: &SharedAutomationState, status: CpuAffinitySnapshot) {
     if let Ok(mut state) = shared.state.lock() {
         state.cpu_affinity_status = status;
+    }
+}
+
+fn update_foreground_responsiveness_status(
+    shared: &SharedAutomationState,
+    status: ForegroundResponsivenessSnapshot,
+) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.foreground_responsiveness_status = status;
     }
 }
 
@@ -328,6 +369,7 @@ struct HiddenAutomationRunner {
     app_suspension_manager: AppSuspensionManager,
     last_app_suspension_shell_user_intent: Option<Instant>,
     cpu_affinity_manager: CpuAffinityManager,
+    foreground_responsiveness_manager: ForegroundResponsivenessManager,
 }
 
 impl HiddenAutomationRunner {
@@ -409,6 +451,20 @@ impl HiddenAutomationRunner {
             &settings.cpu_affinity,
             settings.general.enabled,
             foreground_process_id,
+        )
+    }
+
+    fn run_foreground_responsiveness_update(
+        &mut self,
+        settings: &Settings,
+    ) -> ForegroundResponsivenessSnapshot {
+        let foreground_process_id = self.foreground_detector.process_id();
+        let eco_qos_process_ids = self.eco_qos_manager.throttled_process_ids();
+        self.foreground_responsiveness_manager.update(
+            &settings.foreground_responsiveness,
+            settings.general.enabled,
+            foreground_process_id,
+            &eco_qos_process_ids,
         )
     }
 

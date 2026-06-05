@@ -16,6 +16,8 @@ pub struct Settings {
     pub app_suspension: AppSuspensionSettings,
     #[serde(default)]
     pub cpu_affinity: CpuAffinitySettings,
+    #[serde(default)]
+    pub foreground_responsiveness: ForegroundResponsivenessSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +264,54 @@ pub struct CpuAffinityRule {
     pub core_mask: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForegroundResponsivenessSettings {
+    pub enabled: bool,
+    #[serde(default = "default_lower_background_apps")]
+    pub lower_background_apps: bool,
+    #[serde(default)]
+    pub boost_foreground_app: bool,
+    #[serde(default)]
+    pub foreground_boost: ForegroundBoostPriority,
+    #[serde(default = "default_foreground_stability_delay_ms")]
+    pub foreground_stability_delay_ms: u64,
+    #[serde(default)]
+    pub rules: Vec<PriorityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriorityRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+    pub priority: ProcessPriority,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessPriority {
+    Normal,
+    BelowNormal,
+    #[default]
+    Idle,
+}
+
+impl ProcessPriority {
+    pub const ALL: [Self; 3] = [Self::Normal, Self::BelowNormal, Self::Idle];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForegroundBoostPriority {
+    Normal,
+    #[default]
+    AboveNormal,
+}
+
+impl ForegroundBoostPriority {
+    pub const ALL: [Self; 2] = [Self::Normal, Self::AboveNormal];
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CpuAffinityMode {
@@ -395,6 +445,7 @@ impl Default for Settings {
             eco_qos: EcoQosSettings::default(),
             app_suspension: AppSuspensionSettings::default(),
             cpu_affinity: CpuAffinitySettings::default(),
+            foreground_responsiveness: ForegroundResponsivenessSettings::default(),
         }
     }
 }
@@ -471,6 +522,14 @@ const fn default_exclude_foreground_app() -> bool {
 
 const fn default_rule_enabled() -> bool {
     true
+}
+
+const fn default_lower_background_apps() -> bool {
+    true
+}
+
+const fn default_foreground_stability_delay_ms() -> u64 {
+    750
 }
 
 const fn default_temporary_thaw_interval_seconds() -> u64 {
@@ -597,6 +656,19 @@ impl Default for CpuAffinitySettings {
     }
 }
 
+impl Default for ForegroundResponsivenessSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            lower_background_apps: default_lower_background_apps(),
+            boost_foreground_app: false,
+            foreground_boost: ForegroundBoostPriority::AboveNormal,
+            foreground_stability_delay_ms: default_foreground_stability_delay_ms(),
+            rules: Vec::new(),
+        }
+    }
+}
+
 impl AppSuspensionSettings {
     pub fn contains_suspendable_app(&self, process_name: &str) -> bool {
         self.suspendable_apps.iter().any(|rule| {
@@ -645,6 +717,16 @@ impl AppSuspensionSettings {
 }
 
 impl CpuAffinitySettings {
+    pub fn contains_rule_for(&self, process_name: &str) -> bool {
+        self.rules.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+}
+
+impl ForegroundResponsivenessSettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules.iter().any(|rule| {
             rule.process_name

@@ -116,9 +116,10 @@ mod tests {
     use crate::config::{
         AccentSettings, ActivityModeSettings, AppLanguage, AppSuspensionRule,
         AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, EcoQosSettings, ForegroundRule,
-        ForegroundRules, GeneralSettings, InputDetectionSettings, ManualOverride,
-        NetworkThresholdUnit, PowerPlanSettings, ScheduleModeSettings, ScheduleRule,
+        CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, EcoQosSettings,
+        ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules,
+        GeneralSettings, InputDetectionSettings, ManualOverride, NetworkThresholdUnit,
+        PowerPlanSettings, PriorityRule, ProcessPriority, ScheduleModeSettings, ScheduleRule,
         WeekdaySetting,
     };
 
@@ -266,6 +267,18 @@ mod tests {
                         core_mask: 0,
                     },
                 ],
+            },
+            foreground_responsiveness: ForegroundResponsivenessSettings {
+                enabled: true,
+                lower_background_apps: true,
+                boost_foreground_app: true,
+                foreground_boost: ForegroundBoostPriority::AboveNormal,
+                foreground_stability_delay_ms: 750,
+                rules: vec![PriorityRule {
+                    enabled: true,
+                    process_name: "backup.exe".to_owned(),
+                    priority: ProcessPriority::BelowNormal,
+                }],
             },
         };
 

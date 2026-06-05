@@ -73,6 +73,10 @@ struct ThrottledProcess {
 }
 
 impl EcoQosManager {
+    pub fn throttled_process_ids(&self) -> BTreeSet<u32> {
+        self.throttled.keys().copied().collect()
+    }
+
     pub fn update(
         &mut self,
         settings: &EcoQosSettings,

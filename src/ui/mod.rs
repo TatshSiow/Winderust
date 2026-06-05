@@ -8,6 +8,7 @@ pub enum Page {
     CoreParking,
     EfficiencyMode,
     AppSuspension,
+    ForegroundResponsiveness,
     CpuAffinity,
     ForegroundRules,
     Schedule,
@@ -28,7 +29,11 @@ const AUTOMATION_RULE_PAGES: [Page; 4] = [
     Page::ForegroundRules,
 ];
 const CPU_CONTROL_PAGES: [Page; 2] = [Page::CoreParking, Page::CpuAffinity];
-const PROCESS_CONTROL_PAGES: [Page; 2] = [Page::EfficiencyMode, Page::AppSuspension];
+const PROCESS_CONTROL_PAGES: [Page; 3] = [
+    Page::EfficiencyMode,
+    Page::AppSuspension,
+    Page::ForegroundResponsiveness,
+];
 const APP_PAGES: [Page; 2] = [Page::Settings, Page::About];
 const PAGE_SECTIONS: [PageSection; 5] = [
     PageSection {
@@ -62,6 +67,7 @@ impl Page {
             Self::CoreParking => t!("nav.core_parking"),
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
+            Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
             Self::Schedule => t!("nav.schedule"),
@@ -78,7 +84,9 @@ impl Page {
                 t!("nav.power_plan_controls")
             }
             Self::CoreParking | Self::CpuAffinity => t!("nav.cpu_controls"),
-            Self::EfficiencyMode | Self::AppSuspension => t!("nav.process_controls"),
+            Self::EfficiencyMode | Self::AppSuspension | Self::ForegroundResponsiveness => {
+                t!("nav.process_controls")
+            }
             Self::Settings | Self::About => t!("nav.app"),
         }
         .to_string()

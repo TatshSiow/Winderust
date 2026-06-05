@@ -14,6 +14,7 @@ mod ecoqos;
 mod foreground;
 mod power;
 mod power_source;
+mod responsiveness;
 mod rules;
 mod scheduler;
 mod startup;

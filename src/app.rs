@@ -40,8 +40,9 @@ use crate::{
     config::{
         self, AccentColorSource, AccentSettings, AppLanguage, AppSuspensionRule,
         AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundRule, ForegroundRules,
-        NetworkThresholdUnit, ScheduleRule, Settings, WeekdaySetting,
+        CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundBoostPriority,
+        ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, NetworkThresholdUnit,
+        PriorityRule, ProcessPriority, ScheduleRule, Settings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     ecoqos::{self, EcoQosSnapshot},
@@ -51,6 +52,7 @@ use crate::{
         ProcessorPowerValues,
     },
     power_source,
+    responsiveness::{self, ForegroundResponsivenessSnapshot},
     rules::{DecisionEngine, DecisionInput, DecisionOutcome, DecisionState},
     scheduler::{CpuUsageScheduler, Scheduler},
     startup,
@@ -97,6 +99,8 @@ const ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS: u64 = 60 * 60;
 const ACTIVITY_CHECK_INTERVAL_MIN_MS: u64 = 250;
 const ACTIVITY_CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
 const ACTIVITY_CHECK_INTERVAL_STEP_MS: u64 = 250;
+const FOREGROUND_STABILITY_DELAY_MIN_MS: u64 = 0;
+const FOREGROUND_STABILITY_DELAY_MAX_MS: u64 = 10_000;
 const RULE_TITLE_TEXT_SIZE: f32 = 14.0;
 const RULE_TITLE_LINE_HEIGHT: f32 = 20.0;
 const MAX_CUSTOM_ACCENT_COLORS: usize = 8;
@@ -158,6 +162,7 @@ pub struct PowerLeafApp {
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     cpu_affinity_status: CpuAffinitySnapshot,
+    foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     foreground_app: Option<String>,
     decision: DecisionOutcome,
     next_schedule: String,
@@ -220,6 +225,7 @@ struct UiInputs {
     eco_qos_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
+    responsiveness_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
     activity_idle_timeout: Entity<SliderState>,
     activity_check_interval: Entity<SliderState>,
@@ -317,6 +323,7 @@ impl UiInputs {
             eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
+            responsiveness_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
             activity_idle_timeout: make_range_slider(
                 cx,
@@ -525,6 +532,7 @@ impl PowerLeafApp {
             eco_qos_status: EcoQosSnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
             cpu_affinity_status: CpuAffinitySnapshot::default(),
+            foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
             foreground_app: None,
             decision: DecisionOutcome {
                 target_guid: None,
@@ -1277,6 +1285,14 @@ impl PowerLeafApp {
             changed = true;
         }
 
+        let foreground_responsiveness_status = self
+            .background_automation
+            .foreground_responsiveness_status();
+        if self.foreground_responsiveness_status != foreground_responsiveness_status {
+            self.foreground_responsiveness_status = foreground_responsiveness_status;
+            changed = true;
+        }
+
         if self.page_uses_process_candidates() && Instant::now() >= self.next_process_refresh {
             changed |= self.refresh_process_candidates(false);
         }
@@ -1315,7 +1331,11 @@ impl PowerLeafApp {
     fn page_uses_process_candidates(&self) -> bool {
         matches!(
             self.page,
-            Page::ForegroundRules | Page::EfficiencyMode | Page::AppSuspension | Page::CpuAffinity
+            Page::ForegroundRules
+                | Page::EfficiencyMode
+                | Page::AppSuspension
+                | Page::ForegroundResponsiveness
+                | Page::CpuAffinity
         )
     }
 
@@ -1661,6 +1681,17 @@ impl PowerLeafApp {
                     self.settings.app_suspension.network_wake_duration_seconds = value;
                 }
             }
+            NumericField::ForegroundStabilityDelay => {
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    FOREGROUND_STABILITY_DELAY_MIN_MS,
+                    FOREGROUND_STABILITY_DELAY_MAX_MS,
+                ) {
+                    self.settings
+                        .foreground_responsiveness
+                        .foreground_stability_delay_ms = value;
+                }
+            }
             NumericField::ProcessorAcCoreParkingMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_processor_power_slider_value(
@@ -1857,6 +1888,7 @@ impl PowerLeafApp {
         settings.eco_qos = self.saved_settings.eco_qos.clone();
         settings.app_suspension = self.saved_settings.app_suspension.clone();
         settings.cpu_affinity = self.saved_settings.cpu_affinity.clone();
+        settings.foreground_responsiveness = self.saved_settings.foreground_responsiveness.clone();
         settings
     }
 
@@ -1892,6 +1924,11 @@ impl PowerLeafApp {
                 settings.cpu_affinity.enabled,
                 self.cpu_affinity_status.failed_processes,
                 self.cpu_affinity_status.last_error.is_some(),
+            )),
+            Page::ForegroundResponsiveness => Some(process_nav_status(
+                settings.foreground_responsiveness.enabled,
+                self.foreground_responsiveness_status.failed_processes,
+                self.foreground_responsiveness_status.last_error.is_some(),
             )),
             Page::ForegroundRules => Some(enabled_nav_status(settings.foreground_rules.enabled)),
             Page::Schedule => Some(enabled_nav_status(settings.schedule_mode.enabled)),
@@ -2161,6 +2198,9 @@ impl PowerLeafApp {
             Page::CoreParking => self.render_core_parking_page(window, cx),
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
+            Page::ForegroundResponsiveness => {
+                self.render_foreground_responsiveness_page(window, cx)
+            }
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::Settings => self.render_settings_page(window, cx),
             Page::About => self.render_about_page(),
@@ -2366,6 +2406,19 @@ impl PowerLeafApp {
                     "{}; {} suspended",
                     enabled_label(self.app_suspension_status.enabled),
                     self.app_suspension_status.suspended_processes
+                ),
+            ),
+            (
+                t!("nav.foreground_responsiveness").to_string(),
+                format!(
+                    "{}; {} lowered; {} boosted",
+                    enabled_label(self.foreground_responsiveness_status.enabled),
+                    self.foreground_responsiveness_status
+                        .background_adjusted_processes,
+                    self.foreground_responsiveness_status
+                        .foreground_boosted_process
+                        .as_deref()
+                        .unwrap_or("none")
                 ),
             ),
             (
@@ -3842,6 +3895,343 @@ impl PowerLeafApp {
             list = list.child(text_muted(t!("suspension.no_suspendable").to_string()));
         }
         list.into_any_element()
+    }
+
+    fn render_foreground_responsiveness_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .responsiveness_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.foreground_responsiveness.enabled;
+        let body = feature_body(enabled)
+            .child(checkbox(
+                "responsiveness-lower-background",
+                t!("responsiveness.lower_background_apps").to_string(),
+                self.settings
+                    .foreground_responsiveness
+                    .lower_background_apps,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.foreground_responsiveness.lower_background_apps = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(checkbox(
+                "responsiveness-boost-foreground",
+                t!("responsiveness.boost_foreground_app").to_string(),
+                self.settings.foreground_responsiveness.boost_foreground_app,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.foreground_responsiveness.boost_foreground_app = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(self.render_foreground_boost_selector(cx))
+            .child(setting_stepper_card_u64(
+                "responsiveness-stability-delay",
+                t!("responsiveness.stability_delay").to_string(),
+                self.settings
+                    .foreground_responsiveness
+                    .foreground_stability_delay_ms,
+                self.render_numeric_value(
+                    NumericField::ForegroundStabilityDelay,
+                    format!(
+                        "{} ms",
+                        self.settings
+                            .foreground_responsiveness
+                            .foreground_stability_delay_ms
+                    ),
+                    self.settings
+                        .foreground_responsiveness
+                        .foreground_stability_delay_ms
+                        .to_string(),
+                    cx,
+                ),
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .foreground_stability_delay_ms = apply_u64_step(
+                        app.settings
+                            .foreground_responsiveness
+                            .foreground_stability_delay_ms,
+                        change,
+                        FOREGROUND_STABILITY_DELAY_MIN_MS,
+                        FOREGROUND_STABILITY_DELAY_MAX_MS,
+                    );
+                    cx.notify();
+                }),
+            ))
+            .child(stat_grid(vec![
+                (
+                    t!("common.status").to_string(),
+                    self.foreground_responsiveness_status.message.clone(),
+                ),
+                (
+                    t!("responsiveness.background_adjusted").to_string(),
+                    self.foreground_responsiveness_status
+                        .background_adjusted_processes
+                        .to_string(),
+                ),
+                (
+                    t!("responsiveness.foreground_boosted").to_string(),
+                    self.foreground_responsiveness_status
+                        .foreground_boosted_process
+                        .clone()
+                        .unwrap_or_else(|| t!("common.none").to_string()),
+                ),
+                (
+                    t!("efficiency.scanned_processes").to_string(),
+                    self.foreground_responsiveness_status
+                        .scanned_processes
+                        .to_string(),
+                ),
+                (
+                    t!("efficiency.skipped_processes").to_string(),
+                    self.foreground_responsiveness_status
+                        .skipped_processes
+                        .to_string(),
+                ),
+                (
+                    t!("efficiency.failed_actions").to_string(),
+                    self.foreground_responsiveness_status
+                        .failed_processes
+                        .to_string(),
+                ),
+                (
+                    t!("common.last_failure").to_string(),
+                    self.foreground_responsiveness_status
+                        .last_error
+                        .as_deref()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| t!("common.none").to_string()),
+                ),
+            ]))
+            .child(section_header(
+                &t!("responsiveness.rules"),
+                t!("responsiveness.rules_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "responsiveness-suggestion",
+                        &self.inputs.responsiveness_process,
+                        SuggestionTarget::Responsiveness,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        control_button(Button::new("add-responsiveness-process"))
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_responsiveness_process(
+                                        &self.settings.foreground_responsiveness,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process = app
+                                    .inputs
+                                    .responsiveness_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_responsiveness_process(
+                                    &app.settings.foreground_responsiveness,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .rules
+                                        .push(new_responsiveness_rule(&process));
+                                    clear_input(&app.inputs.responsiveness_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_responsiveness_rules(cx));
+
+        page_shell_with_help(
+            Page::ForegroundResponsiveness,
+            Some(tooltip_lines(vec![
+                t!("responsiveness.intro_1").to_string(),
+                t!("responsiveness.intro_2").to_string(),
+                t!("responsiveness.intro_3").to_string(),
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "foreground-responsiveness-enabled",
+            t!("responsiveness.enable").to_string(),
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.foreground_responsiveness.enabled = *checked;
+                cx.notify();
+            }),
+        ))
+        .child(disabled_feature_body(body, enabled))
+        .into_any_element()
+    }
+
+    fn render_foreground_boost_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.settings.foreground_responsiveness.foreground_boost;
+        let mut row = h_flex().gap_1().flex_wrap();
+        for priority in ForegroundBoostPriority::ALL {
+            row = row.child(
+                toggle_button(
+                    format!("foreground-boost-{priority:?}"),
+                    foreground_boost_priority_label(priority),
+                    selected == priority,
+                )
+                .disabled(!self.settings.foreground_responsiveness.boost_foreground_app)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings.foreground_responsiveness.foreground_boost = priority;
+                    cx.notify();
+                })),
+            );
+        }
+        setting_action_card(
+            "foreground-boost-priority",
+            t!("responsiveness.foreground_boost").to_string(),
+            row.into_any_element(),
+        )
+        .into_any_element()
+    }
+
+    fn render_responsiveness_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self
+            .settings
+            .foreground_responsiveness
+            .rules
+            .iter()
+            .enumerate()
+        {
+            let process = rule.process_name.clone();
+            let adjusted = responsiveness::contains_process(
+                &self.foreground_responsiveness_status.adjusted_apps,
+                &process,
+            );
+            let indicator = if responsiveness::is_builtin_excluded(&process) {
+                (
+                    t!("affinity.indicator.protected").to_string(),
+                    settings_card_hover_color(),
+                    accent_color(),
+                )
+            } else if adjusted {
+                (
+                    t!("responsiveness.indicator_lowered").to_string(),
+                    success_bg_color(),
+                    success_text_color(),
+                )
+            } else if self.foreground_responsiveness_status.enabled {
+                (
+                    t!("affinity.indicator.ready").to_string(),
+                    panel_active_color(),
+                    muted_text_color(),
+                )
+            } else {
+                (
+                    t!("affinity.indicator.off").to_string(),
+                    panel_active_color(),
+                    dim_text_color(),
+                )
+            };
+            let card_target = RuleCardTarget::Responsiveness(process.clone());
+            let collapsed = self.is_rule_card_collapsed(&card_target);
+            let mut card = rule_card(
+                static_rule_title(&process),
+                rule_enable_checkbox(
+                    format!("responsiveness-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) =
+                            app.settings.foreground_responsiveness.rules.get_mut(index)
+                        {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ),
+                rule_card_collapse_indicator(collapsed),
+                card_target.clone(),
+                cx,
+            );
+            if !collapsed {
+                card = card
+                    .child(rule_card_body_row(vec![rule_action_row(
+                        format!("responsiveness-rule-status-{index}"),
+                        t!("common.status").to_string(),
+                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                    )
+                    .into_any_element()]))
+                    .child(rule_card_body_row(vec![self.render_priority_selector(
+                        index,
+                        rule.priority,
+                        cx,
+                    )]))
+                    .child(rule_card_body_action(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-responsiveness-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener({
+                            let card_target = card_target.clone();
+                            move |app, _, _, cx| {
+                                if index < app.settings.foreground_responsiveness.rules.len() {
+                                    app.settings.foreground_responsiveness.rules.remove(index);
+                                }
+                                app.expanded_rule_cards.remove(&card_target);
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
+                    ));
+            }
+            list = list.child(card);
+        }
+        if self.settings.foreground_responsiveness.rules.is_empty() {
+            list = list.child(text_muted(t!("responsiveness.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_priority_selector(
+        &self,
+        index: usize,
+        selected_priority: ProcessPriority,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = h_flex().gap_1().flex_wrap();
+        for priority in ProcessPriority::ALL {
+            row = row.child(
+                toggle_button(
+                    format!("responsiveness-priority-{index}-{priority:?}"),
+                    process_priority_label(priority),
+                    selected_priority == priority,
+                )
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if let Some(rule) = app.settings.foreground_responsiveness.rules.get_mut(index)
+                    {
+                        rule.priority = priority;
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        rule_action_row(
+            format!("responsiveness-priority-row-{index}"),
+            t!("responsiveness.background_priority").to_string(),
+            row.into_any_element(),
+        )
+        .into_any_element()
     }
 
     fn render_affinity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -5375,6 +5765,9 @@ impl PowerLeafApp {
             SuggestionTarget::Suspension => {
                 clear_input_to(&self.inputs.suspension_process, process, window, cx);
             }
+            SuggestionTarget::Responsiveness => {
+                clear_input_to(&self.inputs.responsiveness_process, process, window, cx);
+            }
             SuggestionTarget::Affinity => {
                 clear_input_to(&self.inputs.affinity_process, process, window, cx);
             }
@@ -5568,6 +5961,7 @@ enum SuggestionTarget {
     Foreground,
     EcoQos,
     Suspension,
+    Responsiveness,
     Affinity,
 }
 
@@ -5582,6 +5976,7 @@ enum RuleCardTarget {
     Schedule(usize),
     Cpu(usize),
     Suspension(String),
+    Responsiveness(String),
     Affinity(String),
 }
 
@@ -5607,6 +6002,7 @@ enum NumericField {
     SuspensionThawDuration,
     SuspensionAudioRefreeze,
     SuspensionNetworkRefreeze,
+    ForegroundStabilityDelay,
     ProcessorAcCoreParkingMin,
     ProcessorAcPerformanceMin,
     ProcessorAcPerformanceMax,
@@ -7551,6 +7947,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::CoreParking => NavIcon::Chip,
         Page::EfficiencyMode => NavIcon::Zap,
         Page::AppSuspension => NavIcon::PauseCircle,
+        Page::ForegroundResponsiveness => NavIcon::Zap,
         Page::CpuAffinity => NavIcon::Chip,
         Page::ForegroundRules => NavIcon::Frame,
         Page::Schedule => NavIcon::Calendar,
@@ -8444,6 +8841,9 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::Suspension => {
             can_add_suspension_process(&settings.app_suspension, process)
         }
+        SuggestionTarget::Responsiveness => {
+            can_add_responsiveness_process(&settings.foreground_responsiveness, process)
+        }
         SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
     }
 }
@@ -8476,6 +8876,16 @@ fn can_add_affinity_process(settings: &CpuAffinitySettings, process: &str) -> bo
         && !affinity::is_builtin_excluded(process)
 }
 
+fn can_add_responsiveness_process(
+    settings: &ForegroundResponsivenessSettings,
+    process: &str,
+) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !settings.contains_rule_for(process)
+        && !responsiveness::is_builtin_excluded(process)
+}
+
 fn new_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         process_name: process.trim().to_ascii_lowercase(),
@@ -8494,6 +8904,31 @@ fn new_affinity_rule(process: &str) -> CpuAffinityRule {
         mode: CpuAffinityMode::Hard,
         process_name: process.trim().to_ascii_lowercase(),
         core_mask: default_affinity_mask(),
+    }
+}
+
+fn new_responsiveness_rule(process: &str) -> PriorityRule {
+    PriorityRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+        priority: ProcessPriority::BelowNormal,
+    }
+}
+
+fn process_priority_label(priority: ProcessPriority) -> String {
+    match priority {
+        ProcessPriority::Normal => t!("responsiveness.priority_normal").to_string(),
+        ProcessPriority::BelowNormal => t!("responsiveness.priority_below_normal").to_string(),
+        ProcessPriority::Idle => t!("responsiveness.priority_idle").to_string(),
+    }
+}
+
+fn foreground_boost_priority_label(priority: ForegroundBoostPriority) -> String {
+    match priority {
+        ForegroundBoostPriority::Normal => t!("responsiveness.priority_normal").to_string(),
+        ForegroundBoostPriority::AboveNormal => {
+            t!("responsiveness.priority_above_normal").to_string()
+        }
     }
 }
 
