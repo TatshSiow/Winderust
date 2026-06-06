@@ -3582,26 +3582,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(feature_toggle_switch_with_help(
-                "eco-qos-efficiency-cores",
-                t!("efficiency.prefer_efficiency_cores").to_string(),
-                t!("efficiency.prefer_efficiency_cores_help").to_string(),
-                self.settings.eco_qos.prefer_efficiency_cores,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.eco_qos.prefer_efficiency_cores = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(feature_toggle_switch_with_help(
-                "eco-qos-limit-standard-cpu-sets",
-                t!("efficiency.limit_cpu_sets_on_non_hybrid").to_string(),
-                t!("efficiency.limit_cpu_sets_on_non_hybrid_help").to_string(),
-                self.settings.eco_qos.limit_cpu_sets_on_non_hybrid,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.eco_qos.limit_cpu_sets_on_non_hybrid = *checked;
-                    cx.notify();
-                }),
-            ))
+            .child(self.render_efficiency_cpu_set_preference(cx))
             .child(section_header(
                 &t!("efficiency.whitelist"),
                 t!("efficiency.whitelist_help").to_string(),
@@ -3662,6 +3643,94 @@ impl PowerLeafApp {
                 }),
             ))
             .child(disabled_feature_body(body, enabled))
+            .into_any_element()
+    }
+
+    fn render_efficiency_cpu_set_preference(&self, cx: &mut Context<Self>) -> AnyElement {
+        let processors = affinity::logical_processors();
+        let has_efficiency_cores =
+            affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency) != 0;
+        let has_multiple_processors = processors.len() > 1;
+        let selected = EfficiencyCpuSetPreference::from_flags(
+            self.settings.eco_qos.prefer_efficiency_cores,
+            self.settings.eco_qos.limit_cpu_sets_on_non_hybrid,
+        );
+        let status = if has_efficiency_cores {
+            t!("efficiency.cpu_set_topology_hybrid").to_string()
+        } else if has_multiple_processors {
+            t!("efficiency.cpu_set_topology_standard").to_string()
+        } else {
+            t!("efficiency.cpu_set_topology_single").to_string()
+        };
+
+        let mut options = h_flex().gap_1().flex_wrap().justify_end();
+        for preference in EfficiencyCpuSetPreference::ALL {
+            let enabled = match preference {
+                EfficiencyCpuSetPreference::PreferEfficiencyCores => has_efficiency_cores,
+                EfficiencyCpuSetPreference::LimitLogicalCpus => has_multiple_processors,
+                EfficiencyCpuSetPreference::Auto | EfficiencyCpuSetPreference::Off => true,
+            };
+            options = options.child(
+                toggle_button(
+                    format!("eco-qos-cpu-set-preference-{preference:?}"),
+                    efficiency_cpu_set_preference_label(preference),
+                    selected == preference,
+                )
+                .disabled(!enabled)
+                .tooltip(efficiency_cpu_set_preference_help(preference))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    let (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) =
+                        preference.flags();
+                    app.settings.eco_qos.prefer_efficiency_cores = prefer_efficiency_cores;
+                    app.settings.eco_qos.limit_cpu_sets_on_non_hybrid =
+                        limit_cpu_sets_on_non_hybrid;
+                    cx.notify();
+                })),
+            );
+        }
+
+        h_flex()
+            .id("eco-qos-cpu-set-preference")
+            .w_full()
+            .min_w(px(0.0))
+            .min_h(px(58.0))
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .py_3()
+            .px_4()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(border_color()))
+            .bg(rgb(settings_card_color()))
+            .text_color(rgb(primary_text_color()))
+            .text_size(px(TEXT_BODY_SIZE))
+            .line_height(px(TEXT_BODY_LINE_HEIGHT))
+            .hover(|style| style.bg(rgb(settings_card_hover_color())))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(t!("efficiency.cpu_set_preference").to_string()),
+                    )
+                    .child(title_info_button(
+                        "eco-qos-cpu-set-preference-info",
+                        t!("efficiency.cpu_set_preference_help").to_string(),
+                    )),
+            )
+            .child(
+                v_flex()
+                    .items_end()
+                    .gap_1()
+                    .child(options)
+                    .child(text_muted(status)),
+            )
             .into_any_element()
     }
 
@@ -6862,6 +6931,41 @@ enum SettingGroupTarget {
     SuspensionThaw,
     SuspensionAudio,
     SuspensionNetwork,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EfficiencyCpuSetPreference {
+    Off,
+    Auto,
+    PreferEfficiencyCores,
+    LimitLogicalCpus,
+}
+
+impl EfficiencyCpuSetPreference {
+    const ALL: [Self; 4] = [
+        Self::Auto,
+        Self::PreferEfficiencyCores,
+        Self::LimitLogicalCpus,
+        Self::Off,
+    ];
+
+    const fn from_flags(prefer_efficiency_cores: bool, limit_cpu_sets_on_non_hybrid: bool) -> Self {
+        match (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) {
+            (true, true) => Self::Auto,
+            (true, false) => Self::PreferEfficiencyCores,
+            (false, true) => Self::LimitLogicalCpus,
+            (false, false) => Self::Off,
+        }
+    }
+
+    const fn flags(self) -> (bool, bool) {
+        match self {
+            Self::Off => (false, false),
+            Self::Auto => (true, true),
+            Self::PreferEfficiencyCores => (true, false),
+            Self::LimitLogicalCpus => (false, true),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -10399,6 +10503,32 @@ fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
 
 fn logical_core_count() -> usize {
     affinity::logical_processors().len().clamp(1, 64)
+}
+
+fn efficiency_cpu_set_preference_label(preference: EfficiencyCpuSetPreference) -> String {
+    match preference {
+        EfficiencyCpuSetPreference::Off => t!("efficiency.cpu_set_off").to_string(),
+        EfficiencyCpuSetPreference::Auto => t!("efficiency.cpu_set_auto").to_string(),
+        EfficiencyCpuSetPreference::PreferEfficiencyCores => {
+            t!("efficiency.cpu_set_prefer_e_cores").to_string()
+        }
+        EfficiencyCpuSetPreference::LimitLogicalCpus => {
+            t!("efficiency.cpu_set_limit_logical").to_string()
+        }
+    }
+}
+
+fn efficiency_cpu_set_preference_help(preference: EfficiencyCpuSetPreference) -> String {
+    match preference {
+        EfficiencyCpuSetPreference::Off => t!("efficiency.cpu_set_off_help").to_string(),
+        EfficiencyCpuSetPreference::Auto => t!("efficiency.cpu_set_auto_help").to_string(),
+        EfficiencyCpuSetPreference::PreferEfficiencyCores => {
+            t!("efficiency.cpu_set_prefer_e_cores_help").to_string()
+        }
+        EfficiencyCpuSetPreference::LimitLogicalCpus => {
+            t!("efficiency.cpu_set_limit_logical_help").to_string()
+        }
+    }
 }
 
 fn default_affinity_mask() -> u64 {

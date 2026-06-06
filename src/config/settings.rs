@@ -609,8 +609,8 @@ impl Default for EcoQosSettings {
         Self {
             enabled: false,
             exclude_foreground_app: default_exclude_foreground_app(),
-            prefer_efficiency_cores: false,
-            limit_cpu_sets_on_non_hybrid: false,
+            prefer_efficiency_cores: true,
+            limit_cpu_sets_on_non_hybrid: true,
             efficiency_whitelist: Vec::new(),
         }
     }
