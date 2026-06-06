@@ -2879,18 +2879,18 @@ impl PowerLeafApp {
         ]);
 
         page_shell(Page::Activity)
-        .child(feature_toggle_switch_with_help(
-            "activity-enabled",
-            t!("activity.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.activity_mode.enabled = *checked;
-                cx.notify();
-            }),
-        ))
-        .child(disabled_feature_body(body, enabled))
-        .into_any_element()
+            .child(feature_toggle_switch_with_help(
+                "activity-enabled",
+                t!("activity.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.activity_mode.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
     }
 
     fn render_foreground_rules_page(
@@ -2906,8 +2906,7 @@ impl PowerLeafApp {
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
-        let mut content = page_shell(Page::ForegroundRules)
-        .child(feature_toggle_switch_with_help(
+        let mut content = page_shell(Page::ForegroundRules).child(feature_toggle_switch_with_help(
             "foreground-enabled",
             t!("foreground.enable").to_string(),
             help,
@@ -2918,9 +2917,8 @@ impl PowerLeafApp {
             }),
         ));
 
-        let mut body = feature_body(enabled).child(section_title_text(
-            t!("common.rules").to_string(),
-        ));
+        let mut body =
+            feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
         body = body.child(
             h_flex()
                 .gap_2()
@@ -3104,8 +3102,7 @@ impl PowerLeafApp {
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
-        let mut content = page_shell(Page::Schedule)
-        .child(feature_toggle_switch_with_help(
+        let mut content = page_shell(Page::Schedule).child(feature_toggle_switch_with_help(
             "schedule-enabled",
             t!("schedule.enable").to_string(),
             help,
@@ -3116,9 +3113,8 @@ impl PowerLeafApp {
             }),
         ));
 
-        let mut body = feature_body(enabled).child(section_title_text(
-            t!("common.rules").to_string(),
-        ));
+        let mut body =
+            feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
         body = body.child(create_rule_card(
             "create-time-rule-card",
             t!("schedule.rule_title").to_string(),
@@ -3294,8 +3290,7 @@ impl PowerLeafApp {
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
-        let mut content = page_shell(Page::CpuUsage)
-        .child(feature_toggle_switch_with_help(
+        let mut content = page_shell(Page::CpuUsage).child(feature_toggle_switch_with_help(
             "cpu-usage-enabled",
             t!("cpu_rules.enable").to_string(),
             help,
@@ -3306,9 +3301,8 @@ impl PowerLeafApp {
             }),
         ));
 
-        let mut body = feature_body(enabled).child(section_title_text(
-            t!("common.rules").to_string(),
-        ));
+        let mut body =
+            feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
         body = body.child(create_rule_card(
             "create-cpu-rule-card",
             t!("cpu_rules.rule_title").to_string(),
@@ -3588,6 +3582,26 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
+            .child(feature_toggle_switch_with_help(
+                "eco-qos-efficiency-cores",
+                t!("efficiency.prefer_efficiency_cores").to_string(),
+                t!("efficiency.prefer_efficiency_cores_help").to_string(),
+                self.settings.eco_qos.prefer_efficiency_cores,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.eco_qos.prefer_efficiency_cores = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(feature_toggle_switch_with_help(
+                "eco-qos-limit-standard-cpu-sets",
+                t!("efficiency.limit_cpu_sets_on_non_hybrid").to_string(),
+                t!("efficiency.limit_cpu_sets_on_non_hybrid_help").to_string(),
+                self.settings.eco_qos.limit_cpu_sets_on_non_hybrid,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.eco_qos.limit_cpu_sets_on_non_hybrid = *checked;
+                    cx.notify();
+                }),
+            ))
             .child(section_header(
                 &t!("efficiency.whitelist"),
                 t!("efficiency.whitelist_help").to_string(),
@@ -3637,18 +3651,18 @@ impl PowerLeafApp {
         ]);
 
         page_shell(Page::EfficiencyMode)
-        .child(feature_toggle_switch_with_help(
-            "eco-qos-enabled",
-            t!("efficiency.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.eco_qos.enabled = *checked;
-                cx.notify();
-            }),
-        ))
-        .child(disabled_feature_body(body, enabled))
-        .into_any_element()
+            .child(feature_toggle_switch_with_help(
+                "eco-qos-enabled",
+                t!("efficiency.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.eco_qos.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
     }
 
     fn render_eco_qos_whitelist(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -3933,18 +3947,18 @@ impl PowerLeafApp {
         ]);
 
         page_shell(Page::AppSuspension)
-        .child(feature_toggle_switch_with_help(
-            "app-suspension-enabled",
-            t!("suspension.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.app_suspension.enabled = *checked;
-                cx.notify();
-            }),
-        ))
-        .child(disabled_feature_body(body, enabled))
-        .into_any_element()
+            .child(feature_toggle_switch_with_help(
+                "app-suspension-enabled",
+                t!("suspension.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.app_suspension.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
     }
 
     fn render_suspendable_apps(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -4131,18 +4145,18 @@ impl PowerLeafApp {
         ]);
 
         page_shell(Page::CpuLimiter)
-        .child(feature_toggle_switch_with_help(
-            "cpu-limiter-enabled",
-            t!("cpu_limiter.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.cpu_limiter.enabled = *checked;
-                cx.notify();
-            }),
-        ))
-        .child(disabled_feature_body(body, enabled))
-        .into_any_element()
+            .child(feature_toggle_switch_with_help(
+                "cpu-limiter-enabled",
+                t!("cpu_limiter.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.cpu_limiter.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
     }
 
     fn render_cpu_limiter_rules(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -4320,18 +4334,18 @@ impl PowerLeafApp {
         ]);
 
         page_shell(Page::Watchdog)
-        .child(feature_toggle_switch_with_help(
-            "watchdog-enabled",
-            t!("watchdog.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.watchdog.enabled = *checked;
-                cx.notify();
-            }),
-        ))
-        .child(disabled_feature_body(body, enabled))
-        .into_any_element()
+            .child(feature_toggle_switch_with_help(
+                "watchdog-enabled",
+                t!("watchdog.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.watchdog.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
     }
 
     fn render_watchdog_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -4528,18 +4542,18 @@ impl PowerLeafApp {
         ]);
 
         page_shell(Page::PerformanceMode)
-        .child(feature_toggle_switch_with_help(
-            "performance-mode-enabled",
-            t!("performance_mode.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.performance_mode.enabled = *checked;
-                cx.notify();
-            }),
-        ))
-        .child(disabled_feature_body(body, enabled))
-        .into_any_element()
+            .child(feature_toggle_switch_with_help(
+                "performance-mode-enabled",
+                t!("performance_mode.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.performance_mode.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
     }
 
     fn render_performance_mode_rules(
@@ -4554,14 +4568,14 @@ impl PowerLeafApp {
             list = list.child(
                 compact_rule_row(cx)
                     .child(rule_enable_checkbox(
-                    format!("performance-mode-rule-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.performance_mode.rules.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
+                        format!("performance-mode-rule-enabled-{index}"),
+                        rule.enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) = app.settings.performance_mode.rules.get_mut(index) {
+                                rule.enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
                     ))
                     .child(
                         div()
@@ -4574,24 +4588,24 @@ impl PowerLeafApp {
                     )
                     .child(status_pill(indicator.0, indicator.1, indicator.2))
                     .child(self.render_inline_power_plan_picker(
-                            format!("performance-mode-plan-{index}"),
-                            rule.power_plan_guid.clone(),
-                            PowerPlanField::PerformanceModeRule(index),
-                            window,
-                            cx,
-                        ))
+                        format!("performance-mode-plan-{index}"),
+                        rule.power_plan_guid.clone(),
+                        PowerPlanField::PerformanceModeRule(index),
+                        window,
+                        cx,
+                    ))
                     .child(
                         danger_control_button(Button::new(SharedString::from(format!(
                             "remove-performance-mode-{index}"
                         ))))
                         .label(t!("common.remove").to_string())
                         .on_click(cx.listener(move |app, _, _, cx| {
-                                if index < app.settings.performance_mode.rules.len() {
-                                    app.settings.performance_mode.rules.remove(index);
-                                }
-                                app.editing_rule_title = None;
-                                app.expanded_rule_cards.clear();
-                                cx.notify();
+                            if index < app.settings.performance_mode.rules.len() {
+                                app.settings.performance_mode.rules.remove(index);
+                            }
+                            app.editing_rule_title = None;
+                            app.expanded_rule_cards.clear();
+                            cx.notify();
                         }))
                         .into_any_element(),
                     ),
@@ -4840,18 +4854,18 @@ impl PowerLeafApp {
         ]);
 
         page_shell(Page::ForegroundResponsiveness)
-        .child(feature_toggle_switch_with_help(
-            "foreground-responsiveness-enabled",
-            t!("responsiveness.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.foreground_responsiveness.enabled = *checked;
-                cx.notify();
-            }),
-        ))
-        .child(disabled_feature_body(body, enabled))
-        .into_any_element()
+            .child(feature_toggle_switch_with_help(
+                "foreground-responsiveness-enabled",
+                t!("responsiveness.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.foreground_responsiveness.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
     }
 
     fn render_foreground_boost_selector(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -5071,18 +5085,18 @@ impl PowerLeafApp {
         ]);
 
         page_shell(Page::CpuAffinity)
-        .child(feature_toggle_switch_with_help(
-            "cpu-affinity-enabled",
-            t!("affinity.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.cpu_affinity.enabled = *checked;
-                cx.notify();
-            }),
-        ))
-        .child(disabled_feature_body(body, enabled))
-        .into_any_element()
+            .child(feature_toggle_switch_with_help(
+                "cpu-affinity-enabled",
+                t!("affinity.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.cpu_affinity.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
     }
 
     fn render_affinity_rules(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -6230,7 +6244,13 @@ impl PowerLeafApp {
                             .text_color(cx.theme().foreground)
                             .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
                             .cursor_pointer()
-                            .child(div().flex_1().min_w(px(0.0)).truncate().child(selected_text))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .child(selected_text),
+                            )
                             .child(dropdown_chevron(cx))
                             .on_click(cx.listener(|app, _: &gpui::ClickEvent, _, cx| {
                                 app.refresh_power_plans();
@@ -10781,7 +10801,6 @@ mod tests {
             ProcessorPowerSlider::AcCoreParkingMin
         );
     }
-
 }
 
 fn path_to_wide_buffer(path: &Path, len: usize) -> Vec<u16> {

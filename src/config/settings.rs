@@ -218,6 +218,10 @@ pub struct EcoQosSettings {
         alias = "ignore_foreground_app"
     )]
     pub exclude_foreground_app: bool,
+    #[serde(default)]
+    pub prefer_efficiency_cores: bool,
+    #[serde(default)]
+    pub limit_cpu_sets_on_non_hybrid: bool,
     #[serde(default, alias = "excluded_processes")]
     pub efficiency_whitelist: Vec<String>,
 }
@@ -605,6 +609,8 @@ impl Default for EcoQosSettings {
         Self {
             enabled: false,
             exclude_foreground_app: default_exclude_foreground_app(),
+            prefer_efficiency_cores: false,
+            limit_cpu_sets_on_non_hybrid: false,
             efficiency_whitelist: Vec::new(),
         }
     }

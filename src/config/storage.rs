@@ -212,6 +212,8 @@ mod tests {
             eco_qos: EcoQosSettings {
                 enabled: true,
                 exclude_foreground_app: false,
+                prefer_efficiency_cores: true,
+                limit_cpu_sets_on_non_hybrid: true,
                 efficiency_whitelist: vec!["mouse.exe".to_owned(), "comma,app.exe".to_owned()],
             },
             app_suspension: AppSuspensionSettings {

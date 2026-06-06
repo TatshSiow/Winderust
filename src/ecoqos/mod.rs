@@ -1,6 +1,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
+    mem::size_of,
+    ptr::{null_mut, read_unaligned},
+    slice,
 };
 
 use windows_sys::Win32::{
@@ -10,13 +13,14 @@ use windows_sys::Win32::{
     },
     System::{
         RemoteDesktop::ProcessIdToSessionId,
+        SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION},
         Threading::{
-            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess,
-            ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS,
-            NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-            PROCESS_SET_LIMITED_INFORMATION,
+            GetCurrentProcessId, GetPriorityClass, GetProcessDefaultCpuSets, GetProcessInformation,
+            OpenProcess, ProcessPowerThrottling, SetPriorityClass, SetProcessDefaultCpuSets,
+            SetProcessInformation, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SET_INFORMATION, PROCESS_SET_LIMITED_INFORMATION,
         },
     },
 };
@@ -74,6 +78,15 @@ struct ThrottledProcess {
     process_name: String,
     previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     previous_priority: Option<u32>,
+    previous_cpu_set_ids: Option<Vec<u32>>,
+    applied_cpu_set_ids: Option<Vec<u32>>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CpuSetInformationHeader {
+    size: u32,
+    cpu_set_type: u32,
 }
 
 impl EcoQosManager {
@@ -188,20 +201,42 @@ impl EcoQosManager {
         let mut unsupported = false;
 
         for (process_id, name) in target_processes {
-            if self.throttled.contains_key(&process_id) {
+            if let Some(process_state) = self.throttled.get_mut(&process_id) {
+                if let Err(err) = sync_efficiency_cpu_sets(
+                    process_id,
+                    &name,
+                    process_state,
+                    settings.prefer_efficiency_cores,
+                    settings.limit_cpu_sets_on_non_hybrid,
+                    action_log,
+                ) {
+                    failures.record_error("CPU Sets", process_id, &name, err, action_log);
+                }
                 continue;
             }
 
-            match enable_efficiency_mode(process_id, name.clone()) {
+            match enable_efficiency_mode(
+                process_id,
+                name.clone(),
+                settings.prefer_efficiency_cores,
+                settings.limit_cpu_sets_on_non_hybrid,
+            ) {
                 Ok(process) => {
                     self.throttled.insert(process_id, process);
+                    let cpu_sets_note = if settings.prefer_efficiency_cores {
+                        " and preferred efficiency CPU sets"
+                    } else {
+                        ""
+                    };
                     action_log.record(
                         ActionLogFeature::EcoQos,
                         Some(process_id),
                         name,
                         ActionLogAction::Apply,
                         ActionLogResult::Applied,
-                        "Enabled Windows Efficiency Mode and lowered priority.",
+                        format!(
+                            "Enabled Windows Efficiency Mode, lowered priority{cpu_sets_note}."
+                        ),
                     );
                 }
                 Err(EcoQosError::AccessDenied | EcoQosError::ProcessExited) => {
@@ -425,10 +460,24 @@ fn process_failure_message(
 fn enable_efficiency_mode(
     process_id: u32,
     process_name: String,
+    prefer_efficiency_cores: bool,
+    limit_cpu_sets_on_non_hybrid: bool,
 ) -> Result<ThrottledProcess, EcoQosError> {
     let process = ProcessHandle::open(process_id)?;
     let previous_state = process.power_throttling_state().ok();
     let previous_priority = process.priority_class().ok();
+    let target_cpu_set_ids = if prefer_efficiency_cores {
+        efficiency_cpu_set_ids(true, limit_cpu_sets_on_non_hybrid)?
+    } else if limit_cpu_sets_on_non_hybrid {
+        efficiency_cpu_set_ids(false, true)?
+    } else {
+        Vec::new()
+    };
+    let previous_cpu_set_ids = if target_cpu_set_ids.is_empty() {
+        None
+    } else {
+        Some(process.default_cpu_set_ids()?)
+    };
 
     let mut next_state = previous_state.unwrap_or_default();
     next_state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
@@ -441,11 +490,22 @@ fn enable_efficiency_mode(
         );
         return Err(err);
     }
+    if !target_cpu_set_ids.is_empty() {
+        if let Err(err) = process.set_default_cpu_set_ids(&target_cpu_set_ids) {
+            let _ = process.set_priority_class(previous_priority.unwrap_or(NORMAL_PRIORITY_CLASS));
+            let _ = process.set_power_throttling_state(
+                previous_state.unwrap_or_else(power_throttling_disabled_state),
+            );
+            return Err(err);
+        }
+    }
 
     Ok(ThrottledProcess {
         process_name,
         previous_state,
         previous_priority,
+        previous_cpu_set_ids,
+        applied_cpu_set_ids: (!target_cpu_set_ids.is_empty()).then_some(target_cpu_set_ids),
     })
 }
 
@@ -472,10 +532,75 @@ fn restore_efficiency_mode(
         last_error = Some(err);
     }
 
+    if let Some(previous_cpu_set_ids) = process_state.previous_cpu_set_ids {
+        if let Err(err) = process.set_default_cpu_set_ids(&previous_cpu_set_ids) {
+            last_error = Some(err);
+        }
+    }
+
     match last_error {
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+fn sync_efficiency_cpu_sets(
+    process_id: u32,
+    process_name: &str,
+    process_state: &mut ThrottledProcess,
+    prefer_efficiency_cores: bool,
+    limit_cpu_sets_on_non_hybrid: bool,
+    action_log: &mut ActionLog,
+) -> Result<(), EcoQosError> {
+    let target_cpu_set_ids = if prefer_efficiency_cores {
+        efficiency_cpu_set_ids(true, limit_cpu_sets_on_non_hybrid)?
+    } else if limit_cpu_sets_on_non_hybrid {
+        efficiency_cpu_set_ids(false, true)?
+    } else {
+        Vec::new()
+    };
+
+    if target_cpu_set_ids.is_empty() {
+        let Some(previous_cpu_set_ids) = process_state.previous_cpu_set_ids.take() else {
+            return Ok(());
+        };
+        let process = ProcessHandle::open(process_id)?;
+        process.set_default_cpu_set_ids(&previous_cpu_set_ids)?;
+        process_state.applied_cpu_set_ids = None;
+        action_log.record(
+            ActionLogFeature::EcoQos,
+            Some(process_id),
+            process_name.to_owned(),
+            ActionLogAction::Restore,
+            ActionLogResult::Applied,
+            "Restored previous CPU Sets.",
+        );
+        return Ok(());
+    }
+
+    if process_state
+        .applied_cpu_set_ids
+        .as_ref()
+        .is_some_and(|applied| *applied == target_cpu_set_ids)
+    {
+        return Ok(());
+    }
+
+    let process = ProcessHandle::open(process_id)?;
+    if process_state.previous_cpu_set_ids.is_none() {
+        process_state.previous_cpu_set_ids = Some(process.default_cpu_set_ids()?);
+    }
+    process.set_default_cpu_set_ids(&target_cpu_set_ids)?;
+    process_state.applied_cpu_set_ids = Some(target_cpu_set_ids.clone());
+    action_log.record(
+        ActionLogFeature::EcoQos,
+        Some(process_id),
+        process_name.to_owned(),
+        ActionLogAction::Apply,
+        ActionLogResult::Applied,
+        format!("Applied efficiency CPU Sets: {}.", target_cpu_set_ids.len()),
+    );
+    Ok(())
 }
 
 fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
@@ -484,6 +609,108 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
         ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         StateMask: 0,
     }
+}
+
+fn efficiency_cpu_set_ids(
+    prefer_efficiency_cores: bool,
+    limit_cpu_sets_on_non_hybrid: bool,
+) -> Result<Vec<u32>, EcoQosError> {
+    let mut returned_length = 0;
+    unsafe {
+        GetSystemCpuSetInformation(null_mut(), 0, &mut returned_length, null_mut(), 0);
+    }
+
+    if returned_length == 0 {
+        return Ok(Vec::new());
+    }
+
+    let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
+    let mut buffer = vec![0_usize; word_count];
+    let ok = unsafe {
+        GetSystemCpuSetInformation(
+            buffer.as_mut_ptr() as *mut SYSTEM_CPU_SET_INFORMATION,
+            returned_length,
+            &mut returned_length,
+            null_mut(),
+            0,
+        )
+    };
+    if ok == 0 {
+        return Err(EcoQosError::Failed(format!(
+            "GetSystemCpuSetInformation failed with error {}.",
+            last_error()
+        )));
+    }
+
+    Ok(efficiency_cpu_set_ids_from_bytes(
+        unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) },
+        prefer_efficiency_cores,
+        limit_cpu_sets_on_non_hybrid,
+    ))
+}
+
+fn efficiency_cpu_set_ids_from_bytes(
+    buffer: &[u8],
+    prefer_efficiency_cores: bool,
+    limit_cpu_sets_on_non_hybrid: bool,
+) -> Vec<u32> {
+    let mut records = Vec::new();
+    let mut offset = 0;
+    let header_size = size_of::<CpuSetInformationHeader>();
+
+    while offset + header_size <= buffer.len() {
+        let header = unsafe {
+            read_unaligned(buffer.as_ptr().add(offset) as *const CpuSetInformationHeader)
+        };
+        let record_size = header.size as usize;
+        if record_size < header_size || offset + record_size > buffer.len() {
+            break;
+        }
+
+        if header.cpu_set_type == 0 && record_size >= size_of::<SYSTEM_CPU_SET_INFORMATION>() {
+            let info = unsafe {
+                read_unaligned(buffer.as_ptr().add(offset) as *const SYSTEM_CPU_SET_INFORMATION)
+            };
+            let cpu_set = unsafe { info.Anonymous.CpuSet };
+            if cpu_set.Group == 0 {
+                records.push((cpu_set.Id, cpu_set.EfficiencyClass));
+            }
+        }
+
+        offset += record_size;
+    }
+
+    let Some(min_efficiency_class) = records.iter().map(|(_, class)| *class).min() else {
+        return Vec::new();
+    };
+    let max_efficiency_class = records
+        .iter()
+        .map(|(_, class)| *class)
+        .max()
+        .unwrap_or(min_efficiency_class);
+    if min_efficiency_class != max_efficiency_class {
+        if !prefer_efficiency_cores {
+            return Vec::new();
+        }
+        let mut ids = records
+            .into_iter()
+            .filter_map(|(id, class)| (class == min_efficiency_class).then_some(id))
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids.dedup();
+        return ids;
+    }
+
+    if !limit_cpu_sets_on_non_hybrid || records.len() <= 1 {
+        return Vec::new();
+    }
+
+    let mut ids = records.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    let limited_count = (ids.len() / 2).max(1);
+    ids.truncate(limited_count);
+    ids
 }
 
 struct ProcessHandle(HANDLE);
@@ -572,6 +799,52 @@ impl ProcessHandle {
             Ok(())
         }
     }
+
+    fn default_cpu_set_ids(&self) -> Result<Vec<u32>, EcoQosError> {
+        let mut required_id_count = 0;
+        unsafe {
+            GetProcessDefaultCpuSets(self.0, null_mut(), 0, &mut required_id_count);
+        }
+        if required_id_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut ids = vec![0_u32; required_id_count as usize];
+        let ok = unsafe {
+            GetProcessDefaultCpuSets(
+                self.0,
+                ids.as_mut_ptr(),
+                ids.len() as u32,
+                &mut required_id_count,
+            )
+        };
+        if ok == 0 {
+            Err(EcoQosError::Failed(format!(
+                "GetProcessDefaultCpuSets failed with error {}.",
+                last_error()
+            )))
+        } else {
+            ids.truncate(required_id_count as usize);
+            Ok(ids)
+        }
+    }
+
+    fn set_default_cpu_set_ids(&self, ids: &[u32]) -> Result<(), EcoQosError> {
+        let (ptr, count) = if ids.is_empty() {
+            (null_mut(), 0)
+        } else {
+            (ids.as_ptr() as *mut u32, ids.len() as u32)
+        };
+        let ok = unsafe { SetProcessDefaultCpuSets(self.0, ptr, count) };
+        if ok == 0 {
+            Err(EcoQosError::Failed(format!(
+                "SetProcessDefaultCpuSets failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 impl Drop for ProcessHandle {
@@ -612,6 +885,8 @@ mod tests {
         let settings = EcoQosSettings {
             enabled: true,
             exclude_foreground_app: true,
+            prefer_efficiency_cores: false,
+            limit_cpu_sets_on_non_hybrid: false,
             efficiency_whitelist: vec!["mouse.exe".to_owned()],
         };
 
@@ -660,6 +935,28 @@ mod tests {
     }
 
     #[test]
+    fn non_hybrid_cpu_sets_can_be_limited() {
+        let records = [(10, 0), (11, 0), (12, 0), (13, 0)];
+
+        assert_eq!(
+            limited_cpu_set_ids_for_test(&records, false, true),
+            vec![10, 11]
+        );
+        assert!(limited_cpu_set_ids_for_test(&records, true, false).is_empty());
+    }
+
+    #[test]
+    fn hybrid_cpu_sets_prefer_efficiency_class() {
+        let records = [(20, 0), (21, 0), (30, 1), (31, 1)];
+
+        assert_eq!(
+            limited_cpu_set_ids_for_test(&records, true, true),
+            vec![20, 21]
+        );
+        assert!(limited_cpu_set_ids_for_test(&records, false, true).is_empty());
+    }
+
+    #[test]
     fn foreground_ignore_matches_pid_or_process_name() {
         let mut settings = EcoQosSettings::default();
         settings.exclude_foreground_app = true;
@@ -705,6 +1002,8 @@ mod tests {
                 process_name: "exited.exe".to_owned(),
                 previous_state: None,
                 previous_priority: None,
+                previous_cpu_set_ids: None,
+                applied_cpu_set_ids: None,
             },
         );
         let mut log = ActionLog::new(8);
@@ -714,5 +1013,37 @@ mod tests {
         assert_eq!(failures.count, 0);
         assert!(log.entries().is_empty());
         assert!(manager.throttled.is_empty());
+    }
+
+    fn limited_cpu_set_ids_for_test(
+        records: &[(u32, u8)],
+        prefer_efficiency_cores: bool,
+        limit_cpu_sets_on_non_hybrid: bool,
+    ) -> Vec<u32> {
+        let Some(min_efficiency_class) = records.iter().map(|(_, class)| *class).min() else {
+            return Vec::new();
+        };
+        let max_efficiency_class = records
+            .iter()
+            .map(|(_, class)| *class)
+            .max()
+            .unwrap_or(min_efficiency_class);
+        if min_efficiency_class != max_efficiency_class {
+            if !prefer_efficiency_cores {
+                return Vec::new();
+            }
+            return records
+                .iter()
+                .filter_map(|(id, class)| (*class == min_efficiency_class).then_some(*id))
+                .collect();
+        }
+        if !limit_cpu_sets_on_non_hybrid || records.len() <= 1 {
+            return Vec::new();
+        }
+        records
+            .iter()
+            .take((records.len() / 2).max(1))
+            .map(|(id, _)| *id)
+            .collect()
     }
 }

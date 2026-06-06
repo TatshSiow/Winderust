@@ -33,11 +33,7 @@ const POWER_AUTOMATION_PAGES: [Page; 5] = [
     Page::Activity,
     Page::Schedule,
 ];
-const CPU_CONTROL_PAGES: [Page; 3] = [
-    Page::CoreParking,
-    Page::CpuLimiter,
-    Page::CpuAffinity,
-];
+const CPU_CONTROL_PAGES: [Page; 3] = [Page::CoreParking, Page::CpuLimiter, Page::CpuAffinity];
 const PROCESS_POLICY_PAGES: [Page; 4] = [
     Page::EfficiencyMode,
     Page::ForegroundResponsiveness,
