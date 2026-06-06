@@ -17,14 +17,14 @@ power efficiency, foreground responsiveness, and conservative process control.
      already managed by Core Steering.
 
 2. Action Log and Rule History
-   - Status: backend ring buffer, read-only UI page, and CSV export implemented for CPU Cap Rules, EcoQoS, Core Steering, Foreground Responsiveness, App Suspension, Running App Power Plans, and Watchdog events.
+   - Status: backend ring buffer, read-only UI page, and CSV export implemented for CPU Cap Rules, EcoQoS, Core Steering, Foreground Responsiveness, App Suspension, Running App Detection, and Watchdog events.
    - Record process-control actions with timestamp, feature, process name, PID, action, result,
      and reason.
    - Keep an in-memory ring buffer first.
    - Export retained entries as CSV from the Action Log page.
 
-3. Running App Power Plans
-   - Status: backend and UI implemented with configurable rules, action-log entries, plan restore, and Foreground Responsiveness exclusion for active Running App Power Plan processes.
+3. Running App Detection
+   - Status: backend and UI implemented with configurable rules, action-log entries, plan restore, and Foreground Responsiveness exclusion for active Running App Detection processes.
    - Add per-process rules that switch to a selected performance power plan while matched apps run.
    - Exclude matched foreground apps from background lowering while the mode is active.
    - Restore the previous plan when the triggering process exits.
@@ -42,16 +42,16 @@ power efficiency, foreground responsiveness, and conservative process control.
    - Investigate registry-backed persistence only where Windows supports it cleanly and safely.
 
 6. UI Polish and Profiles
-   - Status: navigation grouping refined into Power Automation, Processor Controls, and Process Policies.
+   - Status: navigation grouping refined into Power Plan Automation, Processor Controls, and Process Policies.
    - Status: processor tuning can link AC and Battery edits for combined slider changes.
    - Status: shared Process Rules page added for mapping one process to multiple process-control modules.
    - Status: repeated process-control status/stat cards removed from detailed rule pages.
-   - Status: Running App Power Plans folded into the main power-plan decision engine so it overlaps cleanly with Foreground Power Plans.
+   - Status: Running App Detection folded into the main power-plan decision engine so it overlaps cleanly with Foreground Detection.
    - Status: Process Rules now owns foreground/running-app plan mapping in the main nav, reducing duplicate top-level pages.
    - Status: Process Rules groups per-process toggles by Plan, CPU, and Policy, with CPU Cap Rules shown as CPU Cap and Core Steering shown as CPU Placement.
-   - Status: CPU Load power-plan automation now sits with CPU controls in navigation and is labeled separately from per-process CPU Cap rules.
-   - Status: Foreground power-plan rules are visible in Power Automation and share foreground power-plan wording with Process Rules.
-   - Status: Running-app power-plan rules are visible in Power Automation and share running-app power-plan wording with Process Rules.
+   - Status: CPU Load Detection now sits under Running App Detection in Power Plan Automation and is labeled separately from per-process CPU Cap rules.
+   - Status: Foreground Detection rules are visible in Power Plan Automation and share Foreground Detection wording with Process Rules.
+   - Status: Running App Detection rules are visible in Power Plan Automation and share Running App Detection wording with Process Rules.
    - Add dedicated pages or integrate controls into existing process-control pages.
    - Add gaming/work/battery profile presets after the runtime systems are stable.
 

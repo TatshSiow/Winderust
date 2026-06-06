@@ -21,13 +21,13 @@ It aims to reduce power usage and carbon emissions.
 ## Recommended Usage Scenario
 
 ### Power plan controls
-- `Action Based Scheduler`
+- `Action Detection`
     - For normal automatic switching.
 
-- `Time Rules`
+- `Time Scheduler`
     - For working and sleep hours.
 
-- `CPU Load Rules`
+- `CPU Load Detection`
     - For detecting heavy or light workloads.
  
 ### Process Controls

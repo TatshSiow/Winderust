@@ -30,12 +30,12 @@ cargo build --release --target-dir target-next
 Navigation pages are defined in `src/ui/mod.rs`:
 
 - `Dashboard`
-- `Action Based Scheduler`
-- `CPU usage-based Scheduler`
+- `Action Detection`
+- `CPU Load Detection`
 - `Efficiency Mode`
 - `App Suspension`
-- `Time Based Scheduler`
-- `Foreground Rules`
+- `Time Scheduler`
+- `Foreground Detection`
 - `Settings`
 - `About`
 
@@ -73,22 +73,22 @@ When adding settings fields:
 
 ## Power Plan Selection
 
-Idle/Active plan mapping controls belong inside Action, Time, and CPU power-plan control pages, not in a global page. Foreground Rules is different: each foreground rule can target any available Windows power plan directly.
+Idle/Active plan mapping controls belong inside Action, Time, and CPU power-plan control pages, not in a global page. Foreground Detection is different: each foreground rule can target any available Windows power plan directly.
 
 Current behavior:
 
 - `ui::power_plan_page::show_section(...)` renders the shared embedded plan selector.
-- Action Based Scheduler owns `settings.activity_mode.power_plans`.
-- Time Based Scheduler owns `settings.schedule_mode.power_plans`.
-- CPU usage-based Scheduler owns `settings.cpu_usage_mode.power_plans`.
-- Foreground Rules stores each custom target in `settings.foreground_rules.rules[*].power_plan_guid`.
+- Action Detection owns `settings.activity_mode.power_plans`.
+- Time Scheduler owns `settings.schedule_mode.power_plans`.
+- CPU Load Detection owns `settings.cpu_usage_mode.power_plans`.
+- Foreground Detection stores each custom target in `settings.foreground_rules.rules[*].power_plan_guid`.
 - Settings must not show power plan mapping controls.
 - There is no standalone global Power Plan Mapping page.
 - `settings.power_plans` remains for legacy config compatibility and fallback only.
 
 Do not reintroduce `Test Idle` / `Test Active`; those buttons were intentionally removed.
 
-## Action Based Scheduler
+## Action Detection
 
 Action-based switching uses a hybrid model:
 
@@ -108,7 +108,7 @@ Important constraints:
   - `Mouse input`
 - At least one input type must stay enabled.
 
-## Time Based Scheduler
+## Time Scheduler
 
 `src/ui/schedule_page.rs` owns schedule editing.
 
@@ -120,9 +120,9 @@ Current scheduler UI includes:
 - Days.
 - Start/end time.
 
-It exposes one shared Idle/Active plan selector for the Time Based Scheduler page. Do not add per-rule plan selectors unless explicitly requested.
+It exposes one shared Idle/Active plan selector for the Time Scheduler page. Do not add per-rule plan selectors unless explicitly requested.
 
-## CPU usage-based Scheduler
+## CPU Load Detection
 
 `src/ui/cpu_usage_page.rs` owns CPU usage rule editing.
 
@@ -154,7 +154,7 @@ Current behavior:
 - It never targets the PowerLeaf process. It only skips the current foreground process when `exclude_foreground_app` is enabled.
 - Built-in exclusions cover Windows shell/input processes such as `explorer.exe`, `dwm.exe`, and `textinputhost.exe`.
 - Access-denied process opens are counted as skipped, not failed. This is expected for protected/elevated Windows processes.
-- The Efficiency Whitelist is edited in the Efficiency Mode page with the same searchable running-app dropdown pattern as Foreground Rules and is persisted to TOML/INI.
+- The Efficiency Whitelist is edited in the Efficiency Mode page with the same searchable running-app dropdown pattern as Foreground Detection and is persisted to TOML/INI.
 
 Avoid copying EnergyStarX code into this project. If EcoQoS behavior needs to change, implement against Microsoft Win32 documentation directly.
 
@@ -214,7 +214,7 @@ Current behavior:
 - Built-in exclusions cover Windows shell/input/UWP lifecycle processes such as `explorer.exe`, `dwm.exe`, `searchapp.exe`, `searchhost.exe`, `systemsettings.exe`, and `textinputhost.exe`.
 - Job-assignment failures include extra context when `IsProcessInJob` reports that the target process is already in a job object.
 - Access-denied process opens are counted as skipped, not failed. This is expected for protected/elevated Windows processes.
-- Suspendable Apps are edited with the same searchable running-app dropdown pattern as Foreground Rules and are persisted to TOML/INI.
+- Suspendable Apps are edited with the same searchable running-app dropdown pattern as Foreground Detection and are persisted to TOML/INI.
 
 Keep this feature opt-in and narrow. Do not add broad "suspend all background apps" behavior without explicit user direction and additional safeguards.
 
@@ -223,7 +223,7 @@ Security-hardening references:
 - UWP lifecycle and Job Object abuse: https://www.orangecyberdefense.com/global/blog/threat/attack-technique-abuse-of-the-uwp-lifecycle-and-windows-job-objects
 - Remote thread hijacking: https://www.ired.team/offensive-security/code-injection-process-injection/injecting-to-remote-process-via-thread-hijacking
 
-## Foreground Rules
+## Foreground Detection
 
 `src/ui/rules_page.rs` owns this page.
 
@@ -256,7 +256,7 @@ Dropdown behavior:
 
 Layout expectations:
 
-- Foreground rules should be rendered as compact rule cards, similar in spirit to Time Based Scheduler and CPU usage-based Scheduler.
+- Foreground Detection rules should be rendered as compact rule cards, similar in spirit to Time Scheduler and CPU Load Detection.
 - The target plan selector should allow any available Windows power plan, not only Idle or Active.
 
 ## System Tray
@@ -307,7 +307,7 @@ Current priority:
 3. Plugged-in power-plan pause, only when enabled and Windows reports AC power.
 4. Foreground rules, only when `foreground_rules.enabled`.
 5. Time scheduler.
-6. CPU usage-based Scheduler.
+6. CPU Load Detection.
 7. Action/activity mode.
 8. Default Active plan.
 

@@ -116,17 +116,9 @@ impl DecisionEngine {
                 Some(performance_mode.power_plan_guid),
                 DecisionState::PerformanceMode,
                 format!(
-                    "{} is running and matched Running App Power Plan rule '{}'.",
+                    "{} is running and matched Running App Detection rule '{}'.",
                     performance_mode.process_name, performance_mode.rule_name
                 ),
-            );
-        }
-
-        if let Some(schedule) = input.schedule {
-            return DecisionOutcome::with_target(
-                schedule.power_plan_guid,
-                DecisionState::ScheduledRule,
-                format!("Time rule '{}' is active.", schedule.rule_name),
             );
         }
 
@@ -173,6 +165,14 @@ impl DecisionEngine {
                     "Input activity could not be detected.",
                 ),
             };
+        }
+
+        if let Some(schedule) = input.schedule {
+            return DecisionOutcome::with_target(
+                schedule.power_plan_guid,
+                DecisionState::ScheduledRule,
+                format!("Time rule '{}' is active.", schedule.rule_name),
+            );
         }
 
         DecisionOutcome::with_target(
@@ -223,9 +223,9 @@ impl DecisionState {
             Self::ForegroundRule => "Foreground rule",
             Self::ForegroundForceActive => "Foreground force Active plan",
             Self::ForegroundForcePowerSave => "Foreground force Idle plan",
-            Self::PerformanceMode => "Running App Power Plans",
+            Self::PerformanceMode => "Running App Detection",
             Self::ScheduledRule => "Time rule",
-            Self::CpuLoadRule => "CPU load rule",
+            Self::CpuLoadRule => "CPU Load Detection",
             Self::IdlePowerSave => "Idle plan",
             Self::ActivePerformance => "Active plan",
             Self::NoTargetPlan => "Needs setup",
@@ -304,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn schedule_rule_overrides_cpu_and_activity() {
+    fn cpu_usage_overrides_activity_and_schedule() {
         let outcome = DecisionEngine.decide(
             &test_settings(),
             DecisionInput {
@@ -324,12 +324,12 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::ScheduledRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("schedule-custom"));
+        assert_eq!(outcome.state, DecisionState::CpuLoadRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("cpu-low-guid"));
     }
 
     #[test]
-    fn cpu_usage_overrides_activity() {
+    fn activity_overrides_schedule_when_cpu_does_not_match() {
         let outcome = DecisionEngine.decide(
             &test_settings(),
             DecisionInput {
@@ -337,17 +337,40 @@ mod tests {
                 foreground_app: None,
                 plugged_in: None,
                 performance_mode: None,
-                schedule: None,
-                cpu_usage: Some(CpuUsageDecision {
-                    rule_name: "High CPU".to_owned(),
-                    power_plan_guid: Some("cpu-high-guid".to_owned()),
-                    usage_percent: 90.0,
+                schedule: Some(ScheduleDecision {
+                    rule_name: "Work hours".to_owned(),
+                    power_plan_guid: Some("schedule-custom".to_owned()),
                 }),
+                cpu_usage: None,
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::CpuLoadRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("cpu-high-guid"));
+        assert_eq!(outcome.state, DecisionState::IdlePowerSave);
+        assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
+    }
+
+    #[test]
+    fn schedule_applies_when_activity_and_cpu_do_not_match() {
+        let mut settings = test_settings();
+        settings.activity_mode.enabled = false;
+
+        let outcome = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Active,
+                foreground_app: None,
+                plugged_in: None,
+                performance_mode: None,
+                schedule: Some(ScheduleDecision {
+                    rule_name: "Work hours".to_owned(),
+                    power_plan_guid: Some("schedule-custom".to_owned()),
+                }),
+                cpu_usage: None,
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::ScheduledRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("schedule-custom"));
     }
 
     #[test]
@@ -441,6 +464,7 @@ mod tests {
         );
         assert_eq!(foreground.target_guid.as_deref(), Some("foreground-custom"));
 
+        settings.activity_mode.enabled = false;
         let schedule = DecisionEngine.decide(
             &settings,
             DecisionInput {
@@ -457,6 +481,7 @@ mod tests {
         );
         assert_eq!(schedule.target_guid.as_deref(), Some("schedule-custom"));
 
+        settings.activity_mode.enabled = false;
         let cpu = DecisionEngine.decide(
             &settings,
             DecisionInput {
@@ -474,6 +499,7 @@ mod tests {
         );
         assert_eq!(cpu.target_guid.as_deref(), Some("cpu-custom"));
 
+        settings.activity_mode.enabled = true;
         let activity = DecisionEngine.decide(
             &settings,
             DecisionInput {
@@ -515,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn foreground_rule_without_power_plan_combines_with_schedule_rule() {
+    fn foreground_rule_without_power_plan_combines_with_cpu_before_activity() {
         let mut settings = test_settings();
         settings.foreground_rules.rules = vec![ForegroundRule {
             enabled: true,
@@ -543,8 +569,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::ScheduledRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("schedule-custom"));
+        assert_eq!(outcome.state, DecisionState::CpuLoadRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("cpu-high-guid"));
     }
 
     #[test]
@@ -578,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn performance_mode_overrides_schedule_cpu_and_activity() {
+    fn performance_mode_overrides_cpu_activity_and_schedule() {
         let outcome = DecisionEngine.decide(
             &test_settings(),
             DecisionInput {

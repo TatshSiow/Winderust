@@ -12,7 +12,6 @@ pub enum Page {
     Watchdog,
     PerformanceMode,
     ForegroundResponsiveness,
-    SharedProcessRules,
     CpuAffinity,
     ForegroundRules,
     Schedule,
@@ -27,20 +26,19 @@ pub struct PageSection {
 }
 
 const OVERVIEW_PAGES: [Page; 1] = [Page::Dashboard];
-const POWER_AUTOMATION_PAGES: [Page; 4] = [
+const POWER_AUTOMATION_PAGES: [Page; 5] = [
     Page::ForegroundRules,
     Page::PerformanceMode,
+    Page::CpuUsage,
     Page::Activity,
     Page::Schedule,
 ];
-const CPU_CONTROL_PAGES: [Page; 4] = [
-    Page::CpuUsage,
+const CPU_CONTROL_PAGES: [Page; 3] = [
     Page::CoreParking,
     Page::CpuLimiter,
     Page::CpuAffinity,
 ];
-const PROCESS_POLICY_PAGES: [Page; 5] = [
-    Page::SharedProcessRules,
+const PROCESS_POLICY_PAGES: [Page; 4] = [
     Page::EfficiencyMode,
     Page::ForegroundResponsiveness,
     Page::AppSuspension,
@@ -53,7 +51,7 @@ const PAGE_SECTIONS: [PageSection; 5] = [
         pages: &OVERVIEW_PAGES,
     },
     PageSection {
-        label: "Power Automation",
+        label: "Power Plan Automation",
         pages: &POWER_AUTOMATION_PAGES,
     },
     PageSection {
@@ -83,7 +81,6 @@ impl Page {
             Self::Watchdog => t!("nav.watchdog"),
             Self::PerformanceMode => t!("nav.performance_mode"),
             Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
-            Self::SharedProcessRules => t!("nav.shared_process_rules"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
             Self::Schedule => t!("nav.schedule"),
@@ -97,14 +94,15 @@ impl Page {
     pub fn section_label(self) -> String {
         match self {
             Self::Dashboard => t!("nav.overview"),
-            Self::Activity | Self::Schedule | Self::ForegroundRules | Self::PerformanceMode => {
-                t!("nav.power_automation")
-            }
-            Self::CpuUsage | Self::CoreParking | Self::CpuLimiter | Self::CpuAffinity => {
+            Self::Activity
+            | Self::Schedule
+            | Self::ForegroundRules
+            | Self::PerformanceMode
+            | Self::CpuUsage => t!("nav.power_automation"),
+            Self::CoreParking | Self::CpuLimiter | Self::CpuAffinity => {
                 t!("nav.processor_controls")
             }
             Self::EfficiencyMode
-            | Self::SharedProcessRules
             | Self::ForegroundResponsiveness
             | Self::AppSuspension
             | Self::Watchdog => t!("nav.process_policies"),
@@ -121,7 +119,7 @@ impl Page {
 pub fn section_label(label: &str) -> String {
     match label {
         "Overview" => t!("nav.overview"),
-        "Power Automation" => t!("nav.power_automation"),
+        "Power Plan Automation" => t!("nav.power_automation"),
         "Processor Controls" => t!("nav.processor_controls"),
         "Process Policies" => t!("nav.process_policies"),
         "App" => t!("nav.app"),

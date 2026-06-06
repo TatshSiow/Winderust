@@ -122,8 +122,6 @@ const TEXT_PAGE_TITLE_SIZE: f32 = 28.0;
 const TEXT_PAGE_TITLE_LINE_HEIGHT: f32 = 36.0;
 const TEXT_PAGE_CRUMB_SIZE: f32 = 20.0;
 const TEXT_PAGE_CRUMB_LINE_HEIGHT: f32 = 28.0;
-const TEXT_SECTION_TITLE_SIZE: f32 = 16.0;
-const TEXT_SECTION_TITLE_LINE_HEIGHT: f32 = 22.0;
 const TEXT_HEADER_SIZE: f32 = RULE_TITLE_TEXT_SIZE;
 const TEXT_HEADER_LINE_HEIGHT: f32 = RULE_TITLE_LINE_HEIGHT;
 const TEXT_BODY_SIZE: f32 = 14.0;
@@ -241,7 +239,6 @@ struct UiInputs {
     foreground_rule_names: Vec<Entity<InputState>>,
     foreground_rule_processes: Vec<Entity<InputState>>,
     foreground_process: Entity<InputState>,
-    shared_process: Entity<InputState>,
     eco_qos_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
     cpu_limiter_process: Entity<InputState>,
@@ -345,7 +342,6 @@ impl UiInputs {
                 .map(|rule| make_input(window, cx, &rule.process_name, "process.exe"))
                 .collect(),
             foreground_process: make_input(window, cx, "", "Search running apps..."),
-            shared_process: make_input(window, cx, "", "Search running apps..."),
             eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             cpu_limiter_process: make_input(window, cx, "", "Search running apps..."),
@@ -1024,6 +1020,11 @@ impl PowerLeafApp {
         .to_string();
     }
 
+    fn processor_power_matches_preset(&self, preset: ProcessorPowerPreset) -> bool {
+        let values = ProcessorPowerValues::for_preset(preset);
+        self.processor_power_values() == ProcessorPowerAcDcValues::same(values).normalized()
+    }
+
     fn apply_processor_power_custom(&mut self) {
         let Some(plan) = self.processor_power_target_plan() else {
             self.status_message = t!("processor_power.no_active_plan").to_string();
@@ -1050,22 +1051,22 @@ impl PowerLeafApp {
             self.refresh_active_plan();
         }
 
+        let decision_settings = self.runtime_settings();
         self.activity = self.idle_detector.snapshot(Duration::from_secs(
-            self.settings.activity_mode.idle_timeout_seconds,
+            decision_settings.activity_mode.idle_timeout_seconds,
         ));
         self.refresh_cpu_usage_sample();
         self.foreground_app = self.foreground_detector.process_name();
         let schedule = self
             .scheduler
-            .current_decision(&self.settings.schedule_mode);
+            .current_decision(&decision_settings.schedule_mode);
         let cpu_usage = self
             .cpu_usage_scheduler
-            .current_decision(&self.settings.cpu_usage_mode, self.cpu_usage.percent);
+            .current_decision(&decision_settings.cpu_usage_mode, self.cpu_usage.percent);
         self.next_schedule = self
             .scheduler
-            .next_switch_label(&self.settings.schedule_mode);
+            .next_switch_label(&decision_settings.schedule_mode);
 
-        let decision_settings = self.runtime_settings();
         self.decision = self.decision_engine.decide(
             &decision_settings,
             DecisionInput {
@@ -1453,7 +1454,6 @@ impl PowerLeafApp {
         matches!(
             self.page,
             Page::ForegroundRules
-                | Page::SharedProcessRules
                 | Page::EfficiencyMode
                 | Page::AppSuspension
                 | Page::CpuLimiter
@@ -2087,6 +2087,12 @@ impl PowerLeafApp {
     fn runtime_settings(&self) -> Settings {
         let mut settings = self.settings.clone();
         settings.general.enabled = self.saved_settings.general.enabled;
+        settings.power_plans = self.saved_settings.power_plans.clone();
+        settings.activity_mode = self.saved_settings.activity_mode.clone();
+        settings.schedule_mode = self.saved_settings.schedule_mode.clone();
+        settings.cpu_usage_mode = self.saved_settings.cpu_usage_mode.clone();
+        settings.foreground_rules = self.saved_settings.foreground_rules.clone();
+        settings.performance_mode = self.saved_settings.performance_mode.clone();
         settings.eco_qos = self.saved_settings.eco_qos.clone();
         settings.app_suspension = self.saved_settings.app_suspension.clone();
         settings.cpu_affinity = self.saved_settings.cpu_affinity.clone();
@@ -2109,7 +2115,10 @@ impl PowerLeafApp {
                     Some(NavStatus::Enabled)
                 }
             }
-            Page::CpuUsage => Some(enabled_nav_status(settings.cpu_usage_mode.enabled)),
+            Page::CpuUsage => Some(rule_based_nav_status(
+                settings.cpu_usage_mode.enabled,
+                settings.cpu_usage_mode.rules.len(),
+            )),
             Page::CoreParking => None,
             Page::CpuLimiter => Some(process_nav_status(
                 settings.cpu_limiter.enabled,
@@ -2122,17 +2131,15 @@ impl PowerLeafApp {
                 self.eco_qos_status.failed_processes,
                 self.eco_qos_status.last_error.is_some(),
             )),
-            Page::SharedProcessRules => {
-                Some(count_nav_status(shared_process_names(settings).len()))
-            }
             Page::AppSuspension => Some(feature_nav_status(
                 settings.app_suspension.enabled,
                 self.app_suspension_status.unsupported,
                 self.app_suspension_status.failed_actions,
                 self.app_suspension_status.last_error.is_some(),
             )),
-            Page::PerformanceMode => Some(process_nav_status(
+            Page::PerformanceMode => Some(process_rule_nav_status(
                 settings.performance_mode.enabled,
+                settings.performance_mode.rules.len(),
                 0,
                 self.performance_mode_status.last_error.is_some(),
             )),
@@ -2151,8 +2158,14 @@ impl PowerLeafApp {
                 self.foreground_responsiveness_status.failed_processes,
                 self.foreground_responsiveness_status.last_error.is_some(),
             )),
-            Page::ForegroundRules => Some(enabled_nav_status(settings.foreground_rules.enabled)),
-            Page::Schedule => Some(enabled_nav_status(settings.schedule_mode.enabled)),
+            Page::ForegroundRules => Some(rule_based_nav_status(
+                settings.foreground_rules.enabled,
+                settings.foreground_rules.rules.len(),
+            )),
+            Page::Schedule => Some(rule_based_nav_status(
+                settings.schedule_mode.enabled,
+                settings.schedule_mode.rules.len(),
+            )),
             Page::ActionLog => None,
             Page::Settings | Page::About => None,
         }
@@ -2270,28 +2283,6 @@ impl PowerLeafApp {
             .border_color(cx.theme().sidebar_border)
             .bg(cx.theme().sidebar);
 
-        let header = v_flex()
-            .flex_shrink_0()
-            .px_3()
-            .pt_3()
-            .pb_2()
-            .gap_1()
-            .child(
-                div()
-                    .text_size(px(TEXT_BODY_SIZE))
-                    .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                    .text_color(cx.theme().sidebar_foreground)
-                    .child(t!("app.name").to_string()),
-            )
-            .child(
-                div()
-                    .text_size(px(TEXT_LABEL_SIZE))
-                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                    .text_color(cx.theme().muted_foreground)
-                    .truncate()
-                    .child(t!("app.description").to_string()),
-            );
-
         let mut drawer = v_flex()
             .flex_1()
             .min_h(px(0.0))
@@ -2336,7 +2327,7 @@ impl PowerLeafApp {
             }
         }
 
-        nav = nav.child(header).child(drawer).child(footer);
+        nav = nav.child(drawer).child(footer);
         nav.into_any_element()
     }
 
@@ -2419,7 +2410,6 @@ impl PowerLeafApp {
             Page::CpuUsage => self.render_cpu_usage_page(window, cx),
             Page::CoreParking => self.render_core_parking_page(window, cx),
             Page::CpuLimiter => self.render_cpu_limiter_page(window, cx),
-            Page::SharedProcessRules => self.render_shared_process_rules_page(window, cx),
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
             Page::Watchdog => self.render_watchdog_page(window, cx),
@@ -2524,7 +2514,7 @@ impl PowerLeafApp {
 
         GroupBox::new()
             .outline()
-            .title(Label::new(t!("dashboard.cpu_usage").to_string()))
+            .title(section_title_label(t!("dashboard.cpu_usage").to_string()))
             .child(
                 v_flex()
                     .gap_2()
@@ -2881,16 +2871,18 @@ impl PowerLeafApp {
                 }),
             ));
 
-        page_shell_with_help(
-            Page::Activity,
-            Some(tooltip_lines(vec![
-                t!("activity.intro_1").to_string(),
-                t!("activity.intro_2").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("activity.intro_1").to_string(),
+            t!("activity.intro_2").to_string(),
+            t!("common.power_plan_priority").to_string(),
+            t!("common.power_plan_pause_priority").to_string(),
+        ]);
+
+        page_shell(Page::Activity)
+        .child(feature_toggle_switch_with_help(
             "activity-enabled",
             t!("activity.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.activity_mode.enabled = *checked;
@@ -2908,16 +2900,17 @@ impl PowerLeafApp {
     ) -> AnyElement {
         let input_value = self.inputs.foreground_process.read(cx).value().to_string();
         let enabled = self.settings.foreground_rules.enabled;
-        let mut content = page_shell_with_help(
-            Page::ForegroundRules,
-            Some(tooltip_lines(vec![
-                t!("foreground.intro_1").to_string(),
-                t!("foreground.intro_2").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("foreground.intro_1").to_string(),
+            t!("foreground.intro_2").to_string(),
+            t!("common.power_plan_priority").to_string(),
+            t!("common.power_plan_pause_priority").to_string(),
+        ]);
+        let mut content = page_shell(Page::ForegroundRules)
+        .child(feature_toggle_switch_with_help(
             "foreground-enabled",
             t!("foreground.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.foreground_rules.enabled = *checked;
@@ -2925,7 +2918,10 @@ impl PowerLeafApp {
             }),
         ));
 
-        let mut body = feature_body(enabled).child(
+        let mut body = feature_body(enabled).child(section_title_text(
+            t!("common.rules").to_string(),
+        ));
+        body = body.child(
             h_flex()
                 .gap_2()
                 .items_start()
@@ -3032,169 +3028,11 @@ impl PowerLeafApp {
         )
     }
 
-    fn render_shared_process_rules_page(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let input_value = self.inputs.shared_process.read(cx).value().to_string();
-        let draft_process = normalize_process_name(&input_value)
-            .filter(|process| can_add_shared_process(&self.settings, process));
-        let mut processes = shared_process_names(&self.settings);
-        if let Some(process) = draft_process.as_deref() {
-            processes.retain(|existing| !existing.eq_ignore_ascii_case(process));
-        }
-
-        let mut rows = rule_list();
-        if let Some(process) = draft_process {
-            rows = rows.child(self.render_shared_process_rule(process, true, cx));
-        }
-        if processes.is_empty() && input_value.trim().is_empty() {
-            rows = rows.child(
-                GroupBox::new()
-                    .outline()
-                    .child(text_muted(t!("shared_process_rules.empty").to_string())),
-            );
-        } else {
-            for process in processes {
-                rows = rows.child(self.render_shared_process_rule(process, false, cx));
-            }
-        }
-
-        page_shell_with_help(
-            Page::SharedProcessRules,
-            Some(tooltip_lines(vec![
-                t!("shared_process_rules.intro_1").to_string(),
-                t!("shared_process_rules.intro_2").to_string(),
-            ])),
+    fn new_performance_mode_rule(&self, process: &str) -> PerformanceModeRule {
+        new_performance_mode_rule(
+            process,
+            self.current_plan.as_ref().map(|plan| plan.guid.clone()),
         )
-        .child(
-            h_flex()
-                .gap_2()
-                .items_start()
-                .flex_wrap()
-                .child(self.render_process_picker(
-                    "shared-process-suggestion",
-                    &self.inputs.shared_process,
-                    SuggestionTarget::SharedProcess,
-                    window,
-                    cx,
-                ))
-                .child(
-                    control_button(Button::new("shared-process-clear"))
-                        .label(t!("common.clear").to_string())
-                        .disabled(input_value.trim().is_empty())
-                        .on_click(cx.listener(|app, _, window, cx| {
-                            clear_input(&app.inputs.shared_process, window, cx);
-                            cx.notify();
-                        })),
-                ),
-        )
-        .child(
-            GroupBox::new()
-                .outline()
-                .title(
-                    Label::new(t!("shared_process_rules.processes").to_string())
-                        .text_size(px(TEXT_SECTION_TITLE_SIZE))
-                        .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
-                )
-                .child(rows),
-        )
-        .into_any_element()
-    }
-
-    fn render_shared_process_rule(
-        &self,
-        process: String,
-        draft: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let modules = v_flex()
-            .flex_1()
-            .min_w(px(260.0))
-            .gap_2()
-            .child(self.render_shared_process_module_group(
-                &process,
-                t!("shared_process_rules.plan_group").to_string(),
-                &[
-                    SharedProcessModule::ForegroundRule,
-                    SharedProcessModule::PerformanceMode,
-                ],
-                cx,
-            ))
-            .child(self.render_shared_process_module_group(
-                &process,
-                t!("shared_process_rules.cpu_group").to_string(),
-                &[
-                    SharedProcessModule::CpuLimiter,
-                    SharedProcessModule::CoreSteering,
-                ],
-                cx,
-            ))
-            .child(self.render_shared_process_module_group(
-                &process,
-                t!("shared_process_rules.policy_group").to_string(),
-                &[
-                    SharedProcessModule::Watchdog,
-                    SharedProcessModule::ForegroundResponsiveness,
-                    SharedProcessModule::EcoQosExclusion,
-                ],
-                cx,
-            ));
-
-        compact_rule_row(cx)
-            .items_start()
-            .child(
-                v_flex()
-                    .w(px(210.0))
-                    .min_w(px(160.0))
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(RULE_TITLE_TEXT_SIZE))
-                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                            .truncate()
-                            .child(process.clone()),
-                    )
-                    .when(draft, |column| {
-                        column.child(
-                            Tag::info()
-                                .outline()
-                                .child(t!("shared_process_rules.draft").to_string()),
-                        )
-                    }),
-            )
-            .child(modules)
-            .into_any_element()
-    }
-
-    fn render_shared_process_module_group(
-        &self,
-        process: &str,
-        label: String,
-        modules: &[SharedProcessModule],
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let mut row = h_flex().gap_2().flex_wrap();
-        for module in modules {
-            row = row.child(shared_process_module_toggle(
-                process.to_string(),
-                *module,
-                shared_process_module_enabled(&self.settings, process, *module),
-                shared_process_module_can_enable(&self.settings, process, *module),
-                cx,
-            ));
-        }
-
-        v_flex()
-            .gap_1()
-            .child(
-                Label::new(label)
-                    .text_size(px(TEXT_CAPTION_SIZE))
-                    .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
-                    .text_color(rgb(muted_text_color())),
-            )
-            .child(row)
     }
 
     fn render_rule_title(
@@ -3260,16 +3098,17 @@ impl PowerLeafApp {
 
     fn render_schedule_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let enabled = self.settings.schedule_mode.enabled;
-        let mut content = page_shell_with_help(
-            Page::Schedule,
-            Some(tooltip_lines(vec![
-                t!("schedule.intro_1").to_string(),
-                t!("schedule.intro_2").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("schedule.intro_1").to_string(),
+            t!("schedule.intro_2").to_string(),
+            t!("common.power_plan_priority").to_string(),
+            t!("common.power_plan_pause_priority").to_string(),
+        ]);
+        let mut content = page_shell(Page::Schedule)
+        .child(feature_toggle_switch_with_help(
             "schedule-enabled",
             t!("schedule.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.schedule_mode.enabled = *checked;
@@ -3277,7 +3116,10 @@ impl PowerLeafApp {
             }),
         ));
 
-        let mut body = feature_body(enabled).child(create_rule_card(
+        let mut body = feature_body(enabled).child(section_title_text(
+            t!("common.rules").to_string(),
+        ));
+        body = body.child(create_rule_card(
             "create-time-rule-card",
             t!("schedule.rule_title").to_string(),
             primary_control_button(Button::new("add-time-rule"), cx)
@@ -3446,16 +3288,17 @@ impl PowerLeafApp {
         self.sync_cpu_threshold_slider_states(window, cx);
 
         let enabled = self.settings.cpu_usage_mode.enabled;
-        let mut content = page_shell_with_help(
-            Page::CpuUsage,
-            Some(tooltip_lines(vec![
-                t!("cpu_rules.intro_1").to_string(),
-                t!("cpu_rules.intro_2").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("cpu_rules.intro_1").to_string(),
+            t!("cpu_rules.intro_2").to_string(),
+            t!("common.power_plan_priority").to_string(),
+            t!("common.power_plan_pause_priority").to_string(),
+        ]);
+        let mut content = page_shell(Page::CpuUsage)
+        .child(feature_toggle_switch_with_help(
             "cpu-usage-enabled",
             t!("cpu_rules.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.cpu_usage_mode.enabled = *checked;
@@ -3463,7 +3306,10 @@ impl PowerLeafApp {
             }),
         ));
 
-        let mut body = feature_body(enabled).child(create_rule_card(
+        let mut body = feature_body(enabled).child(section_title_text(
+            t!("common.rules").to_string(),
+        ));
+        body = body.child(create_rule_card(
             "create-cpu-rule-card",
             t!("cpu_rules.rule_title").to_string(),
             primary_control_button(Button::new("add-cpu-rule"), cx)
@@ -3732,9 +3578,10 @@ impl PowerLeafApp {
         let input_value = self.inputs.eco_qos_exclusion.read(cx).value().to_string();
         let enabled = self.settings.eco_qos.enabled;
         let body = feature_body(enabled)
-            .child(checkbox(
+            .child(feature_toggle_switch_with_help(
                 "eco-qos-foreground",
                 t!("efficiency.focus_detection").to_string(),
+                t!("efficiency.focus_detection_help").to_string(),
                 self.settings.eco_qos.exclude_foreground_app,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.eco_qos.exclude_foreground_app = *checked;
@@ -3758,7 +3605,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        control_button(Button::new("add-eco-qos-exclusion"))
+                        primary_control_button(Button::new("add-eco-qos-exclusion"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -3783,17 +3630,17 @@ impl PowerLeafApp {
             )
             .child(self.render_eco_qos_whitelist(cx));
 
-        page_shell_with_help(
-            Page::EfficiencyMode,
-            Some(tooltip_lines(vec![
-                t!("efficiency.intro_1").to_string(),
-                t!("efficiency.intro_2").to_string(),
-                t!("efficiency.intro_3").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("efficiency.intro_1").to_string(),
+            t!("efficiency.intro_2").to_string(),
+            t!("efficiency.intro_3").to_string(),
+        ]);
+
+        page_shell(Page::EfficiencyMode)
+        .child(feature_toggle_switch_with_help(
             "eco-qos-enabled",
             t!("efficiency.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.eco_qos.enabled = *checked;
@@ -4051,7 +3898,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        control_button(Button::new("add-suspension-process"))
+                        primary_control_button(Button::new("add-suspension-process"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -4079,17 +3926,17 @@ impl PowerLeafApp {
             )
             .child(self.render_suspendable_apps(window, cx));
 
-        page_shell_with_help(
-            Page::AppSuspension,
-            Some(tooltip_lines(vec![
-                t!("suspension.intro_1").to_string(),
-                t!("suspension.intro_2").to_string(),
-                t!("suspension.intro_3").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("suspension.intro_1").to_string(),
+            t!("suspension.intro_2").to_string(),
+            t!("suspension.intro_3").to_string(),
+        ]);
+
+        page_shell(Page::AppSuspension)
+        .child(feature_toggle_switch_with_help(
             "app-suspension-enabled",
             t!("suspension.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.app_suspension.enabled = *checked;
@@ -4224,9 +4071,10 @@ impl PowerLeafApp {
         let input_value = self.inputs.cpu_limiter_process.read(cx).value().to_string();
         let enabled = self.settings.cpu_limiter.enabled;
         let body = feature_body(enabled)
-            .child(checkbox(
+            .child(feature_toggle_switch_with_help(
                 "cpu-limiter-foreground",
                 t!("cpu_limiter.focus_detection").to_string(),
+                t!("cpu_limiter.focus_detection_help").to_string(),
                 self.settings.cpu_limiter.exclude_foreground_app,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.cpu_limiter.exclude_foreground_app = *checked;
@@ -4250,7 +4098,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        control_button(Button::new("add-cpu-limiter-process"))
+                        primary_control_button(Button::new("add-cpu-limiter-process"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -4276,17 +4124,17 @@ impl PowerLeafApp {
             )
             .child(self.render_cpu_limiter_rules(cx));
 
-        page_shell_with_help(
-            Page::CpuLimiter,
-            Some(tooltip_lines(vec![
-                t!("cpu_limiter.intro_1").to_string(),
-                t!("cpu_limiter.intro_2").to_string(),
-                t!("cpu_limiter.intro_3").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("cpu_limiter.intro_1").to_string(),
+            t!("cpu_limiter.intro_2").to_string(),
+            t!("cpu_limiter.intro_3").to_string(),
+        ]);
+
+        page_shell(Page::CpuLimiter)
+        .child(feature_toggle_switch_with_help(
             "cpu-limiter-enabled",
             t!("cpu_limiter.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.cpu_limiter.enabled = *checked;
@@ -4429,7 +4277,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        control_button(Button::new("add-watchdog-terminate"))
+                        primary_control_button(Button::new("add-watchdog-terminate"), cx)
                             .label(t!("watchdog.add_terminate").to_string())
                             .disabled(!can_add)
                             .on_click(cx.listener(|app, _, window, cx| {
@@ -4446,7 +4294,7 @@ impl PowerLeafApp {
                             })),
                     )
                     .child(
-                        control_button(Button::new("add-watchdog-restart"))
+                        primary_control_button(Button::new("add-watchdog-restart"), cx)
                             .label(t!("watchdog.add_restart").to_string())
                             .disabled(!can_add)
                             .on_click(cx.listener(|app, _, window, cx| {
@@ -4465,17 +4313,17 @@ impl PowerLeafApp {
             )
             .child(self.render_watchdog_rules(window, cx));
 
-        page_shell_with_help(
-            Page::Watchdog,
-            Some(tooltip_lines(vec![
-                t!("watchdog.intro_1").to_string(),
-                t!("watchdog.intro_2").to_string(),
-                t!("watchdog.intro_3").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("watchdog.intro_1").to_string(),
+            t!("watchdog.intro_2").to_string(),
+            t!("watchdog.intro_3").to_string(),
+        ]);
+
+        page_shell(Page::Watchdog)
+        .child(feature_toggle_switch_with_help(
             "watchdog-enabled",
             t!("watchdog.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.watchdog.enabled = *checked;
@@ -4628,10 +4476,7 @@ impl PowerLeafApp {
         let input_value = self.inputs.performance_process.read(cx).value().to_string();
         let enabled = self.settings.performance_mode.enabled;
         let body = feature_body(enabled)
-            .child(section_header(
-                &t!("performance_mode.rules"),
-                t!("performance_mode.rules_help").to_string(),
-            ))
+            .child(section_title_text(t!("common.rules").to_string()))
             .child(
                 h_flex()
                     .gap_2()
@@ -4645,7 +4490,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        control_button(Button::new("add-performance-mode-process"))
+                        primary_control_button(Button::new("add-performance-mode-process"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -4664,7 +4509,8 @@ impl PowerLeafApp {
                                     app.settings
                                         .performance_mode
                                         .rules
-                                        .push(new_performance_mode_rule(&process));
+                                        .push(app.new_performance_mode_rule(&process));
+                                    app.inputs.ensure_for_settings(window, cx, &app.settings);
                                     clear_input(&app.inputs.performance_process, window, cx);
                                 }
                                 cx.notify();
@@ -4673,17 +4519,19 @@ impl PowerLeafApp {
             )
             .child(self.render_performance_mode_rules(window, cx));
 
-        page_shell_with_help(
-            Page::PerformanceMode,
-            Some(tooltip_lines(vec![
-                t!("performance_mode.intro_1").to_string(),
-                t!("performance_mode.intro_2").to_string(),
-                t!("performance_mode.intro_3").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("performance_mode.intro_1").to_string(),
+            t!("performance_mode.intro_2").to_string(),
+            t!("performance_mode.intro_3").to_string(),
+            t!("common.power_plan_priority").to_string(),
+            t!("common.power_plan_pause_priority").to_string(),
+        ]);
+
+        page_shell(Page::PerformanceMode)
+        .child(feature_toggle_switch_with_help(
             "performance-mode-enabled",
             t!("performance_mode.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.performance_mode.enabled = *checked;
@@ -4703,11 +4551,9 @@ impl PowerLeafApp {
         for (index, rule) in self.settings.performance_mode.rules.iter().enumerate() {
             let process = rule.process_name.clone();
             let indicator = performance_mode_indicator(&self.performance_mode_status, &process);
-            let card_target = RuleCardTarget::PerformanceMode(process.clone());
-            let collapsed = self.is_rule_card_collapsed(&card_target);
-            let mut card = rule_card(
-                static_rule_title(&process),
-                rule_enable_checkbox(
+            list = list.child(
+                compact_rule_row(cx)
+                    .child(rule_enable_checkbox(
                     format!("performance-mode-rule-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -4716,53 +4562,40 @@ impl PowerLeafApp {
                         }
                         cx.notify();
                     }),
-                ),
-                rule_card_collapse_indicator(collapsed),
-                card_target.clone(),
-                cx,
-            );
-            if !collapsed {
-                card = card
-                    .child(rule_card_body_row(vec![rule_action_row(
-                        format!("performance-mode-rule-status-{index}"),
-                        t!("common.status").to_string(),
-                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.0))
+                            .text_size(px(RULE_TITLE_TEXT_SIZE))
+                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                            .truncate()
+                            .child(process),
                     )
-                    .into_any_element()]))
-                    .child(rule_card_body_row(vec![rule_action_row(
-                        format!("performance-mode-rule-plan-{index}"),
-                        t!("performance_mode.power_plan").to_string(),
-                        self.render_inline_power_plan_picker(
+                    .child(status_pill(indicator.0, indicator.1, indicator.2))
+                    .child(self.render_inline_power_plan_picker(
                             format!("performance-mode-plan-{index}"),
                             rule.power_plan_guid.clone(),
                             PowerPlanField::PerformanceModeRule(index),
                             window,
                             cx,
-                        ),
-                    )
-                    .into_any_element()]))
-                    .child(rule_card_body_action(
+                        ))
+                    .child(
                         danger_control_button(Button::new(SharedString::from(format!(
                             "remove-performance-mode-{index}"
                         ))))
                         .label(t!("common.remove").to_string())
-                        .on_click(cx.listener({
-                            let card_target = card_target.clone();
-                            move |app, _, _, cx| {
+                        .on_click(cx.listener(move |app, _, _, cx| {
                                 if index < app.settings.performance_mode.rules.len() {
                                     app.settings.performance_mode.rules.remove(index);
                                 }
-                                app.expanded_rule_cards.remove(&card_target);
+                                app.editing_rule_title = None;
+                                app.expanded_rule_cards.clear();
                                 cx.notify();
-                            }
                         }))
                         .into_any_element(),
-                    ));
-            }
-            list = list.child(card);
-        }
-        if self.settings.performance_mode.rules.is_empty() {
-            list = list.child(text_muted(t!("performance_mode.no_rules").to_string()));
+                    ),
+            );
         }
         list.into_any_element()
     }
@@ -4968,7 +4801,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        control_button(Button::new("add-responsiveness-process"))
+                        primary_control_button(Button::new("add-responsiveness-process"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -5000,17 +4833,17 @@ impl PowerLeafApp {
             )
             .child(self.render_responsiveness_rules(cx));
 
-        page_shell_with_help(
-            Page::ForegroundResponsiveness,
-            Some(tooltip_lines(vec![
-                t!("responsiveness.intro_1").to_string(),
-                t!("responsiveness.intro_2").to_string(),
-                t!("responsiveness.intro_3").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("responsiveness.intro_1").to_string(),
+            t!("responsiveness.intro_2").to_string(),
+            t!("responsiveness.intro_3").to_string(),
+        ]);
+
+        page_shell(Page::ForegroundResponsiveness)
+        .child(feature_toggle_switch_with_help(
             "foreground-responsiveness-enabled",
             t!("responsiveness.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.foreground_responsiveness.enabled = *checked;
@@ -5179,9 +5012,10 @@ impl PowerLeafApp {
         let input_value = self.inputs.affinity_process.read(cx).value().to_string();
         let enabled = self.settings.cpu_affinity.enabled;
         let body = feature_body(enabled)
-            .child(checkbox(
+            .child(feature_toggle_switch_with_help(
                 "cpu-affinity-foreground",
                 t!("affinity.focus_detection").to_string(),
+                t!("affinity.focus_detection_help").to_string(),
                 self.settings.cpu_affinity.exclude_foreground_app,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.cpu_affinity.exclude_foreground_app = *checked;
@@ -5205,7 +5039,7 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        control_button(Button::new("add-affinity-process"))
+                        primary_control_button(Button::new("add-affinity-process"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
@@ -5230,17 +5064,17 @@ impl PowerLeafApp {
             )
             .child(self.render_affinity_rules(cx));
 
-        page_shell_with_help(
-            Page::CpuAffinity,
-            Some(tooltip_lines(vec![
-                t!("affinity.intro_1").to_string(),
-                t!("affinity.intro_2").to_string(),
-                t!("affinity.intro_3").to_string(),
-            ])),
-        )
-        .child(feature_toggle_switch(
+        let help = tooltip_lines(vec![
+            t!("affinity.intro_1").to_string(),
+            t!("affinity.intro_2").to_string(),
+            t!("affinity.intro_3").to_string(),
+        ]);
+
+        page_shell(Page::CpuAffinity)
+        .child(feature_toggle_switch_with_help(
             "cpu-affinity-enabled",
             t!("affinity.enable").to_string(),
+            help,
             enabled,
             cx.listener(|app, checked, _, cx| {
                 app.settings.cpu_affinity.enabled = *checked;
@@ -6042,12 +5876,13 @@ impl PowerLeafApp {
             ProcessorPowerPreset::Balanced,
             ProcessorPowerPreset::Saver,
         ] {
+            let selected = self.processor_power_matches_preset(preset);
             preset_row = preset_row.child(
-                Button::new(SharedString::from(format!(
-                    "processor-power-preset-{preset:?}"
-                )))
-                .small()
-                .label(processor_power_preset_label(preset))
+                toggle_button(
+                    SharedString::from(format!("processor-power-preset-{preset:?}")),
+                    processor_power_preset_label(preset),
+                    selected,
+                )
                 .tooltip(processor_power_preset_help(preset))
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.fill_processor_power_preset(preset);
@@ -6056,51 +5891,33 @@ impl PowerLeafApp {
             );
         }
 
-        section_card(&t!("processor_power.title"))
-            .child(text_muted(t!("processor_power.help").to_string()))
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .gap_2()
             .child(self.render_processor_power_plan_picker(window, cx))
+            .child(feature_toggle_switch(
+                "processor-power-link-ac-dc",
+                t!("processor_power.link_ac_dc").to_string(),
+                self.processor_power_link_ac_dc,
+                cx.listener(|app, checked: &bool, _, cx| {
+                    app.processor_power_link_ac_dc = *checked;
+                    if *checked {
+                        let values = app.processor_power_values();
+                        app.set_processor_power_values(ProcessorPowerAcDcValues::same(values.ac));
+                        app.processor_power_dirty = true;
+                    }
+                    cx.notify();
+                }),
+            ))
+            .child(labeled_element(
+                &t!("processor_power.presets"),
+                preset_row.into_any_element(),
+            ))
             .child(
                 v_flex()
                     .w_full()
-                    .gap_3()
-                    .child(
-                        h_flex()
-                            .w_full()
-                            .min_w(px(0.0))
-                            .items_center()
-                            .justify_between()
-                            .gap_4()
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .gap_1()
-                                    .child(
-                                        Label::new(t!("processor_power.link_ac_dc").to_string())
-                                            .text_size(px(TEXT_CONTROL_SIZE))
-                                            .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                                            .font_weight(gpui::FontWeight::NORMAL),
-                                    )
-                                    .child(text_muted(
-                                        t!("processor_power.link_ac_dc_help").to_string(),
-                                    )),
-                            )
-                            .child(switch_toggle_action(
-                                "processor-power-link-ac-dc",
-                                self.processor_power_link_ac_dc,
-                                cx.listener(|app, checked: &bool, _, cx| {
-                                    app.processor_power_link_ac_dc = *checked;
-                                    if *checked {
-                                        let values = app.processor_power_values();
-                                        app.set_processor_power_values(
-                                            ProcessorPowerAcDcValues::same(values.ac),
-                                        );
-                                        app.processor_power_dirty = true;
-                                    }
-                                    cx.notify();
-                                }),
-                            )),
-                    )
+                    .gap_2()
                     .child(
                         v_flex()
                             .w_full()
@@ -6282,10 +6099,6 @@ impl PowerLeafApp {
                             )),
                     ),
             )
-            .child(labeled_element(
-                &t!("processor_power.presets"),
-                preset_row.into_any_element(),
-            ))
             .child(
                 h_flex()
                     .gap_2()
@@ -6362,35 +6175,72 @@ impl PowerLeafApp {
 
         let picker = v_flex()
             .w_full()
-            .max_w(px(372.0))
             .min_w(px(0.0))
             .relative()
-            .min_h(px(32.0))
             .child(
                 h_flex()
-                    .id("processor-power-target-plan-control")
-                    .h(px(32.0))
+                    .id("processor-power-target-plan-card")
+                    .min_h(px(58.0))
                     .w_full()
                     .items_center()
                     .justify_between()
                     .gap_2()
-                    .px_3()
+                    .py_3()
+                    .px_4()
                     .rounded_sm()
-                    .bg(rgb(dropdown_control_color()))
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                    .cursor_pointer()
-                    .child(div().flex_1().min_w(px(0.0)).child(selected_text))
-                    .child(dropdown_chevron(cx))
-                    .on_click(cx.listener(|app, _: &gpui::ClickEvent, _, cx| {
-                        app.refresh_power_plans();
-                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                            != Some("processor-power-target-plan"))
-                        .then_some("processor-power-target-plan".to_owned());
-                        cx.notify();
-                    })),
+                    .border_1()
+                    .border_color(rgb(border_color()))
+                    .bg(rgb(settings_card_color()))
+                    .text_color(rgb(primary_text_color()))
+                    .text_size(px(TEXT_BODY_SIZE))
+                    .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                    .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .child(t!("processor_power.target_plan").to_string()),
+                            )
+                            .child(title_info_button(
+                                "processor-power-target-plan-info",
+                                t!("processor_power.help").to_string(),
+                            )),
+                    )
+                    .child(
+                        h_flex()
+                            .id("processor-power-target-plan-control")
+                            .h(px(32.0))
+                            .w(px(280.0))
+                            .max_w(px(360.0))
+                            .min_w(px(180.0))
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .px_3()
+                            .rounded_sm()
+                            .bg(rgb(dropdown_control_color()))
+                            .text_size(px(TEXT_CONTROL_SIZE))
+                            .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                            .text_color(cx.theme().foreground)
+                            .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
+                            .cursor_pointer()
+                            .child(div().flex_1().min_w(px(0.0)).truncate().child(selected_text))
+                            .child(dropdown_chevron(cx))
+                            .on_click(cx.listener(|app, _: &gpui::ClickEvent, _, cx| {
+                                app.refresh_power_plans();
+                                app.active_power_plan_picker =
+                                    (app.active_power_plan_picker.as_deref()
+                                        != Some("processor-power-target-plan"))
+                                    .then_some("processor-power-target-plan".to_owned());
+                                cx.notify();
+                            })),
+                    ),
             )
             .child(dropdown_anchor_sensor(
                 id,
@@ -6412,10 +6262,7 @@ impl PowerLeafApp {
                 div().into_any_element()
             });
 
-        labeled_element(
-            &t!("processor_power.target_plan"),
-            picker.into_any_element(),
-        )
+        picker
     }
 
     fn render_about_page(&self) -> AnyElement {
@@ -6469,11 +6316,9 @@ impl PowerLeafApp {
             .child(
                 GroupBox::new()
                     .outline()
-                    .title(
-                        Label::new(t!("action_log.recent_entries").to_string())
-                            .text_size(px(TEXT_SECTION_TITLE_SIZE))
-                            .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
-                    )
+                    .title(section_title_label(
+                        t!("action_log.recent_entries").to_string(),
+                    ))
                     .child(list),
             )
             .into_any_element()
@@ -6489,7 +6334,7 @@ impl PowerLeafApp {
     ) -> AnyElement {
         let id = id.into();
         let is_open = self.active_power_plan_picker.as_deref() == Some(id.as_str());
-        let option_count = 1 + self.plans.len().max(1);
+        let option_count = self.plans.len().max(1);
         let placement = self.dropdown_placement(&id, dropdown_list_height(option_count), window);
         let selected_text = match selected_guid.as_deref() {
             Some(guid) => self
@@ -6498,19 +6343,10 @@ impl PowerLeafApp {
                 .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
                 .map(PowerPlan::display_name)
                 .unwrap_or_else(|| t!("common.selected_plan_unavailable").to_string()),
-            None => t!("common.use_inherited_default_plan").to_string(),
+            None => t!("common.selected_plan_unavailable").to_string(),
         };
 
         let mut options = dropdown_surface(cx, placement.max_height);
-
-        options = options.child(power_plan_option_row(
-            format!("{id}-default"),
-            t!("common.use_inherited_default_plan").to_string(),
-            selected_guid.is_none(),
-            None,
-            field,
-            cx,
-        ));
 
         if self.plans.is_empty() {
             options = options.child(dropdown_empty_row(
@@ -6765,9 +6601,6 @@ impl PowerLeafApp {
             SuggestionTarget::Foreground => {
                 clear_input_to(&self.inputs.foreground_process, process, window, cx);
             }
-            SuggestionTarget::SharedProcess => {
-                clear_input_to(&self.inputs.shared_process, process, window, cx);
-            }
             SuggestionTarget::EcoQos => {
                 clear_input_to(&self.inputs.eco_qos_exclusion, process, window, cx);
             }
@@ -6978,7 +6811,6 @@ fn dropdown_option_hover_color() -> u32 {
 #[derive(Debug, Clone, Copy)]
 enum SuggestionTarget {
     Foreground,
-    SharedProcess,
     EcoQos,
     Suspension,
     CpuLimiter,
@@ -6986,17 +6818,6 @@ enum SuggestionTarget {
     PerformanceMode,
     Responsiveness,
     Affinity,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum SharedProcessModule {
-    ForegroundRule,
-    PerformanceMode,
-    CpuLimiter,
-    CoreSteering,
-    Watchdog,
-    ForegroundResponsiveness,
-    EcoQosExclusion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7012,7 +6833,6 @@ enum RuleCardTarget {
     Suspension(String),
     CpuLimiter(String),
     Watchdog(String),
-    PerformanceMode(String),
     Responsiveness(String),
     Affinity(String),
 }
@@ -7693,7 +7513,7 @@ fn page_shell_with_help(page: Page, help: Option<SharedString>) -> gpui::Div {
         ));
     }
 
-    v_flex().w_full().min_w(px(0.0)).gap_3().child(header)
+    v_flex().w_full().min_w(px(0.0)).gap_2().child(header)
 }
 
 fn tooltip_lines(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> SharedString {
@@ -7709,11 +7529,9 @@ fn tooltip_lines(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> Sh
 }
 
 fn section_card(title: &str) -> GroupBox {
-    GroupBox::new().outline().title(
-        Label::new(title.to_owned())
-            .text_size(px(TEXT_SECTION_TITLE_SIZE))
-            .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
-    )
+    GroupBox::new()
+        .outline()
+        .title(section_title_label(title.to_owned()))
 }
 
 fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
@@ -7721,23 +7539,32 @@ fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
 
     v_flex().w_full().min_w(px(0.0)).child(
         h_flex()
+            .w_full()
+            .min_h(px(26.0))
             .min_w(px(0.0))
             .items_center()
             .gap_1()
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .text_size(px(TEXT_SECTION_TITLE_SIZE))
-                    .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT))
-                    .font_weight(gpui::FontWeight::BOLD)
-                    .truncate()
-                    .child(title.to_owned()),
-            )
+            .child(section_title_text(title.to_owned()))
             .child(title_info_button(
                 SharedString::from(format!("section-info-{title}")),
                 help,
             )),
     )
+}
+
+fn section_title_label(title: impl Into<SharedString>) -> Label {
+    Label::new(title)
+        .w_full()
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::BOLD)
+}
+
+fn section_title_text(title: impl Into<SharedString>) -> Label {
+    Label::new(title)
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::BOLD)
 }
 
 fn title_info_button(id: impl Into<SharedString>, tooltip: impl Into<SharedString>) -> AnyElement {
@@ -7836,7 +7663,7 @@ fn rule_card_with_header_action(
                         .min_w(px(0.0))
                         .h(px(58.0))
                         .items_center()
-                        .gap_4()
+                        .gap_2()
                         .pl_4()
                         .pr(header_padding)
                         .id(header_action_id)
@@ -7880,7 +7707,7 @@ fn feature_body(enabled: bool) -> gpui::Div {
     v_flex()
         .w_full()
         .min_w(px(0.0))
-        .gap_3()
+        .gap_2()
         .relative()
         .when(!enabled, |body| body.opacity(0.42).cursor_default())
 }
@@ -7923,7 +7750,7 @@ fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
         .min_h(px(58.0))
         .items_center()
         .justify_end()
-        .gap_4()
+        .gap_2()
         .border_t_1()
         .border_color(rgb(border_color()))
         .px_4()
@@ -7949,7 +7776,7 @@ fn compact_rule_row(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
         .min_h(px(58.0))
         .items_center()
         .justify_between()
-        .gap_4()
+        .gap_2()
         .py_3()
         .px_4()
         .rounded_sm()
@@ -8002,7 +7829,7 @@ fn setting_group(
                 .min_h(px(58.0))
                 .items_center()
                 .justify_between()
-                .gap_4()
+                .gap_2()
                 .py_3()
                 .pl_4()
                 .pr_2()
@@ -8091,7 +7918,7 @@ fn setting_group_action_row(
         .min_h(px(58.0))
         .items_center()
         .justify_between()
-        .gap_4()
+        .gap_2()
         .py_3()
         .px_4()
         .text_color(rgb(primary_text_color()))
@@ -8190,7 +8017,7 @@ fn rule_action_row_with_title_color(
         .min_h(px(58.0))
         .items_center()
         .justify_between()
-        .gap_4()
+        .gap_2()
         .border_t_1()
         .border_color(rgb(border_color()))
         .py_3()
@@ -8320,7 +8147,7 @@ fn rule_notice_row(id: impl Into<SharedString>, notice: AnyElement) -> gpui::Sta
         .min_w(px(0.0))
         .min_h(px(58.0))
         .items_center()
-        .gap_4()
+        .gap_2()
         .border_t_1()
         .border_color(rgb(border_color()))
         .py_3()
@@ -8343,7 +8170,7 @@ fn setting_action_card(
         .min_h(px(58.0))
         .items_center()
         .justify_between()
-        .gap_4()
+        .gap_2()
         .py_3()
         .px_4()
         .rounded_sm()
@@ -8463,11 +8290,7 @@ fn titled_stat_grid(title: &str, rows: Vec<(String, String)>) -> GroupBox {
     }
     GroupBox::new()
         .outline()
-        .title(
-            Label::new(title.to_owned())
-                .text_size(px(TEXT_SECTION_TITLE_SIZE))
-                .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
-        )
+        .title(section_title_label(title.to_owned()))
         .child(list)
 }
 
@@ -8569,8 +8392,8 @@ fn action_log_feature_label(feature: ActionLogFeature) -> String {
         ActionLogFeature::AppSuspension => "App Suspension",
         ActionLogFeature::CoreSteering => "Core Steering",
         ActionLogFeature::EcoQos => "Efficiency Mode",
-        ActionLogFeature::CpuLimiter => "CPU Cap Rules",
-        ActionLogFeature::PerformanceMode => "Running App Power Plans",
+        ActionLogFeature::CpuLimiter => "Core Limiter",
+        ActionLogFeature::PerformanceMode => "Running App Detection",
         ActionLogFeature::Watchdog => "Watchdog Rules",
         ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
     }
@@ -8702,12 +8525,7 @@ fn labeled_element(label: &str, element: AnyElement) -> gpui::Div {
         .w_full()
         .min_w(px(0.0))
         .gap_1()
-        .child(
-            Label::new(label.to_owned())
-                .text_size(px(TEXT_CONTROL_SIZE))
-                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                .font_weight(gpui::FontWeight::NORMAL),
-        )
+        .child(section_title_label(label.to_owned()))
         .child(element)
 }
 
@@ -8957,9 +8775,9 @@ fn checkbox(
 enum NavStatus {
     Enabled,
     Disabled,
+    NeedsRules,
     Failed,
     Unsupported,
-    Count(usize),
 }
 
 fn title_bar_controls(window: &Window, cx: &mut Context<PowerLeafApp>) -> AnyElement {
@@ -9113,17 +8931,17 @@ fn nav_status_indicator(status: NavStatus) -> AnyElement {
             dim_text_color(),
             border_color(),
         ),
+        NavStatus::NeedsRules => (
+            "?".to_owned(),
+            warning_bg_color(),
+            warning_text_color(),
+            warning_text_color(),
+        ),
         NavStatus::Unsupported => (
             "N/A".to_owned(),
             warning_bg_color(),
             warning_text_color(),
             warning_text_color(),
-        ),
-        NavStatus::Count(count) => (
-            count.to_string(),
-            panel_active_color(),
-            muted_text_color(),
-            border_color(),
         ),
     };
 
@@ -9152,8 +8970,12 @@ fn enabled_nav_status(enabled: bool) -> NavStatus {
     }
 }
 
-fn count_nav_status(count: usize) -> NavStatus {
-    NavStatus::Count(count)
+fn rule_based_nav_status(enabled: bool, rule_count: usize) -> NavStatus {
+    if enabled && rule_count == 0 {
+        NavStatus::NeedsRules
+    } else {
+        enabled_nav_status(enabled)
+    }
 }
 
 fn process_nav_status(enabled: bool, failed_count: usize, has_error: bool) -> NavStatus {
@@ -9161,6 +8983,19 @@ fn process_nav_status(enabled: bool, failed_count: usize, has_error: bool) -> Na
         NavStatus::Failed
     } else {
         enabled_nav_status(enabled)
+    }
+}
+
+fn process_rule_nav_status(
+    enabled: bool,
+    rule_count: usize,
+    failed_count: usize,
+    has_error: bool,
+) -> NavStatus {
+    if failed_count > 0 || has_error {
+        NavStatus::Failed
+    } else {
+        rule_based_nav_status(enabled, rule_count)
     }
 }
 
@@ -9207,7 +9042,6 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::CoreParking => NavIcon::Chip,
         Page::CpuLimiter => NavIcon::Chart,
         Page::EfficiencyMode => NavIcon::Zap,
-        Page::SharedProcessRules => NavIcon::Frame,
         Page::AppSuspension => NavIcon::PauseCircle,
         Page::Watchdog => NavIcon::Frame,
         Page::PerformanceMode => NavIcon::Zap,
@@ -9313,8 +9147,38 @@ fn feature_toggle_switch(
     enabled: bool,
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    feature_toggle_switch_inner(id, label, None, enabled, handler)
+}
+
+fn feature_toggle_switch_with_help(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    enabled: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    feature_toggle_switch_inner(id, label, Some(help.into()), enabled, handler)
+}
+
+fn feature_toggle_switch_inner(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    help: Option<SharedString>,
+    enabled: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
     let id: SharedString = id.into();
     let label = label.into();
+    let label_id = id.clone();
+    let mut label_row = h_flex()
+        .flex_1()
+        .min_w(px(0.0))
+        .items_center()
+        .gap_1()
+        .child(div().min_w(px(0.0)).truncate().child(label));
+    if let Some(help) = help {
+        label_row = label_row.child(title_info_button(format!("{label_id}-info"), help));
+    }
 
     h_flex()
         .id(id.clone())
@@ -9323,7 +9187,7 @@ fn feature_toggle_switch(
         .min_h(px(58.0))
         .items_center()
         .justify_between()
-        .gap_4()
+        .gap_2()
         .py_3()
         .px_4()
         .rounded_sm()
@@ -9334,50 +9198,12 @@ fn feature_toggle_switch(
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .hover(|style| style.bg(rgb(settings_card_hover_color())))
-        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+        .child(label_row)
         .child(switch_toggle_action(
             format!("{id}-switch"),
             enabled,
             handler,
         ))
-        .into_any_element()
-}
-
-fn shared_process_module_toggle(
-    process: String,
-    module: SharedProcessModule,
-    enabled: bool,
-    can_enable: bool,
-    cx: &mut Context<PowerLeafApp>,
-) -> AnyElement {
-    let label = shared_process_module_label(module);
-    let unavailable = !enabled && !can_enable;
-    h_flex()
-        .min_h(px(32.0))
-        .gap_2()
-        .items_center()
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(border_color()))
-        .bg(rgb(settings_card_color()))
-        .px_2()
-        .text_size(px(TEXT_CONTROL_SIZE))
-        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-        .text_color(rgb(if unavailable {
-            dim_text_color()
-        } else {
-            primary_text_color()
-        }))
-        .child(switch_toggle_action(
-            format!("shared-process-{process}-{module:?}"),
-            enabled,
-            cx.listener(move |app, checked: &bool, window, cx| {
-                set_shared_process_module(&mut app.settings, &process, module, *checked);
-                app.inputs.ensure_for_settings(window, cx, &app.settings);
-                cx.notify();
-            }),
-        ))
-        .child(label)
         .into_any_element()
 }
 
@@ -9512,11 +9338,12 @@ fn text_danger(value: impl Into<SharedString>) -> gpui::Div {
 
 fn processor_power_column_header(value: impl Into<SharedString>) -> gpui::Div {
     div()
-        .px_4()
+        .w_full()
+        .min_w(px(0.0))
         .pb_1()
-        .text_size(px(TEXT_LABEL_SIZE))
-        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-        .text_color(rgb(muted_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::BOLD)
         .child(value.into())
 }
 
@@ -9958,7 +9785,7 @@ where
         .min_h(px(58.0))
         .items_center()
         .justify_between()
-        .gap_4()
+        .gap_2()
         .py_3()
         .px_4()
         .rounded_sm()
@@ -10149,7 +9976,6 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::Foreground => {
             can_add_foreground_process(&settings.foreground_rules, process)
         }
-        SuggestionTarget::SharedProcess => can_add_shared_process(settings, process),
         SuggestionTarget::EcoQos => can_add_eco_qos_process(&settings.eco_qos, process),
         SuggestionTarget::Suspension => {
             can_add_suspension_process(&settings.app_suspension, process)
@@ -10163,280 +9989,6 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
             can_add_responsiveness_process(&settings.foreground_responsiveness, process)
         }
         SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
-    }
-}
-
-fn normalize_process_name(process: &str) -> Option<String> {
-    let process = process.trim().to_ascii_lowercase();
-    (!process.is_empty()).then_some(process)
-}
-
-fn shared_process_names(settings: &Settings) -> Vec<String> {
-    let mut processes = Vec::new();
-    processes.extend(
-        settings
-            .foreground_rules
-            .rules
-            .iter()
-            .map(|rule| rule.process_name.clone()),
-    );
-    processes.extend(
-        settings
-            .performance_mode
-            .rules
-            .iter()
-            .map(|rule| rule.process_name.clone()),
-    );
-    processes.extend(
-        settings
-            .cpu_limiter
-            .rules
-            .iter()
-            .map(|rule| rule.process_name.clone()),
-    );
-    processes.extend(
-        settings
-            .cpu_affinity
-            .rules
-            .iter()
-            .map(|rule| rule.process_name.clone()),
-    );
-    processes.extend(
-        settings
-            .watchdog
-            .rules
-            .iter()
-            .map(|rule| rule.process_name.clone()),
-    );
-    processes.extend(
-        settings
-            .foreground_responsiveness
-            .rules
-            .iter()
-            .map(|rule| rule.process_name.clone()),
-    );
-    processes.extend(settings.eco_qos.efficiency_whitelist.iter().cloned());
-
-    processes.retain(|process| !process.trim().is_empty());
-    processes.sort_by_key(|process| process.to_ascii_lowercase());
-    processes.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
-    processes
-}
-
-fn can_add_shared_process(settings: &Settings, process: &str) -> bool {
-    can_add_foreground_process(&settings.foreground_rules, process)
-        || can_add_performance_mode_process(&settings.performance_mode, process)
-        || can_add_cpu_limiter_process(&settings.cpu_limiter, process)
-        || can_add_affinity_process(&settings.cpu_affinity, process)
-        || can_add_watchdog_process(&settings.watchdog, process)
-        || can_add_responsiveness_process(&settings.foreground_responsiveness, process)
-        || can_add_eco_qos_process(&settings.eco_qos, process)
-}
-
-fn shared_process_module_enabled(
-    settings: &Settings,
-    process: &str,
-    module: SharedProcessModule,
-) -> bool {
-    match module {
-        SharedProcessModule::ForegroundRule => settings
-            .foreground_rules
-            .rules
-            .iter()
-            .any(|rule| process_names_match(&rule.process_name, process)),
-        SharedProcessModule::PerformanceMode => settings
-            .performance_mode
-            .rules
-            .iter()
-            .any(|rule| process_names_match(&rule.process_name, process)),
-        SharedProcessModule::CpuLimiter => settings
-            .cpu_limiter
-            .rules
-            .iter()
-            .any(|rule| process_names_match(&rule.process_name, process)),
-        SharedProcessModule::CoreSteering => settings.cpu_affinity.contains_rule_for(process),
-        SharedProcessModule::Watchdog => settings
-            .watchdog
-            .rules
-            .iter()
-            .any(|rule| process_names_match(&rule.process_name, process)),
-        SharedProcessModule::ForegroundResponsiveness => settings
-            .foreground_responsiveness
-            .contains_rule_for(process),
-        SharedProcessModule::EcoQosExclusion => {
-            ecoqos::is_process_excluded(process, &settings.eco_qos)
-        }
-    }
-}
-
-fn shared_process_module_can_enable(
-    settings: &Settings,
-    process: &str,
-    module: SharedProcessModule,
-) -> bool {
-    match module {
-        SharedProcessModule::ForegroundRule => {
-            can_add_foreground_process(&settings.foreground_rules, process)
-        }
-        SharedProcessModule::PerformanceMode => {
-            can_add_performance_mode_process(&settings.performance_mode, process)
-        }
-        SharedProcessModule::CpuLimiter => {
-            can_add_cpu_limiter_process(&settings.cpu_limiter, process)
-        }
-        SharedProcessModule::CoreSteering => {
-            can_add_affinity_process(&settings.cpu_affinity, process)
-        }
-        SharedProcessModule::Watchdog => can_add_watchdog_process(&settings.watchdog, process),
-        SharedProcessModule::ForegroundResponsiveness => {
-            can_add_responsiveness_process(&settings.foreground_responsiveness, process)
-        }
-        SharedProcessModule::EcoQosExclusion => can_add_eco_qos_process(&settings.eco_qos, process),
-    }
-}
-
-fn set_shared_process_module(
-    settings: &mut Settings,
-    process: &str,
-    module: SharedProcessModule,
-    enabled: bool,
-) {
-    let Some(process) = normalize_process_name(process) else {
-        return;
-    };
-    match module {
-        SharedProcessModule::ForegroundRule => {
-            if enabled {
-                if can_add_foreground_process(&settings.foreground_rules, &process) {
-                    settings.foreground_rules.enabled = true;
-                    settings.foreground_rules.rules.push(new_foreground_rule(
-                        &process,
-                        settings.power_plans.performance_guid.clone(),
-                    ));
-                }
-            } else {
-                settings
-                    .foreground_rules
-                    .rules
-                    .retain(|rule| !process_names_match(&rule.process_name, &process));
-            }
-        }
-        SharedProcessModule::PerformanceMode => {
-            if enabled {
-                if can_add_performance_mode_process(&settings.performance_mode, &process) {
-                    settings.performance_mode.enabled = true;
-                    settings
-                        .performance_mode
-                        .rules
-                        .push(new_performance_mode_rule(&process));
-                }
-            } else {
-                settings
-                    .performance_mode
-                    .rules
-                    .retain(|rule| !process_names_match(&rule.process_name, &process));
-            }
-        }
-        SharedProcessModule::CpuLimiter => {
-            if enabled {
-                if can_add_cpu_limiter_process(&settings.cpu_limiter, &process) {
-                    settings.cpu_limiter.enabled = true;
-                    settings
-                        .cpu_limiter
-                        .rules
-                        .push(new_cpu_limiter_rule(&process));
-                }
-            } else {
-                settings
-                    .cpu_limiter
-                    .rules
-                    .retain(|rule| !process_names_match(&rule.process_name, &process));
-            }
-        }
-        SharedProcessModule::CoreSteering => {
-            if enabled {
-                if can_add_affinity_process(&settings.cpu_affinity, &process) {
-                    settings.cpu_affinity.enabled = true;
-                    settings
-                        .cpu_affinity
-                        .rules
-                        .push(new_affinity_rule(&process));
-                }
-            } else {
-                settings
-                    .cpu_affinity
-                    .rules
-                    .retain(|rule| !process_names_match(&rule.process_name, &process));
-            }
-        }
-        SharedProcessModule::Watchdog => {
-            if enabled {
-                if can_add_watchdog_process(&settings.watchdog, &process) {
-                    settings.watchdog.enabled = true;
-                    settings.watchdog.rules.push(new_watchdog_rule(
-                        &process,
-                        WatchdogAction::TerminateOnLaunch,
-                    ));
-                }
-            } else {
-                settings
-                    .watchdog
-                    .rules
-                    .retain(|rule| !process_names_match(&rule.process_name, &process));
-            }
-        }
-        SharedProcessModule::ForegroundResponsiveness => {
-            if enabled {
-                if can_add_responsiveness_process(&settings.foreground_responsiveness, &process) {
-                    settings.foreground_responsiveness.enabled = true;
-                    settings
-                        .foreground_responsiveness
-                        .rules
-                        .push(new_responsiveness_rule(&process));
-                }
-            } else {
-                settings
-                    .foreground_responsiveness
-                    .rules
-                    .retain(|rule| !process_names_match(&rule.process_name, &process));
-            }
-        }
-        SharedProcessModule::EcoQosExclusion => {
-            if enabled {
-                if can_add_eco_qos_process(&settings.eco_qos, &process) {
-                    settings.eco_qos.efficiency_whitelist.push(process);
-                }
-            } else {
-                settings
-                    .eco_qos
-                    .efficiency_whitelist
-                    .retain(|rule| !process_names_match(rule, &process));
-            }
-        }
-    }
-}
-
-fn process_names_match(left: &str, right: &str) -> bool {
-    left.trim().eq_ignore_ascii_case(right.trim())
-}
-
-fn shared_process_module_label(module: SharedProcessModule) -> String {
-    match module {
-        SharedProcessModule::ForegroundRule => {
-            t!("shared_process_rules.focused_app_plan").to_string()
-        }
-        SharedProcessModule::PerformanceMode => {
-            t!("shared_process_rules.running_app_plan").to_string()
-        }
-        SharedProcessModule::CpuLimiter => t!("shared_process_rules.cpu_cap").to_string(),
-        SharedProcessModule::CoreSteering => t!("shared_process_rules.cpu_placement").to_string(),
-        SharedProcessModule::Watchdog => t!("nav.watchdog").to_string(),
-        SharedProcessModule::ForegroundResponsiveness => {
-            t!("nav.foreground_responsiveness").to_string()
-        }
-        SharedProcessModule::EcoQosExclusion => {
-            t!("shared_process_rules.eco_qos_exclusion").to_string()
-        }
     }
 }
 
@@ -10646,13 +10198,16 @@ fn new_responsiveness_rule(process: &str) -> PriorityRule {
     }
 }
 
-fn new_performance_mode_rule(process: &str) -> PerformanceModeRule {
+fn new_performance_mode_rule(
+    process: &str,
+    power_plan_guid: Option<String>,
+) -> PerformanceModeRule {
     let process_name = process.trim().to_ascii_lowercase();
     PerformanceModeRule {
         enabled: true,
         name: process_name.clone(),
         process_name,
-        power_plan_guid: None,
+        power_plan_guid,
     }
 }
 
@@ -11227,90 +10782,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shared_process_names_deduplicate_across_modules() {
-        let mut settings = Settings::default();
-        settings
-            .cpu_limiter
-            .rules
-            .push(new_cpu_limiter_rule("game.exe"));
-        settings
-            .performance_mode
-            .rules
-            .push(new_performance_mode_rule("GAME.exe"));
-        settings.foreground_rules.rules.push(new_foreground_rule(
-            "Game.exe",
-            Some("foreground".to_owned()),
-        ));
-        settings
-            .eco_qos
-            .efficiency_whitelist
-            .push("editor.exe".to_owned());
-
-        assert_eq!(
-            shared_process_names(&settings),
-            vec!["editor.exe".to_owned(), "game.exe".to_owned()]
-        );
-    }
-
-    #[test]
-    fn shared_process_module_toggle_creates_and_removes_underlying_rule() {
-        let mut settings = Settings::default();
-
-        set_shared_process_module(
-            &mut settings,
-            "game.exe",
-            SharedProcessModule::CpuLimiter,
-            true,
-        );
-
-        assert!(settings.cpu_limiter.enabled);
-        assert!(shared_process_module_enabled(
-            &settings,
-            "game.exe",
-            SharedProcessModule::CpuLimiter
-        ));
-
-        set_shared_process_module(
-            &mut settings,
-            "game.exe",
-            SharedProcessModule::CpuLimiter,
-            false,
-        );
-
-        assert!(!shared_process_module_enabled(
-            &settings,
-            "game.exe",
-            SharedProcessModule::CpuLimiter
-        ));
-    }
-
-    #[test]
-    fn shared_process_module_toggle_creates_foreground_rule() {
-        let mut settings = Settings::default();
-        settings.power_plans.performance_guid = Some("performance-guid".to_owned());
-
-        set_shared_process_module(
-            &mut settings,
-            "game.exe",
-            SharedProcessModule::ForegroundRule,
-            true,
-        );
-
-        assert!(settings.foreground_rules.enabled);
-        assert_eq!(settings.foreground_rules.rules.len(), 1);
-        assert_eq!(
-            settings.foreground_rules.rules[0]
-                .power_plan_guid
-                .as_deref(),
-            Some("performance-guid")
-        );
-        assert!(shared_process_module_enabled(
-            &settings,
-            "game.exe",
-            SharedProcessModule::ForegroundRule
-        ));
-    }
 }
 
 fn path_to_wide_buffer(path: &Path, len: usize) -> Vec<u16> {

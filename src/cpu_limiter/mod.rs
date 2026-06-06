@@ -113,11 +113,11 @@ impl CpuLimiterManager {
         }
 
         if !settings.enabled {
-            let failed = self.clear_all(action_log, "CPU Cap Rules disabled");
+            let failed = self.clear_all(action_log, "Core Limiter disabled");
             return CpuLimiterSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
-                message: "CPU Cap Rules disabled.".to_owned(),
+                message: "Core Limiter disabled.".to_owned(),
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -217,7 +217,7 @@ impl CpuLimiterManager {
             &target_ids,
             &current_process_names,
             action_log,
-            "process no longer matches a CPU Cap rule",
+            "process no longer matches a Core Limiter rule",
         );
         self.tracked
             .retain(|process_id, _| target_ids.contains(process_id));
@@ -263,7 +263,7 @@ impl CpuLimiterManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
-            message: "CPU Cap Rules active.".to_owned(),
+            message: "Core Limiter active.".to_owned(),
             last_error: failures.last_error,
         }
     }
@@ -456,7 +456,7 @@ impl CpuLimiterManager {
 impl Drop for CpuLimiterManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
-        self.clear_all(&mut action_log, "CPU Cap Rules manager dropped");
+        self.clear_all(&mut action_log, "Core Limiter manager dropped");
     }
 }
 
@@ -470,7 +470,7 @@ impl Default for CpuLimiterSnapshot {
             skipped_processes: 0,
             failed_processes: 0,
             limited_apps: Vec::new(),
-            message: "CPU Cap Rules disabled.".to_owned(),
+            message: "Core Limiter disabled.".to_owned(),
             last_error: None,
         }
     }
