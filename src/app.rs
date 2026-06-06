@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
     ffi::{OsStr, OsString},
+    fs,
     mem::size_of,
     os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
@@ -13,6 +14,7 @@ use std::{
 
 use rust_i18n::t;
 
+use chrono::{Local, TimeZone};
 use gpui::{
     canvas, deferred, div, prelude::*, px, relative, rgb, AnyElement, App, Bounds, Context,
     DragMoveEvent, Empty, Entity, EntityId, Focusable, Hsla, IntoElement, MouseButton, Pixels,
@@ -34,31 +36,39 @@ use gpui_component::{
 };
 
 use crate::{
+    action_log::{ActionLogAction, ActionLogEntry, ActionLogFeature, ActionLogResult},
     activity::{ActivitySnapshot, ActivityState, IdleDetector, InputHook},
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
         self, AccentColorSource, AccentSettings, AppLanguage, AppSuspensionRule,
         AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        CpuUsageComparison, CpuUsageRule, EcoQosSettings, ForegroundBoostPriority,
-        ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, NetworkThresholdUnit,
-        PriorityRule, ProcessPriority, ScheduleRule, Settings, WeekdaySetting,
+        CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageRule, EcoQosSettings,
+        ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules,
+        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PriorityRule,
+        ProcessPriority, ScheduleRule, Settings, WatchdogAction, WatchdogRule, WatchdogSettings,
+        WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
+    cpu_limiter::{self, CpuLimiterSnapshot},
     ecoqos::{self, EcoQosSnapshot},
     foreground::{list_process_names, ForegroundDetector},
+    performance_mode::{self, PerformanceModeSnapshot},
     power::{
         PowerPlan, PowerPlanManager, ProcessorPowerAcDcValues, ProcessorPowerPreset,
         ProcessorPowerValues,
     },
     power_source,
     responsiveness::{self, ForegroundResponsivenessSnapshot},
-    rules::{DecisionEngine, DecisionInput, DecisionOutcome, DecisionState},
+    rules::{
+        DecisionEngine, DecisionInput, DecisionOutcome, DecisionState, PerformanceModeDecision,
+    },
     scheduler::{CpuUsageScheduler, Scheduler},
     startup,
     suspension::{self, AppSuspensionSnapshot},
     tray::{self, TrayIcon},
     ui::{self, Page},
+    watchdog::{self, WatchdogSnapshot},
 };
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND, POINT};
 use windows_sys::Win32::System::Registry::{
@@ -165,8 +175,12 @@ pub struct PowerLeafApp {
     cpu_usage_history: VecDeque<f32>,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
+    cpu_limiter_status: CpuLimiterSnapshot,
     cpu_affinity_status: CpuAffinitySnapshot,
+    performance_mode_status: PerformanceModeSnapshot,
+    watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
+    action_log_entries: Vec<ActionLogEntry>,
     foreground_app: Option<String>,
     decision: DecisionOutcome,
     next_schedule: String,
@@ -197,6 +211,7 @@ pub struct PowerLeafApp {
     processor_power_dc_performance_max: u64,
     processor_power_target_plan_guid: Option<String>,
     processor_power_loaded_plan_guid: Option<String>,
+    processor_power_link_ac_dc: bool,
     processor_power_dirty: bool,
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
@@ -226,8 +241,14 @@ struct UiInputs {
     foreground_rule_names: Vec<Entity<InputState>>,
     foreground_rule_processes: Vec<Entity<InputState>>,
     foreground_process: Entity<InputState>,
+    shared_process: Entity<InputState>,
     eco_qos_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
+    cpu_limiter_process: Entity<InputState>,
+    watchdog_process: Entity<InputState>,
+    watchdog_launch_paths: Vec<Entity<InputState>>,
+    watchdog_launch_args: Vec<Entity<InputState>>,
+    performance_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
     responsiveness_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
@@ -324,8 +345,24 @@ impl UiInputs {
                 .map(|rule| make_input(window, cx, &rule.process_name, "process.exe"))
                 .collect(),
             foreground_process: make_input(window, cx, "", "Search running apps..."),
+            shared_process: make_input(window, cx, "", "Search running apps..."),
             eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
+            cpu_limiter_process: make_input(window, cx, "", "Search running apps..."),
+            watchdog_process: make_input(window, cx, "", "Search running apps..."),
+            watchdog_launch_paths: settings
+                .watchdog
+                .rules
+                .iter()
+                .map(|rule| make_input(window, cx, &rule.launch_path, "Executable path"))
+                .collect(),
+            watchdog_launch_args: settings
+                .watchdog
+                .rules
+                .iter()
+                .map(|rule| make_input(window, cx, &rule.launch_args.join(" "), "Arguments"))
+                .collect(),
+            performance_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
             responsiveness_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
@@ -440,6 +477,22 @@ impl UiInputs {
             |index| settings.foreground_rules.rules[index].process_name.clone(),
             "process.exe",
         );
+        sync_input_vec(
+            &mut self.watchdog_launch_paths,
+            settings.watchdog.rules.len(),
+            window,
+            cx,
+            |index| settings.watchdog.rules[index].launch_path.clone(),
+            "Executable path",
+        );
+        sync_input_vec(
+            &mut self.watchdog_launch_args,
+            settings.watchdog.rules.len(),
+            window,
+            cx,
+            |index| settings.watchdog.rules[index].launch_args.join(" "),
+            "Arguments",
+        );
     }
 }
 
@@ -535,8 +588,12 @@ impl PowerLeafApp {
             cpu_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
             eco_qos_status: EcoQosSnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
+            cpu_limiter_status: CpuLimiterSnapshot::default(),
             cpu_affinity_status: CpuAffinitySnapshot::default(),
+            performance_mode_status: PerformanceModeSnapshot::default(),
+            watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
+            action_log_entries: Vec::new(),
             foreground_app: None,
             decision: DecisionOutcome {
                 target_guid: None,
@@ -577,6 +634,8 @@ impl PowerLeafApp {
                 as u64,
             processor_power_target_plan_guid: initial_processor_power.target_plan_guid,
             processor_power_loaded_plan_guid: initial_processor_power.loaded_plan_guid,
+            processor_power_link_ac_dc: initial_processor_power.values.ac
+                == initial_processor_power.values.dc,
             processor_power_dirty: false,
             start_minimized_applied: false,
             editing_rule_title: None,
@@ -779,6 +838,14 @@ impl PowerLeafApp {
 
     fn set_processor_power_slider_value(&mut self, slider: ProcessorPowerSlider, value: u64) {
         let value = value.min(100);
+        self.assign_processor_power_slider_value(slider, value);
+        if self.processor_power_link_ac_dc {
+            self.assign_processor_power_slider_value(slider.paired_power_source(), value);
+        }
+        self.processor_power_dirty = true;
+    }
+
+    fn assign_processor_power_slider_value(&mut self, slider: ProcessorPowerSlider, value: u64) {
         match slider {
             ProcessorPowerSlider::AcCoreParkingMin => {
                 self.processor_power_ac_core_parking_min = value;
@@ -799,7 +866,6 @@ impl PowerLeafApp {
                 self.processor_power_dc_performance_max = value;
             }
         }
-        self.processor_power_dirty = true;
     }
 
     fn sync_processor_power_slider_states(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1006,6 +1072,7 @@ impl PowerLeafApp {
                 activity_state: self.activity.state,
                 foreground_app: self.foreground_app.clone(),
                 plugged_in: power_source::is_plugged_in(),
+                performance_mode: performance_mode_decision(&self.performance_mode_status),
                 schedule,
                 cpu_usage,
             },
@@ -1138,6 +1205,32 @@ impl PowerLeafApp {
             },
             Ok(None) => {
                 self.status_message = t!("status.export_canceled").to_string();
+            }
+            Err(err) => self.status_message = err,
+        }
+    }
+
+    fn export_action_log_csv(&mut self) {
+        if self.action_log_entries.is_empty() {
+            self.status_message = t!("status.action_log_export_empty").to_string();
+            return;
+        }
+
+        match choose_action_log_export_file(self.hwnd) {
+            Ok(Some(path)) => {
+                match fs::write(&path, action_log_entries_to_csv(&self.action_log_entries)) {
+                    Ok(()) => {
+                        self.status_message =
+                            t!("status.exported_action_log", path = path.display()).to_string();
+                    }
+                    Err(err) => {
+                        self.status_message =
+                            format!("Failed to export action log to {}: {err}", path.display());
+                    }
+                }
+            }
+            Ok(None) => {
+                self.status_message = t!("status.action_log_export_canceled").to_string();
             }
             Err(err) => self.status_message = err,
         }
@@ -1283,9 +1376,27 @@ impl PowerLeafApp {
             changed = true;
         }
 
+        let cpu_limiter_status = self.background_automation.cpu_limiter_status();
+        if self.cpu_limiter_status != cpu_limiter_status {
+            self.cpu_limiter_status = cpu_limiter_status;
+            changed = true;
+        }
+
         let cpu_affinity_status = self.background_automation.cpu_affinity_status();
         if self.cpu_affinity_status != cpu_affinity_status {
             self.cpu_affinity_status = cpu_affinity_status;
+            changed = true;
+        }
+
+        let performance_mode_status = self.background_automation.performance_mode_status();
+        if self.performance_mode_status != performance_mode_status {
+            self.performance_mode_status = performance_mode_status;
+            changed = true;
+        }
+
+        let watchdog_status = self.background_automation.watchdog_status();
+        if self.watchdog_status != watchdog_status {
+            self.watchdog_status = watchdog_status;
             changed = true;
         }
 
@@ -1294,6 +1405,12 @@ impl PowerLeafApp {
             .foreground_responsiveness_status();
         if self.foreground_responsiveness_status != foreground_responsiveness_status {
             self.foreground_responsiveness_status = foreground_responsiveness_status;
+            changed = true;
+        }
+
+        let action_log_entries = self.background_automation.action_log_entries();
+        if self.action_log_entries != action_log_entries {
+            self.action_log_entries = action_log_entries;
             changed = true;
         }
 
@@ -1336,9 +1453,13 @@ impl PowerLeafApp {
         matches!(
             self.page,
             Page::ForegroundRules
+                | Page::SharedProcessRules
                 | Page::EfficiencyMode
                 | Page::AppSuspension
+                | Page::CpuLimiter
+                | Page::Watchdog
                 | Page::ForegroundResponsiveness
+                | Page::PerformanceMode
                 | Page::CpuAffinity
         )
     }
@@ -1797,6 +1918,46 @@ impl PowerLeafApp {
                     rule.duration_seconds = value;
                 }
             }
+            NumericField::CpuLimiterThreshold(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.cpu_limiter.rules.get_mut(index),
+                    parse_u64_input(&value, 1, 100),
+                ) {
+                    rule.threshold_percent = value as u8;
+                }
+            }
+            NumericField::CpuLimiterSustain(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.cpu_limiter.rules.get_mut(index),
+                    parse_u64_input(&value, 1, 86_400),
+                ) {
+                    rule.sustain_seconds = value;
+                }
+            }
+            NumericField::CpuLimiterCooldown(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.cpu_limiter.rules.get_mut(index),
+                    parse_u64_input(&value, 1, 86_400),
+                ) {
+                    rule.cooldown_seconds = value;
+                }
+            }
+            NumericField::CpuLimiterMaxProcessors(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.cpu_limiter.rules.get_mut(index),
+                    parse_u64_input(&value, 1, max_logical_processor_count() as u64),
+                ) {
+                    rule.max_logical_processors = value as u8;
+                }
+            }
+            NumericField::WatchdogRestartDelay(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.watchdog.rules.get_mut(index),
+                    parse_u64_input(&value, 0, 86_400),
+                ) {
+                    rule.restart_delay_seconds = value;
+                }
+            }
             NumericField::NetworkThreshold(field) => {
                 let Ok(value) = value.parse::<f64>() else {
                     return;
@@ -1909,6 +2070,14 @@ impl PowerLeafApp {
                 rule.process_name = input.read(cx).value().to_string();
             }
         }
+        for (index, rule) in self.settings.watchdog.rules.iter_mut().enumerate() {
+            if let Some(input) = self.inputs.watchdog_launch_paths.get(index) {
+                rule.launch_path = input.read(cx).value().to_string();
+            }
+            if let Some(input) = self.inputs.watchdog_launch_args.get(index) {
+                rule.launch_args = split_watchdog_args(&input.read(cx).value());
+            }
+        }
     }
 
     fn background_settings(&self) -> Settings {
@@ -1921,6 +2090,7 @@ impl PowerLeafApp {
         settings.eco_qos = self.saved_settings.eco_qos.clone();
         settings.app_suspension = self.saved_settings.app_suspension.clone();
         settings.cpu_affinity = self.saved_settings.cpu_affinity.clone();
+        settings.watchdog = self.saved_settings.watchdog.clone();
         settings.foreground_responsiveness = self.saved_settings.foreground_responsiveness.clone();
         settings
     }
@@ -1941,17 +2111,35 @@ impl PowerLeafApp {
             }
             Page::CpuUsage => Some(enabled_nav_status(settings.cpu_usage_mode.enabled)),
             Page::CoreParking => None,
+            Page::CpuLimiter => Some(process_nav_status(
+                settings.cpu_limiter.enabled,
+                self.cpu_limiter_status.failed_processes,
+                self.cpu_limiter_status.last_error.is_some(),
+            )),
             Page::EfficiencyMode => Some(feature_nav_status(
                 settings.eco_qos.enabled,
                 self.eco_qos_status.unsupported,
                 self.eco_qos_status.failed_processes,
                 self.eco_qos_status.last_error.is_some(),
             )),
+            Page::SharedProcessRules => {
+                Some(count_nav_status(shared_process_names(settings).len()))
+            }
             Page::AppSuspension => Some(feature_nav_status(
                 settings.app_suspension.enabled,
                 self.app_suspension_status.unsupported,
                 self.app_suspension_status.failed_actions,
                 self.app_suspension_status.last_error.is_some(),
+            )),
+            Page::PerformanceMode => Some(process_nav_status(
+                settings.performance_mode.enabled,
+                0,
+                self.performance_mode_status.last_error.is_some(),
+            )),
+            Page::Watchdog => Some(process_nav_status(
+                settings.watchdog.enabled,
+                self.watchdog_status.failed_actions,
+                self.watchdog_status.last_error.is_some(),
             )),
             Page::CpuAffinity => Some(process_nav_status(
                 settings.cpu_affinity.enabled,
@@ -1965,6 +2153,7 @@ impl PowerLeafApp {
             )),
             Page::ForegroundRules => Some(enabled_nav_status(settings.foreground_rules.enabled)),
             Page::Schedule => Some(enabled_nav_status(settings.schedule_mode.enabled)),
+            Page::ActionLog => None,
             Page::Settings | Page::About => None,
         }
     }
@@ -2229,12 +2418,17 @@ impl PowerLeafApp {
             Page::Schedule => self.render_schedule_page(window, cx),
             Page::CpuUsage => self.render_cpu_usage_page(window, cx),
             Page::CoreParking => self.render_core_parking_page(window, cx),
+            Page::CpuLimiter => self.render_cpu_limiter_page(window, cx),
+            Page::SharedProcessRules => self.render_shared_process_rules_page(window, cx),
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
+            Page::Watchdog => self.render_watchdog_page(window, cx),
+            Page::PerformanceMode => self.render_performance_mode_page(window, cx),
             Page::ForegroundResponsiveness => {
                 self.render_foreground_responsiveness_page(window, cx)
             }
             Page::CpuAffinity => self.render_affinity_page(window, cx),
+            Page::ActionLog => self.render_action_log_page(cx),
             Page::Settings => self.render_settings_page(window, cx),
             Page::About => self.render_about_page(),
         }
@@ -2371,6 +2565,16 @@ impl PowerLeafApp {
                             | DecisionState::ForegroundForcePowerSave
                     ),
                     foreground_label(self.foreground_app.as_deref()),
+                ),
+            ),
+            (
+                t!("nav.performance_mode").to_string(),
+                active_rule_label(
+                    self.decision.state == DecisionState::PerformanceMode,
+                    self.performance_mode_status
+                        .active_process
+                        .clone()
+                        .unwrap_or_else(|| t!("common.none").to_string()),
                 ),
             ),
             (
@@ -2822,13 +3026,175 @@ impl PowerLeafApp {
     }
 
     fn new_foreground_rule(&self, process: &str) -> ForegroundRule {
-        let process_name = process.trim().to_ascii_lowercase();
-        ForegroundRule {
-            enabled: true,
-            name: process_name.clone(),
-            process_name,
-            power_plan_guid: self.current_plan.as_ref().map(|plan| plan.guid.clone()),
+        new_foreground_rule(
+            process,
+            self.current_plan.as_ref().map(|plan| plan.guid.clone()),
+        )
+    }
+
+    fn render_shared_process_rules_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self.inputs.shared_process.read(cx).value().to_string();
+        let draft_process = normalize_process_name(&input_value)
+            .filter(|process| can_add_shared_process(&self.settings, process));
+        let mut processes = shared_process_names(&self.settings);
+        if let Some(process) = draft_process.as_deref() {
+            processes.retain(|existing| !existing.eq_ignore_ascii_case(process));
         }
+
+        let mut rows = rule_list();
+        if let Some(process) = draft_process {
+            rows = rows.child(self.render_shared_process_rule(process, true, cx));
+        }
+        if processes.is_empty() && input_value.trim().is_empty() {
+            rows = rows.child(
+                GroupBox::new()
+                    .outline()
+                    .child(text_muted(t!("shared_process_rules.empty").to_string())),
+            );
+        } else {
+            for process in processes {
+                rows = rows.child(self.render_shared_process_rule(process, false, cx));
+            }
+        }
+
+        page_shell_with_help(
+            Page::SharedProcessRules,
+            Some(tooltip_lines(vec![
+                t!("shared_process_rules.intro_1").to_string(),
+                t!("shared_process_rules.intro_2").to_string(),
+            ])),
+        )
+        .child(
+            h_flex()
+                .gap_2()
+                .items_start()
+                .flex_wrap()
+                .child(self.render_process_picker(
+                    "shared-process-suggestion",
+                    &self.inputs.shared_process,
+                    SuggestionTarget::SharedProcess,
+                    window,
+                    cx,
+                ))
+                .child(
+                    control_button(Button::new("shared-process-clear"))
+                        .label(t!("common.clear").to_string())
+                        .disabled(input_value.trim().is_empty())
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            clear_input(&app.inputs.shared_process, window, cx);
+                            cx.notify();
+                        })),
+                ),
+        )
+        .child(
+            GroupBox::new()
+                .outline()
+                .title(
+                    Label::new(t!("shared_process_rules.processes").to_string())
+                        .text_size(px(TEXT_SECTION_TITLE_SIZE))
+                        .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
+                )
+                .child(rows),
+        )
+        .into_any_element()
+    }
+
+    fn render_shared_process_rule(
+        &self,
+        process: String,
+        draft: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let modules = v_flex()
+            .flex_1()
+            .min_w(px(260.0))
+            .gap_2()
+            .child(self.render_shared_process_module_group(
+                &process,
+                t!("shared_process_rules.plan_group").to_string(),
+                &[
+                    SharedProcessModule::ForegroundRule,
+                    SharedProcessModule::PerformanceMode,
+                ],
+                cx,
+            ))
+            .child(self.render_shared_process_module_group(
+                &process,
+                t!("shared_process_rules.cpu_group").to_string(),
+                &[
+                    SharedProcessModule::CpuLimiter,
+                    SharedProcessModule::CoreSteering,
+                ],
+                cx,
+            ))
+            .child(self.render_shared_process_module_group(
+                &process,
+                t!("shared_process_rules.policy_group").to_string(),
+                &[
+                    SharedProcessModule::Watchdog,
+                    SharedProcessModule::ForegroundResponsiveness,
+                    SharedProcessModule::EcoQosExclusion,
+                ],
+                cx,
+            ));
+
+        compact_rule_row(cx)
+            .items_start()
+            .child(
+                v_flex()
+                    .w(px(210.0))
+                    .min_w(px(160.0))
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(RULE_TITLE_TEXT_SIZE))
+                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                            .truncate()
+                            .child(process.clone()),
+                    )
+                    .when(draft, |column| {
+                        column.child(
+                            Tag::info()
+                                .outline()
+                                .child(t!("shared_process_rules.draft").to_string()),
+                        )
+                    }),
+            )
+            .child(modules)
+            .into_any_element()
+    }
+
+    fn render_shared_process_module_group(
+        &self,
+        process: &str,
+        label: String,
+        modules: &[SharedProcessModule],
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let mut row = h_flex().gap_2().flex_wrap();
+        for module in modules {
+            row = row.child(shared_process_module_toggle(
+                process.to_string(),
+                *module,
+                shared_process_module_enabled(&self.settings, process, *module),
+                shared_process_module_can_enable(&self.settings, process, *module),
+                cx,
+            ));
+        }
+
+        v_flex()
+            .gap_1()
+            .child(
+                Label::new(label)
+                    .text_size(px(TEXT_CAPTION_SIZE))
+                    .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
+                    .text_color(rgb(muted_text_color())),
+            )
+            .child(row)
     }
 
     fn render_rule_title(
@@ -3375,36 +3741,6 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(stat_grid(vec![
-                (
-                    t!("common.status").to_string(),
-                    self.eco_qos_status.message.clone(),
-                ),
-                (
-                    t!("efficiency.throttled_processes").to_string(),
-                    self.eco_qos_status.throttled_processes.to_string(),
-                ),
-                (
-                    t!("efficiency.scanned_processes").to_string(),
-                    self.eco_qos_status.scanned_processes.to_string(),
-                ),
-                (
-                    t!("efficiency.skipped_processes").to_string(),
-                    self.eco_qos_status.skipped_processes.to_string(),
-                ),
-                (
-                    t!("efficiency.failed_actions").to_string(),
-                    self.eco_qos_status.failed_processes.to_string(),
-                ),
-                (
-                    t!("common.last_failure").to_string(),
-                    self.eco_qos_status
-                        .last_error
-                        .as_deref()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| t!("common.none").to_string()),
-                ),
-            ]))
             .child(section_header(
                 &t!("efficiency.whitelist"),
                 t!("efficiency.whitelist_help").to_string(),
@@ -3698,52 +4034,6 @@ impl PowerLeafApp {
                 )],
                 cx,
             ))
-            .child(stat_grid(vec![
-                (
-                    t!("common.status").to_string(),
-                    self.app_suspension_status.message.clone(),
-                ),
-                (
-                    t!("suspension.tracked_processes").to_string(),
-                    self.app_suspension_status.tracked_processes.to_string(),
-                ),
-                (
-                    t!("suspension.suspended_processes").to_string(),
-                    self.app_suspension_status.suspended_processes.to_string(),
-                ),
-                (
-                    t!("suspension.temporary_thawed").to_string(),
-                    self.app_suspension_status
-                        .temporary_thawed_processes
-                        .to_string(),
-                ),
-                (
-                    t!("suspension.network_wake").to_string(),
-                    self.app_suspension_status
-                        .network_wake_processes
-                        .to_string(),
-                ),
-                (
-                    t!("suspension.audio_wake").to_string(),
-                    self.app_suspension_status.audio_wake_processes.to_string(),
-                ),
-                (
-                    t!("efficiency.skipped_processes").to_string(),
-                    self.app_suspension_status.skipped_processes.to_string(),
-                ),
-                (
-                    t!("efficiency.failed_actions").to_string(),
-                    self.app_suspension_status.failed_actions.to_string(),
-                ),
-                (
-                    t!("common.last_failure").to_string(),
-                    self.app_suspension_status
-                        .last_error
-                        .as_deref()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| t!("common.none").to_string()),
-                ),
-            ]))
             .child(section_header(
                 &t!("suspension.suspendable_apps"),
                 t!("suspension.suspendable_help").to_string(),
@@ -3926,6 +4216,553 @@ impl PowerLeafApp {
         }
         if self.settings.app_suspension.suspendable_apps.is_empty() {
             list = list.child(text_muted(t!("suspension.no_suspendable").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_cpu_limiter_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self.inputs.cpu_limiter_process.read(cx).value().to_string();
+        let enabled = self.settings.cpu_limiter.enabled;
+        let body = feature_body(enabled)
+            .child(checkbox(
+                "cpu-limiter-foreground",
+                t!("cpu_limiter.focus_detection").to_string(),
+                self.settings.cpu_limiter.exclude_foreground_app,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.cpu_limiter.exclude_foreground_app = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(section_header(
+                &t!("cpu_limiter.rules"),
+                t!("cpu_limiter.rules_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "cpu-limiter-suggestion",
+                        &self.inputs.cpu_limiter_process,
+                        SuggestionTarget::CpuLimiter,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        control_button(Button::new("add-cpu-limiter-process"))
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_cpu_limiter_process(
+                                        &self.settings.cpu_limiter,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.cpu_limiter_process.read(cx).value().to_string();
+                                if can_add_cpu_limiter_process(&app.settings.cpu_limiter, &process)
+                                {
+                                    app.settings
+                                        .cpu_limiter
+                                        .rules
+                                        .push(new_cpu_limiter_rule(&process));
+                                    clear_input(&app.inputs.cpu_limiter_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_cpu_limiter_rules(cx));
+
+        page_shell_with_help(
+            Page::CpuLimiter,
+            Some(tooltip_lines(vec![
+                t!("cpu_limiter.intro_1").to_string(),
+                t!("cpu_limiter.intro_2").to_string(),
+                t!("cpu_limiter.intro_3").to_string(),
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "cpu-limiter-enabled",
+            t!("cpu_limiter.enable").to_string(),
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.cpu_limiter.enabled = *checked;
+                cx.notify();
+            }),
+        ))
+        .child(disabled_feature_body(body, enabled))
+        .into_any_element()
+    }
+
+    fn render_cpu_limiter_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.cpu_limiter.rules.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let indicator = cpu_limiter_indicator(&self.cpu_limiter_status, &process);
+            let card_target = RuleCardTarget::CpuLimiter(process.clone());
+            let collapsed = self.is_rule_card_collapsed(&card_target);
+            let mut card = rule_card(
+                static_rule_title(&process),
+                rule_enable_checkbox(
+                    format!("cpu-limiter-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.cpu_limiter.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ),
+                rule_card_collapse_indicator(collapsed),
+                card_target.clone(),
+                cx,
+            );
+            if !collapsed {
+                card = card
+                    .child(rule_card_body_row(vec![rule_action_row(
+                        format!("cpu-limiter-rule-status-{index}"),
+                        t!("common.status").to_string(),
+                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                    )
+                    .into_any_element()]))
+                    .child(rule_card_body_row(vec![
+                        self.render_cpu_limiter_numeric_row(
+                            index,
+                            NumericField::CpuLimiterThreshold(index),
+                            t!("cpu_limiter.threshold").to_string(),
+                            format!("{}%", rule.threshold_percent),
+                            rule.threshold_percent.to_string(),
+                            cx,
+                        ),
+                        self.render_cpu_limiter_numeric_row(
+                            index,
+                            NumericField::CpuLimiterMaxProcessors(index),
+                            t!("cpu_limiter.max_processors").to_string(),
+                            rule.max_logical_processors.to_string(),
+                            rule.max_logical_processors.to_string(),
+                            cx,
+                        ),
+                    ]))
+                    .child(rule_card_body_row(vec![
+                        self.render_cpu_limiter_numeric_row(
+                            index,
+                            NumericField::CpuLimiterSustain(index),
+                            t!("cpu_limiter.sustain").to_string(),
+                            format!("{} sec", rule.sustain_seconds),
+                            rule.sustain_seconds.to_string(),
+                            cx,
+                        ),
+                        self.render_cpu_limiter_numeric_row(
+                            index,
+                            NumericField::CpuLimiterCooldown(index),
+                            t!("cpu_limiter.cooldown").to_string(),
+                            format!("{} sec", rule.cooldown_seconds),
+                            rule.cooldown_seconds.to_string(),
+                            cx,
+                        ),
+                    ]))
+                    .child(rule_card_body_action(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-cpu-limiter-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener({
+                            let card_target = card_target.clone();
+                            move |app, _, _, cx| {
+                                if index < app.settings.cpu_limiter.rules.len() {
+                                    app.settings.cpu_limiter.rules.remove(index);
+                                }
+                                app.expanded_rule_cards.remove(&card_target);
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
+                    ));
+            }
+            list = list.child(card);
+        }
+        if self.settings.cpu_limiter.rules.is_empty() {
+            list = list.child(text_muted(t!("cpu_limiter.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_cpu_limiter_numeric_row(
+        &self,
+        index: usize,
+        field: NumericField,
+        label: String,
+        display_value: String,
+        edit_value: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        rule_action_row(
+            format!("cpu-limiter-numeric-{index}-{field:?}"),
+            label,
+            self.render_numeric_value(field, display_value, edit_value, cx),
+        )
+        .into_any_element()
+    }
+
+    fn render_watchdog_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self.inputs.watchdog_process.read(cx).value().to_string();
+        let enabled = self.settings.watchdog.enabled;
+        let can_add = enabled && can_add_watchdog_process(&self.settings.watchdog, &input_value);
+        let body = feature_body(enabled)
+            .child(section_header(
+                &t!("watchdog.rules"),
+                t!("watchdog.rules_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "watchdog-suggestion",
+                        &self.inputs.watchdog_process,
+                        SuggestionTarget::Watchdog,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        control_button(Button::new("add-watchdog-terminate"))
+                            .label(t!("watchdog.add_terminate").to_string())
+                            .disabled(!can_add)
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.watchdog_process.read(cx).value().to_string();
+                                if can_add_watchdog_process(&app.settings.watchdog, &process) {
+                                    app.settings.watchdog.rules.push(new_watchdog_rule(
+                                        &process,
+                                        WatchdogAction::TerminateOnLaunch,
+                                    ));
+                                    clear_input(&app.inputs.watchdog_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        control_button(Button::new("add-watchdog-restart"))
+                            .label(t!("watchdog.add_restart").to_string())
+                            .disabled(!can_add)
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.watchdog_process.read(cx).value().to_string();
+                                if can_add_watchdog_process(&app.settings.watchdog, &process) {
+                                    app.settings.watchdog.rules.push(new_watchdog_rule(
+                                        &process,
+                                        WatchdogAction::RestartIfExited,
+                                    ));
+                                    clear_input(&app.inputs.watchdog_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_watchdog_rules(window, cx));
+
+        page_shell_with_help(
+            Page::Watchdog,
+            Some(tooltip_lines(vec![
+                t!("watchdog.intro_1").to_string(),
+                t!("watchdog.intro_2").to_string(),
+                t!("watchdog.intro_3").to_string(),
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "watchdog-enabled",
+            t!("watchdog.enable").to_string(),
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.watchdog.enabled = *checked;
+                cx.notify();
+            }),
+        ))
+        .child(disabled_feature_body(body, enabled))
+        .into_any_element()
+    }
+
+    fn render_watchdog_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.watchdog.rules.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let indicator = watchdog_indicator(&self.watchdog_status, &process);
+            let card_target = RuleCardTarget::Watchdog(process.clone());
+            let collapsed = self.is_rule_card_collapsed(&card_target);
+            let mut card = rule_card(
+                static_rule_title(&process),
+                rule_enable_checkbox(
+                    format!("watchdog-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.watchdog.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ),
+                rule_card_collapse_indicator(collapsed),
+                card_target.clone(),
+                cx,
+            );
+            if !collapsed {
+                card = card
+                    .child(rule_card_body_row(vec![rule_action_row(
+                        format!("watchdog-rule-status-{index}"),
+                        t!("common.status").to_string(),
+                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                    )
+                    .into_any_element()]))
+                    .child(rule_card_body_row(vec![
+                        self.render_watchdog_action_selector(index, rule.action, cx)
+                    ]));
+
+                if rule.action == WatchdogAction::RestartIfExited {
+                    if let Some(input) = self.inputs.watchdog_launch_paths.get(index) {
+                        card = card.child(rule_card_body_row(vec![rule_action_row(
+                            format!("watchdog-launch-path-{index}"),
+                            t!("watchdog.launch_path").to_string(),
+                            app_input(
+                                input,
+                                input.read(cx).focus_handle(cx).is_focused(window),
+                                cx,
+                            )
+                            .into_any_element(),
+                        )
+                        .into_any_element()]));
+                    }
+                    if let Some(input) = self.inputs.watchdog_launch_args.get(index) {
+                        card = card.child(rule_card_body_row(vec![rule_action_row(
+                            format!("watchdog-launch-args-{index}"),
+                            t!("watchdog.launch_args").to_string(),
+                            app_input(
+                                input,
+                                input.read(cx).focus_handle(cx).is_focused(window),
+                                cx,
+                            )
+                            .into_any_element(),
+                        )
+                        .into_any_element()]));
+                    }
+                    card = card.child(rule_card_body_row(vec![rule_action_row(
+                        format!("watchdog-restart-delay-{index}"),
+                        t!("watchdog.restart_delay").to_string(),
+                        self.render_numeric_value(
+                            NumericField::WatchdogRestartDelay(index),
+                            format!("{} sec", rule.restart_delay_seconds),
+                            rule.restart_delay_seconds.to_string(),
+                            cx,
+                        ),
+                    )
+                    .into_any_element()]));
+                }
+
+                card = card.child(rule_card_body_action(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-watchdog-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener({
+                        let card_target = card_target.clone();
+                        move |app, _, _, cx| {
+                            if index < app.settings.watchdog.rules.len() {
+                                app.settings.watchdog.rules.remove(index);
+                            }
+                            app.expanded_rule_cards.remove(&card_target);
+                            cx.notify();
+                        }
+                    }))
+                    .into_any_element(),
+                ));
+            }
+            list = list.child(card);
+        }
+        if self.settings.watchdog.rules.is_empty() {
+            list = list.child(text_muted(t!("watchdog.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_watchdog_action_selector(
+        &self,
+        index: usize,
+        selected_action: WatchdogAction,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = h_flex().gap_1().flex_wrap();
+        for action in [
+            WatchdogAction::TerminateOnLaunch,
+            WatchdogAction::RestartIfExited,
+        ] {
+            row = row.child(
+                toggle_button(
+                    format!("watchdog-action-{index}-{action:?}"),
+                    watchdog_action_label(action),
+                    selected_action == action,
+                )
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if let Some(rule) = app.settings.watchdog.rules.get_mut(index) {
+                        rule.action = action;
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        rule_action_row(
+            format!("watchdog-action-row-{index}"),
+            t!("watchdog.action").to_string(),
+            row.into_any_element(),
+        )
+        .into_any_element()
+    }
+
+    fn render_performance_mode_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self.inputs.performance_process.read(cx).value().to_string();
+        let enabled = self.settings.performance_mode.enabled;
+        let body = feature_body(enabled)
+            .child(section_header(
+                &t!("performance_mode.rules"),
+                t!("performance_mode.rules_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "performance-mode-suggestion",
+                        &self.inputs.performance_process,
+                        SuggestionTarget::PerformanceMode,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        control_button(Button::new("add-performance-mode-process"))
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_performance_mode_process(
+                                        &self.settings.performance_mode,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.performance_process.read(cx).value().to_string();
+                                if can_add_performance_mode_process(
+                                    &app.settings.performance_mode,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .performance_mode
+                                        .rules
+                                        .push(new_performance_mode_rule(&process));
+                                    clear_input(&app.inputs.performance_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_performance_mode_rules(window, cx));
+
+        page_shell_with_help(
+            Page::PerformanceMode,
+            Some(tooltip_lines(vec![
+                t!("performance_mode.intro_1").to_string(),
+                t!("performance_mode.intro_2").to_string(),
+                t!("performance_mode.intro_3").to_string(),
+            ])),
+        )
+        .child(feature_toggle_switch(
+            "performance-mode-enabled",
+            t!("performance_mode.enable").to_string(),
+            enabled,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.performance_mode.enabled = *checked;
+                cx.notify();
+            }),
+        ))
+        .child(disabled_feature_body(body, enabled))
+        .into_any_element()
+    }
+
+    fn render_performance_mode_rules(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.performance_mode.rules.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let indicator = performance_mode_indicator(&self.performance_mode_status, &process);
+            let card_target = RuleCardTarget::PerformanceMode(process.clone());
+            let collapsed = self.is_rule_card_collapsed(&card_target);
+            let mut card = rule_card(
+                static_rule_title(&process),
+                rule_enable_checkbox(
+                    format!("performance-mode-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.performance_mode.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ),
+                rule_card_collapse_indicator(collapsed),
+                card_target.clone(),
+                cx,
+            );
+            if !collapsed {
+                card = card
+                    .child(rule_card_body_row(vec![rule_action_row(
+                        format!("performance-mode-rule-status-{index}"),
+                        t!("common.status").to_string(),
+                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                    )
+                    .into_any_element()]))
+                    .child(rule_card_body_row(vec![rule_action_row(
+                        format!("performance-mode-rule-plan-{index}"),
+                        t!("performance_mode.power_plan").to_string(),
+                        self.render_inline_power_plan_picker(
+                            format!("performance-mode-plan-{index}"),
+                            rule.power_plan_guid.clone(),
+                            PowerPlanField::PerformanceModeRule(index),
+                            window,
+                            cx,
+                        ),
+                    )
+                    .into_any_element()]))
+                    .child(rule_card_body_action(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-performance-mode-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener({
+                            let card_target = card_target.clone();
+                            move |app, _, _, cx| {
+                                if index < app.settings.performance_mode.rules.len() {
+                                    app.settings.performance_mode.rules.remove(index);
+                                }
+                                app.expanded_rule_cards.remove(&card_target);
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
+                    ));
+            }
+            list = list.child(card);
+        }
+        if self.settings.performance_mode.rules.is_empty() {
+            list = list.child(text_muted(t!("performance_mode.no_rules").to_string()));
         }
         list.into_any_element()
     }
@@ -4114,57 +4951,6 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(stat_grid(vec![
-                (
-                    t!("common.status").to_string(),
-                    self.foreground_responsiveness_status.message.clone(),
-                ),
-                (
-                    t!("responsiveness.background_adjusted").to_string(),
-                    self.foreground_responsiveness_status
-                        .background_adjusted_processes
-                        .to_string(),
-                ),
-                (
-                    t!("responsiveness.auto_balanced").to_string(),
-                    self.foreground_responsiveness_status
-                        .auto_balanced_processes
-                        .to_string(),
-                ),
-                (
-                    t!("responsiveness.foreground_boosted").to_string(),
-                    self.foreground_responsiveness_status
-                        .foreground_boosted_process
-                        .clone()
-                        .unwrap_or_else(|| t!("common.none").to_string()),
-                ),
-                (
-                    t!("efficiency.scanned_processes").to_string(),
-                    self.foreground_responsiveness_status
-                        .scanned_processes
-                        .to_string(),
-                ),
-                (
-                    t!("efficiency.skipped_processes").to_string(),
-                    self.foreground_responsiveness_status
-                        .skipped_processes
-                        .to_string(),
-                ),
-                (
-                    t!("efficiency.failed_actions").to_string(),
-                    self.foreground_responsiveness_status
-                        .failed_processes
-                        .to_string(),
-                ),
-                (
-                    t!("common.last_failure").to_string(),
-                    self.foreground_responsiveness_status
-                        .last_error
-                        .as_deref()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| t!("common.none").to_string()),
-                ),
-            ]))
             .child(section_header(
                 &t!("responsiveness.rules"),
                 t!("responsiveness.rules_help").to_string(),
@@ -4402,36 +5188,6 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(stat_grid(vec![
-                (
-                    t!("common.status").to_string(),
-                    self.cpu_affinity_status.message.clone(),
-                ),
-                (
-                    t!("affinity.adjusted_processes").to_string(),
-                    self.cpu_affinity_status.adjusted_processes.to_string(),
-                ),
-                (
-                    t!("affinity.scanned_processes").to_string(),
-                    self.cpu_affinity_status.scanned_processes.to_string(),
-                ),
-                (
-                    t!("affinity.skipped_processes").to_string(),
-                    self.cpu_affinity_status.skipped_processes.to_string(),
-                ),
-                (
-                    t!("affinity.failed_actions").to_string(),
-                    self.cpu_affinity_status.failed_processes.to_string(),
-                ),
-                (
-                    t!("common.last_failure").to_string(),
-                    self.cpu_affinity_status
-                        .last_error
-                        .as_deref()
-                        .map(str::to_owned)
-                        .unwrap_or_else(|| t!("common.none").to_string()),
-                ),
-            ]))
             .child(section_header(
                 &t!("affinity.rules"),
                 t!("affinity.rules_help").to_string(),
@@ -5308,6 +6064,44 @@ impl PowerLeafApp {
                     .w_full()
                     .gap_3()
                     .child(
+                        h_flex()
+                            .w_full()
+                            .min_w(px(0.0))
+                            .items_center()
+                            .justify_between()
+                            .gap_4()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .gap_1()
+                                    .child(
+                                        Label::new(t!("processor_power.link_ac_dc").to_string())
+                                            .text_size(px(TEXT_CONTROL_SIZE))
+                                            .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                                            .font_weight(gpui::FontWeight::NORMAL),
+                                    )
+                                    .child(text_muted(
+                                        t!("processor_power.link_ac_dc_help").to_string(),
+                                    )),
+                            )
+                            .child(switch_toggle_action(
+                                "processor-power-link-ac-dc",
+                                self.processor_power_link_ac_dc,
+                                cx.listener(|app, checked: &bool, _, cx| {
+                                    app.processor_power_link_ac_dc = *checked;
+                                    if *checked {
+                                        let values = app.processor_power_values();
+                                        app.set_processor_power_values(
+                                            ProcessorPowerAcDcValues::same(values.ac),
+                                        );
+                                        app.processor_power_dirty = true;
+                                    }
+                                    cx.notify();
+                                }),
+                            )),
+                    )
+                    .child(
                         v_flex()
                             .w_full()
                             .min_w(px(0.0))
@@ -5640,6 +6434,51 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
+    fn render_action_log_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let help = tooltip_lines(vec![
+            t!("action_log.intro_1").to_string(),
+            t!("action_log.intro_2").to_string(),
+        ]);
+
+        let mut list = rule_list();
+        if self.action_log_entries.is_empty() {
+            list = list.child(
+                GroupBox::new()
+                    .outline()
+                    .child(text_muted(t!("action_log.empty").to_string())),
+            );
+        } else {
+            list = list.child(action_log_header_row());
+            for entry in self.action_log_entries.iter().rev().take(100) {
+                list = list.child(action_log_entry_row(entry, cx));
+            }
+        }
+
+        page_shell_with_help(Page::ActionLog, Some(help))
+            .child(
+                h_flex().w_full().justify_end().child(
+                    control_button(Button::new("export-action-log"))
+                        .label(t!("action_log.export_csv").to_string())
+                        .disabled(self.action_log_entries.is_empty())
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.export_action_log_csv();
+                            cx.notify();
+                        })),
+                ),
+            )
+            .child(
+                GroupBox::new()
+                    .outline()
+                    .title(
+                        Label::new(t!("action_log.recent_entries").to_string())
+                            .text_size(px(TEXT_SECTION_TITLE_SIZE))
+                            .line_height(px(TEXT_SECTION_TITLE_LINE_HEIGHT)),
+                    )
+                    .child(list),
+            )
+            .into_any_element()
+    }
+
     fn render_inline_power_plan_picker(
         &self,
         id: impl Into<String>,
@@ -5764,6 +6603,11 @@ impl PowerLeafApp {
             }
             PowerPlanField::ForegroundRule(index) => {
                 if let Some(rule) = self.settings.foreground_rules.rules.get_mut(index) {
+                    rule.power_plan_guid = guid;
+                }
+            }
+            PowerPlanField::PerformanceModeRule(index) => {
+                if let Some(rule) = self.settings.performance_mode.rules.get_mut(index) {
                     rule.power_plan_guid = guid;
                 }
             }
@@ -5921,11 +6765,23 @@ impl PowerLeafApp {
             SuggestionTarget::Foreground => {
                 clear_input_to(&self.inputs.foreground_process, process, window, cx);
             }
+            SuggestionTarget::SharedProcess => {
+                clear_input_to(&self.inputs.shared_process, process, window, cx);
+            }
             SuggestionTarget::EcoQos => {
                 clear_input_to(&self.inputs.eco_qos_exclusion, process, window, cx);
             }
             SuggestionTarget::Suspension => {
                 clear_input_to(&self.inputs.suspension_process, process, window, cx);
+            }
+            SuggestionTarget::CpuLimiter => {
+                clear_input_to(&self.inputs.cpu_limiter_process, process, window, cx);
+            }
+            SuggestionTarget::Watchdog => {
+                clear_input_to(&self.inputs.watchdog_process, process, window, cx);
+            }
+            SuggestionTarget::PerformanceMode => {
+                clear_input_to(&self.inputs.performance_process, process, window, cx);
             }
             SuggestionTarget::Responsiveness => {
                 clear_input_to(&self.inputs.responsiveness_process, process, window, cx);
@@ -5947,6 +6803,7 @@ enum PowerPlanKind {
 enum PowerPlanField {
     ActivityKind(PowerPlanKind),
     ForegroundRule(usize),
+    PerformanceModeRule(usize),
     ScheduleRule(usize),
     CpuRule(usize),
     CpuRuleElse(usize),
@@ -6121,10 +6978,25 @@ fn dropdown_option_hover_color() -> u32 {
 #[derive(Debug, Clone, Copy)]
 enum SuggestionTarget {
     Foreground,
+    SharedProcess,
     EcoQos,
     Suspension,
+    CpuLimiter,
+    Watchdog,
+    PerformanceMode,
     Responsiveness,
     Affinity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SharedProcessModule {
+    ForegroundRule,
+    PerformanceMode,
+    CpuLimiter,
+    CoreSteering,
+    Watchdog,
+    ForegroundResponsiveness,
+    EcoQosExclusion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6138,6 +7010,9 @@ enum RuleCardTarget {
     Schedule(usize),
     Cpu(usize),
     Suspension(String),
+    CpuLimiter(String),
+    Watchdog(String),
+    PerformanceMode(String),
     Responsiveness(String),
     Affinity(String),
 }
@@ -6177,6 +7052,11 @@ enum NumericField {
     CpuThreshold(usize),
     CpuUpperThreshold(usize),
     CpuDuration(usize),
+    CpuLimiterThreshold(usize),
+    CpuLimiterSustain(usize),
+    CpuLimiterCooldown(usize),
+    CpuLimiterMaxProcessors(usize),
+    WatchdogRestartDelay(usize),
     NetworkThreshold(ThresholdField),
 }
 
@@ -6188,6 +7068,19 @@ enum ProcessorPowerSlider {
     DcCoreParkingMin,
     DcPerformanceMin,
     DcPerformanceMax,
+}
+
+impl ProcessorPowerSlider {
+    const fn paired_power_source(self) -> Self {
+        match self {
+            Self::AcCoreParkingMin => Self::DcCoreParkingMin,
+            Self::AcPerformanceMin => Self::DcPerformanceMin,
+            Self::AcPerformanceMax => Self::DcPerformanceMax,
+            Self::DcCoreParkingMin => Self::AcCoreParkingMin,
+            Self::DcPerformanceMin => Self::AcPerformanceMin,
+            Self::DcPerformanceMax => Self::AcPerformanceMax,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -7578,6 +8471,197 @@ fn titled_stat_grid(title: &str, rows: Vec<(String, String)>) -> GroupBox {
         .child(list)
 }
 
+fn action_log_header_row() -> gpui::Div {
+    h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .gap_3()
+        .px_4()
+        .pb_1()
+        .text_size(px(TEXT_LABEL_SIZE))
+        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+        .text_color(rgb(muted_text_color()))
+        .child(
+            div()
+                .w(px(56.0))
+                .child(t!("action_log.sequence").to_string()),
+        )
+        .child(div().w(px(96.0)).child(t!("action_log.time").to_string()))
+        .child(
+            div()
+                .w(px(156.0))
+                .child(t!("action_log.feature").to_string()),
+        )
+        .child(div().w(px(88.0)).child(t!("action_log.result").to_string()))
+        .child(
+            div()
+                .w(px(176.0))
+                .child(t!("action_log.process").to_string()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(120.0))
+                .child(t!("action_log.reason").to_string()),
+        )
+}
+
+fn action_log_entry_row(entry: &ActionLogEntry, cx: &mut Context<PowerLeafApp>) -> gpui::Div {
+    compact_rule_row(cx)
+        .gap_3()
+        .child(
+            div()
+                .w(px(56.0))
+                .flex_shrink_0()
+                .text_color(rgb(dim_text_color()))
+                .child(format!("#{}", entry.sequence)),
+        )
+        .child(
+            div()
+                .w(px(96.0))
+                .flex_shrink_0()
+                .text_color(rgb(muted_text_color()))
+                .child(action_log_time_label(entry.timestamp_epoch_ms)),
+        )
+        .child(
+            div()
+                .w(px(156.0))
+                .flex_shrink_0()
+                .truncate()
+                .child(action_log_feature_label(entry.feature)),
+        )
+        .child(
+            div()
+                .w(px(88.0))
+                .flex_shrink_0()
+                .child(action_log_result_tag(entry.result).into_any_element()),
+        )
+        .child(
+            div()
+                .w(px(176.0))
+                .min_w(px(0.0))
+                .flex_shrink_0()
+                .truncate()
+                .child(action_log_process_label(entry)),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(120.0))
+                .text_color(rgb(muted_text_color()))
+                .child(entry.reason.clone()),
+        )
+}
+
+fn action_log_result_tag(result: ActionLogResult) -> Tag {
+    let label = action_log_result_label(result);
+    match result {
+        ActionLogResult::Applied | ActionLogResult::Restored => {
+            Tag::success().outline().child(label)
+        }
+        ActionLogResult::Skipped => Tag::warning().outline().child(label),
+        ActionLogResult::Failed => Tag::danger().outline().child(label),
+    }
+}
+
+fn action_log_feature_label(feature: ActionLogFeature) -> String {
+    match feature {
+        ActionLogFeature::AppSuspension => "App Suspension",
+        ActionLogFeature::CoreSteering => "Core Steering",
+        ActionLogFeature::EcoQos => "Efficiency Mode",
+        ActionLogFeature::CpuLimiter => "CPU Cap Rules",
+        ActionLogFeature::PerformanceMode => "Running App Power Plans",
+        ActionLogFeature::Watchdog => "Watchdog Rules",
+        ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
+    }
+    .to_owned()
+}
+
+fn action_log_result_label(result: ActionLogResult) -> SharedString {
+    match result {
+        ActionLogResult::Applied => "Applied",
+        ActionLogResult::Restored => "Restored",
+        ActionLogResult::Skipped => "Skipped",
+        ActionLogResult::Failed => "Failed",
+    }
+    .into()
+}
+
+fn action_log_action_label(action: ActionLogAction) -> &'static str {
+    match action {
+        ActionLogAction::Apply => "Apply",
+        ActionLogAction::Restore => "Restore",
+        ActionLogAction::Skip => "Skip",
+        ActionLogAction::Fail => "Fail",
+    }
+}
+
+fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
+    let mut csv =
+        String::from("sequence,timestamp,feature,process_id,process_name,action,result,reason\r\n");
+    for entry in entries {
+        let process_id = entry
+            .process_id
+            .map(|id| id.to_string())
+            .unwrap_or_default();
+        let row = [
+            entry.sequence.to_string(),
+            action_log_export_time_label(entry.timestamp_epoch_ms),
+            action_log_feature_label(entry.feature),
+            process_id,
+            entry.process_name.clone(),
+            action_log_action_label(entry.action).to_owned(),
+            action_log_result_label(entry.result).to_string(),
+            entry.reason.clone(),
+        ]
+        .into_iter()
+        .map(|value| csv_escape(&value))
+        .collect::<Vec<_>>()
+        .join(",");
+        csv.push_str(&row);
+        csv.push_str("\r\n");
+    }
+    csv
+}
+
+fn action_log_export_time_label(timestamp_epoch_ms: u128) -> String {
+    let timestamp = timestamp_epoch_ms.min(i64::MAX as u128) as i64;
+    Local
+        .timestamp_millis_opt(timestamp)
+        .single()
+        .map(|time| time.format("%Y-%m-%d %H:%M:%S%.3f %:z").to_string())
+        .unwrap_or_else(|| timestamp_epoch_ms.to_string())
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
+}
+
+fn action_log_process_label(entry: &ActionLogEntry) -> String {
+    let name = if entry.process_name.trim().is_empty() {
+        t!("common.none").to_string()
+    } else {
+        entry.process_name.clone()
+    };
+    match entry.process_id {
+        Some(process_id) => format!("{name} ({})", process_id),
+        None => name,
+    }
+}
+
+fn action_log_time_label(timestamp_epoch_ms: u128) -> String {
+    let timestamp = timestamp_epoch_ms.min(i64::MAX as u128) as i64;
+    Local
+        .timestamp_millis_opt(timestamp)
+        .single()
+        .map(|time| time.format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "--:--:--".to_owned())
+}
+
 fn enabled_label(enabled: bool) -> String {
     if enabled {
         t!("common.enabled").to_string()
@@ -7875,6 +8959,7 @@ enum NavStatus {
     Disabled,
     Failed,
     Unsupported,
+    Count(usize),
 }
 
 fn title_bar_controls(window: &Window, cx: &mut Context<PowerLeafApp>) -> AnyElement {
@@ -8011,28 +9096,34 @@ fn nav_row(
 fn nav_status_indicator(status: NavStatus) -> AnyElement {
     let (label, bg, fg, border) = match status {
         NavStatus::Enabled => (
-            "ON",
+            "ON".to_owned(),
             success_bg_color(),
             success_text_color(),
             success_text_color(),
         ),
         NavStatus::Failed => (
-            "ERR",
+            "ERR".to_owned(),
             if ui_is_dark() { 0x4a1f1f } else { 0xfde7e9 },
             if ui_is_dark() { 0xff8a8a } else { 0xc42b1c },
             if ui_is_dark() { 0x8f2f2f } else { 0xf1aeb5 },
         ),
         NavStatus::Disabled => (
-            "OFF",
+            "OFF".to_owned(),
             if ui_is_dark() { 0x343434 } else { 0xf3f3f3 },
             dim_text_color(),
             border_color(),
         ),
         NavStatus::Unsupported => (
-            "N/A",
+            "N/A".to_owned(),
             warning_bg_color(),
             warning_text_color(),
             warning_text_color(),
+        ),
+        NavStatus::Count(count) => (
+            count.to_string(),
+            panel_active_color(),
+            muted_text_color(),
+            border_color(),
         ),
     };
 
@@ -8059,6 +9150,10 @@ fn enabled_nav_status(enabled: bool) -> NavStatus {
     } else {
         NavStatus::Disabled
     }
+}
+
+fn count_nav_status(count: usize) -> NavStatus {
+    NavStatus::Count(count)
 }
 
 fn process_nav_status(enabled: bool, failed_count: usize, has_error: bool) -> NavStatus {
@@ -8110,12 +9205,17 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::Activity => NavIcon::Activity,
         Page::CpuUsage => NavIcon::Chart,
         Page::CoreParking => NavIcon::Chip,
+        Page::CpuLimiter => NavIcon::Chart,
         Page::EfficiencyMode => NavIcon::Zap,
+        Page::SharedProcessRules => NavIcon::Frame,
         Page::AppSuspension => NavIcon::PauseCircle,
+        Page::Watchdog => NavIcon::Frame,
+        Page::PerformanceMode => NavIcon::Zap,
         Page::ForegroundResponsiveness => NavIcon::Zap,
         Page::CpuAffinity => NavIcon::Chip,
         Page::ForegroundRules => NavIcon::Frame,
         Page::Schedule => NavIcon::Calendar,
+        Page::ActionLog => NavIcon::Info,
         Page::Settings => NavIcon::Settings,
         Page::About => NavIcon::Info,
     }
@@ -8243,6 +9343,44 @@ fn feature_toggle_switch(
         .into_any_element()
 }
 
+fn shared_process_module_toggle(
+    process: String,
+    module: SharedProcessModule,
+    enabled: bool,
+    can_enable: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> AnyElement {
+    let label = shared_process_module_label(module);
+    let unavailable = !enabled && !can_enable;
+    h_flex()
+        .min_h(px(32.0))
+        .gap_2()
+        .items_center()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .px_2()
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+        .text_color(rgb(if unavailable {
+            dim_text_color()
+        } else {
+            primary_text_color()
+        }))
+        .child(switch_toggle_action(
+            format!("shared-process-{process}-{module:?}"),
+            enabled,
+            cx.listener(move |app, checked: &bool, window, cx| {
+                set_shared_process_module(&mut app.settings, &process, module, *checked);
+                app.inputs.ensure_for_settings(window, cx, &app.settings);
+                cx.notify();
+            }),
+        ))
+        .child(label)
+        .into_any_element()
+}
+
 fn switch_toggle_action(
     id: impl Into<SharedString>,
     enabled: bool,
@@ -8341,9 +9479,18 @@ fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorAcPerformanceMax
         | NumericField::ProcessorDcCoreParkingMin
         | NumericField::ProcessorDcPerformanceMin
-        | NumericField::ProcessorDcPerformanceMax => 76.0,
+        | NumericField::ProcessorDcPerformanceMax
+        | NumericField::CpuLimiterThreshold(_)
+        | NumericField::CpuLimiterMaxProcessors(_) => 76.0,
         _ => 96.0,
     }
+}
+
+fn max_logical_processor_count() -> u8 {
+    std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .clamp(1, u8::MAX as usize) as u8
 }
 
 fn text_muted(value: impl Into<SharedString>) -> gpui::Div {
@@ -9002,14 +10149,294 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::Foreground => {
             can_add_foreground_process(&settings.foreground_rules, process)
         }
+        SuggestionTarget::SharedProcess => can_add_shared_process(settings, process),
         SuggestionTarget::EcoQos => can_add_eco_qos_process(&settings.eco_qos, process),
         SuggestionTarget::Suspension => {
             can_add_suspension_process(&settings.app_suspension, process)
+        }
+        SuggestionTarget::CpuLimiter => can_add_cpu_limiter_process(&settings.cpu_limiter, process),
+        SuggestionTarget::Watchdog => can_add_watchdog_process(&settings.watchdog, process),
+        SuggestionTarget::PerformanceMode => {
+            can_add_performance_mode_process(&settings.performance_mode, process)
         }
         SuggestionTarget::Responsiveness => {
             can_add_responsiveness_process(&settings.foreground_responsiveness, process)
         }
         SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
+    }
+}
+
+fn normalize_process_name(process: &str) -> Option<String> {
+    let process = process.trim().to_ascii_lowercase();
+    (!process.is_empty()).then_some(process)
+}
+
+fn shared_process_names(settings: &Settings) -> Vec<String> {
+    let mut processes = Vec::new();
+    processes.extend(
+        settings
+            .foreground_rules
+            .rules
+            .iter()
+            .map(|rule| rule.process_name.clone()),
+    );
+    processes.extend(
+        settings
+            .performance_mode
+            .rules
+            .iter()
+            .map(|rule| rule.process_name.clone()),
+    );
+    processes.extend(
+        settings
+            .cpu_limiter
+            .rules
+            .iter()
+            .map(|rule| rule.process_name.clone()),
+    );
+    processes.extend(
+        settings
+            .cpu_affinity
+            .rules
+            .iter()
+            .map(|rule| rule.process_name.clone()),
+    );
+    processes.extend(
+        settings
+            .watchdog
+            .rules
+            .iter()
+            .map(|rule| rule.process_name.clone()),
+    );
+    processes.extend(
+        settings
+            .foreground_responsiveness
+            .rules
+            .iter()
+            .map(|rule| rule.process_name.clone()),
+    );
+    processes.extend(settings.eco_qos.efficiency_whitelist.iter().cloned());
+
+    processes.retain(|process| !process.trim().is_empty());
+    processes.sort_by_key(|process| process.to_ascii_lowercase());
+    processes.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    processes
+}
+
+fn can_add_shared_process(settings: &Settings, process: &str) -> bool {
+    can_add_foreground_process(&settings.foreground_rules, process)
+        || can_add_performance_mode_process(&settings.performance_mode, process)
+        || can_add_cpu_limiter_process(&settings.cpu_limiter, process)
+        || can_add_affinity_process(&settings.cpu_affinity, process)
+        || can_add_watchdog_process(&settings.watchdog, process)
+        || can_add_responsiveness_process(&settings.foreground_responsiveness, process)
+        || can_add_eco_qos_process(&settings.eco_qos, process)
+}
+
+fn shared_process_module_enabled(
+    settings: &Settings,
+    process: &str,
+    module: SharedProcessModule,
+) -> bool {
+    match module {
+        SharedProcessModule::ForegroundRule => settings
+            .foreground_rules
+            .rules
+            .iter()
+            .any(|rule| process_names_match(&rule.process_name, process)),
+        SharedProcessModule::PerformanceMode => settings
+            .performance_mode
+            .rules
+            .iter()
+            .any(|rule| process_names_match(&rule.process_name, process)),
+        SharedProcessModule::CpuLimiter => settings
+            .cpu_limiter
+            .rules
+            .iter()
+            .any(|rule| process_names_match(&rule.process_name, process)),
+        SharedProcessModule::CoreSteering => settings.cpu_affinity.contains_rule_for(process),
+        SharedProcessModule::Watchdog => settings
+            .watchdog
+            .rules
+            .iter()
+            .any(|rule| process_names_match(&rule.process_name, process)),
+        SharedProcessModule::ForegroundResponsiveness => settings
+            .foreground_responsiveness
+            .contains_rule_for(process),
+        SharedProcessModule::EcoQosExclusion => {
+            ecoqos::is_process_excluded(process, &settings.eco_qos)
+        }
+    }
+}
+
+fn shared_process_module_can_enable(
+    settings: &Settings,
+    process: &str,
+    module: SharedProcessModule,
+) -> bool {
+    match module {
+        SharedProcessModule::ForegroundRule => {
+            can_add_foreground_process(&settings.foreground_rules, process)
+        }
+        SharedProcessModule::PerformanceMode => {
+            can_add_performance_mode_process(&settings.performance_mode, process)
+        }
+        SharedProcessModule::CpuLimiter => {
+            can_add_cpu_limiter_process(&settings.cpu_limiter, process)
+        }
+        SharedProcessModule::CoreSteering => {
+            can_add_affinity_process(&settings.cpu_affinity, process)
+        }
+        SharedProcessModule::Watchdog => can_add_watchdog_process(&settings.watchdog, process),
+        SharedProcessModule::ForegroundResponsiveness => {
+            can_add_responsiveness_process(&settings.foreground_responsiveness, process)
+        }
+        SharedProcessModule::EcoQosExclusion => can_add_eco_qos_process(&settings.eco_qos, process),
+    }
+}
+
+fn set_shared_process_module(
+    settings: &mut Settings,
+    process: &str,
+    module: SharedProcessModule,
+    enabled: bool,
+) {
+    let Some(process) = normalize_process_name(process) else {
+        return;
+    };
+    match module {
+        SharedProcessModule::ForegroundRule => {
+            if enabled {
+                if can_add_foreground_process(&settings.foreground_rules, &process) {
+                    settings.foreground_rules.enabled = true;
+                    settings.foreground_rules.rules.push(new_foreground_rule(
+                        &process,
+                        settings.power_plans.performance_guid.clone(),
+                    ));
+                }
+            } else {
+                settings
+                    .foreground_rules
+                    .rules
+                    .retain(|rule| !process_names_match(&rule.process_name, &process));
+            }
+        }
+        SharedProcessModule::PerformanceMode => {
+            if enabled {
+                if can_add_performance_mode_process(&settings.performance_mode, &process) {
+                    settings.performance_mode.enabled = true;
+                    settings
+                        .performance_mode
+                        .rules
+                        .push(new_performance_mode_rule(&process));
+                }
+            } else {
+                settings
+                    .performance_mode
+                    .rules
+                    .retain(|rule| !process_names_match(&rule.process_name, &process));
+            }
+        }
+        SharedProcessModule::CpuLimiter => {
+            if enabled {
+                if can_add_cpu_limiter_process(&settings.cpu_limiter, &process) {
+                    settings.cpu_limiter.enabled = true;
+                    settings
+                        .cpu_limiter
+                        .rules
+                        .push(new_cpu_limiter_rule(&process));
+                }
+            } else {
+                settings
+                    .cpu_limiter
+                    .rules
+                    .retain(|rule| !process_names_match(&rule.process_name, &process));
+            }
+        }
+        SharedProcessModule::CoreSteering => {
+            if enabled {
+                if can_add_affinity_process(&settings.cpu_affinity, &process) {
+                    settings.cpu_affinity.enabled = true;
+                    settings
+                        .cpu_affinity
+                        .rules
+                        .push(new_affinity_rule(&process));
+                }
+            } else {
+                settings
+                    .cpu_affinity
+                    .rules
+                    .retain(|rule| !process_names_match(&rule.process_name, &process));
+            }
+        }
+        SharedProcessModule::Watchdog => {
+            if enabled {
+                if can_add_watchdog_process(&settings.watchdog, &process) {
+                    settings.watchdog.enabled = true;
+                    settings.watchdog.rules.push(new_watchdog_rule(
+                        &process,
+                        WatchdogAction::TerminateOnLaunch,
+                    ));
+                }
+            } else {
+                settings
+                    .watchdog
+                    .rules
+                    .retain(|rule| !process_names_match(&rule.process_name, &process));
+            }
+        }
+        SharedProcessModule::ForegroundResponsiveness => {
+            if enabled {
+                if can_add_responsiveness_process(&settings.foreground_responsiveness, &process) {
+                    settings.foreground_responsiveness.enabled = true;
+                    settings
+                        .foreground_responsiveness
+                        .rules
+                        .push(new_responsiveness_rule(&process));
+                }
+            } else {
+                settings
+                    .foreground_responsiveness
+                    .rules
+                    .retain(|rule| !process_names_match(&rule.process_name, &process));
+            }
+        }
+        SharedProcessModule::EcoQosExclusion => {
+            if enabled {
+                if can_add_eco_qos_process(&settings.eco_qos, &process) {
+                    settings.eco_qos.efficiency_whitelist.push(process);
+                }
+            } else {
+                settings
+                    .eco_qos
+                    .efficiency_whitelist
+                    .retain(|rule| !process_names_match(rule, &process));
+            }
+        }
+    }
+}
+
+fn process_names_match(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+fn shared_process_module_label(module: SharedProcessModule) -> String {
+    match module {
+        SharedProcessModule::ForegroundRule => {
+            t!("shared_process_rules.focused_app_plan").to_string()
+        }
+        SharedProcessModule::PerformanceMode => {
+            t!("shared_process_rules.running_app_plan").to_string()
+        }
+        SharedProcessModule::CpuLimiter => t!("shared_process_rules.cpu_cap").to_string(),
+        SharedProcessModule::CoreSteering => t!("shared_process_rules.cpu_placement").to_string(),
+        SharedProcessModule::Watchdog => t!("nav.watchdog").to_string(),
+        SharedProcessModule::ForegroundResponsiveness => {
+            t!("nav.foreground_responsiveness").to_string()
+        }
+        SharedProcessModule::EcoQosExclusion => {
+            t!("shared_process_rules.eco_qos_exclusion").to_string()
+        }
     }
 }
 
@@ -9020,6 +10447,16 @@ fn can_add_foreground_process(settings: &ForegroundRules, process: &str) -> bool
             .rules
             .iter()
             .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+}
+
+fn new_foreground_rule(process: &str, power_plan_guid: Option<String>) -> ForegroundRule {
+    let process_name = process.trim().to_ascii_lowercase();
+    ForegroundRule {
+        enabled: true,
+        name: process_name.clone(),
+        process_name,
+        power_plan_guid,
+    }
 }
 
 fn can_add_eco_qos_process(settings: &EcoQosSettings, process: &str) -> bool {
@@ -9051,6 +10488,36 @@ fn can_add_responsiveness_process(
         && !responsiveness::is_builtin_excluded(process)
 }
 
+fn can_add_cpu_limiter_process(settings: &CpuLimiterSettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !settings
+            .rules
+            .iter()
+            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+        && !cpu_limiter::is_builtin_excluded(process)
+}
+
+fn can_add_watchdog_process(settings: &WatchdogSettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !settings
+            .rules
+            .iter()
+            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+        && !watchdog::is_builtin_excluded(process)
+}
+
+fn can_add_performance_mode_process(settings: &PerformanceModeSettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !settings
+            .rules
+            .iter()
+            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+        && !performance_mode::is_builtin_excluded(process)
+}
+
 fn new_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         process_name: process.trim().to_ascii_lowercase(),
@@ -9072,12 +10539,165 @@ fn new_affinity_rule(process: &str) -> CpuAffinityRule {
     }
 }
 
+fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
+    CpuLimiterRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+        threshold_percent: 75,
+        sustain_seconds: 5,
+        cooldown_seconds: 10,
+        max_logical_processors: 1,
+    }
+}
+
+fn new_watchdog_rule(process: &str, action: WatchdogAction) -> WatchdogRule {
+    let process_name = process.trim().to_ascii_lowercase();
+    WatchdogRule {
+        enabled: true,
+        name: process_name.clone(),
+        process_name: process_name.clone(),
+        action,
+        launch_path: if action == WatchdogAction::RestartIfExited {
+            process_name
+        } else {
+            String::new()
+        },
+        launch_args: Vec::new(),
+        restart_delay_seconds: 5,
+    }
+}
+
+fn split_watchdog_args(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .map(str::trim)
+        .filter(|arg| !arg.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn watchdog_action_label(action: WatchdogAction) -> String {
+    match action {
+        WatchdogAction::TerminateOnLaunch => t!("watchdog.action_terminate").to_string(),
+        WatchdogAction::RestartIfExited => t!("watchdog.action_restart").to_string(),
+    }
+}
+
+fn watchdog_indicator(status: &WatchdogSnapshot, process: &str) -> (String, u32, u32) {
+    if watchdog::is_builtin_excluded(process) {
+        (
+            t!("affinity.indicator.protected").to_string(),
+            settings_card_hover_color(),
+            accent_color(),
+        )
+    } else if status.enabled {
+        (
+            t!("affinity.indicator.ready").to_string(),
+            panel_active_color(),
+            muted_text_color(),
+        )
+    } else {
+        (
+            t!("affinity.indicator.off").to_string(),
+            panel_active_color(),
+            dim_text_color(),
+        )
+    }
+}
+
+fn cpu_limiter_indicator(status: &CpuLimiterSnapshot, process: &str) -> (String, u32, u32) {
+    if cpu_limiter::is_builtin_excluded(process) {
+        (
+            t!("affinity.indicator.protected").to_string(),
+            settings_card_hover_color(),
+            accent_color(),
+        )
+    } else if cpu_limiter_app_contains(&status.limited_apps, process) {
+        (
+            t!("cpu_limiter.indicator_limited").to_string(),
+            success_bg_color(),
+            success_text_color(),
+        )
+    } else if status.enabled {
+        (
+            t!("affinity.indicator.ready").to_string(),
+            panel_active_color(),
+            muted_text_color(),
+        )
+    } else {
+        (
+            t!("affinity.indicator.off").to_string(),
+            panel_active_color(),
+            dim_text_color(),
+        )
+    }
+}
+
+fn cpu_limiter_app_contains(apps: &[String], process: &str) -> bool {
+    apps.iter()
+        .any(|app| app.trim().eq_ignore_ascii_case(process.trim()))
+}
+
 fn new_responsiveness_rule(process: &str) -> PriorityRule {
     PriorityRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
         priority: ProcessPriority::BelowNormal,
     }
+}
+
+fn new_performance_mode_rule(process: &str) -> PerformanceModeRule {
+    let process_name = process.trim().to_ascii_lowercase();
+    PerformanceModeRule {
+        enabled: true,
+        name: process_name.clone(),
+        process_name,
+        power_plan_guid: None,
+    }
+}
+
+fn performance_mode_indicator(
+    status: &PerformanceModeSnapshot,
+    process: &str,
+) -> (String, u32, u32) {
+    if performance_mode::is_builtin_excluded(process) {
+        (
+            t!("affinity.indicator.protected").to_string(),
+            settings_card_hover_color(),
+            accent_color(),
+        )
+    } else if status.active
+        && status
+            .active_process
+            .as_deref()
+            .is_some_and(|name| name.eq_ignore_ascii_case(process.trim()))
+    {
+        (
+            t!("performance_mode.indicator_active").to_string(),
+            success_bg_color(),
+            success_text_color(),
+        )
+    } else if status.enabled {
+        (
+            t!("affinity.indicator.ready").to_string(),
+            panel_active_color(),
+            muted_text_color(),
+        )
+    } else {
+        (
+            t!("affinity.indicator.off").to_string(),
+            panel_active_color(),
+            dim_text_color(),
+        )
+    }
+}
+
+fn performance_mode_decision(status: &PerformanceModeSnapshot) -> Option<PerformanceModeDecision> {
+    Some(PerformanceModeDecision {
+        rule_name: status.active_rule.clone()?,
+        process_name: status.active_process.clone()?,
+        power_plan_guid: status.target_guid.clone()?,
+    })
 }
 
 fn process_priority_label(priority: ProcessPriority) -> String {
@@ -9467,6 +11087,52 @@ fn choose_settings_file(
     }
 }
 
+fn choose_action_log_export_file(hwnd: Option<HWND>) -> Result<Option<PathBuf>, String> {
+    const FILE_BUFFER_LEN: usize = 4096;
+
+    let mut file_buffer =
+        path_to_wide_buffer(&default_action_log_export_csv_path(), FILE_BUFFER_LEN);
+    let filter = wide_nulls("CSV files (*.csv)\0*.csv\0All files (*.*)\0*.*\0");
+    let default_extension = wide_null("csv");
+    let title = wide_null("Export action log");
+
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: hwnd.unwrap_or_default(),
+        lpstrFilter: filter.as_ptr(),
+        lpstrFile: file_buffer.as_mut_ptr(),
+        nMaxFile: file_buffer.len() as u32,
+        lpstrTitle: title.as_ptr(),
+        lpstrDefExt: default_extension.as_ptr(),
+        Flags: OFN_HIDEREADONLY | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
+        ..Default::default()
+    };
+
+    let selected = unsafe { GetSaveFileNameW(&mut dialog) };
+    if selected != 0 {
+        return Ok(Some(path_from_wide_buffer(&file_buffer)));
+    }
+
+    let error = unsafe { CommDlgExtendedError() };
+    if error == 0 {
+        Ok(None)
+    } else {
+        Err(format!("File dialog failed with error code {error}"))
+    }
+}
+
+fn default_action_log_export_csv_path() -> PathBuf {
+    config::storage::config_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(format!(
+            "powerleaf_action_log_{}_{}.csv",
+            env!("CARGO_PKG_VERSION"),
+            Local::now().format("%Y-%m-%d")
+        ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -9508,6 +11174,142 @@ mod tests {
         let rule = new_affinity_rule("game.exe");
 
         assert_eq!(rule.mode, CpuAffinityMode::Soft);
+    }
+
+    #[test]
+    fn csv_escape_quotes_fields_with_special_characters() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("two,parts"), "\"two,parts\"");
+        assert_eq!(csv_escape("quoted \"value\""), "\"quoted \"\"value\"\"\"");
+        assert_eq!(csv_escape("line\r\nbreak"), "\"line\r\nbreak\"");
+    }
+
+    #[test]
+    fn action_log_entries_export_as_csv() {
+        let entries = vec![ActionLogEntry {
+            sequence: 7,
+            timestamp_epoch_ms: 1_700_000_000_000,
+            feature: ActionLogFeature::Watchdog,
+            process_id: Some(42),
+            process_name: "worker.exe".to_owned(),
+            action: ActionLogAction::Fail,
+            result: ActionLogResult::Failed,
+            reason: "Restart failed, access denied".to_owned(),
+        }];
+
+        let csv = action_log_entries_to_csv(&entries);
+
+        assert!(csv.starts_with(
+            "sequence,timestamp,feature,process_id,process_name,action,result,reason\r\n"
+        ));
+        assert!(csv.contains(
+            ",Watchdog Rules,42,worker.exe,Fail,Failed,\"Restart failed, access denied\"\r\n"
+        ));
+    }
+
+    #[test]
+    fn processor_power_slider_pairs_ac_and_battery_controls() {
+        assert_eq!(
+            ProcessorPowerSlider::AcCoreParkingMin.paired_power_source(),
+            ProcessorPowerSlider::DcCoreParkingMin
+        );
+        assert_eq!(
+            ProcessorPowerSlider::AcPerformanceMin.paired_power_source(),
+            ProcessorPowerSlider::DcPerformanceMin
+        );
+        assert_eq!(
+            ProcessorPowerSlider::AcPerformanceMax.paired_power_source(),
+            ProcessorPowerSlider::DcPerformanceMax
+        );
+        assert_eq!(
+            ProcessorPowerSlider::DcCoreParkingMin.paired_power_source(),
+            ProcessorPowerSlider::AcCoreParkingMin
+        );
+    }
+
+    #[test]
+    fn shared_process_names_deduplicate_across_modules() {
+        let mut settings = Settings::default();
+        settings
+            .cpu_limiter
+            .rules
+            .push(new_cpu_limiter_rule("game.exe"));
+        settings
+            .performance_mode
+            .rules
+            .push(new_performance_mode_rule("GAME.exe"));
+        settings.foreground_rules.rules.push(new_foreground_rule(
+            "Game.exe",
+            Some("foreground".to_owned()),
+        ));
+        settings
+            .eco_qos
+            .efficiency_whitelist
+            .push("editor.exe".to_owned());
+
+        assert_eq!(
+            shared_process_names(&settings),
+            vec!["editor.exe".to_owned(), "game.exe".to_owned()]
+        );
+    }
+
+    #[test]
+    fn shared_process_module_toggle_creates_and_removes_underlying_rule() {
+        let mut settings = Settings::default();
+
+        set_shared_process_module(
+            &mut settings,
+            "game.exe",
+            SharedProcessModule::CpuLimiter,
+            true,
+        );
+
+        assert!(settings.cpu_limiter.enabled);
+        assert!(shared_process_module_enabled(
+            &settings,
+            "game.exe",
+            SharedProcessModule::CpuLimiter
+        ));
+
+        set_shared_process_module(
+            &mut settings,
+            "game.exe",
+            SharedProcessModule::CpuLimiter,
+            false,
+        );
+
+        assert!(!shared_process_module_enabled(
+            &settings,
+            "game.exe",
+            SharedProcessModule::CpuLimiter
+        ));
+    }
+
+    #[test]
+    fn shared_process_module_toggle_creates_foreground_rule() {
+        let mut settings = Settings::default();
+        settings.power_plans.performance_guid = Some("performance-guid".to_owned());
+
+        set_shared_process_module(
+            &mut settings,
+            "game.exe",
+            SharedProcessModule::ForegroundRule,
+            true,
+        );
+
+        assert!(settings.foreground_rules.enabled);
+        assert_eq!(settings.foreground_rules.rules.len(), 1);
+        assert_eq!(
+            settings.foreground_rules.rules[0]
+                .power_plan_guid
+                .as_deref(),
+            Some("performance-guid")
+        );
+        assert!(shared_process_module_enabled(
+            &settings,
+            "game.exe",
+            SharedProcessModule::ForegroundRule
+        ));
     }
 }
 

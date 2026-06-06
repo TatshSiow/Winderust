@@ -6,12 +6,17 @@ pub enum Page {
     Activity,
     CpuUsage,
     CoreParking,
+    CpuLimiter,
     EfficiencyMode,
     AppSuspension,
+    Watchdog,
+    PerformanceMode,
     ForegroundResponsiveness,
+    SharedProcessRules,
     CpuAffinity,
     ForegroundRules,
     Schedule,
+    ActionLog,
     Settings,
     About,
 }
@@ -22,35 +27,42 @@ pub struct PageSection {
 }
 
 const OVERVIEW_PAGES: [Page; 1] = [Page::Dashboard];
-const AUTOMATION_RULE_PAGES: [Page; 4] = [
-    Page::Activity,
-    Page::CpuUsage,
-    Page::Schedule,
+const POWER_AUTOMATION_PAGES: [Page; 4] = [
     Page::ForegroundRules,
+    Page::PerformanceMode,
+    Page::Activity,
+    Page::Schedule,
 ];
-const CPU_CONTROL_PAGES: [Page; 2] = [Page::CoreParking, Page::CpuAffinity];
-const PROCESS_CONTROL_PAGES: [Page; 3] = [
+const CPU_CONTROL_PAGES: [Page; 4] = [
+    Page::CpuUsage,
+    Page::CoreParking,
+    Page::CpuLimiter,
+    Page::CpuAffinity,
+];
+const PROCESS_POLICY_PAGES: [Page; 5] = [
+    Page::SharedProcessRules,
     Page::EfficiencyMode,
-    Page::AppSuspension,
     Page::ForegroundResponsiveness,
+    Page::AppSuspension,
+    Page::Watchdog,
 ];
-const APP_PAGES: [Page; 2] = [Page::Settings, Page::About];
+const APP_PAGES: [Page; 3] = [Page::ActionLog, Page::Settings, Page::About];
 const PAGE_SECTIONS: [PageSection; 5] = [
     PageSection {
         label: "Overview",
         pages: &OVERVIEW_PAGES,
     },
     PageSection {
-        label: "Power Plan Controls",
-        pages: &AUTOMATION_RULE_PAGES,
+        label: "Power Automation",
+        pages: &POWER_AUTOMATION_PAGES,
     },
     PageSection {
-        label: "CPU Controls",
+        label: "Processor Controls",
         pages: &CPU_CONTROL_PAGES,
     },
     PageSection {
-        label: "Process Controls",
-        pages: &PROCESS_CONTROL_PAGES,
+        label: "Process Policies",
+        pages: &PROCESS_POLICY_PAGES,
     },
     PageSection {
         label: "App",
@@ -65,12 +77,17 @@ impl Page {
             Self::Activity => t!("nav.activity"),
             Self::CpuUsage => t!("nav.cpu_usage"),
             Self::CoreParking => t!("nav.core_parking"),
+            Self::CpuLimiter => t!("nav.cpu_limiter"),
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
+            Self::Watchdog => t!("nav.watchdog"),
+            Self::PerformanceMode => t!("nav.performance_mode"),
             Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
+            Self::SharedProcessRules => t!("nav.shared_process_rules"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
             Self::Schedule => t!("nav.schedule"),
+            Self::ActionLog => t!("nav.action_log"),
             Self::Settings => t!("nav.settings"),
             Self::About => t!("nav.about"),
         }
@@ -80,14 +97,18 @@ impl Page {
     pub fn section_label(self) -> String {
         match self {
             Self::Dashboard => t!("nav.overview"),
-            Self::Activity | Self::CpuUsage | Self::Schedule | Self::ForegroundRules => {
-                t!("nav.power_plan_controls")
+            Self::Activity | Self::Schedule | Self::ForegroundRules | Self::PerformanceMode => {
+                t!("nav.power_automation")
             }
-            Self::CoreParking | Self::CpuAffinity => t!("nav.cpu_controls"),
-            Self::EfficiencyMode | Self::AppSuspension | Self::ForegroundResponsiveness => {
-                t!("nav.process_controls")
+            Self::CpuUsage | Self::CoreParking | Self::CpuLimiter | Self::CpuAffinity => {
+                t!("nav.processor_controls")
             }
-            Self::Settings | Self::About => t!("nav.app"),
+            Self::EfficiencyMode
+            | Self::SharedProcessRules
+            | Self::ForegroundResponsiveness
+            | Self::AppSuspension
+            | Self::Watchdog => t!("nav.process_policies"),
+            Self::ActionLog | Self::Settings | Self::About => t!("nav.app"),
         }
         .to_string()
     }
@@ -100,9 +121,9 @@ impl Page {
 pub fn section_label(label: &str) -> String {
     match label {
         "Overview" => t!("nav.overview"),
-        "Power Plan Controls" => t!("nav.power_plan_controls"),
-        "CPU Controls" => t!("nav.cpu_controls"),
-        "Process Controls" => t!("nav.process_controls"),
+        "Power Automation" => t!("nav.power_automation"),
+        "Processor Controls" => t!("nav.processor_controls"),
+        "Process Policies" => t!("nav.process_policies"),
         "App" => t!("nav.app"),
         _ => label.into(),
     }

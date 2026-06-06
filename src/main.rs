@@ -3,6 +3,7 @@
 #[cfg(not(windows))]
 compile_error!("PowerLeaf is a Windows-only application.");
 
+mod action_log;
 mod activity;
 mod affinity;
 mod app;
@@ -10,8 +11,10 @@ mod assets;
 mod automation;
 mod config;
 mod cpu;
+mod cpu_limiter;
 mod ecoqos;
 mod foreground;
+mod performance_mode;
 mod power;
 mod power_source;
 mod responsiveness;
@@ -21,6 +24,7 @@ mod startup;
 mod suspension;
 mod tray;
 mod ui;
+mod watchdog;
 
 rust_i18n::i18n!("locales", fallback = "en");
 

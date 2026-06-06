@@ -27,6 +27,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
+    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings},
     foreground::list_processes,
 };
@@ -128,14 +129,19 @@ enum AffinityAdjustment {
 }
 
 impl CpuAffinityManager {
+    pub fn adjusted_process_ids(&self) -> BTreeSet<u32> {
+        self.adjusted.keys().copied().collect()
+    }
+
     pub fn update(
         &mut self,
         settings: &CpuAffinitySettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
+        action_log: &mut ActionLog,
     ) -> CpuAffinitySnapshot {
         if !automation_enabled {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "automation disabled");
             return CpuAffinitySnapshot {
                 enabled: false,
                 failed_processes: failed,
@@ -145,7 +151,7 @@ impl CpuAffinityManager {
         }
 
         if !settings.enabled {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "Core Steering disabled");
             return CpuAffinitySnapshot {
                 enabled: false,
                 failed_processes: failed,
@@ -155,7 +161,7 @@ impl CpuAffinityManager {
         }
 
         if settings.exclude_foreground_app && foreground_process_id.is_none() {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "foreground app is unknown");
             return CpuAffinitySnapshot {
                 enabled: true,
                 failed_processes: failed,
@@ -166,7 +172,7 @@ impl CpuAffinityManager {
 
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "current Windows session is unknown");
             return CpuAffinitySnapshot {
                 enabled: true,
                 failed_processes: failed,
@@ -178,7 +184,7 @@ impl CpuAffinityManager {
         let processes = match list_processes() {
             Ok(processes) => processes,
             Err(err) => {
-                let failed = self.clear_all();
+                let failed = self.clear_all(action_log, "process list unavailable");
                 return CpuAffinitySnapshot {
                     enabled: true,
                     failed_processes: failed,
@@ -229,17 +235,24 @@ impl CpuAffinityManager {
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
-        let mut failed_processes = self.release_non_targets(&target_ids, &current_process_names);
+        let mut failed_processes = self.release_non_targets(
+            &target_ids,
+            &current_process_names,
+            action_log,
+            "process no longer matches a Core Steering rule",
+        );
         let mut skipped_processes = 0;
         let mut last_error = None;
 
         for (process_id, (process_name, mode, rule_mask)) in target_processes {
+            let failure_process_name = process_name.clone();
             match apply_affinity(
                 process_id,
                 process_name,
                 mode,
                 rule_mask,
                 self.adjusted.get(&process_id),
+                action_log,
             ) {
                 Ok(Some(adjusted)) => {
                     self.adjusted.insert(process_id, adjusted);
@@ -249,12 +262,28 @@ impl CpuAffinityManager {
                 }
                 Err(AffinityError::AccessDenied) => {
                     skipped_processes += 1;
+                    action_log.record(
+                        ActionLogFeature::CoreSteering,
+                        Some(process_id),
+                        failure_process_name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        "Skipped because the process could not be opened.",
+                    );
                 }
                 Err(AffinityError::Failed(err)) => {
                     failed_processes += 1;
                     if last_error.is_none() {
-                        last_error = Some(err);
+                        last_error = Some(err.clone());
                     }
+                    action_log.record(
+                        ActionLogFeature::CoreSteering,
+                        Some(process_id),
+                        failure_process_name,
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        err,
+                    );
                 }
             }
         }
@@ -279,6 +308,8 @@ impl CpuAffinityManager {
         &mut self,
         target_ids: &BTreeSet<u32>,
         current_process_names: &BTreeMap<u32, String>,
+        action_log: &mut ActionLog,
+        reason: &str,
     ) -> usize {
         let process_ids = self
             .adjusted
@@ -287,29 +318,57 @@ impl CpuAffinityManager {
             .filter(|process_id| !target_ids.contains(process_id))
             .collect::<Vec<_>>();
 
-        self.release_processes(&process_ids, Some(current_process_names))
+        self.release_processes(
+            &process_ids,
+            Some(current_process_names),
+            action_log,
+            reason,
+        )
     }
 
-    fn clear_all(&mut self) -> usize {
+    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> usize {
         let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids, None)
+        self.release_processes(&process_ids, None, action_log, reason)
     }
 
     fn release_processes(
         &mut self,
         process_ids: &[u32],
         current_process_names: Option<&BTreeMap<u32, String>>,
+        action_log: &mut ActionLog,
+        reason: &str,
     ) -> usize {
         let mut failed = 0;
         for process_id in process_ids {
             if let Some(process) = self.adjusted.remove(process_id) {
+                let process_name = process.process_name.clone();
+                let adjustment = process.adjustment.clone();
                 let still_same_process = current_process_names.map_or(true, |names| {
                     names
                         .get(process_id)
                         .is_some_and(|name| name.eq_ignore_ascii_case(&process.process_name))
                 });
-                if still_same_process && restore_affinity(*process_id, process).is_err() {
-                    failed += 1;
+                if still_same_process {
+                    if let Err(err) = restore_affinity(*process_id, process) {
+                        failed += 1;
+                        action_log.record(
+                            ActionLogFeature::CoreSteering,
+                            Some(*process_id),
+                            process_name,
+                            ActionLogAction::Fail,
+                            ActionLogResult::Failed,
+                            affinity_error_message(err),
+                        );
+                    } else {
+                        action_log.record(
+                            ActionLogFeature::CoreSteering,
+                            Some(*process_id),
+                            process_name,
+                            ActionLogAction::Restore,
+                            ActionLogResult::Restored,
+                            format!("{reason}: restored {}.", adjustment_label(&adjustment)),
+                        );
+                    }
                 }
             }
         }
@@ -319,7 +378,8 @@ impl CpuAffinityManager {
 
 impl Drop for CpuAffinityManager {
     fn drop(&mut self) {
-        self.clear_all();
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(&mut action_log, "Core Steering manager dropped");
     }
 }
 
@@ -578,6 +638,7 @@ fn apply_affinity(
     mode: CpuAffinityMode,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
+    action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let process = ProcessHandle::open(process_id)?;
     let reusable_existing = existing
@@ -589,19 +650,44 @@ fn apply_affinity(
             || adjusted.adjustment.mode() != mode
         {
             restore_adjustment(&process, &adjusted.adjustment)?;
+            action_log.record(
+                ActionLogFeature::CoreSteering,
+                Some(process_id),
+                process_name.clone(),
+                ActionLogAction::Restore,
+                ActionLogResult::Restored,
+                format!(
+                    "Rule changed: restored previous {}.",
+                    adjustment_label(&adjusted.adjustment)
+                ),
+            );
         }
     }
 
     match mode {
-        CpuAffinityMode::Hard => {
-            apply_hard_affinity(&process, process_name, rule_mask, reusable_existing)
-        }
-        CpuAffinityMode::Soft => {
-            apply_soft_affinity(&process, process_name, rule_mask, reusable_existing)
-        }
-        CpuAffinityMode::EfficiencyOff => {
-            apply_efficiency_mode_off(&process, process_name, reusable_existing)
-        }
+        CpuAffinityMode::Hard => apply_hard_affinity(
+            process_id,
+            &process,
+            process_name,
+            rule_mask,
+            reusable_existing,
+            action_log,
+        ),
+        CpuAffinityMode::Soft => apply_soft_affinity(
+            process_id,
+            &process,
+            process_name,
+            rule_mask,
+            reusable_existing,
+            action_log,
+        ),
+        CpuAffinityMode::EfficiencyOff => apply_efficiency_mode_off(
+            process_id,
+            &process,
+            process_name,
+            reusable_existing,
+            action_log,
+        ),
     }
 }
 
@@ -611,10 +697,12 @@ fn restore_affinity(process_id: u32, process_state: AdjustedProcess) -> Result<(
 }
 
 fn apply_hard_affinity(
+    process_id: u32,
     process: &ProcessHandle,
     process_name: String,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
+    action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let (current_affinity, system_affinity) = process.affinity_mask()?;
     let Some(target_affinity) = target_affinity_mask(rule_mask, system_affinity) else {
@@ -643,6 +731,14 @@ fn apply_hard_affinity(
             AffinityAdjustment::Soft { .. } | AffinityAdjustment::EfficiencyOff { .. } => None,
         })
         .unwrap_or(current_affinity);
+    action_log.record(
+        ActionLogFeature::CoreSteering,
+        Some(process_id),
+        process_name.clone(),
+        ActionLogAction::Apply,
+        ActionLogResult::Applied,
+        format!("Applied hard affinity mask {target_affinity:#x}."),
+    );
 
     Ok(Some(AdjustedProcess {
         process_name,
@@ -654,10 +750,12 @@ fn apply_hard_affinity(
 }
 
 fn apply_soft_affinity(
+    process_id: u32,
     process: &ProcessHandle,
     process_name: String,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
+    action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let Some(target_cpu_set_ids) = target_cpu_set_ids(rule_mask)? else {
         return Ok(None);
@@ -687,6 +785,14 @@ fn apply_soft_affinity(
             AffinityAdjustment::Hard { .. } | AffinityAdjustment::EfficiencyOff { .. } => None,
         })
         .unwrap_or(current_cpu_set_ids);
+    action_log.record(
+        ActionLogFeature::CoreSteering,
+        Some(process_id),
+        process_name.clone(),
+        ActionLogAction::Apply,
+        ActionLogResult::Applied,
+        format!("Applied CPU Sets: {}.", target_cpu_set_ids.len()),
+    );
 
     Ok(Some(AdjustedProcess {
         process_name,
@@ -698,9 +804,11 @@ fn apply_soft_affinity(
 }
 
 fn apply_efficiency_mode_off(
+    process_id: u32,
     process: &ProcessHandle,
     process_name: String,
     existing: Option<&AdjustedProcess>,
+    action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let current_state = process.power_throttling_state().ok();
 
@@ -718,6 +826,14 @@ fn apply_efficiency_mode_off(
     next_state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
     next_state.StateMask &= !PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
     process.set_power_throttling_state(next_state)?;
+    action_log.record(
+        ActionLogFeature::CoreSteering,
+        Some(process_id),
+        process_name.clone(),
+        ActionLogAction::Apply,
+        ActionLogResult::Applied,
+        "Disabled Efficiency Mode execution-speed throttling.",
+    );
 
     let previous_state = existing
         .and_then(|adjusted| match adjusted.adjustment {
@@ -757,6 +873,21 @@ impl AffinityAdjustment {
             Self::Soft { .. } => CpuAffinityMode::Soft,
             Self::EfficiencyOff { .. } => CpuAffinityMode::EfficiencyOff,
         }
+    }
+}
+
+fn adjustment_label(adjustment: &AffinityAdjustment) -> &'static str {
+    match adjustment {
+        AffinityAdjustment::Hard { .. } => "hard affinity",
+        AffinityAdjustment::Soft { .. } => "CPU Sets",
+        AffinityAdjustment::EfficiencyOff { .. } => "Efficiency Mode Off",
+    }
+}
+
+fn affinity_error_message(error: AffinityError) -> String {
+    match error {
+        AffinityError::AccessDenied => "Access denied.".to_owned(),
+        AffinityError::Failed(message) => message,
     }
 }
 
@@ -1154,6 +1285,28 @@ mod tests {
         assert!(is_builtin_excluded("csrss.exe"));
         assert!(is_builtin_excluded("winlogon.exe"));
         assert!(!is_builtin_excluded("browser.exe"));
+    }
+
+    #[test]
+    fn release_processes_skips_restore_when_process_identity_is_unknown() {
+        let mut manager = CpuAffinityManager::default();
+        manager.adjusted.insert(
+            0,
+            AdjustedProcess {
+                process_name: "exited.exe".to_owned(),
+                adjustment: AffinityAdjustment::Hard {
+                    previous_affinity: 0b1111,
+                    applied_affinity: 0b0001,
+                },
+            },
+        );
+        let mut log = ActionLog::new(8);
+
+        let failed = manager.release_processes(&[0], Some(&BTreeMap::new()), &mut log, "test");
+
+        assert_eq!(failed, 0);
+        assert!(log.entries().is_empty());
+        assert!(manager.adjusted.is_empty());
     }
 
     #[test]

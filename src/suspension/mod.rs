@@ -45,6 +45,7 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult};
 use crate::config::AppSuspensionSettings;
 use crate::foreground::list_processes;
 
@@ -196,6 +197,7 @@ impl AppSuspensionManager {
         &mut self,
         process_id: u32,
         process_name: Option<&str>,
+        action_log: &mut ActionLog,
     ) -> Option<AppSuspensionSnapshot> {
         let process_ids = self.interactive_process_ids(process_id, process_name);
         if process_ids.is_empty() {
@@ -203,7 +205,11 @@ impl AppSuspensionManager {
         }
 
         let process_ids = process_ids.into_iter().collect::<Vec<_>>();
-        let failed_actions = self.release_foreground_processes(&process_ids);
+        let failed_actions = self.release_foreground_processes(
+            &process_ids,
+            action_log,
+            "released because the app became interactive",
+        );
         Some(self.snapshot(
             true,
             self.job_freeze_unsupported,
@@ -220,11 +226,12 @@ impl AppSuspensionManager {
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         manual_freeze_processes: &[String],
+        action_log: &mut ActionLog,
     ) -> AppSuspensionSnapshot {
         let now = Instant::now();
 
         if !automation_enabled {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "automation disabled");
             return AppSuspensionSnapshot {
                 enabled: false,
                 failed_actions: failed,
@@ -234,7 +241,7 @@ impl AppSuspensionManager {
         }
 
         if !settings.enabled {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "App Suspension disabled");
             return AppSuspensionSnapshot {
                 enabled: false,
                 failed_actions: failed,
@@ -245,7 +252,15 @@ impl AppSuspensionManager {
 
         let mut failed_actions = 0;
         if self.job_freeze_unsupported {
-            failed_actions += self.clear_all();
+            action_log.record(
+                ActionLogFeature::AppSuspension,
+                None,
+                "",
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                "Skipped because Windows Job Object freeze is unsupported.",
+            );
+            failed_actions += self.clear_all(action_log, "Job Object freeze unsupported");
             return AppSuspensionSnapshot {
                 enabled: true,
                 unsupported: true,
@@ -311,7 +326,11 @@ impl AppSuspensionManager {
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
-        failed_actions += self.release_non_targets(&target_ids);
+        failed_actions += self.release_non_targets(
+            &target_ids,
+            action_log,
+            "process no longer matches an App Suspension rule",
+        );
         self.tracked
             .retain(|process_id, _process| target_ids.contains(process_id));
         self.temporary_thawed
@@ -380,6 +399,14 @@ impl AppSuspensionManager {
                 }
                 Err(err) => {
                     failed_actions += 1;
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        None,
+                        "",
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        err.clone(),
+                    );
                     last_error = Some(err);
                     (self.network_snapshot.clone(), BTreeSet::new())
                 }
@@ -397,6 +424,14 @@ impl AppSuspensionManager {
                 }
                 Err(err) => {
                     failed_actions += 1;
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        None,
+                        "",
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        err.clone(),
+                    );
                     if last_error.is_none() {
                         last_error = Some(err);
                     }
@@ -404,11 +439,13 @@ impl AppSuspensionManager {
             }
         }
         let network_wake_names = self.active_network_wake_names(now);
-        failed_actions += self.apply_network_wake(&target_processes, &network_wake_names, now);
+        failed_actions +=
+            self.apply_network_wake(&target_processes, &network_wake_names, now, action_log);
         let audio_wake_names = self.active_audio_wake_names(now);
-        failed_actions += self.apply_audio_wake(&target_processes, &audio_wake_names, now);
+        failed_actions +=
+            self.apply_audio_wake(&target_processes, &audio_wake_names, now, action_log);
         self.network_snapshot = network_snapshot;
-        failed_actions += self.release_for_temporary_thaw(settings, &target_ids, now);
+        failed_actions += self.release_for_temporary_thaw(settings, &target_ids, now, action_log);
 
         for (process_id, process_name) in target_processes {
             if self.suspended.contains_key(&process_id) {
@@ -420,6 +457,14 @@ impl AppSuspensionManager {
             if manual_freeze {
                 self.temporary_thawed.remove(&process_id);
                 self.tracked.remove(&process_id);
+                action_log.record(
+                    ActionLogFeature::AppSuspension,
+                    Some(process_id),
+                    process_name.clone(),
+                    ActionLogAction::Apply,
+                    ActionLogResult::Applied,
+                    "Manual freeze requested.",
+                );
             }
 
             match self.temporary_thaw_state(process_id, &process_name, now) {
@@ -444,22 +489,58 @@ impl AppSuspensionManager {
                 TemporaryThawState::None => {}
             }
 
-            match self.suspend_process(process_id, process_name, now) {
+            match self.suspend_process(process_id, process_name.clone(), now) {
                 Ok(()) => {
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(process_id),
+                        process_name.clone(),
+                        ActionLogAction::Apply,
+                        ActionLogResult::Applied,
+                        if manual_freeze {
+                            "Manually froze background process."
+                        } else {
+                            "Froze background process after delay."
+                        },
+                    );
                     self.tracked.remove(&process_id);
                 }
                 Err(SuspensionError::AccessDenied | SuspensionError::NotSupported) => {
                     skipped_processes += 1;
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(process_id),
+                        process_name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        "Skipped because the process cannot be frozen.",
+                    );
                 }
                 Err(SuspensionError::Unsupported) => {
                     skipped_processes += 1;
                     unsupported = true;
                     self.job_freeze_unsupported = true;
-                    failed_actions += self.clear_all();
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(process_id),
+                        process_name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        "Skipped because Windows Job Object freeze is unsupported.",
+                    );
+                    failed_actions += self.clear_all(action_log, "Job Object freeze unsupported");
                     break;
                 }
                 Err(SuspensionError::Failed(err)) => {
                     failed_actions += 1;
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(process_id),
+                        process_name,
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        err.clone(),
+                    );
                     if last_error.is_none() {
                         last_error = Some(err);
                     }
@@ -482,23 +563,28 @@ impl AppSuspensionManager {
         )
     }
 
-    fn release_non_targets(&mut self, target_ids: &BTreeSet<u32>) -> usize {
+    fn release_non_targets(
+        &mut self,
+        target_ids: &BTreeSet<u32>,
+        action_log: &mut ActionLog,
+        reason: &str,
+    ) -> usize {
         let process_ids = self
             .managed_process_ids()
             .into_iter()
             .filter(|process_id| !target_ids.contains(process_id))
             .collect::<Vec<_>>();
 
-        self.release_processes(&process_ids)
+        self.release_processes(&process_ids, action_log, reason)
     }
 
-    fn clear_all(&mut self) -> usize {
+    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> usize {
         self.tracked.clear();
         self.network_snapshot.clear();
         self.network_wake_windows.clear();
         self.audio_wake_windows.clear();
         let process_ids = self.managed_process_ids().into_iter().collect::<Vec<_>>();
-        let failed = self.release_processes(&process_ids);
+        let failed = self.release_processes(&process_ids, action_log, reason);
         self.temporary_thawed.clear();
         failed
     }
@@ -521,13 +607,40 @@ impl AppSuspensionManager {
         )
     }
 
-    fn release_processes(&mut self, process_ids: &[u32]) -> usize {
+    fn release_processes(
+        &mut self,
+        process_ids: &[u32],
+        action_log: &mut ActionLog,
+        reason: &str,
+    ) -> usize {
         let mut failed = 0;
         for process_id in process_ids {
-            if self.suspended.remove(process_id).is_some()
-                && self.thaw_process(*process_id).is_err()
-            {
-                failed += 1;
+            let suspended_name = self
+                .suspended
+                .get(process_id)
+                .map(|process| process.process_name.clone());
+            if let Some(process_name) = suspended_name {
+                if let Err(err) = self.thaw_process(*process_id) {
+                    failed += 1;
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(*process_id),
+                        process_name,
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        suspension_error_message(err),
+                    );
+                } else {
+                    self.suspended.remove(process_id);
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(*process_id),
+                        process_name,
+                        ActionLogAction::Restore,
+                        ActionLogResult::Restored,
+                        reason.to_owned(),
+                    );
+                }
             }
             self.temporary_thawed.remove(process_id);
             self.freezers.remove(process_id);
@@ -535,12 +648,38 @@ impl AppSuspensionManager {
         failed
     }
 
-    fn release_foreground_processes(&mut self, process_ids: &[u32]) -> usize {
+    fn release_foreground_processes(
+        &mut self,
+        process_ids: &[u32],
+        action_log: &mut ActionLog,
+        reason: &str,
+    ) -> usize {
         let mut failed = 0;
         for process_id in process_ids {
-            if self.suspended.contains_key(process_id) && self.thaw_process(*process_id).is_err() {
-                failed += 1;
-                continue;
+            let process_name = self.controlled_process_name(*process_id).map(str::to_owned);
+            if let Some(process_name) = process_name.clone() {
+                if self.suspended.contains_key(process_id) {
+                    if let Err(err) = self.thaw_process(*process_id) {
+                        failed += 1;
+                        action_log.record(
+                            ActionLogFeature::AppSuspension,
+                            Some(*process_id),
+                            process_name,
+                            ActionLogAction::Fail,
+                            ActionLogResult::Failed,
+                            suspension_error_message(err),
+                        );
+                        continue;
+                    }
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(*process_id),
+                        process_name,
+                        ActionLogAction::Restore,
+                        ActionLogResult::Restored,
+                        reason.to_owned(),
+                    );
+                }
             }
 
             self.tracked.remove(process_id);
@@ -555,6 +694,7 @@ impl AppSuspensionManager {
     pub fn release_window_owner_processes_for_user_intent(
         &mut self,
         window_owner_process_ids: &BTreeSet<u32>,
+        action_log: &mut ActionLog,
     ) -> Option<AppSuspensionSnapshot> {
         let process_ids = self
             .window_owner_suspended_process_ids(window_owner_process_ids)
@@ -564,7 +704,8 @@ impl AppSuspensionManager {
             return None;
         }
 
-        let failed_actions = self.thaw_processes_for_user_intent(&process_ids, Instant::now());
+        let failed_actions =
+            self.thaw_processes_for_user_intent(&process_ids, Instant::now(), action_log);
         Some(self.snapshot(
             true,
             self.job_freeze_unsupported,
@@ -575,13 +716,38 @@ impl AppSuspensionManager {
         ))
     }
 
-    fn thaw_processes_for_user_intent(&mut self, process_ids: &[u32], now: Instant) -> usize {
+    fn thaw_processes_for_user_intent(
+        &mut self,
+        process_ids: &[u32],
+        now: Instant,
+        action_log: &mut ActionLog,
+    ) -> usize {
         let mut failed = 0;
         for process_id in process_ids {
             let process_name = self.controlled_process_name(*process_id).map(str::to_owned);
-            if self.suspended.contains_key(process_id) && self.thaw_process(*process_id).is_err() {
-                failed += 1;
-                continue;
+            if let Some(process_name) = process_name.clone() {
+                if self.suspended.contains_key(process_id) {
+                    if let Err(err) = self.thaw_process(*process_id) {
+                        failed += 1;
+                        action_log.record(
+                            ActionLogFeature::AppSuspension,
+                            Some(*process_id),
+                            process_name,
+                            ActionLogAction::Fail,
+                            ActionLogResult::Failed,
+                            suspension_error_message(err),
+                        );
+                        continue;
+                    }
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(*process_id),
+                        process_name.clone(),
+                        ActionLogAction::Restore,
+                        ActionLogResult::Restored,
+                        "Thawed because the user interacted with the window.",
+                    );
+                }
             }
 
             self.tracked.remove(process_id);
@@ -697,6 +863,7 @@ impl AppSuspensionManager {
         settings: &AppSuspensionSettings,
         target_ids: &BTreeSet<u32>,
         now: Instant,
+        action_log: &mut ActionLog,
     ) -> usize {
         if !settings.temporary_thaw_enabled
             || settings.temporary_thaw_interval_seconds == 0
@@ -725,6 +892,14 @@ impl AppSuspensionManager {
                     failed += 1;
                 } else {
                     self.suspended.remove(&process_id);
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(process_id),
+                        process_name.clone(),
+                        ActionLogAction::Restore,
+                        ActionLogResult::Restored,
+                        "Temporary thaw interval elapsed.",
+                    );
                     self.temporary_thawed.insert(
                         process_id,
                         TemporaryThaw {
@@ -745,6 +920,7 @@ impl AppSuspensionManager {
         target_processes: &BTreeMap<u32, String>,
         network_process_names: &BTreeSet<String>,
         now: Instant,
+        action_log: &mut ActionLog,
     ) -> usize {
         let process_ids = target_processes
             .iter()
@@ -760,13 +936,34 @@ impl AppSuspensionManager {
                 continue;
             };
 
-            if self.suspended.contains_key(&process_id) && self.thaw_process(process_id).is_err() {
-                failed += 1;
-                continue;
+            let was_suspended = self.suspended.contains_key(&process_id);
+            if was_suspended {
+                if let Err(err) = self.thaw_process(process_id) {
+                    failed += 1;
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(process_id),
+                        process_name,
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        suspension_error_message(err),
+                    );
+                    continue;
+                }
             }
             self.suspended.remove(&process_id);
 
             self.tracked.remove(&process_id);
+            if was_suspended {
+                action_log.record(
+                    ActionLogFeature::AppSuspension,
+                    Some(process_id),
+                    process_name.clone(),
+                    ActionLogAction::Restore,
+                    ActionLogResult::Restored,
+                    "Network activity woke the suspended process.",
+                );
+            }
             self.set_temporary_thaw(
                 process_id,
                 process_name,
@@ -783,6 +980,7 @@ impl AppSuspensionManager {
         target_processes: &BTreeMap<u32, String>,
         audio_process_names: &BTreeSet<String>,
         now: Instant,
+        action_log: &mut ActionLog,
     ) -> usize {
         let process_ids = target_processes
             .iter()
@@ -798,13 +996,34 @@ impl AppSuspensionManager {
                 continue;
             };
 
-            if self.suspended.contains_key(&process_id) && self.thaw_process(process_id).is_err() {
-                failed += 1;
-                continue;
+            let was_suspended = self.suspended.contains_key(&process_id);
+            if was_suspended {
+                if let Err(err) = self.thaw_process(process_id) {
+                    failed += 1;
+                    action_log.record(
+                        ActionLogFeature::AppSuspension,
+                        Some(process_id),
+                        process_name,
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        suspension_error_message(err),
+                    );
+                    continue;
+                }
             }
             self.suspended.remove(&process_id);
 
             self.tracked.remove(&process_id);
+            if was_suspended {
+                action_log.record(
+                    ActionLogFeature::AppSuspension,
+                    Some(process_id),
+                    process_name.clone(),
+                    ActionLogAction::Restore,
+                    ActionLogResult::Restored,
+                    "Audio activity woke the suspended process.",
+                );
+            }
             self.set_temporary_thaw(
                 process_id,
                 process_name,
@@ -1072,7 +1291,8 @@ impl AppSuspensionManager {
 
 impl Drop for AppSuspensionManager {
     fn drop(&mut self) {
-        self.clear_all();
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(&mut action_log, "App Suspension manager dropped");
     }
 }
 
@@ -1677,6 +1897,15 @@ enum SuspensionError {
     Failed(String),
 }
 
+fn suspension_error_message(error: SuspensionError) -> String {
+    match error {
+        SuspensionError::AccessDenied => "Access denied.".to_owned(),
+        SuspensionError::NotSupported => "Operation not supported for this process.".to_owned(),
+        SuspensionError::Unsupported => "Windows Job Object freeze is unsupported.".to_owned(),
+        SuspensionError::Failed(message) => message,
+    }
+}
+
 const JOB_OBJECT_FREEZE_INFORMATION_CLASS: i32 = 18;
 const JOB_OBJECT_FREEZE_OPERATION: u32 = 1;
 
@@ -1959,6 +2188,7 @@ mod tests {
     #[test]
     fn user_intent_release_thaws_window_owner_processes_only() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
         let now = Instant::now();
         manager.suspended.insert(
             7,
@@ -1976,7 +2206,7 @@ mod tests {
         );
 
         let status = manager
-            .release_window_owner_processes_for_user_intent(&BTreeSet::from([7]))
+            .release_window_owner_processes_for_user_intent(&BTreeSet::from([7]), &mut log)
             .unwrap();
 
         assert_eq!(status.suspended_processes, 1);
@@ -1989,6 +2219,7 @@ mod tests {
     #[test]
     fn user_intent_release_does_not_extend_existing_temporary_thaw() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
         let now = Instant::now();
         manager.temporary_thawed.insert(
             7,
@@ -2000,7 +2231,7 @@ mod tests {
         );
 
         assert!(manager
-            .release_window_owner_processes_for_user_intent(&BTreeSet::from([7]))
+            .release_window_owner_processes_for_user_intent(&BTreeSet::from([7]), &mut log)
             .is_none());
         assert_eq!(
             manager.temporary_thawed.get(&7).unwrap().thaw_until,
@@ -2011,9 +2242,10 @@ mod tests {
     #[test]
     fn user_intent_release_returns_none_without_matching_window_owner() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
 
         assert!(manager
-            .release_window_owner_processes_for_user_intent(&BTreeSet::from([42]))
+            .release_window_owner_processes_for_user_intent(&BTreeSet::from([42]), &mut log)
             .is_none());
     }
 
@@ -2093,6 +2325,7 @@ mod tests {
     #[test]
     fn release_non_targets_closes_thawed_freezers() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
         let now = Instant::now();
         manager.freezers.insert(7, inert_freezer());
         manager.temporary_thawed.insert(
@@ -2104,7 +2337,10 @@ mod tests {
             },
         );
 
-        assert_eq!(manager.release_non_targets(&BTreeSet::new()), 0);
+        assert_eq!(
+            manager.release_non_targets(&BTreeSet::new(), &mut log, "test"),
+            0
+        );
         assert!(manager.freezers.is_empty());
         assert!(manager.temporary_thawed.is_empty());
     }
@@ -2112,6 +2348,7 @@ mod tests {
     #[test]
     fn release_non_targets_keeps_target_thawed_freezers() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
         let now = Instant::now();
         manager.freezers.insert(7, inert_freezer());
         manager.temporary_thawed.insert(
@@ -2123,7 +2360,10 @@ mod tests {
             },
         );
 
-        assert_eq!(manager.release_non_targets(&BTreeSet::from([7])), 0);
+        assert_eq!(
+            manager.release_non_targets(&BTreeSet::from([7]), &mut log, "test"),
+            0
+        );
         assert!(manager.freezers.contains_key(&7));
         assert!(manager.temporary_thawed.contains_key(&7));
     }
@@ -2131,6 +2371,7 @@ mod tests {
     #[test]
     fn foreground_unknown_pauses_without_releasing_suspended_processes() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
         let mut settings = AppSuspensionSettings::default();
         settings.enabled = true;
         let now = Instant::now();
@@ -2150,7 +2391,7 @@ mod tests {
             },
         );
 
-        let status = manager.update(&settings, true, None, &[]);
+        let status = manager.update(&settings, true, None, &[], &mut log);
 
         assert_eq!(status.message, "Paused: foreground app is unknown.");
         assert_eq!(status.tracked_processes, 0);
@@ -2163,6 +2404,7 @@ mod tests {
     #[test]
     fn interactive_release_matches_process_app_group() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
         let now = Instant::now();
         manager.tracked.insert(
             6,
@@ -2194,7 +2436,7 @@ mod tests {
         );
 
         let status = manager
-            .release_interactive_process(7, Some("chat.exe"))
+            .release_interactive_process(7, Some("chat.exe"), &mut log)
             .unwrap();
 
         assert_eq!(status.tracked_processes, 0);
@@ -2208,6 +2450,7 @@ mod tests {
     #[test]
     fn interactive_release_uses_managed_process_name_when_lookup_is_unavailable() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
         let now = Instant::now();
         manager.suspended.insert(
             7,
@@ -2224,7 +2467,9 @@ mod tests {
             },
         );
 
-        let status = manager.release_interactive_process(7, None).unwrap();
+        let status = manager
+            .release_interactive_process(7, None, &mut log)
+            .unwrap();
 
         assert_eq!(status.suspended_processes, 0);
         assert!(manager.suspended.is_empty());
@@ -2233,6 +2478,7 @@ mod tests {
     #[test]
     fn interactive_release_clears_matching_thawed_freezers() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
         let now = Instant::now();
         manager.freezers.insert(7, inert_freezer());
         manager.freezers.insert(8, inert_freezer());
@@ -2254,7 +2500,7 @@ mod tests {
         );
 
         let status = manager
-            .release_interactive_process(7, Some("chat.exe"))
+            .release_interactive_process(7, Some("chat.exe"), &mut log)
             .unwrap();
 
         assert_eq!(status.temporary_thawed_processes, 0);
@@ -2267,9 +2513,10 @@ mod tests {
     #[test]
     fn interactive_release_returns_none_without_matching_controlled_process() {
         let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
 
         assert!(manager
-            .release_interactive_process(42, Some("chat.exe"))
+            .release_interactive_process(42, Some("chat.exe"), &mut log)
             .is_none());
     }
 

@@ -14,6 +14,7 @@ pub enum DecisionState {
     ForegroundRule,
     ForegroundForceActive,
     ForegroundForcePowerSave,
+    PerformanceMode,
     ScheduledRule,
     CpuLoadRule,
     IdlePowerSave,
@@ -26,8 +27,16 @@ pub struct DecisionInput {
     pub activity_state: ActivityState,
     pub foreground_app: Option<String>,
     pub plugged_in: Option<bool>,
+    pub performance_mode: Option<PerformanceModeDecision>,
     pub schedule: Option<ScheduleDecision>,
     pub cpu_usage: Option<CpuUsageDecision>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PerformanceModeDecision {
+    pub rule_name: String,
+    pub process_name: String,
+    pub power_plan_guid: String,
 }
 
 #[derive(Debug, Clone)]
@@ -74,11 +83,14 @@ impl DecisionEngine {
         {
             for rule in &settings.foreground_rules.rules {
                 if rule.enabled && rule.process_name.trim().eq_ignore_ascii_case(app.trim()) {
-                    return DecisionOutcome::with_target(
-                        rule.power_plan_guid.clone(),
-                        DecisionState::ForegroundRule,
-                        format!("{app} matched foreground rule '{}'.", rule.name),
-                    );
+                    if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
+                        return DecisionOutcome::with_target(
+                            Some(power_plan_guid),
+                            DecisionState::ForegroundRule,
+                            format!("{app} matched foreground rule '{}'.", rule.name),
+                        );
+                    }
+                    break;
                 }
             }
 
@@ -97,6 +109,17 @@ impl DecisionEngine {
                     format!("{app} is configured to force the Active plan."),
                 );
             }
+        }
+
+        if let Some(performance_mode) = input.performance_mode {
+            return DecisionOutcome::with_target(
+                Some(performance_mode.power_plan_guid),
+                DecisionState::PerformanceMode,
+                format!(
+                    "{} is running and matched Running App Power Plan rule '{}'.",
+                    performance_mode.process_name, performance_mode.rule_name
+                ),
+            );
         }
 
         if let Some(schedule) = input.schedule {
@@ -200,6 +223,7 @@ impl DecisionState {
             Self::ForegroundRule => "Foreground rule",
             Self::ForegroundForceActive => "Foreground force Active plan",
             Self::ForegroundForcePowerSave => "Foreground force Idle plan",
+            Self::PerformanceMode => "Running App Power Plans",
             Self::ScheduledRule => "Time rule",
             Self::CpuLoadRule => "CPU load rule",
             Self::IdlePowerSave => "Idle plan",
@@ -266,6 +290,7 @@ mod tests {
                 activity_state: ActivityState::Active,
                 foreground_app: Some("backup.exe".to_owned()),
                 plugged_in: None,
+                performance_mode: None,
                 schedule: Some(ScheduleDecision {
                     rule_name: "Work hours".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
@@ -286,6 +311,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
                 plugged_in: None,
+                performance_mode: None,
                 schedule: Some(ScheduleDecision {
                     rule_name: "Work hours".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
@@ -310,6 +336,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
                 plugged_in: None,
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: Some(CpuUsageDecision {
                     rule_name: "High CPU".to_owned(),
@@ -331,6 +358,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
                 plugged_in: None,
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -351,6 +379,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: Some("backup.exe".to_owned()),
                 plugged_in: None,
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -371,6 +400,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
                 plugged_in: Some(true),
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -404,6 +434,7 @@ mod tests {
                 activity_state: ActivityState::Active,
                 foreground_app: Some("game.exe".to_owned()),
                 plugged_in: None,
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -416,6 +447,7 @@ mod tests {
                 activity_state: ActivityState::Active,
                 foreground_app: None,
                 plugged_in: None,
+                performance_mode: None,
                 schedule: Some(ScheduleDecision {
                     rule_name: "Quiet".to_owned(),
                     power_plan_guid: Some("schedule-custom".to_owned()),
@@ -431,6 +463,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
                 plugged_in: None,
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: Some(CpuUsageDecision {
                     rule_name: "High CPU".to_owned(),
@@ -447,6 +480,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: None,
                 plugged_in: None,
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -470,6 +504,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: Some("editor.exe".to_owned()),
                 plugged_in: None,
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: None,
             },
@@ -477,6 +512,131 @@ mod tests {
 
         assert_eq!(outcome.state, DecisionState::ForegroundRule);
         assert_eq!(outcome.target_guid.as_deref(), Some("balanced-guid"));
+    }
+
+    #[test]
+    fn foreground_rule_without_power_plan_combines_with_schedule_rule() {
+        let mut settings = test_settings();
+        settings.foreground_rules.rules = vec![ForegroundRule {
+            enabled: true,
+            name: "Editing".to_owned(),
+            process_name: "editor.exe".to_owned(),
+            power_plan_guid: None,
+        }];
+
+        let outcome = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: Some("editor.exe".to_owned()),
+                plugged_in: None,
+                performance_mode: None,
+                schedule: Some(ScheduleDecision {
+                    rule_name: "Work hours".to_owned(),
+                    power_plan_guid: Some("schedule-custom".to_owned()),
+                }),
+                cpu_usage: Some(CpuUsageDecision {
+                    rule_name: "High CPU".to_owned(),
+                    power_plan_guid: Some("cpu-high-guid".to_owned()),
+                    usage_percent: 90.0,
+                }),
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::ScheduledRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("schedule-custom"));
+    }
+
+    #[test]
+    fn foreground_rule_without_power_plan_combines_with_cpu_rule() {
+        let mut settings = test_settings();
+        settings.foreground_rules.rules = vec![ForegroundRule {
+            enabled: true,
+            name: "Rendering".to_owned(),
+            process_name: "render.exe".to_owned(),
+            power_plan_guid: None,
+        }];
+
+        let outcome = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: Some("render.exe".to_owned()),
+                plugged_in: None,
+                performance_mode: None,
+                schedule: None,
+                cpu_usage: Some(CpuUsageDecision {
+                    rule_name: "High CPU".to_owned(),
+                    power_plan_guid: Some("cpu-high-guid".to_owned()),
+                    usage_percent: 90.0,
+                }),
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::CpuLoadRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("cpu-high-guid"));
+    }
+
+    #[test]
+    fn performance_mode_overrides_schedule_cpu_and_activity() {
+        let outcome = DecisionEngine.decide(
+            &test_settings(),
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: None,
+                plugged_in: None,
+                performance_mode: Some(PerformanceModeDecision {
+                    rule_name: "Game".to_owned(),
+                    process_name: "game.exe".to_owned(),
+                    power_plan_guid: "performance-mode-guid".to_owned(),
+                }),
+                schedule: Some(ScheduleDecision {
+                    rule_name: "Work hours".to_owned(),
+                    power_plan_guid: Some("schedule-custom".to_owned()),
+                }),
+                cpu_usage: Some(CpuUsageDecision {
+                    rule_name: "High CPU".to_owned(),
+                    power_plan_guid: Some("cpu-high-guid".to_owned()),
+                    usage_percent: 90.0,
+                }),
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::PerformanceMode);
+        assert_eq!(
+            outcome.target_guid.as_deref(),
+            Some("performance-mode-guid")
+        );
+    }
+
+    #[test]
+    fn foreground_rule_overrides_performance_mode_when_both_match() {
+        let mut settings = test_settings();
+        settings.foreground_rules.rules = vec![ForegroundRule {
+            enabled: true,
+            name: "Game focus".to_owned(),
+            process_name: "game.exe".to_owned(),
+            power_plan_guid: Some("foreground-guid".to_owned()),
+        }];
+
+        let outcome = DecisionEngine.decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
+                foreground_app: Some("game.exe".to_owned()),
+                plugged_in: None,
+                performance_mode: Some(PerformanceModeDecision {
+                    rule_name: "Game running".to_owned(),
+                    process_name: "game.exe".to_owned(),
+                    power_plan_guid: "performance-mode-guid".to_owned(),
+                }),
+                schedule: None,
+                cpu_usage: None,
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::ForegroundRule);
+        assert_eq!(outcome.target_guid.as_deref(), Some("foreground-guid"));
     }
 
     #[test]
@@ -495,6 +655,7 @@ mod tests {
                 activity_state: ActivityState::Idle,
                 foreground_app: Some("editor.exe".to_owned()),
                 plugged_in: None,
+                performance_mode: None,
                 schedule: None,
                 cpu_usage: None,
             },

@@ -17,6 +17,12 @@ pub struct Settings {
     #[serde(default)]
     pub cpu_affinity: CpuAffinitySettings,
     #[serde(default)]
+    pub cpu_limiter: CpuLimiterSettings,
+    #[serde(default)]
+    pub performance_mode: PerformanceModeSettings,
+    #[serde(default)]
+    pub watchdog: WatchdogSettings,
+    #[serde(default)]
     pub foreground_responsiveness: ForegroundResponsivenessSettings,
 }
 
@@ -265,6 +271,83 @@ pub struct CpuAffinityRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuLimiterSettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub exclude_foreground_app: bool,
+    #[serde(default)]
+    pub rules: Vec<CpuLimiterRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuLimiterRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+    #[serde(default = "default_cpu_limiter_threshold_percent")]
+    pub threshold_percent: u8,
+    #[serde(default = "default_cpu_limiter_sustain_seconds")]
+    pub sustain_seconds: u64,
+    #[serde(default = "default_cpu_limiter_cooldown_seconds")]
+    pub cooldown_seconds: u64,
+    #[serde(default = "default_cpu_limiter_max_logical_processors")]
+    pub max_logical_processors: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerformanceModeSettings {
+    pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<PerformanceModeRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PerformanceModeRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub name: String,
+    pub process_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_plan_guid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchdogSettings {
+    pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<WatchdogRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchdogRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub name: String,
+    pub process_name: String,
+    #[serde(default)]
+    pub action: WatchdogAction,
+    #[serde(default)]
+    pub launch_path: String,
+    #[serde(default)]
+    pub launch_args: Vec<String>,
+    #[serde(default = "default_watchdog_restart_delay_seconds")]
+    pub restart_delay_seconds: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchdogAction {
+    #[default]
+    TerminateOnLaunch,
+    RestartIfExited,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundResponsivenessSettings {
     pub enabled: bool,
     #[serde(default = "default_lower_background_apps")]
@@ -453,6 +536,9 @@ impl Default for Settings {
             eco_qos: EcoQosSettings::default(),
             app_suspension: AppSuspensionSettings::default(),
             cpu_affinity: CpuAffinitySettings::default(),
+            cpu_limiter: CpuLimiterSettings::default(),
+            performance_mode: PerformanceModeSettings::default(),
+            watchdog: WatchdogSettings::default(),
             foreground_responsiveness: ForegroundResponsivenessSettings::default(),
         }
     }
@@ -550,6 +636,26 @@ const fn default_auto_balance_cooldown_seconds() -> u64 {
 
 const fn default_foreground_stability_delay_ms() -> u64 {
     750
+}
+
+const fn default_cpu_limiter_threshold_percent() -> u8 {
+    75
+}
+
+const fn default_cpu_limiter_sustain_seconds() -> u64 {
+    5
+}
+
+const fn default_cpu_limiter_cooldown_seconds() -> u64 {
+    10
+}
+
+const fn default_cpu_limiter_max_logical_processors() -> u8 {
+    1
+}
+
+const fn default_watchdog_restart_delay_seconds() -> u64 {
+    5
 }
 
 const fn default_temporary_thaw_interval_seconds() -> u64 {
@@ -671,6 +777,34 @@ impl Default for CpuAffinitySettings {
         Self {
             enabled: false,
             exclude_foreground_app: default_exclude_foreground_app(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+impl Default for CpuLimiterSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exclude_foreground_app: default_exclude_foreground_app(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+impl Default for PerformanceModeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rules: Vec::new(),
+        }
+    }
+}
+
+impl Default for WatchdogSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
             rules: Vec::new(),
         }
     }

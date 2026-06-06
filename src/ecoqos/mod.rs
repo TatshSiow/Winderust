@@ -21,7 +21,11 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::{config::EcoQosSettings, foreground::list_processes};
+use crate::{
+    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    config::EcoQosSettings,
+    foreground::list_processes,
+};
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "audiodg.exe",
@@ -82,9 +86,10 @@ impl EcoQosManager {
         settings: &EcoQosSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
+        action_log: &mut ActionLog,
     ) -> EcoQosSnapshot {
         if !automation_enabled {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "automation disabled");
             return EcoQosSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
@@ -95,7 +100,7 @@ impl EcoQosManager {
         }
 
         if !settings.enabled {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "Efficiency Mode disabled");
             return EcoQosSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
@@ -106,7 +111,7 @@ impl EcoQosManager {
         }
 
         if settings.exclude_foreground_app && foreground_process_id.is_none() {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "foreground app is unknown");
             return EcoQosSnapshot {
                 enabled: true,
                 failed_processes: failed.count,
@@ -118,7 +123,7 @@ impl EcoQosManager {
 
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
-            let failed = self.clear_all();
+            let failed = self.clear_all(action_log, "current Windows session is unknown");
             return EcoQosSnapshot {
                 enabled: true,
                 failed_processes: failed.count,
@@ -131,7 +136,7 @@ impl EcoQosManager {
         let processes = match list_processes() {
             Ok(processes) => processes,
             Err(err) => {
-                let failed = self.clear_all();
+                let failed = self.clear_all(action_log, "process list unavailable");
                 return EcoQosSnapshot {
                     enabled: true,
                     failed_processes: failed.count,
@@ -178,7 +183,8 @@ impl EcoQosManager {
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
-        let mut failures = self.release_non_targets(&target_ids);
+        let mut failures =
+            self.release_non_targets(&target_ids, action_log, "process no longer matches EcoQoS");
         let mut unsupported = false;
 
         for (process_id, name) in target_processes {
@@ -189,16 +195,40 @@ impl EcoQosManager {
             match enable_efficiency_mode(process_id, name.clone()) {
                 Ok(process) => {
                     self.throttled.insert(process_id, process);
+                    action_log.record(
+                        ActionLogFeature::EcoQos,
+                        Some(process_id),
+                        name,
+                        ActionLogAction::Apply,
+                        ActionLogResult::Applied,
+                        "Enabled Windows Efficiency Mode and lowered priority.",
+                    );
                 }
                 Err(EcoQosError::AccessDenied | EcoQosError::ProcessExited) => {
                     skipped_processes += 1;
+                    action_log.record(
+                        ActionLogFeature::EcoQos,
+                        Some(process_id),
+                        name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        "Skipped because the process could not be opened.",
+                    );
                 }
                 Err(EcoQosError::Unsupported) => {
                     skipped_processes += 1;
                     unsupported = true;
+                    action_log.record(
+                        ActionLogFeature::EcoQos,
+                        Some(process_id),
+                        name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        "Skipped because Windows process power throttling is unsupported.",
+                    );
                 }
                 Err(EcoQosError::Failed(err)) => {
-                    failures.record_message("Apply", process_id, &name, err);
+                    failures.record_message("Apply", process_id, &name, err, action_log);
                 }
             }
         }
@@ -215,7 +245,12 @@ impl EcoQosManager {
         }
     }
 
-    fn release_non_targets(&mut self, target_ids: &BTreeSet<u32>) -> EcoQosFailures {
+    fn release_non_targets(
+        &mut self,
+        target_ids: &BTreeSet<u32>,
+        action_log: &mut ActionLog,
+        reason: &str,
+    ) -> EcoQosFailures {
         let process_ids = self
             .throttled
             .keys()
@@ -223,23 +258,43 @@ impl EcoQosManager {
             .filter(|process_id| !target_ids.contains(process_id))
             .collect::<Vec<_>>();
 
-        self.release_processes(&process_ids)
+        self.release_processes(&process_ids, action_log, reason)
     }
 
-    fn clear_all(&mut self) -> EcoQosFailures {
+    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> EcoQosFailures {
         let process_ids = self.throttled.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids)
+        self.release_processes(&process_ids, action_log, reason)
     }
 
-    fn release_processes(&mut self, process_ids: &[u32]) -> EcoQosFailures {
+    fn release_processes(
+        &mut self,
+        process_ids: &[u32],
+        action_log: &mut ActionLog,
+        reason: &str,
+    ) -> EcoQosFailures {
         let mut failures = EcoQosFailures::default();
         for process_id in process_ids {
             if let Some(process) = self.throttled.remove(process_id) {
                 let process_name = process.process_name.clone();
                 if let Err(err) = restore_efficiency_mode(*process_id, process) {
                     if !matches!(err, EcoQosError::ProcessExited) {
-                        failures.record_error("Restore", *process_id, &process_name, err);
+                        failures.record_error(
+                            "Restore",
+                            *process_id,
+                            &process_name,
+                            err,
+                            action_log,
+                        );
                     }
+                } else {
+                    action_log.record(
+                        ActionLogFeature::EcoQos,
+                        Some(*process_id),
+                        process_name,
+                        ActionLogAction::Restore,
+                        ActionLogResult::Restored,
+                        reason.to_owned(),
+                    );
                 }
             }
         }
@@ -262,7 +317,8 @@ fn should_ignore_foreground_process(
 
 impl Drop for EcoQosManager {
     fn drop(&mut self) {
-        self.clear_all();
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(&mut action_log, "EcoQoS manager dropped");
     }
 }
 
@@ -318,6 +374,7 @@ impl EcoQosFailures {
         process_id: u32,
         process_name: &str,
         error: EcoQosError,
+        action_log: &mut ActionLog,
     ) {
         let message = match error {
             EcoQosError::AccessDenied => "Access denied.".to_owned(),
@@ -325,7 +382,7 @@ impl EcoQosFailures {
             EcoQosError::Unsupported => "Operation unsupported.".to_owned(),
             EcoQosError::Failed(message) => message,
         };
-        self.record_message(action, process_id, process_name, message);
+        self.record_message(action, process_id, process_name, message, action_log);
     }
 
     fn record_message(
@@ -334,6 +391,7 @@ impl EcoQosFailures {
         process_id: u32,
         process_name: &str,
         message: String,
+        action_log: &mut ActionLog,
     ) {
         self.count += 1;
         if self.last_error.is_none() {
@@ -344,6 +402,14 @@ impl EcoQosFailures {
                 &message,
             ));
         }
+        action_log.record(
+            ActionLogFeature::EcoQos,
+            Some(process_id),
+            process_name.to_owned(),
+            ActionLogAction::Fail,
+            ActionLogResult::Failed,
+            message,
+        );
     }
 }
 
@@ -628,5 +694,25 @@ mod tests {
             Some(42),
             Some("app.exe"),
         ));
+    }
+
+    #[test]
+    fn release_processes_drops_exited_process_without_log_entry() {
+        let mut manager = EcoQosManager::default();
+        manager.throttled.insert(
+            0,
+            ThrottledProcess {
+                process_name: "exited.exe".to_owned(),
+                previous_state: None,
+                previous_priority: None,
+            },
+        );
+        let mut log = ActionLog::new(8);
+
+        let failures = manager.release_processes(&[0], &mut log, "test");
+
+        assert_eq!(failures.count, 0);
+        assert!(log.entries().is_empty());
+        assert!(manager.throttled.is_empty());
     }
 }

@@ -116,11 +116,12 @@ mod tests {
     use crate::config::{
         AccentSettings, ActivityModeSettings, AppLanguage, AppSuspensionRule,
         AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, EcoQosSettings,
-        ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules,
-        GeneralSettings, InputDetectionSettings, ManualOverride, NetworkThresholdUnit,
-        PowerPlanSettings, PriorityRule, ProcessPriority, ScheduleModeSettings, ScheduleRule,
-        WeekdaySetting,
+        CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule,
+        EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
+        ForegroundRules, GeneralSettings, InputDetectionSettings, ManualOverride,
+        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
+        PriorityRule, ProcessPriority, ScheduleModeSettings, ScheduleRule, WatchdogAction,
+        WatchdogRule, WatchdogSettings, WeekdaySetting,
     };
 
     #[test]
@@ -265,6 +266,50 @@ mod tests {
                         mode: CpuAffinityMode::EfficiencyOff,
                         process_name: "game.exe".to_owned(),
                         core_mask: 0,
+                    },
+                ],
+            },
+            cpu_limiter: CpuLimiterSettings {
+                enabled: true,
+                exclude_foreground_app: true,
+                rules: vec![CpuLimiterRule {
+                    enabled: true,
+                    process_name: "encoder.exe".to_owned(),
+                    threshold_percent: 80,
+                    sustain_seconds: 5,
+                    cooldown_seconds: 15,
+                    max_logical_processors: 2,
+                }],
+            },
+            performance_mode: PerformanceModeSettings {
+                enabled: true,
+                rules: vec![PerformanceModeRule {
+                    enabled: true,
+                    name: "Game performance".to_owned(),
+                    process_name: "game.exe".to_owned(),
+                    power_plan_guid: Some("gaming-guid".to_owned()),
+                }],
+            },
+            watchdog: WatchdogSettings {
+                enabled: true,
+                rules: vec![
+                    WatchdogRule {
+                        enabled: true,
+                        name: "Block updater".to_owned(),
+                        process_name: "updater.exe".to_owned(),
+                        action: WatchdogAction::TerminateOnLaunch,
+                        launch_path: String::new(),
+                        launch_args: Vec::new(),
+                        restart_delay_seconds: 5,
+                    },
+                    WatchdogRule {
+                        enabled: true,
+                        name: "Keep helper running".to_owned(),
+                        process_name: "helper.exe".to_owned(),
+                        action: WatchdogAction::RestartIfExited,
+                        launch_path: "C:\\Tools\\helper.exe".to_owned(),
+                        launch_args: vec!["--minimized".to_owned()],
+                        restart_delay_seconds: 10,
                     },
                 ],
             },
