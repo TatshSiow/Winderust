@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub general: GeneralSettings,
+    #[serde(default)]
+    pub advanced: AdvancedSettings,
     pub power_plans: PowerPlanSettings,
     pub activity_mode: ActivityModeSettings,
     pub foreground_rules: ForegroundRules,
@@ -24,6 +26,26 @@ pub struct Settings {
     pub watchdog: WatchdogSettings,
     #[serde(default)]
     pub foreground_responsiveness: ForegroundResponsivenessSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvancedSettings {
+    #[serde(default)]
+    pub action_log_mode: ActionLogMode,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionLogMode {
+    Off,
+    Error,
+    Warning,
+    #[default]
+    Full,
+}
+
+impl ActionLogMode {
+    pub const ALL: [Self; 4] = [Self::Full, Self::Warning, Self::Error, Self::Off];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -582,6 +604,7 @@ impl Default for Settings {
                 check_interval_ms: 1000,
                 manual_override: ManualOverride::None,
             },
+            advanced: AdvancedSettings::default(),
             power_plans: PowerPlanSettings::default(),
             activity_mode: ActivityModeSettings {
                 enabled: true,
@@ -613,6 +636,14 @@ impl Default for Settings {
             performance_mode: PerformanceModeSettings::default(),
             watchdog: WatchdogSettings::default(),
             foreground_responsiveness: ForegroundResponsivenessSettings::default(),
+        }
+    }
+}
+
+impl Default for AdvancedSettings {
+    fn default() -> Self {
+        Self {
+            action_log_mode: ActionLogMode::Full,
         }
     }
 }

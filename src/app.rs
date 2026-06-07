@@ -41,7 +41,7 @@ use crate::{
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
-        self, AccentColorSource, AccentSettings, AppLanguage, AppSuspensionRule,
+        self, AccentColorSource, AccentSettings, ActionLogMode, AppLanguage, AppSuspensionRule,
         AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
         CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageRule,
         EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
@@ -154,6 +154,35 @@ struct DropdownPlacement {
     max_height: Pixels,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionLogResultFilter {
+    All,
+    Applied,
+    Restored,
+    Skipped,
+    Failed,
+}
+
+impl ActionLogResultFilter {
+    const ALL: [Self; 5] = [
+        Self::All,
+        Self::Applied,
+        Self::Restored,
+        Self::Skipped,
+        Self::Failed,
+    ];
+
+    fn matches(self, result: ActionLogResult) -> bool {
+        match self {
+            Self::All => true,
+            Self::Applied => result == ActionLogResult::Applied,
+            Self::Restored => result == ActionLogResult::Restored,
+            Self::Skipped => result == ActionLogResult::Skipped,
+            Self::Failed => result == ActionLogResult::Failed,
+        }
+    }
+}
+
 const ACCENT_PALETTE: [u32; 12] = [
     0x4cc2ff, 0x0078d4, 0x744da9, 0xc239b3, 0xe74856, 0xff8c00, 0xf7630c, 0xffb900, 0x13a10e,
     0x00b7c3, 0x038387, 0x7a7574,
@@ -179,6 +208,7 @@ pub struct PowerLeafApp {
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
+    action_log_filter: ActionLogResultFilter,
     foreground_app: Option<String>,
     decision: DecisionOutcome,
     next_schedule: String,
@@ -597,6 +627,7 @@ impl PowerLeafApp {
             watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
             action_log_entries: Vec::new(),
+            action_log_filter: ActionLogResultFilter::All,
             foreground_app: None,
             decision: DecisionOutcome {
                 target_guid: None,
@@ -6230,6 +6261,10 @@ impl PowerLeafApp {
                     .child(self.render_language_selector(cx)),
             )
             .child(
+                section_card(&t!("settings.advanced"))
+                    .child(self.render_action_log_mode_selector(cx)),
+            )
+            .child(
                 section_card(&t!("settings.settings_files")).child(
                     h_flex()
                         .gap_2()
@@ -6255,6 +6290,33 @@ impl PowerLeafApp {
                 ),
             )
             .into_any_element()
+    }
+
+    fn render_action_log_mode_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.settings.advanced.action_log_mode;
+        let mut options = h_flex().gap_1().flex_wrap();
+        for mode in ActionLogMode::ALL {
+            options = options.child(
+                toggle_button(
+                    format!("action-log-mode-{mode:?}"),
+                    action_log_mode_label(mode),
+                    selected == mode,
+                )
+                .tooltip(action_log_mode_help(mode))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings.advanced.action_log_mode = mode;
+                    cx.notify();
+                })),
+            );
+        }
+
+        setting_group_action_row(
+            "advanced-action-log-mode",
+            t!("settings.action_log_mode").to_string(),
+            options.into_any_element(),
+            true,
+        )
+        .into_any_element()
     }
 
     fn render_core_parking_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -6692,6 +6754,11 @@ impl PowerLeafApp {
             t!("action_log.intro_1").to_string(),
             t!("action_log.intro_2").to_string(),
         ]);
+        let filtered_entries = self
+            .action_log_entries
+            .iter()
+            .filter(|entry| self.action_log_filter.matches(entry.result))
+            .collect::<Vec<_>>();
 
         let mut list = rule_list();
         if self.action_log_entries.is_empty() {
@@ -6700,24 +6767,52 @@ impl PowerLeafApp {
                     .outline()
                     .child(text_muted(t!("action_log.empty").to_string())),
             );
+        } else if filtered_entries.is_empty() {
+            list = list.child(
+                GroupBox::new()
+                    .outline()
+                    .child(text_muted(t!("action_log.no_filter_matches").to_string())),
+            );
         } else {
             list = list.child(action_log_header_row());
-            for entry in self.action_log_entries.iter().rev().take(100) {
+            for entry in filtered_entries.into_iter().rev().take(100) {
                 list = list.child(action_log_entry_row(entry, cx));
             }
         }
 
         page_shell_with_help(Page::ActionLog, Some(help))
             .child(
-                h_flex().w_full().justify_end().child(
-                    control_button(Button::new("export-action-log"))
-                        .label(t!("action_log.export_csv").to_string())
-                        .disabled(self.action_log_entries.is_empty())
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.export_action_log_csv();
-                            cx.notify();
-                        })),
-                ),
+                h_flex()
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(self.render_action_log_filter(cx))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .flex_wrap()
+                            .child(
+                                control_button(Button::new("clear-action-log"))
+                                    .label(t!("action_log.clear").to_string())
+                                    .disabled(self.action_log_entries.is_empty())
+                                    .on_click(cx.listener(|app, _, _, cx| {
+                                        app.background_automation.clear_action_log();
+                                        app.action_log_entries.clear();
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                control_button(Button::new("export-action-log"))
+                                    .label(t!("action_log.export_csv").to_string())
+                                    .disabled(self.action_log_entries.is_empty())
+                                    .on_click(cx.listener(|app, _, _, cx| {
+                                        app.export_action_log_csv();
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
             )
             .child(
                 GroupBox::new()
@@ -6728,6 +6823,25 @@ impl PowerLeafApp {
                     .child(list),
             )
             .into_any_element()
+    }
+
+    fn render_action_log_filter(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut row = h_flex().gap_1().flex_wrap();
+        for filter in ActionLogResultFilter::ALL {
+            row = row.child(
+                toggle_button(
+                    format!("action-log-filter-{filter:?}"),
+                    action_log_filter_label(filter),
+                    self.action_log_filter == filter,
+                )
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.action_log_filter = filter;
+                    cx.notify();
+                })),
+            );
+        }
+
+        labeled_element(&t!("action_log.filter"), row.into_any_element()).into_any_element()
     }
 
     fn render_inline_power_plan_picker(
@@ -8869,6 +8983,24 @@ fn action_log_result_label(result: ActionLogResult) -> SharedString {
     .into()
 }
 
+fn action_log_filter_label(filter: ActionLogResultFilter) -> String {
+    match filter {
+        ActionLogResultFilter::All => t!("action_log.filter_all").to_string(),
+        ActionLogResultFilter::Applied => {
+            action_log_result_label(ActionLogResult::Applied).to_string()
+        }
+        ActionLogResultFilter::Restored => {
+            action_log_result_label(ActionLogResult::Restored).to_string()
+        }
+        ActionLogResultFilter::Skipped => {
+            action_log_result_label(ActionLogResult::Skipped).to_string()
+        }
+        ActionLogResultFilter::Failed => {
+            action_log_result_label(ActionLogResult::Failed).to_string()
+        }
+    }
+}
+
 fn action_log_action_label(action: ActionLogAction) -> &'static str {
     match action {
         ActionLogAction::Apply => "Apply",
@@ -10865,6 +10997,24 @@ fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
 
 fn logical_core_count() -> usize {
     affinity::logical_processors().len().clamp(1, 64)
+}
+
+fn action_log_mode_label(mode: ActionLogMode) -> String {
+    match mode {
+        ActionLogMode::Full => t!("settings.action_log_mode_full").to_string(),
+        ActionLogMode::Warning => t!("settings.action_log_mode_warning").to_string(),
+        ActionLogMode::Error => t!("settings.action_log_mode_error").to_string(),
+        ActionLogMode::Off => t!("settings.action_log_mode_off").to_string(),
+    }
+}
+
+fn action_log_mode_help(mode: ActionLogMode) -> String {
+    match mode {
+        ActionLogMode::Full => t!("settings.action_log_mode_full_help").to_string(),
+        ActionLogMode::Warning => t!("settings.action_log_mode_warning_help").to_string(),
+        ActionLogMode::Error => t!("settings.action_log_mode_error_help").to_string(),
+        ActionLogMode::Off => t!("settings.action_log_mode_off_help").to_string(),
+    }
 }
 
 fn efficiency_cpu_restriction_mode_label(mode: EcoQosCpuRestrictionMode) -> String {

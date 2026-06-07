@@ -114,15 +114,16 @@ fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
 mod tests {
     use super::*;
     use crate::config::{
-        AccentSettings, ActivityModeSettings, AppLanguage, AppSuspensionRule,
-        AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule,
-        EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
-        EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, GeneralSettings, InputDetectionSettings, ManualOverride,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
-        PriorityRule, ProcessPriority, ScheduleModeSettings, ScheduleRule, WatchdogAction,
-        WatchdogRule, WatchdogSettings, WeekdaySetting,
+        AccentSettings, ActionLogMode, ActivityModeSettings, AdvancedSettings, AppLanguage,
+        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule,
+        CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison,
+        CpuUsageModeSettings, CpuUsageRule, EcoQosCpuRestrictionControlStyle,
+        EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosSettings,
+        ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules,
+        GeneralSettings, InputDetectionSettings, ManualOverride, NetworkThresholdUnit,
+        PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings, PriorityRule,
+        ProcessPriority, ScheduleModeSettings, ScheduleRule, WatchdogAction, WatchdogRule,
+        WatchdogSettings, WeekdaySetting,
     };
 
     #[test]
@@ -139,6 +140,9 @@ mod tests {
                 pause_power_plan_switching_while_plugged_in: true,
                 check_interval_ms: 2_500,
                 manual_override: ManualOverride::UntilEpochSeconds(42),
+            },
+            advanced: AdvancedSettings {
+                action_log_mode: ActionLogMode::Error,
             },
             power_plans: PowerPlanSettings {
                 power_save_guid: Some("idle-guid".to_owned()),

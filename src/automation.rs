@@ -65,6 +65,7 @@ struct AutomationWorkerState {
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
     app_suspension_freeze_requests: Vec<String>,
+    action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
     windows_event_watcher_active: bool,
     stop_requested: bool,
@@ -106,6 +107,7 @@ impl BackgroundAutomation {
                 foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
                 action_log_entries: Vec::new(),
                 app_suspension_freeze_requests: Vec::new(),
+                action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
                 windows_event_watcher_active: false,
                 stop_requested: false,
@@ -203,6 +205,15 @@ impl BackgroundAutomation {
             .lock()
             .map(|state| state.action_log_entries.clone())
             .unwrap_or_default()
+    }
+
+    pub fn clear_action_log(&self) {
+        if let Ok(mut state) = self.shared.state.lock() {
+            state.action_log_entries.clear();
+            state.action_log_clear_requested = true;
+            state.change_generation = state.change_generation.wrapping_add(1);
+            self.shared.changed.notify_one();
+        }
     }
 
     pub fn request_app_suspension_freeze(&self, process_name: &str) {
@@ -309,6 +320,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let settings = snapshot.settings;
         let change_generation = snapshot.change_generation;
         let app_suspension_freeze_requests = snapshot.app_suspension_freeze_requests;
+        if snapshot.action_log_clear_requested {
+            runner.action_log.clear();
+            update_action_log_entries(&shared, runner.action_log.entries());
+        }
         let wake_events = snapshot.wake_events;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
         let hidden_to_tray = tray::is_hidden_to_tray();
@@ -580,6 +595,7 @@ struct AutomationSnapshot {
     settings: Settings,
     change_generation: u64,
     app_suspension_freeze_requests: Vec<String>,
+    action_log_clear_requested: bool,
     wake_events: AutomationWakeEvents,
     windows_event_watcher_active: bool,
 }
@@ -592,6 +608,7 @@ fn automation_snapshot(shared: &SharedAutomationState) -> Option<AutomationSnaps
             app_suspension_freeze_requests: std::mem::take(
                 &mut state.app_suspension_freeze_requests,
             ),
+            action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
             wake_events: std::mem::take(&mut state.pending_events),
             windows_event_watcher_active: state.windows_event_watcher_active,
         })
@@ -939,6 +956,8 @@ struct HiddenAutomationRunner {
 
 impl HiddenAutomationRunner {
     fn note_settings(&mut self, settings: &Settings) -> bool {
+        self.action_log.set_mode(settings.advanced.action_log_mode);
+
         let changed = self.last_settings.as_ref() != Some(settings);
         if changed {
             self.last_settings = Some(settings.clone());
