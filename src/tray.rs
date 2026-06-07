@@ -21,6 +21,8 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::self_power;
+
 const TRAY_UID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
 const MENU_SHOW: usize = 1001;
@@ -30,6 +32,7 @@ static ORIGINAL_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 static HIDE_ON_CLOSE: AtomicBool = AtomicBool::new(false);
 static HIDDEN_TO_TRAY: AtomicBool = AtomicBool::new(false);
 static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+static RESTORE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub struct TrayIcon {
     hwnd: HWND,
@@ -79,6 +82,10 @@ pub fn take_quit_requested() -> bool {
     QUIT_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
+pub fn take_restore_requested() -> bool {
+    RESTORE_REQUESTED.swap(false, Ordering::SeqCst)
+}
+
 pub fn set_hide_on_close(enabled: bool) {
     HIDE_ON_CLOSE.store(enabled, Ordering::SeqCst);
 }
@@ -90,6 +97,7 @@ pub fn is_hidden_to_tray() -> bool {
 pub fn hide_window(hwnd: HWND) {
     unsafe {
         HIDDEN_TO_TRAY.store(true, Ordering::SeqCst);
+        let _ = self_power::enable_hidden_mode();
         ShowWindow(hwnd, SW_HIDE);
     }
 }
@@ -134,6 +142,7 @@ unsafe extern "system" fn tray_wnd_proc(
 ) -> LRESULT {
     if message == WM_CLOSE && HIDE_ON_CLOSE.load(Ordering::SeqCst) {
         HIDDEN_TO_TRAY.store(true, Ordering::SeqCst);
+        let _ = self_power::enable_hidden_mode();
         ShowWindow(hwnd, SW_HIDE);
         return 0;
     }
@@ -168,6 +177,8 @@ unsafe extern "system" fn tray_wnd_proc(
 
 unsafe fn show_window(hwnd: HWND) {
     HIDDEN_TO_TRAY.store(false, Ordering::SeqCst);
+    RESTORE_REQUESTED.store(true, Ordering::SeqCst);
+    let _ = self_power::disable_hidden_mode();
     ShowWindow(hwnd, SW_RESTORE);
     SetForegroundWindow(hwnd);
 }
@@ -211,6 +222,7 @@ unsafe fn quit_window(hwnd: HWND) {
     HIDE_ON_CLOSE.store(false, Ordering::SeqCst);
     HIDDEN_TO_TRAY.store(false, Ordering::SeqCst);
     QUIT_REQUESTED.store(true, Ordering::SeqCst);
+    let _ = self_power::disable_hidden_mode();
 
     ShowWindow(hwnd, SW_SHOWNA);
     PostMessageW(hwnd, WM_CLOSE, 0, 0);

@@ -20,11 +20,13 @@ mod power_source;
 mod responsiveness;
 mod rules;
 mod scheduler;
+mod self_power;
 mod startup;
 mod suspension;
 mod tray;
 mod ui;
 mod watchdog;
+mod windows_events;
 
 rust_i18n::i18n!("locales", fallback = "en");
 

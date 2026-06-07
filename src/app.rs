@@ -37,7 +37,7 @@ use gpui_component::{
 
 use crate::{
     action_log::{ActionLogAction, ActionLogEntry, ActionLogFeature, ActionLogResult},
-    activity::{ActivitySnapshot, ActivityState, IdleDetector, InputHook},
+    activity::{ActivitySnapshot, ActivityState, IdleDetector, InputHook, InputHookConfig},
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
@@ -86,7 +86,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
-const HIDDEN_APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_HISTORY_LEN: usize = 36;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -223,6 +222,7 @@ pub struct PowerLeafApp {
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
+    _window_activation_subscription: Subscription,
     accent_color_picker: Entity<ColorPickerState>,
     _accent_color_picker_subscription: Subscription,
     inputs: UiInputs,
@@ -563,6 +563,12 @@ impl PowerLeafApp {
                 ColorPickerEvent::Change(None) => {}
             },
         );
+        let window_activation_subscription =
+            cx.observe_window_activation(window, |app, window, cx| {
+                if window.is_window_active() && tray::take_restore_requested() {
+                    app.refresh_after_tray_restore(window, cx);
+                }
+            });
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
@@ -645,6 +651,7 @@ impl PowerLeafApp {
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
+            _window_activation_subscription: window_activation_subscription,
             accent_color_picker,
             _accent_color_picker_subscription: accent_color_picker_subscription,
             inputs,
@@ -661,15 +668,14 @@ impl PowerLeafApp {
         app.refresh_process_candidates(false);
         app.run_check();
         app.sync_processor_power_slider_states(window, cx);
-        app.install_input_hook();
+        app.sync_input_hook();
         app.schedule_tick(window, cx);
         app
     }
 
     fn schedule_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let tick_interval = self.tick_interval();
         self._tick_task = cx.spawn_in(window, async move |this, cx| {
-            Timer::after(tick_interval).await;
+            Timer::after(APP_TICK_INTERVAL).await;
             let _ = cx.update(move |window, app_cx| {
                 if let Some(this) = this.upgrade() {
                     let _ = this.update(app_cx, |app, cx| match app.tick(window) {
@@ -684,14 +690,6 @@ impl PowerLeafApp {
                 }
             });
         });
-    }
-
-    fn tick_interval(&self) -> Duration {
-        if tray::is_hidden_to_tray() {
-            HIDDEN_APP_TICK_INTERVAL
-        } else {
-            APP_TICK_INTERVAL
-        }
     }
 
     fn refresh_power_plans(&mut self) {
@@ -1132,13 +1130,34 @@ impl PowerLeafApp {
     }
 
     fn install_input_hook(&mut self) {
-        match InputHook::install() {
+        let settings = self.runtime_settings();
+        match InputHook::install(
+            input_hook_config(&settings),
+            self.background_automation.input_event_callback(),
+        ) {
             Ok(input_hook) => {
                 self.input_hook = Some(input_hook);
             }
             Err(err) => {
                 self.status_message = err;
             }
+        }
+    }
+
+    fn sync_input_hook(&mut self) {
+        let settings = self.runtime_settings();
+        if input_hook_required(&settings) {
+            let config = input_hook_config(&settings);
+            if self
+                .input_hook
+                .as_ref()
+                .is_none_or(|input_hook| input_hook.config() != config)
+            {
+                self.input_hook = None;
+                self.install_input_hook();
+            }
+        } else {
+            self.input_hook = None;
         }
     }
 
@@ -1180,6 +1199,9 @@ impl PowerLeafApp {
             Ok(()) => {
                 self.saved_settings = self.settings.clone();
                 self.editing_accent_color = None;
+                self.sync_input_hook();
+                self.background_automation
+                    .update_settings(&self.background_settings());
                 self.status_message = match startup::set_startup_with_windows(
                     self.saved_settings.general.startup_with_windows,
                 ) {
@@ -1258,6 +1280,9 @@ impl PowerLeafApp {
                             };
                             self.rebuild_inputs(window, cx);
                             self.sync_accent_color_picker(window, cx);
+                            self.sync_input_hook();
+                            self.background_automation
+                                .update_settings(&self.background_settings());
                         }
                         Err(err) => self.status_message = err,
                     }
@@ -1350,6 +1375,19 @@ impl PowerLeafApp {
         true
     }
 
+    fn refresh_after_tray_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.next_check = Instant::now();
+        match self.tick(window) {
+            TickOutcome::Continue { changed } => {
+                self.schedule_tick(window, cx);
+                if changed {
+                    cx.notify();
+                }
+            }
+            TickOutcome::Stop => {}
+        }
+    }
+
     fn tick(&mut self, window: &mut Window) -> TickOutcome {
         if tray::take_quit_requested() {
             tray::set_hide_on_close(false);
@@ -1360,9 +1398,10 @@ impl PowerLeafApp {
 
         let mut changed = self.apply_start_minimized(window);
         if tray::is_hidden_to_tray() {
+            self.sync_input_hook();
             self.background_automation
                 .update_settings(&self.background_settings());
-            return TickOutcome::Continue { changed: false };
+            return TickOutcome::Stop;
         }
 
         let eco_qos_status = self.background_automation.eco_qos_status();
@@ -1421,11 +1460,6 @@ impl PowerLeafApp {
 
         changed |= self.refresh_cpu_usage_sample();
 
-        let _input_events = self
-            .input_hook
-            .as_ref()
-            .map(InputHook::take_events)
-            .unwrap_or_default();
         let should_check_now = Instant::now() >= self.next_check;
 
         if should_check_now {
@@ -2096,6 +2130,7 @@ impl PowerLeafApp {
         settings.eco_qos = self.saved_settings.eco_qos.clone();
         settings.app_suspension = self.saved_settings.app_suspension.clone();
         settings.cpu_affinity = self.saved_settings.cpu_affinity.clone();
+        settings.cpu_limiter = self.saved_settings.cpu_limiter.clone();
         settings.watchdog = self.saved_settings.watchdog.clone();
         settings.foreground_responsiveness = self.saved_settings.foreground_responsiveness.clone();
         settings
@@ -10095,6 +10130,26 @@ fn cpu_usage_label(percent: Option<f32>) -> String {
         .unwrap_or_else(|| t!("dashboard.collecting").to_string())
 }
 
+fn input_hook_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && settings.activity_mode.enabled
+        && settings.activity_mode.switch_to_performance_on_resume
+        && settings.activity_mode.input_detection.any_enabled()
+        && (settings
+            .activity_mode
+            .power_plans
+            .performance_guid
+            .is_some()
+            || settings.power_plans.performance_guid.is_some())
+}
+
+fn input_hook_config(settings: &Settings) -> InputHookConfig {
+    InputHookConfig {
+        keyboard: settings.activity_mode.input_detection.keyboard,
+        mouse: settings.activity_mode.input_detection.mouse,
+    }
+}
+
 fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, process: &str) -> bool {
     match target {
         SuggestionTarget::Foreground => {
@@ -10929,6 +10984,52 @@ mod tests {
         assert_eq!(
             ProcessorPowerSlider::DcCoreParkingMin.paired_power_source(),
             ProcessorPowerSlider::AcCoreParkingMin
+        );
+    }
+
+    #[test]
+    fn input_hook_is_needed_only_for_enabled_activity_input_detection() {
+        let mut settings = Settings::default();
+
+        assert!(!input_hook_required(&settings));
+
+        settings.power_plans.performance_guid = Some("active-guid".to_owned());
+        assert!(input_hook_required(&settings));
+
+        settings.activity_mode.enabled = false;
+        assert!(!input_hook_required(&settings));
+
+        settings.activity_mode.enabled = true;
+        settings.general.enabled = false;
+        assert!(!input_hook_required(&settings));
+
+        settings.general.enabled = true;
+        settings.activity_mode.switch_to_performance_on_resume = false;
+        assert!(!input_hook_required(&settings));
+    }
+
+    #[test]
+    fn input_hook_config_tracks_enabled_input_devices() {
+        let mut settings = Settings::default();
+
+        settings.activity_mode.input_detection.keyboard = true;
+        settings.activity_mode.input_detection.mouse = false;
+        assert_eq!(
+            input_hook_config(&settings),
+            InputHookConfig {
+                keyboard: true,
+                mouse: false,
+            }
+        );
+
+        settings.activity_mode.input_detection.keyboard = false;
+        settings.activity_mode.input_detection.mouse = true;
+        assert_eq!(
+            input_hook_config(&settings),
+            InputHookConfig {
+                keyboard: false,
+                mouse: true,
+            }
         );
     }
 }
