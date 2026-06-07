@@ -6328,15 +6328,15 @@ impl PowerLeafApp {
 
     fn render_action_log_mode_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.settings.advanced.action_log_mode;
-        let mut options = h_flex().gap_1().flex_wrap();
+        let mut options = h_flex().w_full().min_w(px(0.0)).gap_2().flex_wrap();
         for mode in ActionLogMode::ALL {
             options = options.child(
-                toggle_button(
+                action_log_mode_option(
                     format!("action-log-mode-{mode:?}"),
                     action_log_mode_label(mode),
+                    action_log_mode_help(mode),
                     selected == mode,
                 )
-                .tooltip(action_log_mode_help(mode))
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.settings.advanced.action_log_mode = mode;
                     cx.notify();
@@ -6344,13 +6344,8 @@ impl PowerLeafApp {
             );
         }
 
-        setting_group_action_row(
-            "advanced-action-log-mode",
-            t!("settings.action_log_mode").to_string(),
-            options.into_any_element(),
-            true,
-        )
-        .into_any_element()
+        labeled_element(&t!("settings.action_log_mode"), options.into_any_element())
+            .into_any_element()
     }
 
     fn render_core_parking_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -9728,6 +9723,73 @@ fn toggle_button(
         .label(label)
         .small()
         .when(selected, |button| button.primary())
+}
+
+fn action_log_mode_option(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    selected: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
+    let label: SharedString = label.into();
+    let help: SharedString = help.into();
+    let accent = accent_color();
+    let border = if selected { accent } else { border_color() };
+    let title_color = if selected {
+        accent
+    } else {
+        primary_text_color()
+    };
+    let help_color = if selected {
+        primary_text_color()
+    } else {
+        muted_text_color()
+    };
+
+    div()
+        .id(id)
+        .min_w(px(150.0))
+        .flex_1()
+        .min_h(px(82.0))
+        .p_3()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border))
+        .bg(rgb(settings_card_color()))
+        .hover(|style| {
+            style
+                .bg(rgb(settings_card_hover_color()))
+                .border_color(rgb(accent_color()))
+        })
+        .cursor_pointer()
+        .when(selected, |style| {
+            style.bg(rgb(settings_card_hover_color())).border_2()
+        })
+        .child(
+            v_flex()
+                .w_full()
+                .gap_1()
+                .min_w(px(0.0))
+                .child(
+                    div()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .text_size(px(TEXT_BODY_SIZE))
+                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgb(title_color))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .text_size(px(TEXT_LABEL_SIZE))
+                        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                        .text_color(rgb(help_color))
+                        .child(help),
+                ),
+        )
 }
 
 fn control_button(button: Button) -> Button {
