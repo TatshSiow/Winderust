@@ -39,6 +39,10 @@ impl ForegroundDetector {
         unsafe { mouse_button_pressed() && cursor_is_shell_window() }
     }
 
+    pub fn cursor_is_shell_window(&self) -> bool {
+        unsafe { cursor_is_shell_window() }
+    }
+
     pub fn process_id(&self) -> Option<u32> {
         unsafe { foreground_process_id() }
     }
@@ -163,6 +167,11 @@ fn is_shell_window_class(class_name: &str) -> bool {
             | "Shell_SecondaryTrayWnd"
             | "Shell_TrayWndClass"
             | "NotifyIconOverflowWindow"
+            | "TaskListThumbnailWnd"
+            | "TaskListOverlayWnd"
+            | "TaskSwitcherWnd"
+            | "MultitaskingViewFrame"
+            | "XamlExplorerHostIslandWindow"
     )
 }
 
@@ -185,4 +194,31 @@ unsafe fn mouse_button_pressed() -> bool {
     [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
         .into_iter()
         .any(|button| GetAsyncKeyState(i32::from(button)) < 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_window_classes_include_taskbar_and_switcher_surfaces() {
+        for class_name in [
+            "Shell_TrayWnd",
+            "Shell_SecondaryTrayWnd",
+            "NotifyIconOverflowWindow",
+            "TaskListThumbnailWnd",
+            "TaskListOverlayWnd",
+            "TaskSwitcherWnd",
+            "MultitaskingViewFrame",
+            "XamlExplorerHostIslandWindow",
+        ] {
+            assert!(is_shell_window_class(class_name), "{class_name}");
+        }
+    }
+
+    #[test]
+    fn shell_window_classes_exclude_regular_app_windows() {
+        assert!(!is_shell_window_class("Chrome_WidgetWin_1"));
+        assert!(!is_shell_window_class("CabinetWClass"));
+    }
 }

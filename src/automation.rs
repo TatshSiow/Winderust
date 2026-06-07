@@ -82,6 +82,8 @@ struct AutomationWakeEvents {
     power_changed: bool,
     session_changed: bool,
     input_activity: bool,
+    app_switch: bool,
+    app_switch_mouse_click: bool,
 }
 
 impl AutomationWakeEvents {
@@ -392,6 +394,20 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         if wake_events.input_activity {
             next_check = Instant::now();
         }
+        if wake_events.app_switch || wake_events.app_switch_mouse_click {
+            next_app_suspension_foreground_release = Instant::now();
+            if runner.app_suspension_manager.has_suspended_processes() {
+                let app_suspension_status = if wake_events.app_switch {
+                    runner.run_app_suspension_app_switch_release()
+                } else {
+                    runner.run_app_suspension_shell_click_release()
+                };
+                if let Some(app_suspension_status) = app_suspension_status {
+                    update_app_suspension_status(&shared, app_suspension_status);
+                    update_action_log_entries(&shared, runner.action_log.entries());
+                }
+            }
+        }
         let power_plan_checks_required = power_plan_checks_required(&settings);
         let scan_process_appearance = process_appearance_scan_required(&settings);
         let eco_qos_refresh_required =
@@ -684,7 +700,15 @@ fn notify_input_event(shared: &SharedAutomationState, events: InputHookEvents) {
             return;
         }
 
-        state.pending_events.input_activity = true;
+        if input_hook_should_check_activity(&state.settings, events) {
+            state.pending_events.input_activity = true;
+        }
+        if input_hook_should_check_app_switch(&state.settings, events) {
+            state.pending_events.app_switch = true;
+        }
+        if input_hook_should_check_app_switch_mouse_click(&state.settings, events) {
+            state.pending_events.app_switch_mouse_click = true;
+        }
         state.change_generation = state.change_generation.wrapping_add(1);
         shared.changed.notify_one();
     }
@@ -958,10 +982,27 @@ fn wait_for_wake(
 }
 
 fn input_hook_should_check(settings: &Settings, events: InputHookEvents) -> bool {
+    input_hook_should_check_activity(settings, events)
+        || input_hook_should_check_app_switch(settings, events)
+        || input_hook_should_check_app_switch_mouse_click(settings, events)
+}
+
+fn input_hook_should_check_activity(settings: &Settings, events: InputHookEvents) -> bool {
     settings.general.enabled
         && settings.activity_mode.enabled
         && ((events.keyboard && settings.activity_mode.input_detection.keyboard)
             || (events.mouse && settings.activity_mode.input_detection.mouse))
+}
+
+fn input_hook_should_check_app_switch(settings: &Settings, events: InputHookEvents) -> bool {
+    settings.general.enabled && settings.app_suspension.enabled && events.app_switch
+}
+
+fn input_hook_should_check_app_switch_mouse_click(
+    settings: &Settings,
+    events: InputHookEvents,
+) -> bool {
+    settings.general.enabled && settings.app_suspension.enabled && events.mouse_click
 }
 
 fn process_ids_have_new_entries(
@@ -1098,6 +1139,22 @@ impl HiddenAutomationRunner {
                 .map(|process| process.name.as_str()),
             &mut self.action_log,
         )
+    }
+
+    fn run_app_suspension_app_switch_release(&mut self) -> Option<AppSuspensionSnapshot> {
+        self.app_suspension_manager
+            .release_window_owner_processes_for_user_intent(
+                &top_level_window_process_ids(),
+                &mut self.action_log,
+            )
+    }
+
+    fn run_app_suspension_shell_click_release(&mut self) -> Option<AppSuspensionSnapshot> {
+        if !self.foreground_detector.cursor_is_shell_window() {
+            return None;
+        }
+
+        self.run_app_suspension_app_switch_release()
     }
 
     fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {

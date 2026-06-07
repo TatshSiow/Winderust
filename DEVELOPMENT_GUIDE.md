@@ -216,6 +216,14 @@ Current behavior:
 - Access-denied process opens are counted as skipped, not failed. This is expected for protected/elevated Windows processes.
 - Suspendable Apps are edited with the same searchable running-app dropdown pattern as Foreground Detection and are persisted to TOML/INI.
 
+App-switch thaw intent:
+
+- `src/activity/input_hook.rs` detects user intent that can activate a suspended app before Windows can report that app as foreground.
+- `src/automation.rs` routes those events to `AppSuspensionManager::release_window_owner_processes_for_user_intent()` or the focused/cursor release path.
+- Covered built-in switch paths: `Alt+Tab`, `Win+Tab`, `Alt+Esc`, `Win+T`, `Win+number`, taskbar icon/thumbnail clicks over shell/taskbar windows, and `Win+Ctrl+Left/Right` virtual-desktop switches.
+- Taskbar thumbnail/switcher shell class coverage lives in `src/foreground/active_window.rs`; keep this list narrow to shell UI classes such as `TaskListThumbnailWnd`, `TaskListOverlayWnd`, `TaskSwitcherWnd`, and `MultitaskingViewFrame`.
+- Potential future edge cases: `Win+Ctrl+D`, `Win+Ctrl+F4`, `Win+Shift+number`, `Win+Alt+number` jump-list flows, touch/taskbar gestures, accessibility/UI Automation activation, RDP shell layers, and third-party switchers. Add these only when there is a reproducible failure, because broad input thawing can wake unrelated suspended apps.
+
 Keep this feature opt-in and narrow. Do not add broad "suspend all background apps" behavior without explicit user direction and additional safeguards.
 
 Security-hardening references:

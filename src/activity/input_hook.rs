@@ -12,15 +12,24 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{LPARAM, LRESULT, WPARAM},
     System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
-    UI::WindowsAndMessaging::{
-        CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
-        SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, HHOOK, MSG,
-        PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_QUIT,
+    UI::{
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_0, VK_9, VK_CONTROL, VK_ESCAPE, VK_LEFT, VK_LWIN, VK_MENU,
+            VK_NUMPAD0, VK_NUMPAD9, VK_RIGHT, VK_RWIN, VK_T, VK_TAB,
+        },
+        WindowsAndMessaging::{
+            CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
+            SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, HHOOK,
+            KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN,
+            WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN,
+        },
     },
 };
 
 const KEYBOARD_EVENT: u8 = 0b01;
 const MOUSE_EVENT: u8 = 0b10;
+const APP_SWITCH_EVENT: u8 = 0b100;
+const MOUSE_CLICK_EVENT: u8 = 0b1000;
 
 static INPUT_EVENTS: AtomicU8 = AtomicU8::new(0);
 
@@ -34,6 +43,8 @@ thread_local! {
 pub struct InputHookEvents {
     pub keyboard: bool,
     pub mouse: bool,
+    pub app_switch: bool,
+    pub mouse_click: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -157,7 +168,11 @@ fn hook_thread(
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
-        record_input_event(KEYBOARD_EVENT);
+        let mut event = KEYBOARD_EVENT;
+        if is_app_switch_key_event(wparam, lparam) {
+            event |= APP_SWITCH_EVENT;
+        }
+        record_input_event(event);
     }
     unsafe {
         CallNextHookEx(
@@ -171,7 +186,11 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
-        record_input_event(MOUSE_EVENT);
+        let mut event = MOUSE_EVENT;
+        if is_mouse_button_down(wparam) {
+            event |= MOUSE_CLICK_EVENT;
+        }
+        record_input_event(event);
     }
     unsafe {
         CallNextHookEx(
@@ -202,5 +221,178 @@ fn input_events_from_bits(events: u8) -> InputHookEvents {
     InputHookEvents {
         keyboard: events & KEYBOARD_EVENT != 0,
         mouse: events & MOUSE_EVENT != 0,
+        app_switch: events & APP_SWITCH_EVENT != 0,
+        mouse_click: events & MOUSE_CLICK_EVENT != 0,
+    }
+}
+
+unsafe fn is_app_switch_key_event(wparam: WPARAM, lparam: LPARAM) -> bool {
+    if wparam != WM_KEYDOWN as WPARAM && wparam != WM_SYSKEYDOWN as WPARAM {
+        return false;
+    }
+
+    let event = &*(lparam as *const KBDLLHOOKSTRUCT);
+    let alt_down = virtual_key_pressed(VK_MENU);
+    let win_down = virtual_key_pressed(VK_LWIN) || virtual_key_pressed(VK_RWIN);
+    let ctrl_down = virtual_key_pressed(VK_CONTROL);
+    is_app_switch_virtual_key(event.vkCode, alt_down, win_down, ctrl_down)
+}
+
+fn is_mouse_button_down(wparam: WPARAM) -> bool {
+    matches!(
+        wparam,
+        value if value == WM_LBUTTONDOWN as WPARAM
+            || value == WM_RBUTTONDOWN as WPARAM
+            || value == WM_MBUTTONDOWN as WPARAM
+    )
+}
+
+fn is_app_switch_virtual_key(
+    vk_code: u32,
+    alt_down: bool,
+    win_down: bool,
+    ctrl_down: bool,
+) -> bool {
+    (vk_code == u32::from(VK_TAB) && (alt_down || win_down))
+        || (vk_code == u32::from(VK_ESCAPE) && alt_down)
+        || (vk_code == u32::from(VK_T) && win_down)
+        || (win_down && is_taskbar_number_key(vk_code))
+        || (win_down
+            && ctrl_down
+            && (vk_code == u32::from(VK_LEFT) || vk_code == u32::from(VK_RIGHT)))
+}
+
+fn is_taskbar_number_key(vk_code: u32) -> bool {
+    (u32::from(VK_0)..=u32::from(VK_9)).contains(&vk_code)
+        || (u32::from(VK_NUMPAD0)..=u32::from(VK_NUMPAD9)).contains(&vk_code)
+}
+
+unsafe fn virtual_key_pressed(key: u16) -> bool {
+    GetAsyncKeyState(i32::from(key)) < 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_1, VK_NUMPAD1};
+
+    #[test]
+    fn app_switch_virtual_key_matches_alt_or_win_tab() {
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_TAB),
+            true,
+            false,
+            false
+        ));
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_TAB),
+            false,
+            true,
+            false
+        ));
+        assert!(!is_app_switch_virtual_key(
+            u32::from(VK_TAB),
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn app_switch_virtual_key_matches_alt_escape() {
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_ESCAPE),
+            true,
+            false,
+            false
+        ));
+        assert!(!is_app_switch_virtual_key(
+            u32::from(VK_ESCAPE),
+            false,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn app_switch_virtual_key_matches_win_taskbar_navigation() {
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_T),
+            false,
+            true,
+            false
+        ));
+        assert!(!is_app_switch_virtual_key(
+            u32::from(VK_T),
+            false,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn app_switch_virtual_key_matches_win_ctrl_virtual_desktop_switching() {
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_LEFT),
+            false,
+            true,
+            true
+        ));
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_RIGHT),
+            false,
+            true,
+            true
+        ));
+        assert!(!is_app_switch_virtual_key(
+            u32::from(VK_LEFT),
+            false,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn app_switch_virtual_key_matches_win_number_shortcuts() {
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_1),
+            false,
+            true,
+            false
+        ));
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_0),
+            false,
+            true,
+            false
+        ));
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_NUMPAD1),
+            false,
+            true,
+            false
+        ));
+        assert!(is_app_switch_virtual_key(
+            u32::from(VK_NUMPAD0),
+            false,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn app_switch_virtual_key_ignores_numbers_without_windows_key() {
+        assert!(!is_app_switch_virtual_key(
+            u32::from(VK_1),
+            true,
+            false,
+            false
+        ));
+        assert!(!is_app_switch_virtual_key(
+            u32::from(VK_NUMPAD1),
+            false,
+            false,
+            false
+        ));
     }
 }

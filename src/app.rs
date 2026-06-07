@@ -11061,7 +11061,19 @@ fn cpu_usage_label(percent: Option<f32>) -> String {
 
 fn input_hook_required(settings: &Settings) -> bool {
     settings.general.enabled
-        && settings.activity_mode.enabled
+        && (activity_input_hook_required(settings) || settings.app_suspension.enabled)
+}
+
+fn input_hook_config(settings: &Settings) -> InputHookConfig {
+    InputHookConfig {
+        keyboard: settings.activity_mode.input_detection.keyboard
+            || settings.app_suspension.enabled,
+        mouse: settings.activity_mode.input_detection.mouse || settings.app_suspension.enabled,
+    }
+}
+
+fn activity_input_hook_required(settings: &Settings) -> bool {
+    settings.activity_mode.enabled
         && settings.activity_mode.switch_to_performance_on_resume
         && settings.activity_mode.input_detection.any_enabled()
         && (settings
@@ -11070,13 +11082,6 @@ fn input_hook_required(settings: &Settings) -> bool {
             .performance_guid
             .is_some()
             || settings.power_plans.performance_guid.is_some())
-}
-
-fn input_hook_config(settings: &Settings) -> InputHookConfig {
-    InputHookConfig {
-        keyboard: settings.activity_mode.input_detection.keyboard,
-        mouse: settings.activity_mode.input_detection.mouse,
-    }
 }
 
 fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, process: &str) -> bool {
@@ -12035,7 +12040,7 @@ mod tests {
     }
 
     #[test]
-    fn input_hook_is_needed_only_for_enabled_activity_input_detection() {
+    fn input_hook_is_needed_for_activity_input_or_app_suspension() {
         let mut settings = Settings::default();
 
         assert!(!input_hook_required(&settings));
@@ -12052,6 +12057,12 @@ mod tests {
 
         settings.general.enabled = true;
         settings.activity_mode.switch_to_performance_on_resume = false;
+        assert!(!input_hook_required(&settings));
+
+        settings.app_suspension.enabled = true;
+        assert!(input_hook_required(&settings));
+
+        settings.general.enabled = false;
         assert!(!input_hook_required(&settings));
     }
 
@@ -12075,6 +12086,15 @@ mod tests {
             input_hook_config(&settings),
             InputHookConfig {
                 keyboard: false,
+                mouse: true,
+            }
+        );
+
+        settings.app_suspension.enabled = true;
+        assert_eq!(
+            input_hook_config(&settings),
+            InputHookConfig {
+                keyboard: true,
                 mouse: true,
             }
         );
