@@ -21,7 +21,7 @@ use gpui::{
     Point, Render, SharedString, Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
-    button::{Button, ButtonVariants},
+    button::{Button, ButtonCustomVariant, ButtonVariants},
     color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     description_list::DescriptionList,
     group_box::{GroupBox, GroupBoxVariants},
@@ -3897,15 +3897,13 @@ impl PowerLeafApp {
         enabled: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let available_mask = affinity_processors_mask(processors);
         self.render_core_tile_grid(
             processors,
             self.settings.eco_qos.cpu_restriction_core_mask,
             enabled,
             "eco-qos-core-toggle",
-            cx.listener(move |app, core: &usize, _, cx| {
-                toggle_affinity_core(&mut app.settings.eco_qos.cpu_restriction_core_mask, *core);
-                cx.notify();
-            }),
+            CoreTileGridAction::EcoQosCpuRestriction { available_mask },
             cx,
         )
     }
@@ -5541,12 +5539,7 @@ impl PowerLeafApp {
             core_mask,
             true,
             format!("affinity-core-{index}"),
-            cx.listener(move |app, core: &usize, _, cx| {
-                if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
-                    toggle_affinity_core(&mut rule.core_mask, *core);
-                }
-                cx.notify();
-            }),
+            CoreTileGridAction::CpuAffinityRule { index },
             cx,
         );
 
@@ -5579,7 +5572,7 @@ impl PowerLeafApp {
         core_mask: u64,
         enabled: bool,
         id_prefix: impl Into<String>,
-        handler: impl Fn(&usize, &mut Window, &mut App) + 'static,
+        action: CoreTileGridAction,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         const CORE_GRID_COLUMNS: usize = 8;
@@ -5589,7 +5582,6 @@ impl PowerLeafApp {
         }
 
         let id_prefix = id_prefix.into();
-        let handler = Rc::new(handler);
         let mut grid = v_flex().w_full().min_w(px(0.0)).gap_1();
         let mut current_row = h_flex().w_full().min_w(px(0.0)).gap_1();
         let mut cells_in_row = 0;
@@ -5607,50 +5599,82 @@ impl PowerLeafApp {
             } else {
                 rgb(muted_text_color()).into()
             };
-            let handler = Rc::clone(&handler);
+            let tile_variant = ButtonCustomVariant::new(cx)
+                .color(
+                    rgb(if selected {
+                        accent_color()
+                    } else {
+                        settings_card_color()
+                    })
+                    .into(),
+                )
+                .foreground(tile_text_color)
+                .border(
+                    rgb(if selected {
+                        accent_color()
+                    } else {
+                        border_color()
+                    })
+                    .into(),
+                )
+                .hover(if selected {
+                    cx.theme().primary_hover
+                } else {
+                    cx.theme().secondary_hover
+                })
+                .active(if selected {
+                    cx.theme().primary_active
+                } else {
+                    cx.theme().secondary_active
+                });
             current_row = current_row.child(
                 div().flex_1().min_w(px(0.0)).child(
-                    v_flex()
-                        .id(SharedString::from(format!("{id_prefix}-{core}")))
+                    Button::new(SharedString::from(format!("{id_prefix}-{core}")))
+                        .custom(tile_variant)
+                        .rounded(px(4.0))
                         .w_full()
                         .min_w(px(0.0))
                         .h(px(54.0))
-                        .items_center()
-                        .justify_center()
-                        .gap(px(1.0))
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(rgb(if selected {
-                            accent_color()
-                        } else {
-                            border_color()
-                        }))
-                        .bg(rgb(if selected {
-                            accent_color()
-                        } else {
-                            settings_card_color()
-                        }))
-                        .text_color(tile_text_color)
-                        .when(enabled, |tile| tile.cursor_pointer())
-                        .when(!enabled, |tile| tile.opacity(0.42).cursor_default())
-                        .on_click(cx.listener(move |_app, _, window, cx| {
-                            if enabled {
-                                handler(&core, window, cx);
+                        .disabled(!enabled)
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match action {
+                                CoreTileGridAction::EcoQosCpuRestriction { available_mask } => {
+                                    toggle_affinity_core_with_available_mask(
+                                        &mut app.settings.eco_qos.cpu_restriction_core_mask,
+                                        core,
+                                        available_mask,
+                                    );
+                                }
+                                CoreTileGridAction::CpuAffinityRule { index } => {
+                                    if let Some(rule) =
+                                        app.settings.cpu_affinity.rules.get_mut(index)
+                                    {
+                                        toggle_affinity_core(&mut rule.core_mask, core);
+                                    }
+                                }
                             }
+                            cx.notify();
                         }))
                         .child(
-                            div()
-                                .text_size(px(10.0))
-                                .line_height(px(12.0))
-                                .text_color(tile_muted_text_color)
-                                .child(core_tile_kind_label(processor)),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(TEXT_CONTROL_SIZE))
-                                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                                .font_weight(gpui::FontWeight::BOLD)
-                                .child(format!("CPU {}", processor.index)),
+                            v_flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(1.0))
+                                .child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .line_height(px(12.0))
+                                        .text_color(tile_muted_text_color)
+                                        .child(core_tile_kind_label(processor)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(TEXT_CONTROL_SIZE))
+                                        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                                        .font_weight(gpui::FontWeight::BOLD)
+                                        .text_color(tile_text_color)
+                                        .child(format!("CPU {}", processor.index)),
+                                ),
                         ),
                 ),
             );
@@ -10741,6 +10765,12 @@ struct AffinityIndicator {
     hover: String,
 }
 
+#[derive(Clone, Copy)]
+enum CoreTileGridAction {
+    EcoQosCpuRestriction { available_mask: u64 },
+    CpuAffinityRule { index: usize },
+}
+
 fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> SuspensionIndicator {
     let accent = accent_color();
     let accent_bg = settings_card_hover_color();
@@ -10932,6 +10962,22 @@ fn toggle_affinity_core(mask: &mut u64, core: usize) {
     }
 
     let bit = 1_u64 << core;
+    if (*mask & bit) == 0 {
+        *mask |= bit;
+    } else if mask.count_ones() > 1 {
+        *mask &= !bit;
+    }
+}
+
+fn toggle_affinity_core_with_available_mask(mask: &mut u64, core: usize, available_mask: u64) {
+    *mask &= available_mask;
+    let Some(bit) = affinity_processor_bit(core) else {
+        return;
+    };
+    if (available_mask & bit) == 0 {
+        return;
+    }
+
     if (*mask & bit) == 0 {
         *mask |= bit;
     } else if mask.count_ones() > 1 {
@@ -11237,6 +11283,20 @@ mod tests {
         ];
 
         assert_eq!(affinity_processors_no_smt_mask(&processors), 0b0101);
+    }
+
+    #[test]
+    fn topology_aware_core_toggle_keeps_one_available_cpu_selected() {
+        let mut mask = (1_u64 << 63) | 0b0001;
+        toggle_affinity_core_with_available_mask(&mut mask, 0, 0b0011);
+
+        assert_eq!(mask, 0b0001);
+
+        toggle_affinity_core_with_available_mask(&mut mask, 1, 0b0011);
+        assert_eq!(mask, 0b0011);
+
+        toggle_affinity_core_with_available_mask(&mut mask, 0, 0b0011);
+        assert_eq!(mask, 0b0010);
     }
 
     #[test]
