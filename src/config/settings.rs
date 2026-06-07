@@ -256,8 +256,19 @@ pub struct EcoQosSettings {
     pub cpu_restriction_max_logical_processors: u8,
     #[serde(default)]
     pub cpu_restriction_core_mask: u64,
-    #[serde(default, alias = "excluded_processes")]
-    pub efficiency_whitelist: Vec<String>,
+    #[serde(
+        default,
+        alias = "excluded_processes",
+        deserialize_with = "deserialize_eco_qos_exclusion_rules"
+    )]
+    pub efficiency_whitelist: Vec<EcoQosExclusionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EcoQosExclusionRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -513,6 +524,8 @@ impl CpuAffinityMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSuspensionRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
     pub process_name: String,
     #[serde(default = "default_rule_network_wake_enabled")]
     pub network_wake_enabled: bool,
@@ -957,10 +970,21 @@ impl AppSuspensionSettings {
         })
     }
 
+    pub fn suspendable_app_enabled_for(&self, process_name: &str) -> bool {
+        self.suspendable_apps.iter().any(|rule| {
+            rule.enabled
+                && rule
+                    .process_name
+                    .trim()
+                    .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+
     pub fn network_wake_enabled_for(&self, process_name: &str) -> bool {
         self.network_wake_enabled
             && self.suspendable_apps.iter().any(|rule| {
-                rule.network_wake_enabled
+                rule.enabled
+                    && rule.network_wake_enabled
                     && rule
                         .process_name
                         .trim()
@@ -971,7 +995,8 @@ impl AppSuspensionSettings {
     pub fn audio_wake_enabled_for(&self, process_name: &str) -> bool {
         self.audio_wake_enabled
             && self.suspendable_apps.iter().any(|rule| {
-                rule.audio_wake_enabled
+                rule.enabled
+                    && rule.audio_wake_enabled
                     && rule
                         .process_name
                         .trim()
@@ -982,7 +1007,8 @@ impl AppSuspensionSettings {
     pub fn network_wake_thresholds_for(&self, process_name: &str) -> Option<(u64, u64)> {
         self.network_wake_enabled.then_some(())?;
         self.suspendable_apps.iter().find_map(|rule| {
-            (rule.network_wake_enabled
+            (rule.enabled
+                && rule.network_wake_enabled
                 && rule
                     .process_name
                     .trim()
@@ -991,6 +1017,26 @@ impl AppSuspensionSettings {
                 rule.network_download_threshold_bytes,
                 rule.network_upload_threshold_bytes,
             ))
+        })
+    }
+}
+
+impl EcoQosSettings {
+    pub fn contains_efficiency_exclusion(&self, process_name: &str) -> bool {
+        self.efficiency_whitelist.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+
+    pub fn efficiency_exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.efficiency_whitelist.iter().any(|rule| {
+            rule.enabled
+                && rule
+                    .process_name
+                    .trim()
+                    .eq_ignore_ascii_case(process_name.trim())
         })
     }
 }
@@ -1017,6 +1063,38 @@ impl ForegroundResponsivenessSettings {
 
 #[derive(Deserialize)]
 #[serde(untagged)]
+enum EcoQosExclusionRuleInput {
+    ProcessName(String),
+    Rule(EcoQosExclusionRule),
+}
+
+fn deserialize_eco_qos_exclusion_rules<'de, D>(
+    deserializer: D,
+) -> Result<Vec<EcoQosExclusionRule>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let rules = Vec::<EcoQosExclusionRuleInput>::deserialize(deserializer)?;
+    Ok(rules
+        .into_iter()
+        .filter_map(|rule| match rule {
+            EcoQosExclusionRuleInput::ProcessName(process_name) => {
+                let process_name = process_name.trim().to_ascii_lowercase();
+                (!process_name.is_empty()).then_some(EcoQosExclusionRule {
+                    enabled: true,
+                    process_name,
+                })
+            }
+            EcoQosExclusionRuleInput::Rule(mut rule) => {
+                rule.process_name = rule.process_name.trim().to_ascii_lowercase();
+                (!rule.process_name.is_empty()).then_some(rule)
+            }
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
 enum AppSuspensionRuleInput {
     ProcessName(String),
     Rule(AppSuspensionRule),
@@ -1036,6 +1114,7 @@ where
                 let process_name = process_name.trim().to_ascii_lowercase();
                 let download_threshold = default_rule_network_download_threshold_bytes();
                 (!process_name.is_empty()).then_some(AppSuspensionRule {
+                    enabled: true,
                     process_name,
                     network_wake_enabled: true,
                     audio_wake_enabled: true,
@@ -1298,5 +1377,36 @@ mod tests {
             NetworkThresholdUnit::Megabits.threshold_value_from_bytes(125_000),
             1.0
         );
+    }
+
+    #[test]
+    fn disabled_suspendable_apps_remain_configured_but_do_not_match() {
+        let settings = AppSuspensionSettings {
+            enabled: true,
+            background_delay_seconds: 60,
+            temporary_thaw_enabled: false,
+            temporary_thaw_interval_seconds: default_temporary_thaw_interval_seconds(),
+            temporary_thaw_duration_seconds: default_temporary_thaw_duration_seconds(),
+            network_wake_enabled: true,
+            network_wake_duration_seconds: default_network_wake_duration_seconds(),
+            audio_wake_enabled: true,
+            audio_wake_duration_seconds: default_audio_wake_duration_seconds(),
+            suspendable_apps: vec![AppSuspensionRule {
+                enabled: false,
+                process_name: "chat.exe".to_owned(),
+                network_wake_enabled: true,
+                audio_wake_enabled: true,
+                network_download_threshold_bytes: 1,
+                network_download_threshold_unit: NetworkThresholdUnit::Bytes,
+                network_upload_threshold_bytes: 0,
+                network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
+            }],
+        };
+
+        assert!(settings.contains_suspendable_app("CHAT.EXE"));
+        assert!(!settings.suspendable_app_enabled_for("chat.exe"));
+        assert!(!settings.network_wake_enabled_for("chat.exe"));
+        assert!(!settings.audio_wake_enabled_for("chat.exe"));
+        assert_eq!(settings.network_wake_thresholds_for("chat.exe"), None);
     }
 }

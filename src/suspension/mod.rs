@@ -307,7 +307,7 @@ impl AppSuspensionManager {
             if process.id == 0
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
-                || !settings.contains_suspendable_app(&process.name)
+                || !settings.suspendable_app_enabled_for(&process.name)
                 || should_skip_foreground_process(
                     process.id,
                     &process.name,

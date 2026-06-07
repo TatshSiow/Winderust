@@ -479,14 +479,14 @@ impl Default for EcoQosSnapshot {
 }
 
 pub fn is_process_excluded(process_name: &str, settings: &EcoQosSettings) -> bool {
+    is_builtin_excluded(process_name) || settings.efficiency_exclusion_enabled_for(process_name)
+}
+
+pub fn is_builtin_excluded(process_name: &str) -> bool {
     let process_name = process_name.trim();
     BUILT_IN_EXCLUSIONS
         .iter()
         .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
-        || settings
-            .efficiency_whitelist
-            .iter()
-            .any(|excluded| excluded.trim().eq_ignore_ascii_case(process_name))
 }
 
 fn process_session_id(process_id: u32) -> Option<u32> {
@@ -1336,7 +1336,10 @@ mod tests {
             cpu_restriction_percent: 50,
             cpu_restriction_max_logical_processors: 0,
             cpu_restriction_core_mask: 0,
-            efficiency_whitelist: vec!["mouse.exe".to_owned()],
+            efficiency_whitelist: vec![crate::config::EcoQosExclusionRule {
+                enabled: true,
+                process_name: "mouse.exe".to_owned(),
+            }],
         };
 
         assert!(is_process_excluded("EXPLORER.EXE", &settings));
@@ -1344,6 +1347,29 @@ mod tests {
         assert!(is_process_excluded("winlogon.exe", &settings));
         assert!(is_process_excluded("Mouse.exe", &settings));
         assert!(!is_process_excluded("browser.exe", &settings));
+    }
+
+    #[test]
+    fn disabled_user_exclusions_do_not_exclude_processes() {
+        let settings = EcoQosSettings {
+            enabled: true,
+            exclude_foreground_app: true,
+            prefer_efficiency_cores: false,
+            limit_cpu_sets_on_non_hybrid: false,
+            cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
+            cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
+            cpu_restriction_percent: 50,
+            cpu_restriction_max_logical_processors: 0,
+            cpu_restriction_core_mask: 0,
+            efficiency_whitelist: vec![crate::config::EcoQosExclusionRule {
+                enabled: false,
+                process_name: "mouse.exe".to_owned(),
+            }],
+        };
+
+        assert!(settings.contains_efficiency_exclusion("MOUSE.EXE"));
+        assert!(!is_process_excluded("mouse.exe", &settings));
     }
 
     #[test]

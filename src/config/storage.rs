@@ -118,12 +118,12 @@ mod tests {
         AppSuspensionRule, AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule,
         CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison,
         CpuUsageModeSettings, CpuUsageRule, EcoQosCpuRestrictionControlStyle,
-        EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosSettings,
-        ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules,
-        GeneralSettings, InputDetectionSettings, ManualOverride, NetworkThresholdUnit,
-        PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings, PriorityRule,
-        ProcessPriority, ScheduleModeSettings, ScheduleRule, WatchdogAction, WatchdogRule,
-        WatchdogSettings, WeekdaySetting,
+        EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
+        EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
+        ForegroundRules, GeneralSettings, InputDetectionSettings, ManualOverride,
+        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
+        PriorityRule, ProcessPriority, ScheduleModeSettings, ScheduleRule, WatchdogAction,
+        WatchdogRule, WatchdogSettings, WeekdaySetting,
     };
 
     #[test]
@@ -225,7 +225,16 @@ mod tests {
                 cpu_restriction_percent: 50,
                 cpu_restriction_max_logical_processors: 0,
                 cpu_restriction_core_mask: 0,
-                efficiency_whitelist: vec!["mouse.exe".to_owned(), "comma,app.exe".to_owned()],
+                efficiency_whitelist: vec![
+                    EcoQosExclusionRule {
+                        enabled: true,
+                        process_name: "mouse.exe".to_owned(),
+                    },
+                    EcoQosExclusionRule {
+                        enabled: false,
+                        process_name: "comma,app.exe".to_owned(),
+                    },
+                ],
             },
             app_suspension: AppSuspensionSettings {
                 enabled: true,
@@ -239,6 +248,7 @@ mod tests {
                 audio_wake_duration_seconds: 8,
                 suspendable_apps: vec![
                     AppSuspensionRule {
+                        enabled: true,
                         process_name: "chat.exe".to_owned(),
                         network_wake_enabled: true,
                         audio_wake_enabled: true,
@@ -248,6 +258,7 @@ mod tests {
                         network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
                     },
                     AppSuspensionRule {
+                        enabled: false,
                         process_name: "comma,app.exe".to_owned(),
                         network_wake_enabled: false,
                         audio_wake_enabled: false,
@@ -411,6 +422,7 @@ suspendable_apps = ["CHAT.EXE", "browser.exe"]
             settings.app_suspension.suspendable_apps,
             vec![
                 AppSuspensionRule {
+                    enabled: true,
                     process_name: "chat.exe".to_owned(),
                     network_wake_enabled: true,
                     audio_wake_enabled: true,
@@ -420,6 +432,7 @@ suspendable_apps = ["CHAT.EXE", "browser.exe"]
                     network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
                 },
                 AppSuspensionRule {
+                    enabled: true,
                     process_name: "browser.exe".to_owned(),
                     network_wake_enabled: true,
                     audio_wake_enabled: true,

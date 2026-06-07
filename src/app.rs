@@ -45,10 +45,10 @@ use crate::{
         AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
         CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageRule,
         EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
-        EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
-        PriorityRule, ProcessPriority, ScheduleRule, Settings, WatchdogAction, WatchdogRule,
-        WatchdogSettings, WeekdaySetting,
+        EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
+        ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, NetworkThresholdUnit,
+        PerformanceModeRule, PerformanceModeSettings, PriorityRule, ProcessPriority, ScheduleRule,
+        Settings, WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -3688,7 +3688,7 @@ impl PowerLeafApp {
                                     app.settings
                                         .eco_qos
                                         .efficiency_whitelist
-                                        .push(process.trim().to_ascii_lowercase());
+                                        .push(new_eco_qos_exclusion_rule(&process));
                                     clear_input(&app.inputs.eco_qos_exclusion, window, cx);
                                 }
                                 cx.notify();
@@ -3955,15 +3955,28 @@ impl PowerLeafApp {
 
     fn render_eco_qos_whitelist(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = v_flex().gap_2();
-        for (index, process) in self
+        for (index, rule) in self
             .settings
             .eco_qos
             .efficiency_whitelist
             .iter()
             .enumerate()
         {
+            let process = rule.process_name.clone();
             list = list.child(
                 compact_rule_row(cx)
+                    .child(rule_enable_checkbox(
+                        format!("eco-qos-exclusion-enabled-{index}"),
+                        rule.enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) =
+                                app.settings.eco_qos.efficiency_whitelist.get_mut(index)
+                            {
+                                rule.enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -3971,7 +3984,7 @@ impl PowerLeafApp {
                             .text_size(px(RULE_TITLE_TEXT_SIZE))
                             .line_height(px(RULE_TITLE_LINE_HEIGHT))
                             .truncate()
-                            .child(process.clone()),
+                            .child(process),
                     )
                     .child(
                         danger_control_button(Button::new(SharedString::from(format!(
@@ -4262,13 +4275,15 @@ impl PowerLeafApp {
             let indicator = suspension_indicator(&self.app_suspension_status, &process);
             let card_target = RuleCardTarget::Suspension(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
-            let network_thresholds_enabled =
-                self.settings.app_suspension.network_wake_enabled && rule.network_wake_enabled;
+            let rule_enabled = rule.enabled;
+            let network_thresholds_enabled = rule_enabled
+                && self.settings.app_suspension.network_wake_enabled
+                && rule.network_wake_enabled;
             let freeze_action = control_button(Button::new(SharedString::from(format!(
                 "freeze-suspension-{index}"
             ))))
             .label(t!("suspension.freeze").to_string())
-            .disabled(!can_manual_freeze(&self.app_suspension_status, &process))
+            .disabled(!rule_enabled || !can_manual_freeze(&self.app_suspension_status, &process))
             .on_click(cx.listener({
                 let process = process.clone();
                 move |app, _, _, cx| {
@@ -4281,9 +4296,28 @@ impl PowerLeafApp {
                 }
             }))
             .into_any_element();
+            let title = h_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap_2()
+                .items_center()
+                .child(static_rule_title(&process))
+                .child(status_pill(indicator.label, indicator.bg, indicator.fg))
+                .into_any_element();
             let mut card = rule_card_with_header_action(
-                static_rule_title(&process),
-                status_pill(indicator.label, indicator.bg, indicator.fg),
+                title,
+                rule_enable_checkbox(
+                    format!("suspension-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) =
+                            app.settings.app_suspension.suspendable_apps.get_mut(index)
+                        {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ),
                 Some(freeze_action),
                 rule_card_collapse_indicator(collapsed),
                 card_target.clone(),
@@ -10625,7 +10659,16 @@ fn new_foreground_rule(process: &str, power_plan_guid: Option<String>) -> Foregr
 
 fn can_add_eco_qos_process(settings: &EcoQosSettings, process: &str) -> bool {
     let process = process.trim();
-    !process.is_empty() && !ecoqos::is_process_excluded(process, settings)
+    !process.is_empty()
+        && !ecoqos::is_builtin_excluded(process)
+        && !settings.contains_efficiency_exclusion(process)
+}
+
+fn new_eco_qos_exclusion_rule(process: &str) -> EcoQosExclusionRule {
+    EcoQosExclusionRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+    }
 }
 
 fn can_add_suspension_process(settings: &AppSuspensionSettings, process: &str) -> bool {
@@ -10684,6 +10727,7 @@ fn can_add_performance_mode_process(settings: &PerformanceModeSettings, process:
 
 fn new_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
+        enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
         network_wake_enabled: true,
         audio_wake_enabled: true,
