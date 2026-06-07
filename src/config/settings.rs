@@ -19,6 +19,8 @@ pub struct Settings {
     #[serde(default)]
     pub cpu_affinity: CpuAffinitySettings,
     #[serde(default)]
+    pub background_cpu_restriction: BackgroundCpuRestrictionSettings,
+    #[serde(default)]
     pub cpu_limiter: CpuLimiterSettings,
     #[serde(default)]
     pub performance_mode: PerformanceModeSettings,
@@ -367,6 +369,37 @@ pub struct CpuAffinitySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundCpuRestrictionSettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub exclude_foreground_app: bool,
+    #[serde(default)]
+    pub mode: EcoQosCpuRestrictionMode,
+    #[serde(default)]
+    pub strategy: EcoQosCpuRestrictionStrategy,
+    #[serde(default)]
+    pub control_style: EcoQosCpuRestrictionControlStyle,
+    #[serde(default = "default_eco_qos_cpu_restriction_percent")]
+    pub percent: u8,
+    #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
+    pub max_logical_processors: u8,
+    #[serde(default)]
+    pub core_mask: u64,
+    #[serde(default, deserialize_with = "deserialize_process_exclusion_rules")]
+    pub exclusions: Vec<ProcessExclusionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessExclusionRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuAffinityRule {
     #[serde(default = "default_rule_enabled")]
     pub enabled: bool,
@@ -645,6 +678,7 @@ impl Default for Settings {
             eco_qos: EcoQosSettings::default(),
             app_suspension: AppSuspensionSettings::default(),
             cpu_affinity: CpuAffinitySettings::default(),
+            background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
             cpu_limiter: CpuLimiterSettings::default(),
             performance_mode: PerformanceModeSettings::default(),
             watchdog: WatchdogSettings::default(),
@@ -916,6 +950,22 @@ impl Default for CpuAffinitySettings {
     }
 }
 
+impl Default for BackgroundCpuRestrictionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exclude_foreground_app: default_exclude_foreground_app(),
+            mode: EcoQosCpuRestrictionMode::HardAffinity,
+            strategy: EcoQosCpuRestrictionStrategy::Auto,
+            control_style: EcoQosCpuRestrictionControlStyle::Percentage,
+            percent: default_eco_qos_cpu_restriction_percent(),
+            max_logical_processors: default_eco_qos_cpu_restriction_max_logical_processors(),
+            core_mask: 0,
+            exclusions: Vec::new(),
+        }
+    }
+}
+
 impl Default for CpuLimiterSettings {
     fn default() -> Self {
         Self {
@@ -1041,6 +1091,26 @@ impl EcoQosSettings {
     }
 }
 
+impl BackgroundCpuRestrictionSettings {
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+
+    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.enabled
+                && rule
+                    .process_name
+                    .trim()
+                    .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+}
+
 impl CpuAffinitySettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules.iter().any(|rule| {
@@ -1086,6 +1156,38 @@ where
                 })
             }
             EcoQosExclusionRuleInput::Rule(mut rule) => {
+                rule.process_name = rule.process_name.trim().to_ascii_lowercase();
+                (!rule.process_name.is_empty()).then_some(rule)
+            }
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ProcessExclusionRuleInput {
+    ProcessName(String),
+    Rule(ProcessExclusionRule),
+}
+
+fn deserialize_process_exclusion_rules<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ProcessExclusionRule>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let rules = Vec::<ProcessExclusionRuleInput>::deserialize(deserializer)?;
+    Ok(rules
+        .into_iter()
+        .filter_map(|rule| match rule {
+            ProcessExclusionRuleInput::ProcessName(process_name) => {
+                let process_name = process_name.trim().to_ascii_lowercase();
+                (!process_name.is_empty()).then_some(ProcessExclusionRule {
+                    enabled: true,
+                    process_name,
+                })
+            }
+            ProcessExclusionRuleInput::Rule(mut rule) => {
                 rule.process_name = rule.process_name.trim().to_ascii_lowercase();
                 (!rule.process_name.is_empty()).then_some(rule)
             }

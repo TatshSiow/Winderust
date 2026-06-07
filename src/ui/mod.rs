@@ -7,6 +7,7 @@ pub enum Page {
     CpuUsage,
     CoreParking,
     CpuLimiter,
+    BackgroundCpuRestriction,
     EfficiencyMode,
     AppSuspension,
     Watchdog,
@@ -33,7 +34,12 @@ const POWER_AUTOMATION_PAGES: [Page; 5] = [
     Page::Activity,
     Page::Schedule,
 ];
-const CPU_CONTROL_PAGES: [Page; 3] = [Page::CoreParking, Page::CpuLimiter, Page::CpuAffinity];
+const CPU_CONTROL_PAGES: [Page; 4] = [
+    Page::CoreParking,
+    Page::CpuLimiter,
+    Page::BackgroundCpuRestriction,
+    Page::CpuAffinity,
+];
 const PROCESS_POLICY_PAGES: [Page; 4] = [
     Page::EfficiencyMode,
     Page::ForegroundResponsiveness,
@@ -72,6 +78,7 @@ impl Page {
             Self::CpuUsage => t!("nav.cpu_usage"),
             Self::CoreParking => t!("nav.core_parking"),
             Self::CpuLimiter => t!("nav.cpu_limiter"),
+            Self::BackgroundCpuRestriction => t!("nav.background_cpu_restriction"),
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
             Self::Watchdog => t!("nav.watchdog"),
@@ -95,7 +102,10 @@ impl Page {
             | Self::ForegroundRules
             | Self::PerformanceMode
             | Self::CpuUsage => t!("nav.power_automation"),
-            Self::CoreParking | Self::CpuLimiter | Self::CpuAffinity => {
+            Self::CoreParking
+            | Self::CpuLimiter
+            | Self::BackgroundCpuRestriction
+            | Self::CpuAffinity => {
                 t!("nav.processor_controls")
             }
             Self::EfficiencyMode

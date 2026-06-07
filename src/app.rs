@@ -42,13 +42,14 @@ use crate::{
     automation::BackgroundAutomation,
     config::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AppLanguage, AppSuspensionRule,
-        AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageRule,
-        EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
-        EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
-        ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, NetworkThresholdUnit,
-        PerformanceModeRule, PerformanceModeSettings, PriorityRule, ProcessPriority, ScheduleRule,
-        Settings, WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
+        AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings, CpuAffinityMode,
+        CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
+        CpuUsageComparison, CpuUsageRule, EcoQosCpuRestrictionControlStyle,
+        EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
+        EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
+        ForegroundRules, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
+        PriorityRule, ProcessExclusionRule, ProcessPriority, ScheduleRule, Settings,
+        WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -204,6 +205,7 @@ pub struct PowerLeafApp {
     app_suspension_status: AppSuspensionSnapshot,
     cpu_limiter_status: CpuLimiterSnapshot,
     cpu_affinity_status: CpuAffinitySnapshot,
+    background_cpu_restriction_status: CpuAffinitySnapshot,
     performance_mode_status: PerformanceModeSnapshot,
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
@@ -271,6 +273,7 @@ struct UiInputs {
     foreground_rule_processes: Vec<Entity<InputState>>,
     foreground_process: Entity<InputState>,
     eco_qos_exclusion: Entity<InputState>,
+    background_cpu_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
     cpu_limiter_process: Entity<InputState>,
     watchdog_process: Entity<InputState>,
@@ -374,6 +377,7 @@ impl UiInputs {
                 .collect(),
             foreground_process: make_input(window, cx, "", "Search running apps..."),
             eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
+            background_cpu_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             cpu_limiter_process: make_input(window, cx, "", "Search running apps..."),
             watchdog_process: make_input(window, cx, "", "Search running apps..."),
@@ -623,6 +627,7 @@ impl PowerLeafApp {
             app_suspension_status: AppSuspensionSnapshot::default(),
             cpu_limiter_status: CpuLimiterSnapshot::default(),
             cpu_affinity_status: CpuAffinitySnapshot::default(),
+            background_cpu_restriction_status: CpuAffinitySnapshot::default(),
             performance_mode_status: PerformanceModeSnapshot::default(),
             watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
@@ -1460,6 +1465,14 @@ impl PowerLeafApp {
             changed = true;
         }
 
+        let background_cpu_restriction_status = self
+            .background_automation
+            .background_cpu_restriction_status();
+        if self.background_cpu_restriction_status != background_cpu_restriction_status {
+            self.background_cpu_restriction_status = background_cpu_restriction_status;
+            changed = true;
+        }
+
         let performance_mode_status = self.background_automation.performance_mode_status();
         if self.performance_mode_status != performance_mode_status {
             self.performance_mode_status = performance_mode_status;
@@ -1523,6 +1536,7 @@ impl PowerLeafApp {
                 | Page::EfficiencyMode
                 | Page::AppSuspension
                 | Page::CpuLimiter
+                | Page::BackgroundCpuRestriction
                 | Page::Watchdog
                 | Page::ForegroundResponsiveness
                 | Page::PerformanceMode
@@ -1850,6 +1864,11 @@ impl PowerLeafApp {
             NumericField::EcoQosRestrictionPercent => {
                 if let Some(value) = parse_u64_input(&value, 1, 100) {
                     self.settings.eco_qos.cpu_restriction_percent = value as u8;
+                }
+            }
+            NumericField::BackgroundCpuRestrictionPercent => {
+                if let Some(value) = parse_u64_input(&value, 1, 100) {
+                    self.settings.background_cpu_restriction.percent = value as u8;
                 }
             }
             NumericField::SuspensionBackgroundDelay => {
@@ -2197,6 +2216,11 @@ impl PowerLeafApp {
                 self.cpu_limiter_status.failed_processes,
                 self.cpu_limiter_status.last_error.is_some(),
             )),
+            Page::BackgroundCpuRestriction => Some(process_nav_status(
+                settings.background_cpu_restriction.enabled,
+                self.background_cpu_restriction_status.failed_processes,
+                self.background_cpu_restriction_status.last_error.is_some(),
+            )),
             Page::EfficiencyMode => Some(feature_nav_status(
                 settings.eco_qos.enabled,
                 self.eco_qos_status.unsupported,
@@ -2482,6 +2506,9 @@ impl PowerLeafApp {
             Page::CpuUsage => self.render_cpu_usage_page(window, cx),
             Page::CoreParking => self.render_core_parking_page(window, cx),
             Page::CpuLimiter => self.render_cpu_limiter_page(window, cx),
+            Page::BackgroundCpuRestriction => {
+                self.render_background_cpu_restriction_page(window, cx)
+            }
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
             Page::Watchdog => self.render_watchdog_page(window, cx),
@@ -2718,6 +2745,14 @@ impl PowerLeafApp {
                         .foreground_boosted_process
                         .as_deref()
                         .unwrap_or("none")
+                ),
+            ),
+            (
+                t!("nav.background_cpu_restriction").to_string(),
+                format!(
+                    "{}; {} adjusted",
+                    enabled_label(self.background_cpu_restriction_status.enabled),
+                    self.background_cpu_restriction_status.adjusted_processes
                 ),
             ),
             (
@@ -3953,6 +3988,10 @@ impl PowerLeafApp {
         }
     }
 
+    fn effective_background_cpu_restriction_strategy(&self) -> EcoQosCpuRestrictionStrategy {
+        self.settings.background_cpu_restriction.strategy
+    }
+
     fn render_eco_qos_whitelist(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = v_flex().gap_2();
         for (index, rule) in self
@@ -4399,6 +4438,352 @@ impl PowerLeafApp {
         }
         if self.settings.app_suspension.suspendable_apps.is_empty() {
             list = list.child(text_muted(t!("suspension.no_suspendable").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_background_cpu_restriction_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .background_cpu_exclusion
+            .read(cx)
+            .value()
+            .to_string();
+        let settings = &self.settings.background_cpu_restriction;
+        let enabled = settings.enabled;
+        let processors = affinity::logical_processors();
+        let has_efficiency_cores =
+            affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency) != 0;
+        let has_multiple_processors = processors.len() > 1;
+        let selected = self.effective_background_cpu_restriction_strategy();
+        let restriction_enabled = selected != EcoQosCpuRestrictionStrategy::Off;
+        let available_mask = affinity_processors_mask(&processors);
+
+        let mut mode_options = h_flex().gap_1().flex_wrap().justify_end();
+        for mode in EcoQosCpuRestrictionMode::ALL {
+            mode_options = mode_options.child(
+                toggle_button(
+                    format!("background-cpu-mode-{mode:?}"),
+                    efficiency_cpu_restriction_mode_label(mode),
+                    settings.mode == mode,
+                )
+                .tooltip(efficiency_cpu_restriction_mode_help(mode))
+                .disabled(!restriction_enabled)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings.background_cpu_restriction.mode = mode;
+                    cx.notify();
+                })),
+            );
+        }
+
+        let mut strategy_options = h_flex().gap_1().flex_wrap().justify_end();
+        for strategy in [
+            EcoQosCpuRestrictionStrategy::Auto,
+            EcoQosCpuRestrictionStrategy::PreferEfficiencyCores,
+            EcoQosCpuRestrictionStrategy::LimitLogicalCpus,
+        ] {
+            let option_enabled = match strategy {
+                EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
+                EcoQosCpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
+                EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::Off => true,
+            };
+            strategy_options = strategy_options.child(
+                toggle_button(
+                    format!("background-cpu-strategy-{strategy:?}"),
+                    efficiency_cpu_restriction_strategy_label(strategy),
+                    selected == strategy,
+                )
+                .tooltip(efficiency_cpu_restriction_strategy_help(strategy))
+                .disabled(!restriction_enabled || !option_enabled)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings.background_cpu_restriction.strategy = strategy;
+                    if app.settings.background_cpu_restriction.control_style
+                        == EcoQosCpuRestrictionControlStyle::CoreToggle
+                    {
+                        let processors = affinity::logical_processors();
+                        let mask = eco_qos_strategy_core_mask(&processors, strategy);
+                        if mask != 0 {
+                            app.settings.background_cpu_restriction.core_mask = mask;
+                        }
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+
+        let mut style_options = h_flex().gap_1().flex_wrap().justify_end();
+        for style in EcoQosCpuRestrictionControlStyle::ALL {
+            style_options = style_options.child(
+                toggle_button(
+                    format!("background-cpu-style-{style:?}"),
+                    efficiency_cpu_restriction_control_style_label(style),
+                    settings.control_style == style,
+                )
+                .tooltip(efficiency_cpu_restriction_control_style_help(style))
+                .disabled(!restriction_enabled)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings.background_cpu_restriction.control_style = style;
+                    if style == EcoQosCpuRestrictionControlStyle::CoreToggle
+                        && app.settings.background_cpu_restriction.core_mask == 0
+                    {
+                        let processors = affinity::logical_processors();
+                        let strategy = app.effective_background_cpu_restriction_strategy();
+                        app.settings.background_cpu_restriction.core_mask =
+                            eco_qos_strategy_core_mask(&processors, strategy);
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+
+        let percent = settings.percent.clamp(1, 100);
+        let percentage_control = self.render_numeric_value(
+            NumericField::BackgroundCpuRestrictionPercent,
+            format!("{percent}%"),
+            percent.to_string(),
+            cx,
+        );
+
+        let mut rows = vec![
+            setting_group_action_row(
+                "background-cpu-affinity-control",
+                t!("background_cpu.core_affinity_control").to_string(),
+                mode_options.into_any_element(),
+                true,
+            )
+            .into_any_element(),
+            setting_group_action_row(
+                "background-cpu-suppression-rule",
+                t!("background_cpu.core_suppression_rule").to_string(),
+                strategy_options.into_any_element(),
+                true,
+            )
+            .into_any_element(),
+            setting_group_action_row(
+                "background-cpu-control-style",
+                t!("background_cpu.control_style").to_string(),
+                style_options.into_any_element(),
+                true,
+            )
+            .into_any_element(),
+        ];
+        rows.push(match settings.control_style {
+            EcoQosCpuRestrictionControlStyle::Percentage => setting_group_action_row(
+                "background-cpu-percent",
+                t!("background_cpu.core_allocation_percentage").to_string(),
+                percentage_control,
+                true,
+            )
+            .into_any_element(),
+            EcoQosCpuRestrictionControlStyle::CoreToggle => setting_group_stacked_action_row(
+                "background-cpu-core-toggle-list",
+                t!("background_cpu.selected_cores").to_string(),
+                self.render_core_tile_grid(
+                    &processors,
+                    settings.core_mask,
+                    restriction_enabled,
+                    "background-cpu-core-toggle",
+                    CoreTileGridAction::BackgroundCpuRestriction { available_mask },
+                    cx,
+                ),
+                true,
+            )
+            .into_any_element(),
+        });
+
+        let body = feature_body(enabled)
+            .child(feature_toggle_switch_with_help(
+                "background-cpu-foreground",
+                t!("background_cpu.focus_detection").to_string(),
+                t!("background_cpu.focus_detection_help").to_string(),
+                settings.exclude_foreground_app,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings
+                        .background_cpu_restriction
+                        .exclude_foreground_app = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(setting_group_with_title_element(
+                SettingGroupTarget::BackgroundCpuRestriction,
+                div()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .child(t!("background_cpu.cpu_restriction").to_string())
+                    .into_any_element(),
+                setting_group_switch_action(
+                    "background-cpu-restriction-enabled",
+                    restriction_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.background_cpu_restriction.strategy = if *checked {
+                            EcoQosCpuRestrictionStrategy::Auto
+                        } else {
+                            EcoQosCpuRestrictionStrategy::Off
+                        };
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(SettingGroupTarget::BackgroundCpuRestriction),
+                rows,
+                cx,
+            ))
+            .child(stat_grid(vec![
+                (
+                    t!("background_cpu.adjusted_processes").to_string(),
+                    self.background_cpu_restriction_status
+                        .adjusted_processes
+                        .to_string(),
+                ),
+                (
+                    t!("background_cpu.scanned_processes").to_string(),
+                    self.background_cpu_restriction_status
+                        .scanned_processes
+                        .to_string(),
+                ),
+                (
+                    t!("background_cpu.skipped_processes").to_string(),
+                    self.background_cpu_restriction_status
+                        .skipped_processes
+                        .to_string(),
+                ),
+                (
+                    t!("background_cpu.failed_actions").to_string(),
+                    self.background_cpu_restriction_status
+                        .failed_processes
+                        .to_string(),
+                ),
+            ]))
+            .child(section_header(
+                &t!("background_cpu.exclusions"),
+                t!("background_cpu.exclusions_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "background-cpu-exclusion",
+                        &self.inputs.background_cpu_exclusion,
+                        SuggestionTarget::BackgroundCpu,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-background-cpu-exclusion"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_background_cpu_exclusion(
+                                        &self.settings.background_cpu_restriction,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process = app
+                                    .inputs
+                                    .background_cpu_exclusion
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_background_cpu_exclusion(
+                                    &app.settings.background_cpu_restriction,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .background_cpu_restriction
+                                        .exclusions
+                                        .push(new_process_exclusion_rule(&process));
+                                    clear_input(&app.inputs.background_cpu_exclusion, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_background_cpu_exclusions(cx));
+
+        page_shell(Page::BackgroundCpuRestriction)
+            .child(feature_toggle_switch_with_help(
+                "background-cpu-enabled",
+                t!("background_cpu.enable").to_string(),
+                tooltip_lines(vec![
+                    t!("background_cpu.intro_1").to_string(),
+                    t!("background_cpu.intro_2").to_string(),
+                ]),
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.background_cpu_restriction.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
+    }
+
+    fn render_background_cpu_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = v_flex().gap_2();
+        for (index, rule) in self
+            .settings
+            .background_cpu_restriction
+            .exclusions
+            .iter()
+            .enumerate()
+        {
+            let process = rule.process_name.clone();
+            list = list.child(
+                compact_rule_row(cx)
+                    .child(rule_enable_checkbox(
+                        format!("background-cpu-exclusion-enabled-{index}"),
+                        rule.enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) = app
+                                .settings
+                                .background_cpu_restriction
+                                .exclusions
+                                .get_mut(index)
+                            {
+                                rule.enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.0))
+                            .text_size(px(RULE_TITLE_TEXT_SIZE))
+                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                            .truncate()
+                            .child(process),
+                    )
+                    .child(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-background-cpu-exclusion-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if index < app.settings.background_cpu_restriction.exclusions.len() {
+                                app.settings
+                                    .background_cpu_restriction
+                                    .exclusions
+                                    .remove(index);
+                            }
+                            cx.notify();
+                        })),
+                    ),
+            );
+        }
+        if self
+            .settings
+            .background_cpu_restriction
+            .exclusions
+            .is_empty()
+        {
+            list = list.child(text_muted(t!("background_cpu.no_exclusions").to_string()));
         }
         list.into_any_element()
     }
@@ -5706,6 +6091,13 @@ impl PowerLeafApp {
                                 CoreTileGridAction::EcoQosCpuRestriction { available_mask } => {
                                     toggle_affinity_core_with_available_mask(
                                         &mut app.settings.eco_qos.cpu_restriction_core_mask,
+                                        core,
+                                        available_mask,
+                                    );
+                                }
+                                CoreTileGridAction::BackgroundCpuRestriction { available_mask } => {
+                                    toggle_affinity_core_with_available_mask(
+                                        &mut app.settings.background_cpu_restriction.core_mask,
                                         core,
                                         available_mask,
                                     );
@@ -7153,6 +7545,9 @@ impl PowerLeafApp {
             SuggestionTarget::EcoQos => {
                 clear_input_to(&self.inputs.eco_qos_exclusion, process, window, cx);
             }
+            SuggestionTarget::BackgroundCpu => {
+                clear_input_to(&self.inputs.background_cpu_exclusion, process, window, cx);
+            }
             SuggestionTarget::Suspension => {
                 clear_input_to(&self.inputs.suspension_process, process, window, cx);
             }
@@ -7361,6 +7756,7 @@ fn dropdown_option_hover_color() -> u32 {
 enum SuggestionTarget {
     Foreground,
     EcoQos,
+    BackgroundCpu,
     Suspension,
     CpuLimiter,
     Watchdog,
@@ -7389,6 +7785,7 @@ enum RuleCardTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingGroupTarget {
     EfficiencyCpuRestriction,
+    BackgroundCpuRestriction,
     SuspensionThaw,
     SuspensionAudio,
     SuspensionNetwork,
@@ -7405,6 +7802,7 @@ enum NumericField {
     ActivityIdleTimeout,
     GeneralCheckInterval,
     EcoQosRestrictionPercent,
+    BackgroundCpuRestrictionPercent,
     SuspensionBackgroundDelay,
     SuspensionThawInterval,
     SuspensionThawDuration,
@@ -9661,6 +10059,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::CpuUsage => NavIcon::Chart,
         Page::CoreParking => NavIcon::Chip,
         Page::CpuLimiter => NavIcon::Chart,
+        Page::BackgroundCpuRestriction => NavIcon::Chip,
         Page::EfficiencyMode => NavIcon::Zap,
         Page::AppSuspension => NavIcon::PauseCircle,
         Page::Watchdog => NavIcon::Frame,
@@ -9994,6 +10393,7 @@ fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorDcPerformanceMin
         | NumericField::ProcessorDcPerformanceMax
         | NumericField::EcoQosRestrictionPercent
+        | NumericField::BackgroundCpuRestrictionPercent
         | NumericField::CpuLimiterThreshold(_)
         | NumericField::CpuLimiterMaxProcessors(_) => 76.0,
         _ => 96.0,
@@ -10685,6 +11085,9 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
             can_add_foreground_process(&settings.foreground_rules, process)
         }
         SuggestionTarget::EcoQos => can_add_eco_qos_process(&settings.eco_qos, process),
+        SuggestionTarget::BackgroundCpu => {
+            can_add_background_cpu_exclusion(&settings.background_cpu_restriction, process)
+        }
         SuggestionTarget::Suspension => {
             can_add_suspension_process(&settings.app_suspension, process)
         }
@@ -10724,6 +11127,23 @@ fn can_add_eco_qos_process(settings: &EcoQosSettings, process: &str) -> bool {
     !process.is_empty()
         && !ecoqos::is_builtin_excluded(process)
         && !settings.contains_efficiency_exclusion(process)
+}
+
+fn can_add_background_cpu_exclusion(
+    settings: &BackgroundCpuRestrictionSettings,
+    process: &str,
+) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !affinity::is_builtin_excluded(process)
+        && !settings.contains_exclusion(process)
+}
+
+fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
+    ProcessExclusionRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+    }
 }
 
 fn new_eco_qos_exclusion_rule(process: &str) -> EcoQosExclusionRule {
@@ -11006,6 +11426,7 @@ struct AffinityIndicator {
 #[derive(Clone, Copy)]
 enum CoreTileGridAction {
     EcoQosCpuRestriction { available_mask: u64 },
+    BackgroundCpuRestriction { available_mask: u64 },
     CpuAffinityRule { index: usize },
 }
 

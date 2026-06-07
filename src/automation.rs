@@ -9,6 +9,7 @@ use crate::{
     action_log::{ActionLog, ActionLogEntry},
     activity::{input_hook, input_tracker, IdleDetector, InputHookEvents},
     affinity::{CpuAffinityManager, CpuAffinitySnapshot},
+    background_cpu::BackgroundCpuRestrictionManager,
     config::{PowerPlanSettings, Settings},
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
@@ -33,6 +34,7 @@ const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL: Duration = Duration::from_millis(500);
 const APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL: Duration = Duration::from_millis(750);
 const CPU_AFFINITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const BACKGROUND_CPU_RESTRICTION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const WATCHDOG_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -59,6 +61,7 @@ struct AutomationWorkerState {
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     cpu_affinity_status: CpuAffinitySnapshot,
+    background_cpu_restriction_status: CpuAffinitySnapshot,
     cpu_limiter_status: CpuLimiterSnapshot,
     performance_mode_status: PerformanceModeSnapshot,
     watchdog_status: WatchdogSnapshot,
@@ -101,6 +104,7 @@ impl BackgroundAutomation {
                 eco_qos_status: EcoQosSnapshot::default(),
                 app_suspension_status: AppSuspensionSnapshot::default(),
                 cpu_affinity_status: CpuAffinitySnapshot::default(),
+                background_cpu_restriction_status: CpuAffinitySnapshot::default(),
                 cpu_limiter_status: CpuLimiterSnapshot::default(),
                 performance_mode_status: PerformanceModeSnapshot::default(),
                 watchdog_status: WatchdogSnapshot::default(),
@@ -172,6 +176,14 @@ impl BackgroundAutomation {
             .state
             .lock()
             .map(|state| state.cpu_affinity_status.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn background_cpu_restriction_status(&self) -> CpuAffinitySnapshot {
+        self.shared
+            .state
+            .lock()
+            .map(|state| state.background_cpu_restriction_status.clone())
             .unwrap_or_default()
     }
 
@@ -306,6 +318,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_app_suspension_refresh = Instant::now();
     let mut next_app_suspension_foreground_release = Instant::now();
     let mut next_cpu_affinity_refresh = Instant::now();
+    let mut next_background_cpu_restriction_refresh = Instant::now();
     let mut next_cpu_limiter_refresh = Instant::now();
     let mut next_performance_mode_refresh = Instant::now();
     let mut next_watchdog_refresh = Instant::now();
@@ -333,6 +346,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, APP_SUSPENSION_REFRESH_INTERVAL);
         let cpu_affinity_refresh_interval =
             automation_refresh_interval(hidden_to_tray, CPU_AFFINITY_REFRESH_INTERVAL);
+        let background_cpu_restriction_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            BACKGROUND_CPU_RESTRICTION_REFRESH_INTERVAL,
+        );
         let cpu_limiter_refresh_interval =
             automation_refresh_interval(hidden_to_tray, CPU_LIMITER_REFRESH_INTERVAL);
         let performance_mode_refresh_interval =
@@ -348,6 +365,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_app_suspension_refresh = Instant::now();
             next_app_suspension_foreground_release = Instant::now();
             next_cpu_affinity_refresh = Instant::now();
+            next_background_cpu_restriction_refresh = Instant::now();
             next_cpu_limiter_refresh = Instant::now();
             next_performance_mode_refresh = Instant::now();
             next_watchdog_refresh = Instant::now();
@@ -358,6 +376,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_check = Instant::now();
             next_eco_qos_refresh = Instant::now();
             next_cpu_affinity_refresh = Instant::now();
+            next_background_cpu_restriction_refresh = Instant::now();
             next_cpu_limiter_refresh = Instant::now();
             next_foreground_responsiveness_refresh = Instant::now();
             next_app_suspension_foreground_release = Instant::now();
@@ -383,6 +402,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || runner.app_suspension_manager.has_suspended_processes();
         let cpu_affinity_refresh_required =
             settings_changed || feature_refresh_required(&settings, settings.cpu_affinity.enabled);
+        let background_cpu_restriction_refresh_required = settings_changed
+            || feature_refresh_required(&settings, settings.background_cpu_restriction.enabled);
         let cpu_limiter_refresh_required =
             settings_changed || feature_refresh_required(&settings, settings.cpu_limiter.enabled);
         let performance_mode_refresh_required = settings_changed
@@ -400,6 +421,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             if runner.detect_process_appearance() {
                 next_eco_qos_refresh = Instant::now();
                 next_cpu_affinity_refresh = Instant::now();
+                next_background_cpu_restriction_refresh = Instant::now();
                 next_cpu_limiter_refresh = Instant::now();
                 next_performance_mode_refresh = Instant::now();
                 next_watchdog_refresh = Instant::now();
@@ -453,6 +475,15 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             update_cpu_affinity_status(&shared, cpu_affinity_status);
             update_action_log_entries(&shared, runner.action_log.entries());
             next_cpu_affinity_refresh = Instant::now() + cpu_affinity_refresh_interval;
+        }
+        if background_cpu_restriction_refresh_required
+            && Instant::now() >= next_background_cpu_restriction_refresh
+        {
+            let status = runner.run_background_cpu_restriction_update(&settings);
+            update_background_cpu_restriction_status(&shared, status);
+            update_action_log_entries(&shared, runner.action_log.entries());
+            next_background_cpu_restriction_refresh =
+                Instant::now() + background_cpu_restriction_refresh_interval;
         }
         if cpu_limiter_refresh_required && Instant::now() >= next_cpu_limiter_refresh {
             let cpu_limiter_status = runner.run_cpu_limiter_update(&settings);
@@ -524,6 +555,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_cpu_affinity_refresh
                     .saturating_duration_since(Instant::now())
                     .min(cpu_affinity_refresh_interval),
+            ));
+        }
+        if background_cpu_restriction_refresh_required {
+            wait_for = Some(min_worker_wait(
+                wait_for,
+                next_background_cpu_restriction_refresh
+                    .saturating_duration_since(Instant::now())
+                    .min(background_cpu_restriction_refresh_interval),
             ));
         }
         if cpu_limiter_refresh_required {
@@ -669,6 +708,15 @@ fn update_cpu_affinity_status(shared: &SharedAutomationState, status: CpuAffinit
     }
 }
 
+fn update_background_cpu_restriction_status(
+    shared: &SharedAutomationState,
+    status: CpuAffinitySnapshot,
+) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.background_cpu_restriction_status = status;
+    }
+}
+
 fn update_cpu_limiter_status(shared: &SharedAutomationState, status: CpuLimiterSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
         state.cpu_limiter_status = status;
@@ -718,6 +766,7 @@ fn process_appearance_scan_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (settings.eco_qos.enabled
             || settings.cpu_affinity.enabled
+            || settings.background_cpu_restriction.enabled
             || settings.cpu_limiter.enabled
             || settings.performance_mode.enabled
             || settings.watchdog.enabled
@@ -739,6 +788,7 @@ fn automation_worker_required(settings: &Settings) -> bool {
             || settings.eco_qos.enabled
             || settings.app_suspension.enabled
             || settings.cpu_affinity.enabled
+            || settings.background_cpu_restriction.enabled
             || settings.cpu_limiter.enabled
             || settings.performance_mode.enabled
             || settings.watchdog.enabled
@@ -946,6 +996,7 @@ struct HiddenAutomationRunner {
     app_suspension_manager: AppSuspensionManager,
     last_app_suspension_shell_user_intent: Option<Instant>,
     cpu_affinity_manager: CpuAffinityManager,
+    background_cpu_restriction_manager: BackgroundCpuRestrictionManager,
     cpu_limiter_manager: CpuLimiterManager,
     performance_mode_manager: PerformanceModeManager,
     watchdog_manager: WatchdogManager,
@@ -1062,6 +1113,18 @@ impl HiddenAutomationRunner {
             &settings.cpu_affinity,
             settings.general.enabled,
             foreground_process_id,
+            &mut self.action_log,
+        )
+    }
+
+    fn run_background_cpu_restriction_update(
+        &mut self,
+        settings: &Settings,
+    ) -> CpuAffinitySnapshot {
+        self.background_cpu_restriction_manager.update(
+            &settings.background_cpu_restriction,
+            settings.general.enabled,
+            self.foreground_detector.process_id(),
             &mut self.action_log,
         )
     }

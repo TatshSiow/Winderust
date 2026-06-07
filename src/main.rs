@@ -9,6 +9,7 @@ mod affinity;
 mod app;
 mod assets;
 mod automation;
+mod background_cpu;
 mod config;
 mod cpu;
 mod cpu_limiter;

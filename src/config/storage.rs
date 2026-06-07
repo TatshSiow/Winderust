@@ -115,9 +115,9 @@ mod tests {
     use super::*;
     use crate::config::{
         AccentSettings, ActionLogMode, ActivityModeSettings, AdvancedSettings, AppLanguage,
-        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule,
-        CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison,
-        CpuUsageModeSettings, CpuUsageRule, EcoQosCpuRestrictionControlStyle,
+        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
+        CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
+        CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, EcoQosCpuRestrictionControlStyle,
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
         ForegroundRules, GeneralSettings, InputDetectionSettings, ManualOverride,
@@ -293,6 +293,7 @@ mod tests {
                     },
                 ],
             },
+            background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
             cpu_limiter: CpuLimiterSettings {
                 enabled: true,
                 exclude_foreground_app: true,
