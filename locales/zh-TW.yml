@@ -285,6 +285,8 @@ suspension:
     thawed_help: "PowerLeaf 已暫時解凍此應用程式，之後會再次凍結。"
     waiting: "等待中"
     waiting_help: "此應用程式在背景中，正在等待延遲時間。"
+    not_running: "未執行"
+    not_running_help: "此應用程式目前未執行。"
     not_suspended: "未暫停"
     not_suspended_help: "PowerLeaf 目前未暫停此應用程式。"
     off: "關閉"

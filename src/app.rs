@@ -10782,7 +10782,7 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
         }
     } else if status.enabled {
         SuspensionIndicator {
-            label: t!("suspension.indicator.not_suspended").to_string(),
+            label: t!("suspension.indicator.not_running").to_string(),
             bg: panel_active_color(),
             fg: muted_text_color(),
         }

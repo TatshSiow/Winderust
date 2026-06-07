@@ -291,6 +291,8 @@ suspension:
     thawed_help: "PowerLeaf has temporarily thawed this app before freezing it again."
     waiting: "Waiting"
     waiting_help: "This app is in the background and waiting for the delay."
+    not_running: "Not running"
+    not_running_help: "This app is not currently running."
     not_suspended: "Not suspended"
     not_suspended_help: "PowerLeaf is not currently suspending this app."
     off: "Off"
