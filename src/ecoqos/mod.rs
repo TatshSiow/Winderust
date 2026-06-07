@@ -62,6 +62,8 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EcoQosSnapshot {
     pub enabled: bool,
@@ -77,6 +79,7 @@ pub struct EcoQosSnapshot {
 #[derive(Default)]
 pub struct EcoQosManager {
     throttled: BTreeMap<u32, ThrottledProcess>,
+    failure_suppression: BTreeMap<String, EcoQosFailureSuppression>,
 }
 
 struct ThrottledProcess {
@@ -87,6 +90,12 @@ struct ThrottledProcess {
     applied_cpu_set_ids: Option<Vec<u32>>,
     previous_affinity: Option<usize>,
     applied_affinity: Option<usize>,
+}
+
+#[derive(Default)]
+struct EcoQosFailureSuppression {
+    attempts: u8,
+    suppression_logged: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +136,7 @@ impl EcoQosManager {
     ) -> EcoQosSnapshot {
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
+            self.failure_suppression.clear();
             return EcoQosSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
@@ -138,6 +148,7 @@ impl EcoQosManager {
 
         if !settings.enabled {
             let failed = self.clear_all(action_log, "Efficiency Mode disabled");
+            self.failure_suppression.clear();
             return EcoQosSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
@@ -219,12 +230,24 @@ impl EcoQosManager {
             target_processes.insert(process.id, process.name);
         }
 
+        let active_target_names = target_processes
+            .values()
+            .map(|name| process_failure_key(name))
+            .collect::<BTreeSet<_>>();
+        self.failure_suppression
+            .retain(|name, _| active_target_names.contains(name));
+
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut failures =
             self.release_non_targets(&target_ids, action_log, "process no longer matches EcoQoS");
         let mut unsupported = false;
 
         for (process_id, name) in target_processes {
+            if self.is_process_suppressed(process_id, &name, action_log) {
+                skipped_processes += 1;
+                continue;
+            }
+
             if let Some(process_state) = self.throttled.get_mut(&process_id) {
                 if let Err(err) = sync_efficiency_cpu_sets(
                     process_id,
@@ -236,6 +259,7 @@ impl EcoQosManager {
                     action_log,
                 ) {
                     failures.record_error("CPU Sets", process_id, &name, err, action_log);
+                    self.record_process_failure(&name);
                 }
                 continue;
             }
@@ -248,6 +272,7 @@ impl EcoQosManager {
                 cpu_restriction(settings),
             ) {
                 Ok(process) => {
+                    self.clear_process_failure(&name);
                     self.throttled.insert(process_id, process);
                     let cpu_sets_note = if settings.prefer_efficiency_cores {
                         " and preferred efficiency CPU sets"
@@ -265,8 +290,11 @@ impl EcoQosManager {
                         ),
                     );
                 }
-                Err(EcoQosError::AccessDenied | EcoQosError::ProcessExited) => {
+                Err(err @ (EcoQosError::AccessDenied | EcoQosError::ProcessExited)) => {
                     skipped_processes += 1;
+                    if !matches!(err, EcoQosError::ProcessExited) {
+                        self.record_process_failure(&name);
+                    }
                     action_log.record(
                         ActionLogFeature::EcoQos,
                         Some(process_id),
@@ -279,6 +307,7 @@ impl EcoQosManager {
                 Err(EcoQosError::Unsupported) => {
                     skipped_processes += 1;
                     unsupported = true;
+                    self.record_process_failure(&name);
                     action_log.record(
                         ActionLogFeature::EcoQos,
                         Some(process_id),
@@ -290,6 +319,7 @@ impl EcoQosManager {
                 }
                 Err(EcoQosError::Failed(err)) => {
                     failures.record_message("Apply", process_id, &name, err, action_log);
+                    self.record_process_failure(&name);
                 }
             }
         }
@@ -361,6 +391,52 @@ impl EcoQosManager {
         }
         failures
     }
+
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let Some(suppression) = self
+            .failure_suppression
+            .get_mut(&process_failure_key(process_name))
+        else {
+            return false;
+        };
+        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+            return false;
+        }
+
+        if !suppression.suppression_logged {
+            suppression.suppression_logged = true;
+            action_log.record(
+                ActionLogFeature::EcoQos,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying Efficiency Mode after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                ),
+            );
+        }
+
+        true
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        let suppression = self
+            .failure_suppression
+            .entry(process_failure_key(process_name))
+            .or_default();
+        suppression.attempts = suppression.attempts.saturating_add(1);
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression
+            .remove(&process_failure_key(process_name));
+    }
 }
 
 fn should_ignore_foreground_process(
@@ -374,6 +450,10 @@ fn should_ignore_foreground_process(
         && (foreground_process_id.is_some_and(|id| id == process_id)
             || foreground_process_name
                 .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
+}
+
+fn process_failure_key(process_name: &str) -> String {
+    process_name.trim().to_ascii_lowercase()
 }
 
 impl Drop for EcoQosManager {
@@ -1292,6 +1372,27 @@ mod tests {
             open_process_error(42, ERROR_INVALID_PARAMETER),
             EcoQosError::ProcessExited
         ));
+    }
+
+    #[test]
+    fn repeated_failures_suppress_future_efficiency_attempts_once() {
+        let mut manager = EcoQosManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("APP.exe");
+        manager.record_process_failure("app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(log.entries().is_empty());
+
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].process_name, "app.exe");
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 
     #[test]
