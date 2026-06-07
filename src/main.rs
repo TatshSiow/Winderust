@@ -17,6 +17,7 @@ mod foreground;
 mod performance_mode;
 mod power;
 mod power_source;
+mod privilege;
 mod responsiveness;
 mod rules;
 mod scheduler;
@@ -39,6 +40,8 @@ fn main() {
     let Some(_single_instance_guard) = SingleInstanceGuard::acquire() else {
         return;
     };
+
+    privilege::enable_debug_privilege();
 
     Application::new()
         .with_assets(assets::Assets)
