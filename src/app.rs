@@ -43,11 +43,12 @@ use crate::{
     config::{
         self, AccentColorSource, AccentSettings, AppLanguage, AppSuspensionRule,
         AppSuspensionSettings, AppThemeMode, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageRule, EcoQosSettings,
-        ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PriorityRule,
-        ProcessPriority, ScheduleRule, Settings, WatchdogAction, WatchdogRule, WatchdogSettings,
-        WeekdaySetting,
+        CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageRule,
+        EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
+        EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
+        ForegroundRules, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
+        PriorityRule, ProcessPriority, ScheduleRule, Settings, WatchdogAction, WatchdogRule,
+        WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -1813,6 +1814,11 @@ impl PowerLeafApp {
                     ACTIVITY_CHECK_INTERVAL_MAX_MS,
                 ) {
                     self.set_activity_slider_value(ActivitySlider::CheckInterval, value);
+                }
+            }
+            NumericField::EcoQosRestrictionPercent => {
+                if let Some(value) = parse_u64_input(&value, 1, 100) {
+                    self.settings.eco_qos.cpu_restriction_percent = value as u8;
                 }
             }
             NumericField::SuspensionBackgroundDelay => {
@@ -3686,87 +3692,236 @@ impl PowerLeafApp {
         let has_efficiency_cores =
             affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency) != 0;
         let has_multiple_processors = processors.len() > 1;
-        let selected = EfficiencyCpuSetPreference::from_flags(
-            self.settings.eco_qos.prefer_efficiency_cores,
-            self.settings.eco_qos.limit_cpu_sets_on_non_hybrid,
-        );
-        let status = if has_efficiency_cores {
-            t!("efficiency.cpu_set_topology_hybrid").to_string()
-        } else if has_multiple_processors {
-            t!("efficiency.cpu_set_topology_standard").to_string()
-        } else {
-            t!("efficiency.cpu_set_topology_single").to_string()
-        };
-
-        let mut options = h_flex().gap_1().flex_wrap().justify_end();
-        for preference in EfficiencyCpuSetPreference::ALL {
-            let enabled = match preference {
-                EfficiencyCpuSetPreference::PreferEfficiencyCores => has_efficiency_cores,
-                EfficiencyCpuSetPreference::LimitLogicalCpus => has_multiple_processors,
-                EfficiencyCpuSetPreference::Auto | EfficiencyCpuSetPreference::Off => true,
-            };
-            options = options.child(
+        let selected = self.effective_eco_qos_cpu_restriction_strategy();
+        let restriction_enabled = selected != EcoQosCpuRestrictionStrategy::Off;
+        let collapsed =
+            self.is_setting_group_collapsed(SettingGroupTarget::EfficiencyCpuRestriction);
+        let mut mode_options = h_flex().gap_1().flex_wrap().justify_end();
+        for mode in EcoQosCpuRestrictionMode::ALL {
+            mode_options = mode_options.child(
                 toggle_button(
-                    format!("eco-qos-cpu-set-preference-{preference:?}"),
-                    efficiency_cpu_set_preference_label(preference),
-                    selected == preference,
+                    format!("eco-qos-cpu-restriction-mode-{mode:?}"),
+                    efficiency_cpu_restriction_mode_label(mode),
+                    self.settings.eco_qos.cpu_restriction_mode == mode,
                 )
-                .disabled(!enabled)
-                .tooltip(efficiency_cpu_set_preference_help(preference))
+                .tooltip(efficiency_cpu_restriction_mode_help(mode))
+                .disabled(!restriction_enabled)
                 .on_click(cx.listener(move |app, _, _, cx| {
-                    let (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) =
-                        preference.flags();
-                    app.settings.eco_qos.prefer_efficiency_cores = prefer_efficiency_cores;
-                    app.settings.eco_qos.limit_cpu_sets_on_non_hybrid =
-                        limit_cpu_sets_on_non_hybrid;
+                    app.settings.eco_qos.cpu_restriction_mode = mode;
                     cx.notify();
                 })),
             );
         }
 
-        h_flex()
-            .id("eco-qos-cpu-set-preference")
-            .w_full()
-            .min_w(px(0.0))
-            .min_h(px(58.0))
-            .items_center()
-            .justify_between()
+        let mut strategy_options = h_flex().gap_1().flex_wrap().justify_end();
+        for strategy in [
+            EcoQosCpuRestrictionStrategy::Auto,
+            EcoQosCpuRestrictionStrategy::PreferEfficiencyCores,
+            EcoQosCpuRestrictionStrategy::LimitLogicalCpus,
+        ] {
+            let enabled = match strategy {
+                EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
+                EcoQosCpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
+                EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::Off => true,
+            };
+            strategy_options = strategy_options.child(
+                toggle_button(
+                    format!("eco-qos-cpu-restriction-strategy-{strategy:?}"),
+                    efficiency_cpu_restriction_strategy_label(strategy),
+                    selected == strategy,
+                )
+                .disabled(!restriction_enabled || !enabled)
+                .tooltip(efficiency_cpu_restriction_strategy_help(strategy))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    let (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) =
+                        strategy.legacy_flags();
+                    app.settings.eco_qos.cpu_restriction_strategy = strategy;
+                    app.settings.eco_qos.prefer_efficiency_cores = prefer_efficiency_cores;
+                    app.settings.eco_qos.limit_cpu_sets_on_non_hybrid =
+                        limit_cpu_sets_on_non_hybrid;
+                    if app.settings.eco_qos.cpu_restriction_control_style
+                        == EcoQosCpuRestrictionControlStyle::CoreToggle
+                    {
+                        let processors = affinity::logical_processors();
+                        let mask = eco_qos_strategy_core_mask(&processors, strategy);
+                        if mask != 0 {
+                            app.settings.eco_qos.cpu_restriction_core_mask = mask;
+                        }
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+
+        let percent = self.settings.eco_qos.cpu_restriction_percent.clamp(1, 100);
+        let percentage_control = h_flex()
             .gap_2()
-            .py_3()
-            .px_4()
-            .rounded_sm()
-            .border_1()
-            .border_color(rgb(border_color()))
-            .bg(rgb(settings_card_color()))
-            .text_color(rgb(primary_text_color()))
-            .text_size(px(TEXT_BODY_SIZE))
-            .line_height(px(TEXT_BODY_LINE_HEIGHT))
-            .hover(|style| style.bg(rgb(settings_card_hover_color())))
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(t!("efficiency.cpu_set_preference").to_string()),
-                    )
-                    .child(title_info_button(
-                        "eco-qos-cpu-set-preference-info",
-                        t!("efficiency.cpu_set_preference_help").to_string(),
-                    )),
+            .items_center()
+            .justify_end()
+            .flex_wrap()
+            .child(self.render_numeric_value(
+                NumericField::EcoQosRestrictionPercent,
+                format!("{percent}%"),
+                percent.to_string(),
+                cx,
+            ));
+
+        let mut style_options = h_flex().gap_1().flex_wrap().justify_end();
+        for style in EcoQosCpuRestrictionControlStyle::ALL {
+            style_options = style_options.child(
+                toggle_button(
+                    format!("eco-qos-cpu-restriction-style-{style:?}"),
+                    efficiency_cpu_restriction_control_style_label(style),
+                    self.settings.eco_qos.cpu_restriction_control_style == style,
+                )
+                .tooltip(efficiency_cpu_restriction_control_style_help(style))
+                .disabled(!restriction_enabled)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings.eco_qos.cpu_restriction_control_style = style;
+                    if style == EcoQosCpuRestrictionControlStyle::CoreToggle
+                        && app.settings.eco_qos.cpu_restriction_core_mask == 0
+                    {
+                        let strategy = app.effective_eco_qos_cpu_restriction_strategy();
+                        let processors = affinity::logical_processors();
+                        app.settings.eco_qos.cpu_restriction_core_mask =
+                            eco_qos_strategy_core_mask(&processors, strategy);
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+
+        let mut rows = vec![
+            setting_group_action_row(
+                "eco-qos-core-affinity-control",
+                t!("efficiency.core_affinity_control").to_string(),
+                mode_options.into_any_element(),
+                true,
             )
-            .child(
-                v_flex()
-                    .items_end()
-                    .gap_1()
-                    .child(options)
-                    .child(text_muted(status)),
+            .when(!restriction_enabled, |row| {
+                row.opacity(0.42).cursor_default()
+            })
+            .into_any_element(),
+            setting_group_action_row(
+                "eco-qos-core-suppression-rule",
+                t!("efficiency.core_suppression_rule").to_string(),
+                strategy_options.into_any_element(),
+                true,
             )
-            .into_any_element()
+            .into_any_element(),
+            setting_group_action_row(
+                "eco-qos-control-style",
+                t!("efficiency.control_style").to_string(),
+                style_options.into_any_element(),
+                true,
+            )
+            .when(!restriction_enabled, |row| {
+                row.opacity(0.42).cursor_default()
+            })
+            .into_any_element(),
+        ];
+
+        rows.push(match self.settings.eco_qos.cpu_restriction_control_style {
+            EcoQosCpuRestrictionControlStyle::Percentage => setting_group_action_row(
+                "eco-qos-core-allocation-percentage",
+                t!("efficiency.core_allocation_percentage").to_string(),
+                percentage_control.into_any_element(),
+                true,
+            )
+            .when(!restriction_enabled, |row| {
+                row.opacity(0.42).cursor_default()
+            })
+            .into_any_element(),
+            EcoQosCpuRestrictionControlStyle::CoreToggle => setting_group_stacked_action_row(
+                "eco-qos-core-toggle-list",
+                t!("efficiency.selected_cores").to_string(),
+                self.render_efficiency_core_toggle_selector(&processors, restriction_enabled, cx),
+                true,
+            )
+            .when(!restriction_enabled, |row| {
+                row.opacity(0.42).cursor_default()
+            })
+            .into_any_element(),
+        });
+
+        setting_group_with_title_element(
+            SettingGroupTarget::EfficiencyCpuRestriction,
+            h_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .child(t!("efficiency.cpu_set_preference").to_string()),
+                )
+                .child(title_info_button(
+                    "eco-qos-cpu-set-preference-info",
+                    t!("efficiency.cpu_set_preference_help").to_string(),
+                ))
+                .into_any_element(),
+            setting_group_switch_action(
+                "eco-qos-cpu-restriction-enabled",
+                restriction_enabled,
+                cx.listener(|app, checked, _, cx| {
+                    if *checked {
+                        if app.effective_eco_qos_cpu_restriction_strategy()
+                            == EcoQosCpuRestrictionStrategy::Off
+                        {
+                            app.settings.eco_qos.cpu_restriction_strategy =
+                                EcoQosCpuRestrictionStrategy::Auto;
+                            app.settings.eco_qos.prefer_efficiency_cores = true;
+                            app.settings.eco_qos.limit_cpu_sets_on_non_hybrid = true;
+                        }
+                    } else {
+                        app.settings.eco_qos.cpu_restriction_strategy =
+                            EcoQosCpuRestrictionStrategy::Off;
+                        app.settings.eco_qos.prefer_efficiency_cores = false;
+                        app.settings.eco_qos.limit_cpu_sets_on_non_hybrid = false;
+                    }
+                    cx.notify();
+                }),
+            ),
+            collapsed,
+            rows,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    fn render_efficiency_core_toggle_selector(
+        &self,
+        processors: &[LogicalProcessorInfo],
+        enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_core_tile_grid(
+            processors,
+            self.settings.eco_qos.cpu_restriction_core_mask,
+            enabled,
+            "eco-qos-core-toggle",
+            cx.listener(move |app, core: &usize, _, cx| {
+                toggle_affinity_core(&mut app.settings.eco_qos.cpu_restriction_core_mask, *core);
+                cx.notify();
+            }),
+            cx,
+        )
+    }
+
+    fn effective_eco_qos_cpu_restriction_strategy(&self) -> EcoQosCpuRestrictionStrategy {
+        let legacy_strategy = EcoQosCpuRestrictionStrategy::from_legacy_flags(
+            self.settings.eco_qos.prefer_efficiency_cores,
+            self.settings.eco_qos.limit_cpu_sets_on_non_hybrid,
+        );
+        if self.settings.eco_qos.cpu_restriction_strategy == EcoQosCpuRestrictionStrategy::Auto
+            && legacy_strategy != EcoQosCpuRestrictionStrategy::Auto
+        {
+            legacy_strategy
+        } else {
+            self.settings.eco_qos.cpu_restriction_strategy
+        }
     }
 
     fn render_eco_qos_whitelist(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -5381,37 +5536,140 @@ impl PowerLeafApp {
             );
         }
 
-        let mut row = h_flex().gap_1().flex_wrap();
+        let core_grid = self.render_core_tile_grid(
+            &processors,
+            core_mask,
+            true,
+            format!("affinity-core-{index}"),
+            cx.listener(move |app, core: &usize, _, cx| {
+                if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                    toggle_affinity_core(&mut rule.core_mask, *core);
+                }
+                cx.notify();
+            }),
+            cx,
+        );
+
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .child(
+                rule_action_row(
+                    format!("affinity-core-presets-row-{index}"),
+                    t!("affinity.core_presets").to_string(),
+                    presets.into_any_element(),
+                )
+                .into_any_element(),
+            )
+            .child(
+                setting_group_stacked_action_row(
+                    format!("affinity-core-row-{index}"),
+                    t!("affinity.allowed_cpus").to_string(),
+                    core_grid,
+                    true,
+                )
+                .into_any_element(),
+            )
+            .into_any_element()
+    }
+
+    fn render_core_tile_grid(
+        &self,
+        processors: &[LogicalProcessorInfo],
+        core_mask: u64,
+        enabled: bool,
+        id_prefix: impl Into<String>,
+        handler: impl Fn(&usize, &mut Window, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        const CORE_GRID_COLUMNS: usize = 8;
+
+        if processors.is_empty() {
+            return text_muted(t!("affinity.no_logical_cpus").to_string()).into_any_element();
+        }
+
+        let id_prefix = id_prefix.into();
+        let handler = Rc::new(handler);
+        let mut grid = v_flex().w_full().min_w(px(0.0)).gap_1();
+        let mut current_row = h_flex().w_full().min_w(px(0.0)).gap_1();
+        let mut cells_in_row = 0;
+
         for processor in processors {
             let core = processor.index;
             let selected = affinity_mask_contains(core_mask, core);
-            row = row.child(
-                toggle_button(
-                    format!("affinity-core-{index}-{core}"),
-                    affinity_processor_label(&processor),
-                    selected,
-                )
-                .tooltip(affinity_processor_tooltip(&processor))
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
-                        toggle_affinity_core(&mut rule.core_mask, core);
-                    }
-                    cx.notify();
-                })),
+            let tile_text_color: Hsla = if selected {
+                cx.theme().primary_foreground
+            } else {
+                rgb(primary_text_color()).into()
+            };
+            let tile_muted_text_color: Hsla = if selected {
+                cx.theme().primary_foreground
+            } else {
+                rgb(muted_text_color()).into()
+            };
+            let handler = Rc::clone(&handler);
+            current_row = current_row.child(
+                div().flex_1().min_w(px(0.0)).child(
+                    v_flex()
+                        .id(SharedString::from(format!("{id_prefix}-{core}")))
+                        .w_full()
+                        .min_w(px(0.0))
+                        .h(px(54.0))
+                        .items_center()
+                        .justify_center()
+                        .gap(px(1.0))
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(rgb(if selected {
+                            accent_color()
+                        } else {
+                            border_color()
+                        }))
+                        .bg(rgb(if selected {
+                            accent_color()
+                        } else {
+                            settings_card_color()
+                        }))
+                        .text_color(tile_text_color)
+                        .when(enabled, |tile| tile.cursor_pointer())
+                        .when(!enabled, |tile| tile.opacity(0.42).cursor_default())
+                        .on_click(cx.listener(move |_app, _, window, cx| {
+                            if enabled {
+                                handler(&core, window, cx);
+                            }
+                        }))
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .line_height(px(12.0))
+                                .text_color(tile_muted_text_color)
+                                .child(core_tile_kind_label(processor)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(TEXT_CONTROL_SIZE))
+                                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .child(format!("CPU {}", processor.index)),
+                        ),
+                ),
             );
+            cells_in_row += 1;
+            if cells_in_row == CORE_GRID_COLUMNS {
+                grid = grid.child(current_row);
+                current_row = h_flex().w_full().min_w(px(0.0)).gap_1();
+                cells_in_row = 0;
+            }
         }
 
-        rule_action_row(
-            format!("affinity-core-row-{index}"),
-            t!("affinity.allowed_cpus").to_string(),
-            v_flex()
-                .gap_2()
-                .items_end()
-                .child(presets)
-                .child(row)
-                .into_any_element(),
-        )
-        .into_any_element()
+        if cells_in_row > 0 {
+            for _ in cells_in_row..CORE_GRID_COLUMNS {
+                current_row = current_row.child(div().flex_1().min_w(px(0.0)));
+            }
+            grid = grid.child(current_row);
+        }
+
+        grid.into_any_element()
     }
 
     fn render_numeric_value(
@@ -6963,44 +7221,10 @@ enum RuleCardTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingGroupTarget {
+    EfficiencyCpuRestriction,
     SuspensionThaw,
     SuspensionAudio,
     SuspensionNetwork,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EfficiencyCpuSetPreference {
-    Off,
-    Auto,
-    PreferEfficiencyCores,
-    LimitLogicalCpus,
-}
-
-impl EfficiencyCpuSetPreference {
-    const ALL: [Self; 4] = [
-        Self::Auto,
-        Self::PreferEfficiencyCores,
-        Self::LimitLogicalCpus,
-        Self::Off,
-    ];
-
-    const fn from_flags(prefer_efficiency_cores: bool, limit_cpu_sets_on_non_hybrid: bool) -> Self {
-        match (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) {
-            (true, true) => Self::Auto,
-            (true, false) => Self::PreferEfficiencyCores,
-            (false, true) => Self::LimitLogicalCpus,
-            (false, false) => Self::Off,
-        }
-    }
-
-    const fn flags(self) -> (bool, bool) {
-        match self {
-            Self::Off => (false, false),
-            Self::Auto => (true, true),
-            Self::PreferEfficiencyCores => (true, false),
-            Self::LimitLogicalCpus => (false, true),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -7013,6 +7237,7 @@ enum ThresholdField {
 enum NumericField {
     ActivityIdleTimeout,
     GeneralCheckInterval,
+    EcoQosRestrictionPercent,
     SuspensionBackgroundDelay,
     SuspensionThawInterval,
     SuspensionThawDuration,
@@ -7965,6 +8190,29 @@ fn setting_group(
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let title: SharedString = title.into();
+    setting_group_with_title_element(
+        target,
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .child(title)
+            .into_any_element(),
+        action,
+        collapsed,
+        rows,
+        cx,
+    )
+}
+
+fn setting_group_with_title_element(
+    target: SettingGroupTarget,
+    title: AnyElement,
+    action: AnyElement,
+    collapsed: bool,
+    rows: Vec<AnyElement>,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
     let chevron_target = target;
     let mut group = v_flex()
         .id(SharedString::from(format!("setting-group-{target:?}")))
@@ -8005,7 +8253,6 @@ fn setting_group(
                         )))
                         .flex_1()
                         .min_w(px(0.0))
-                        .truncate()
                         .child(title),
                 )
                 .child(
@@ -8094,6 +8341,35 @@ fn setting_group_action_row(
                 .gap_2()
                 .min_w(px(0.0))
                 .flex_shrink_0()
+                .child(action),
+        )
+}
+
+fn setting_group_stacked_action_row(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    action: AnyElement,
+    divided: bool,
+) -> gpui::Stateful<gpui::Div> {
+    v_flex()
+        .id(id.into())
+        .w_full()
+        .min_w(px(0.0))
+        .gap_2()
+        .py_3()
+        .px_4()
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .when(divided, |row| {
+            row.border_t_1().border_color(rgb(border_color()))
+        })
+        .child(div().w_full().min_w(px(0.0)).child(title.into()))
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.0))
+                .overflow_hidden()
                 .child(action),
         )
 }
@@ -9465,6 +9741,7 @@ fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorDcCoreParkingMin
         | NumericField::ProcessorDcPerformanceMin
         | NumericField::ProcessorDcPerformanceMax
+        | NumericField::EcoQosRestrictionPercent
         | NumericField::CpuLimiterThreshold(_)
         | NumericField::CpuLimiterMaxProcessors(_) => 76.0,
         _ => 96.0,
@@ -10560,28 +10837,72 @@ fn logical_core_count() -> usize {
     affinity::logical_processors().len().clamp(1, 64)
 }
 
-fn efficiency_cpu_set_preference_label(preference: EfficiencyCpuSetPreference) -> String {
-    match preference {
-        EfficiencyCpuSetPreference::Off => t!("efficiency.cpu_set_off").to_string(),
-        EfficiencyCpuSetPreference::Auto => t!("efficiency.cpu_set_auto").to_string(),
-        EfficiencyCpuSetPreference::PreferEfficiencyCores => {
+fn efficiency_cpu_restriction_mode_label(mode: EcoQosCpuRestrictionMode) -> String {
+    match mode {
+        EcoQosCpuRestrictionMode::SoftCpuSets => t!("efficiency.cpu_restriction_soft").to_string(),
+        EcoQosCpuRestrictionMode::HardAffinity => t!("efficiency.cpu_restriction_hard").to_string(),
+    }
+}
+
+fn efficiency_cpu_restriction_mode_help(mode: EcoQosCpuRestrictionMode) -> String {
+    match mode {
+        EcoQosCpuRestrictionMode::SoftCpuSets => {
+            t!("efficiency.cpu_restriction_soft_help").to_string()
+        }
+        EcoQosCpuRestrictionMode::HardAffinity => {
+            t!("efficiency.cpu_restriction_hard_help").to_string()
+        }
+    }
+}
+
+fn efficiency_cpu_restriction_strategy_label(strategy: EcoQosCpuRestrictionStrategy) -> String {
+    match strategy {
+        EcoQosCpuRestrictionStrategy::Off => t!("efficiency.cpu_set_off").to_string(),
+        EcoQosCpuRestrictionStrategy::Auto => t!("efficiency.cpu_set_auto").to_string(),
+        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => {
             t!("efficiency.cpu_set_prefer_e_cores").to_string()
         }
-        EfficiencyCpuSetPreference::LimitLogicalCpus => {
+        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => {
             t!("efficiency.cpu_set_limit_logical").to_string()
         }
     }
 }
 
-fn efficiency_cpu_set_preference_help(preference: EfficiencyCpuSetPreference) -> String {
-    match preference {
-        EfficiencyCpuSetPreference::Off => t!("efficiency.cpu_set_off_help").to_string(),
-        EfficiencyCpuSetPreference::Auto => t!("efficiency.cpu_set_auto_help").to_string(),
-        EfficiencyCpuSetPreference::PreferEfficiencyCores => {
+fn efficiency_cpu_restriction_strategy_help(strategy: EcoQosCpuRestrictionStrategy) -> String {
+    match strategy {
+        EcoQosCpuRestrictionStrategy::Off => t!("efficiency.cpu_set_off_help").to_string(),
+        EcoQosCpuRestrictionStrategy::Auto => t!("efficiency.cpu_set_auto_help").to_string(),
+        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => {
             t!("efficiency.cpu_set_prefer_e_cores_help").to_string()
         }
-        EfficiencyCpuSetPreference::LimitLogicalCpus => {
+        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => {
             t!("efficiency.cpu_set_limit_logical_help").to_string()
+        }
+    }
+}
+
+fn efficiency_cpu_restriction_control_style_label(
+    style: EcoQosCpuRestrictionControlStyle,
+) -> String {
+    match style {
+        EcoQosCpuRestrictionControlStyle::Percentage => {
+            t!("efficiency.control_style_percentage").to_string()
+        }
+        EcoQosCpuRestrictionControlStyle::CoreToggle => {
+            t!("efficiency.control_style_core_toggle").to_string()
+        }
+    }
+}
+
+fn efficiency_cpu_restriction_control_style_help(
+    style: EcoQosCpuRestrictionControlStyle,
+) -> String {
+    match style {
+        EcoQosCpuRestrictionControlStyle::Percentage => {
+            t!("efficiency.control_style_percentage_help").to_string()
+        }
+        EcoQosCpuRestrictionControlStyle::CoreToggle => {
+            t!("efficiency.control_style_core_toggle_help").to_string()
         }
     }
 }
@@ -10653,48 +10974,37 @@ fn affinity_processors_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
     mask
 }
 
+fn eco_qos_strategy_core_mask(
+    processors: &[LogicalProcessorInfo],
+    strategy: EcoQosCpuRestrictionStrategy,
+) -> u64 {
+    match strategy {
+        EcoQosCpuRestrictionStrategy::Off => 0,
+        EcoQosCpuRestrictionStrategy::Auto => {
+            let efficiency_mask =
+                affinity_processors_kind_mask(processors, LogicalProcessorKind::Efficiency);
+            if efficiency_mask != 0 {
+                efficiency_mask
+            } else {
+                affinity_processors_mask(processors)
+            }
+        }
+        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => {
+            affinity_processors_kind_mask(processors, LogicalProcessorKind::Efficiency)
+        }
+        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => affinity_processors_mask(processors),
+    }
+}
+
 fn affinity_processor_bit(index: usize) -> Option<u64> {
     (index < 64).then_some(1_u64 << index)
 }
 
-fn affinity_processor_label(processor: &LogicalProcessorInfo) -> String {
+fn core_tile_kind_label(processor: &LogicalProcessorInfo) -> String {
     match processor.kind {
-        LogicalProcessorKind::Performance => {
-            t!("affinity.p_core", index = processor.index).to_string()
-        }
-        LogicalProcessorKind::Efficiency => {
-            t!("affinity.e_core", index = processor.index).to_string()
-        }
-        LogicalProcessorKind::Standard => {
-            t!("affinity.cpu_core", index = processor.index).to_string()
-        }
-    }
-}
-
-fn affinity_processor_tooltip(processor: &LogicalProcessorInfo) -> String {
-    let kind = match processor.kind {
-        LogicalProcessorKind::Performance => t!("affinity.performance_core_kind").to_string(),
-        LogicalProcessorKind::Efficiency => t!("affinity.efficiency_core_kind").to_string(),
-        LogicalProcessorKind::Standard => t!("affinity.logical_cpu_kind").to_string(),
-    };
-
-    if processor.kind == LogicalProcessorKind::Standard {
-        t!(
-            "affinity.standard_cpu_tooltip",
-            kind = kind,
-            index = processor.index,
-            core = processor.core_index
-        )
-        .to_string()
-    } else {
-        t!(
-            "affinity.hybrid_cpu_tooltip",
-            kind = kind,
-            index = processor.index,
-            core = processor.core_index,
-            class = processor.efficiency_class
-        )
-        .to_string()
+        LogicalProcessorKind::Performance => "P-Core".to_owned(),
+        LogicalProcessorKind::Efficiency => "E-Core".to_owned(),
+        LogicalProcessorKind::Standard => "Core".to_owned(),
     }
 }
 

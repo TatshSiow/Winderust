@@ -222,8 +222,77 @@ pub struct EcoQosSettings {
     pub prefer_efficiency_cores: bool,
     #[serde(default)]
     pub limit_cpu_sets_on_non_hybrid: bool,
+    #[serde(default)]
+    pub cpu_restriction_mode: EcoQosCpuRestrictionMode,
+    #[serde(default)]
+    pub cpu_restriction_strategy: EcoQosCpuRestrictionStrategy,
+    #[serde(default)]
+    pub cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle,
+    #[serde(default = "default_eco_qos_cpu_restriction_percent")]
+    pub cpu_restriction_percent: u8,
+    #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
+    pub cpu_restriction_max_logical_processors: u8,
+    #[serde(default)]
+    pub cpu_restriction_core_mask: u64,
     #[serde(default, alias = "excluded_processes")]
     pub efficiency_whitelist: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EcoQosCpuRestrictionMode {
+    #[default]
+    SoftCpuSets,
+    HardAffinity,
+}
+
+impl EcoQosCpuRestrictionMode {
+    pub const ALL: [Self; 2] = [Self::SoftCpuSets, Self::HardAffinity];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EcoQosCpuRestrictionStrategy {
+    Off,
+    #[default]
+    Auto,
+    PreferEfficiencyCores,
+    LimitLogicalCpus,
+}
+
+impl EcoQosCpuRestrictionStrategy {
+    pub const fn from_legacy_flags(
+        prefer_efficiency_cores: bool,
+        limit_cpu_sets_on_non_hybrid: bool,
+    ) -> Self {
+        match (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) {
+            (true, true) => Self::Auto,
+            (true, false) => Self::PreferEfficiencyCores,
+            (false, true) => Self::LimitLogicalCpus,
+            (false, false) => Self::Off,
+        }
+    }
+
+    pub const fn legacy_flags(self) -> (bool, bool) {
+        match self {
+            Self::Off => (false, false),
+            Self::Auto => (true, true),
+            Self::PreferEfficiencyCores => (true, false),
+            Self::LimitLogicalCpus => (false, true),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EcoQosCpuRestrictionControlStyle {
+    #[default]
+    Percentage,
+    CoreToggle,
+}
+
+impl EcoQosCpuRestrictionControlStyle {
+    pub const ALL: [Self; 2] = [Self::Percentage, Self::CoreToggle];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,6 +680,13 @@ impl Default for EcoQosSettings {
             exclude_foreground_app: default_exclude_foreground_app(),
             prefer_efficiency_cores: true,
             limit_cpu_sets_on_non_hybrid: true,
+            cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Auto,
+            cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
+            cpu_restriction_percent: default_eco_qos_cpu_restriction_percent(),
+            cpu_restriction_max_logical_processors:
+                default_eco_qos_cpu_restriction_max_logical_processors(),
+            cpu_restriction_core_mask: 0,
             efficiency_whitelist: Vec::new(),
         }
     }
@@ -658,6 +734,14 @@ const fn default_cpu_limiter_cooldown_seconds() -> u64 {
 
 const fn default_cpu_limiter_max_logical_processors() -> u8 {
     1
+}
+
+const fn default_eco_qos_cpu_restriction_percent() -> u8 {
+    50
+}
+
+const fn default_eco_qos_cpu_restriction_max_logical_processors() -> u8 {
+    0
 }
 
 const fn default_watchdog_restart_delay_seconds() -> u64 {
