@@ -62,11 +62,30 @@ pub struct ForegroundResponsivenessSnapshot {
     pub background_adjusted_processes: usize,
     pub foreground_boosted_process: Option<String>,
     pub auto_balanced_processes: usize,
+    pub auto_balance_message: String,
+    pub auto_balance_total_cpu_usage_tenths: Option<u16>,
+    pub auto_balance_details: Vec<AutoBalanceProcessStatus>,
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoBalanceProcessStatus {
+    pub process_id: u32,
+    pub process_name: String,
+    pub state: AutoBalanceProcessState,
+    pub cpu_usage_tenths: Option<u16>,
+    pub elapsed_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoBalanceProcessState {
+    Watching,
+    Restrained,
+    CoolingDown,
 }
 
 #[derive(Default)]
@@ -102,6 +121,7 @@ struct ForegroundCandidate {
 struct AutoBalanceProcess {
     process_name: String,
     previous_cpu_time: Option<ProcessCpuSample>,
+    last_usage_tenths: Option<u16>,
     high_since: Option<Instant>,
     below_since: Option<Instant>,
     active_since: Option<Instant>,
@@ -179,6 +199,7 @@ impl ForegroundResponsivenessManager {
         };
 
         let scanned_processes = processes.len();
+        let total_cpu_usage_tenths = total_cpu_usage_percent.map(percent_tenths);
         let current_process_names = processes
             .iter()
             .map(|process| (process.id, process.name.clone()))
@@ -236,7 +257,8 @@ impl ForegroundResponsivenessManager {
             }
         }
 
-        if auto_balance_should_run(settings, total_cpu_usage_percent) {
+        let auto_balance_running = auto_balance_should_run(settings, total_cpu_usage_percent);
+        if auto_balance_running {
             let now = Instant::now();
             let current_ids = processes
                 .iter()
@@ -343,6 +365,17 @@ impl ForegroundResponsivenessManager {
             }
         }
 
+        let auto_balance_details = self.auto_balance_statuses(Instant::now());
+        let auto_balance_message = auto_balance_status_message(
+            settings,
+            total_cpu_usage_percent,
+            auto_balance_running,
+            auto_balance_details
+                .iter()
+                .filter(|status| status.state == AutoBalanceProcessState::Restrained)
+                .count(),
+        );
+
         if let Some(foreground_id) = foreground_process_id {
             if settings.boost_foreground_app
                 && !eco_qos_process_ids.contains(&foreground_id)
@@ -401,6 +434,9 @@ impl ForegroundResponsivenessManager {
                 .as_ref()
                 .map(|process| format!("{} ({})", process.process_name, process.process_id)),
             auto_balanced_processes,
+            auto_balance_message,
+            auto_balance_total_cpu_usage_tenths: total_cpu_usage_tenths,
+            auto_balance_details,
             skipped_processes,
             failed_processes: failures.count,
             adjusted_apps: unique_app_names(
@@ -648,6 +684,7 @@ impl ForegroundResponsivenessManager {
             .or_insert_with(|| AutoBalanceProcess {
                 process_name: process_name.to_owned(),
                 previous_cpu_time: None,
+                last_usage_tenths: None,
                 high_since: None,
                 below_since: None,
                 active_since: None,
@@ -662,6 +699,7 @@ impl ForegroundResponsivenessManager {
         state.previous_cpu_time = Some(current);
 
         let usage = usage?;
+        state.last_usage_tenths = Some(percent_tenths(usage));
         if usage >= threshold {
             state.below_since = None;
             let high_since = *state.high_since.get_or_insert(now);
@@ -694,6 +732,41 @@ impl ForegroundResponsivenessManager {
 
         None
     }
+
+    fn auto_balance_statuses(&self, now: Instant) -> Vec<AutoBalanceProcessStatus> {
+        self.auto_balance
+            .iter()
+            .filter_map(|(process_id, process)| {
+                let state = if process.active {
+                    if process.below_since.is_some() {
+                        AutoBalanceProcessState::CoolingDown
+                    } else {
+                        AutoBalanceProcessState::Restrained
+                    }
+                } else if process.high_since.is_some() {
+                    AutoBalanceProcessState::Watching
+                } else {
+                    return None;
+                };
+
+                let elapsed_seconds = match state {
+                    AutoBalanceProcessState::Watching => process.high_since,
+                    AutoBalanceProcessState::Restrained | AutoBalanceProcessState::CoolingDown => {
+                        process.active_since.or(process.below_since)
+                    }
+                }
+                .map(|started| now.duration_since(started).as_secs());
+
+                Some(AutoBalanceProcessStatus {
+                    process_id: *process_id,
+                    process_name: process.process_name.clone(),
+                    state,
+                    cpu_usage_tenths: process.last_usage_tenths,
+                    elapsed_seconds,
+                })
+            })
+            .collect()
+    }
 }
 
 impl Drop for ForegroundResponsivenessManager {
@@ -711,6 +784,9 @@ impl Default for ForegroundResponsivenessSnapshot {
             background_adjusted_processes: 0,
             foreground_boosted_process: None,
             auto_balanced_processes: 0,
+            auto_balance_message: "Auto-balance disabled.".to_owned(),
+            auto_balance_total_cpu_usage_tenths: None,
+            auto_balance_details: Vec::new(),
             skipped_processes: 0,
             failed_processes: 0,
             adjusted_apps: Vec::new(),
@@ -730,6 +806,42 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 pub fn contains_process(list: &[String], process_name: &str) -> bool {
     list.iter()
         .any(|name| name.trim().eq_ignore_ascii_case(process_name.trim()))
+}
+
+fn percent_tenths(usage: f32) -> u16 {
+    (usage.clamp(0.0, 100.0) * 10.0).round() as u16
+}
+
+fn auto_balance_status_message(
+    settings: &ForegroundResponsivenessSettings,
+    total_cpu_usage_percent: Option<f32>,
+    running: bool,
+    restrained_count: usize,
+) -> String {
+    if !settings.auto_balance_enabled {
+        return "Auto-balance disabled.".to_owned();
+    }
+
+    if !running {
+        return match total_cpu_usage_percent {
+            Some(usage) => format!(
+                "Waiting for total CPU contention: {:.1}% of {}%.",
+                usage.clamp(0.0, 100.0),
+                settings.auto_balance_total_threshold_percent.min(100)
+            ),
+            None => "Waiting for a total CPU sample before auto-balance can act.".to_owned(),
+        };
+    }
+
+    if restrained_count == 0 {
+        return "CPU contention is high; watching background processes for sustained spikes."
+            .to_owned();
+    }
+
+    format!(
+        "Restraining {restrained_count} background process{} to preserve foreground responsiveness.",
+        if restrained_count == 1 { "" } else { "es" }
+    )
 }
 
 fn matching_rule<'a>(

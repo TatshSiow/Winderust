@@ -61,7 +61,7 @@ use crate::{
         ProcessorPowerValues,
     },
     power_source,
-    responsiveness::{self, ForegroundResponsivenessSnapshot},
+    responsiveness::{self, AutoBalanceProcessState, ForegroundResponsivenessSnapshot},
     rules::{
         DecisionEngine, DecisionInput, DecisionOutcome, DecisionState, PerformanceModeDecision,
     },
@@ -2756,10 +2756,12 @@ impl PowerLeafApp {
             (
                 t!("nav.foreground_responsiveness").to_string(),
                 format!(
-                    "{}; {} lowered; {} boosted",
+                    "{}; {} lowered; {} auto-balanced; {} boosted",
                     enabled_label(self.foreground_responsiveness_status.enabled),
                     self.foreground_responsiveness_status
                         .background_adjusted_processes,
+                    self.foreground_responsiveness_status
+                        .auto_balanced_processes,
                     self.foreground_responsiveness_status
                         .foreground_boosted_process
                         .as_deref()
@@ -5376,6 +5378,7 @@ impl PowerLeafApp {
                 }),
             ))
             .child(self.render_auto_balance_preset_selector(cx))
+            .child(self.render_auto_balance_insight())
             .child(self.render_auto_balance_advanced_group(window, cx, &input_value, enabled))
             .child(checkbox_with_help(
                 "responsiveness-boost-foreground",
@@ -5484,6 +5487,51 @@ impl PowerLeafApp {
             row.into_any_element(),
         )
         .into_any_element()
+    }
+
+    fn render_auto_balance_insight(&self) -> AnyElement {
+        let status = &self.foreground_responsiveness_status;
+        let total_cpu = status
+            .auto_balance_total_cpu_usage_tenths
+            .map(format_percent_tenths)
+            .unwrap_or_else(|| t!("common.unknown").to_string());
+
+        let mut rows = vec![
+            (
+                t!("responsiveness.auto_balance_status").to_string(),
+                status.auto_balance_message.clone(),
+            ),
+            (
+                t!("responsiveness.auto_balance_total_cpu").to_string(),
+                total_cpu,
+            ),
+            (
+                t!("responsiveness.auto_balance_restrained").to_string(),
+                status.auto_balanced_processes.to_string(),
+            ),
+        ];
+        if let Some(error) = &status.last_error {
+            rows.push((t!("common.last_failure").to_string(), error.clone()));
+        }
+
+        let mut content = v_flex().gap_2().child(titled_stat_grid(
+            &t!("responsiveness.auto_balance_insight"),
+            rows,
+        ));
+
+        let mut list = rule_list();
+        for detail in &status.auto_balance_details {
+            list = list.child(auto_balance_status_row(detail));
+        }
+
+        if status.auto_balance_details.is_empty() {
+            list = list.child(text_muted(
+                t!("responsiveness.no_auto_balance_activity").to_string(),
+            ));
+        }
+
+        content = content.child(list);
+        content.into_any_element()
     }
 
     fn render_auto_balance_advanced_group(
@@ -9825,6 +9873,67 @@ fn app_list_label(apps: &[String], count: usize) -> String {
         names.push(format!("+{}", apps.len() - names.len()));
     }
     format!("{count}: {}", names.join(", "))
+}
+
+fn format_percent_tenths(value: u16) -> String {
+    format!("{}.{:01}%", value / 10, value % 10)
+}
+
+fn auto_balance_status_row(detail: &responsiveness::AutoBalanceProcessStatus) -> gpui::Div {
+    let cpu_usage = detail
+        .cpu_usage_tenths
+        .map(format_percent_tenths)
+        .unwrap_or_else(|| t!("common.unknown").to_string());
+    let elapsed = detail
+        .elapsed_seconds
+        .map(|seconds| format!("{seconds}s"))
+        .unwrap_or_else(|| "-".to_owned());
+
+    h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .py_3()
+        .px_4()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .child(
+            v_flex()
+                .min_w(px(0.0))
+                .gap_1()
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(rgb(primary_text_color()))
+                        .text_size(px(TEXT_BODY_SIZE))
+                        .child(format!("{} ({})", detail.process_name, detail.process_id)),
+                )
+                .child(text_muted(format!(
+                    "{}: {cpu_usage} | {}: {elapsed}",
+                    t!("responsiveness.auto_balance_process_cpu"),
+                    t!("responsiveness.auto_balance_elapsed")
+                ))),
+        )
+        .child(auto_balance_state_tag(detail.state))
+}
+
+fn auto_balance_state_tag(state: AutoBalanceProcessState) -> Tag {
+    match state {
+        AutoBalanceProcessState::Watching => Tag::warning()
+            .outline()
+            .child(t!("responsiveness.auto_balance_state_watching").to_string()),
+        AutoBalanceProcessState::Restrained => Tag::success()
+            .outline()
+            .child(t!("responsiveness.auto_balance_state_restrained").to_string()),
+        AutoBalanceProcessState::CoolingDown => Tag::secondary()
+            .outline()
+            .child(t!("responsiveness.auto_balance_state_cooling").to_string()),
+    }
 }
 
 fn labeled_element(label: &str, element: AnyElement) -> gpui::Div {
