@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -43,6 +43,7 @@ const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
+const SWITCH_FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
 
 pub struct BackgroundAutomation {
     shared: Arc<SharedAutomationState>,
@@ -67,11 +68,18 @@ struct AutomationWorkerState {
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
+    pending_auto_exclusions: PendingAutoExclusions,
     app_suspension_freeze_requests: Vec<String>,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
     windows_event_watcher_active: bool,
     stop_requested: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PendingAutoExclusions {
+    pub eco_qos: Vec<String>,
+    pub background_cpu_restriction: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -112,6 +120,7 @@ impl BackgroundAutomation {
                 watchdog_status: WatchdogSnapshot::default(),
                 foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
                 action_log_entries: Vec::new(),
+                pending_auto_exclusions: PendingAutoExclusions::default(),
                 app_suspension_freeze_requests: Vec::new(),
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
@@ -228,6 +237,14 @@ impl BackgroundAutomation {
             state.change_generation = state.change_generation.wrapping_add(1);
             self.shared.changed.notify_one();
         }
+    }
+
+    pub fn take_pending_auto_exclusions(&self) -> PendingAutoExclusions {
+        self.shared
+            .state
+            .lock()
+            .map(|mut state| std::mem::take(&mut state.pending_auto_exclusions))
+            .unwrap_or_default()
     }
 
     pub fn request_app_suspension_freeze(&self, process_name: &str) {
@@ -716,6 +733,10 @@ fn notify_input_event(shared: &SharedAutomationState, events: InputHookEvents) {
 
 fn update_eco_qos_status(shared: &SharedAutomationState, status: EcoQosSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
+        append_unique_process_names(
+            &mut state.pending_auto_exclusions.eco_qos,
+            &status.auto_excluded_processes,
+        );
         state.eco_qos_status = status;
     }
 }
@@ -737,7 +758,24 @@ fn update_background_cpu_restriction_status(
     status: CpuAffinitySnapshot,
 ) {
     if let Ok(mut state) = shared.state.lock() {
+        append_unique_process_names(
+            &mut state.pending_auto_exclusions.background_cpu_restriction,
+            &status.auto_excluded_processes,
+        );
         state.background_cpu_restriction_status = status;
+    }
+}
+
+fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) {
+    for name in names {
+        let name = name.trim().to_ascii_lowercase();
+        if !name.is_empty()
+            && !target
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&name))
+        {
+            target.push(name);
+        }
     }
 }
 
@@ -1024,6 +1062,7 @@ struct HiddenAutomationRunner {
     current_guid: Option<String>,
     next_active_plan_refresh: Option<Instant>,
     last_switch_attempt: Option<(String, Instant)>,
+    switch_failure_suppression: BTreeMap<String, SwitchFailureSuppression>,
     power: PowerPlanManager,
     cpu_usage: CpuUsageSnapshot,
     next_cpu_usage_refresh: Option<Instant>,
@@ -1046,6 +1085,11 @@ struct HiddenAutomationRunner {
     known_process_ids: BTreeSet<u32>,
 }
 
+#[derive(Default)]
+struct SwitchFailureSuppression {
+    attempts: u8,
+}
+
 impl HiddenAutomationRunner {
     fn note_settings(&mut self, settings: &Settings) -> bool {
         self.action_log.set_mode(settings.advanced.action_log_mode);
@@ -1053,6 +1097,7 @@ impl HiddenAutomationRunner {
         let changed = self.last_settings.as_ref() != Some(settings);
         if changed {
             self.last_settings = Some(settings.clone());
+            self.switch_failure_suppression.clear();
         }
         changed
     }
@@ -1301,6 +1346,11 @@ impl HiddenAutomationRunner {
             .as_deref()
             .is_some_and(|guid| guid.eq_ignore_ascii_case(target_guid));
         if already_active {
+            self.clear_switch_failure(target_guid);
+            return;
+        }
+
+        if self.is_switch_suppressed(target_guid) {
             return;
         }
 
@@ -1314,10 +1364,39 @@ impl HiddenAutomationRunner {
 
         self.last_switch_attempt = Some((target_guid.to_owned(), Instant::now()));
 
-        if self.power.set_active(target_guid).is_ok() {
-            self.current_guid = Some(target_guid.to_owned());
+        match self.power.set_active(target_guid) {
+            Ok(()) => {
+                self.clear_switch_failure(target_guid);
+                self.current_guid = Some(target_guid.to_owned());
+            }
+            Err(_err) => {
+                self.record_switch_failure(target_guid);
+            }
         }
     }
+
+    fn is_switch_suppressed(&self, target_guid: &str) -> bool {
+        self.switch_failure_suppression
+            .get(&switch_failure_key(target_guid))
+            .is_some_and(|suppression| suppression.attempts >= SWITCH_FAILURE_SUPPRESSION_THRESHOLD)
+    }
+
+    fn record_switch_failure(&mut self, target_guid: &str) {
+        let suppression = self
+            .switch_failure_suppression
+            .entry(switch_failure_key(target_guid))
+            .or_default();
+        suppression.attempts = suppression.attempts.saturating_add(1);
+    }
+
+    fn clear_switch_failure(&mut self, target_guid: &str) {
+        self.switch_failure_suppression
+            .remove(&switch_failure_key(target_guid));
+    }
+}
+
+fn switch_failure_key(target_guid: &str) -> String {
+    target_guid.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -1344,6 +1423,21 @@ mod tests {
             BTreeSet::from([1, 2, 3])
         ));
         assert_eq!(known, BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn repeated_power_plan_switch_failures_suppress_future_attempts() {
+        let mut runner = HiddenAutomationRunner::default();
+
+        runner.record_switch_failure("PLAN-GUID");
+        runner.record_switch_failure("plan-guid");
+        assert!(!runner.is_switch_suppressed("plan-guid"));
+
+        runner.record_switch_failure("plan-guid");
+        assert!(runner.is_switch_suppressed("plan-guid"));
+
+        runner.clear_switch_failure("PLAN-GUID");
+        assert!(!runner.is_switch_suppressed("plan-guid"));
     }
 
     #[test]

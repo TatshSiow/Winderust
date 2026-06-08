@@ -22,6 +22,7 @@ pub struct ActionLogEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionLogFeature {
     AppSuspension,
+    BackgroundCpuRestriction,
     CoreSteering,
     EcoQos,
     CpuLimiter,

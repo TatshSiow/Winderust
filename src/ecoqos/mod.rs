@@ -72,6 +72,7 @@ pub struct EcoQosSnapshot {
     pub throttled_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
+    pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -241,10 +242,15 @@ impl EcoQosManager {
         let mut failures =
             self.release_non_targets(&target_ids, action_log, "process no longer matches EcoQoS");
         let mut unsupported = false;
+        let mut auto_excluded_processes = BTreeSet::new();
 
         for (process_id, name) in target_processes {
-            if self.is_process_suppressed(process_id, &name, action_log) {
+            let suppression = self.check_process_suppression(process_id, &name, action_log);
+            if suppression.suppressed {
                 skipped_processes += 1;
+                if suppression.newly_suppressed {
+                    auto_excluded_processes.insert(process_failure_key(&name));
+                }
                 continue;
             }
 
@@ -331,6 +337,7 @@ impl EcoQosManager {
             throttled_processes: self.throttled.len(),
             skipped_processes,
             failed_processes: failures.count,
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "Efficiency Mode active.".to_owned(),
             last_error: failures.last_error,
         }
@@ -392,24 +399,26 @@ impl EcoQosManager {
         failures
     }
 
-    fn is_process_suppressed(
+    fn check_process_suppression(
         &mut self,
         process_id: u32,
         process_name: &str,
         action_log: &mut ActionLog,
-    ) -> bool {
+    ) -> ProcessSuppression {
         let Some(suppression) = self
             .failure_suppression
             .get_mut(&process_failure_key(process_name))
         else {
-            return false;
+            return ProcessSuppression::default();
         };
         if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
-            return false;
+            return ProcessSuppression::default();
         }
 
+        let mut newly_suppressed = false;
         if !suppression.suppression_logged {
             suppression.suppression_logged = true;
+            newly_suppressed = true;
             action_log.record(
                 ActionLogFeature::EcoQos,
                 Some(process_id),
@@ -422,7 +431,10 @@ impl EcoQosManager {
             );
         }
 
-        true
+        ProcessSuppression {
+            suppressed: true,
+            newly_suppressed,
+        }
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
@@ -437,6 +449,12 @@ impl EcoQosManager {
         self.failure_suppression
             .remove(&process_failure_key(process_name));
     }
+}
+
+#[derive(Default)]
+struct ProcessSuppression {
+    suppressed: bool,
+    newly_suppressed: bool,
 }
 
 fn should_ignore_foreground_process(
@@ -472,6 +490,7 @@ impl Default for EcoQosSnapshot {
             throttled_processes: 0,
             skipped_processes: 0,
             failed_processes: 0,
+            auto_excluded_processes: Vec::new(),
             message: "Efficiency Mode disabled.".to_owned(),
             last_error: None,
         }
@@ -1419,6 +1438,24 @@ mod tests {
         assert_eq!(entries[0].process_name, "app.exe");
         assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
+    }
+
+    #[test]
+    fn first_suppression_reports_auto_exclusion_once() {
+        let mut manager = EcoQosManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+
+        let first = manager.check_process_suppression(42, "app.exe", &mut log);
+        let second = manager.check_process_suppression(42, "app.exe", &mut log);
+
+        assert!(first.suppressed);
+        assert!(first.newly_suppressed);
+        assert!(second.suppressed);
+        assert!(!second.newly_suppressed);
     }
 
     #[test]

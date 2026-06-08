@@ -51,6 +51,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuLimiterSnapshot {
@@ -69,6 +70,7 @@ pub struct CpuLimiterSnapshot {
 pub struct CpuLimiterManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     limited: BTreeMap<u32, LimitedProcess>,
+    failure_suppression: BTreeMap<String, CpuLimiterFailureSuppression>,
 }
 
 #[derive(Clone)]
@@ -84,6 +86,12 @@ struct LimitedProcess {
     process_name: String,
     previous_affinity: usize,
     applied_affinity: usize,
+}
+
+#[derive(Default)]
+struct CpuLimiterFailureSuppression {
+    attempts: u8,
+    suppression_logged: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -103,6 +111,7 @@ impl CpuLimiterManager {
     ) -> CpuLimiterSnapshot {
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
+            self.failure_suppression.clear();
             return CpuLimiterSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
@@ -114,6 +123,7 @@ impl CpuLimiterManager {
 
         if !settings.enabled {
             let failed = self.clear_all(action_log, "Core Limiter disabled");
+            self.failure_suppression.clear();
             return CpuLimiterSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
@@ -213,6 +223,12 @@ impl CpuLimiterManager {
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        let active_target_names = target_processes
+            .values()
+            .map(|(name, _rule)| process_failure_key(name))
+            .collect::<BTreeSet<_>>();
+        self.failure_suppression
+            .retain(|name, _| active_target_names.contains(name));
         let mut failures = self.release_non_targets(
             &target_ids,
             &current_process_names,
@@ -226,10 +242,20 @@ impl CpuLimiterManager {
         let now = Instant::now();
         for (process_id, (process_name, rule)) in target_processes {
             let failure_process_name = process_name.clone();
+            if self.is_process_suppressed(process_id, &failure_process_name, action_log) {
+                skipped_processes += 1;
+                continue;
+            }
+
             match self.update_process(process_id, process_name, &rule, now, action_log) {
-                Ok(()) => {}
-                Err(CpuLimiterError::AccessDenied | CpuLimiterError::ProcessExited) => {
+                Ok(()) => {
+                    self.clear_process_failure(&failure_process_name);
+                }
+                Err(err @ (CpuLimiterError::AccessDenied | CpuLimiterError::ProcessExited)) => {
                     skipped_processes += 1;
+                    if !matches!(err, CpuLimiterError::ProcessExited) {
+                        self.record_process_failure(&failure_process_name);
+                    }
                     action_log.record(
                         ActionLogFeature::CpuLimiter,
                         Some(process_id),
@@ -240,6 +266,7 @@ impl CpuLimiterManager {
                     );
                 }
                 Err(CpuLimiterError::Failed(err)) => {
+                    self.record_process_failure(&failure_process_name);
                     failures.record_message(
                         "Limit",
                         process_id,
@@ -451,6 +478,52 @@ impl CpuLimiterManager {
         }
         failures
     }
+
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let Some(suppression) = self
+            .failure_suppression
+            .get_mut(&process_failure_key(process_name))
+        else {
+            return false;
+        };
+        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+            return false;
+        }
+
+        if !suppression.suppression_logged {
+            suppression.suppression_logged = true;
+            action_log.record(
+                ActionLogFeature::CpuLimiter,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying Core Limiter after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                ),
+            );
+        }
+
+        true
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        let suppression = self
+            .failure_suppression
+            .entry(process_failure_key(process_name))
+            .or_default();
+        suppression.attempts = suppression.attempts.saturating_add(1);
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression
+            .remove(&process_failure_key(process_name));
+    }
 }
 
 impl Drop for CpuLimiterManager {
@@ -508,6 +581,10 @@ fn should_ignore_foreground_process(
         && (foreground_process_id.is_some_and(|id| id == process_id)
             || foreground_process_name
                 .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
+}
+
+fn process_failure_key(process_name: &str) -> String {
+    process_name.trim().to_ascii_lowercase()
 }
 
 fn limited_affinity_mask(
@@ -816,6 +893,27 @@ mod tests {
             Some(42),
             Some("app.exe"),
         ));
+    }
+
+    #[test]
+    fn repeated_failures_suppress_future_core_limiter_attempts_once() {
+        let mut manager = CpuLimiterManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("APP.exe");
+        manager.record_process_failure("app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(log.entries().is_empty());
+
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].process_name, "app.exe");
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 
     #[test]

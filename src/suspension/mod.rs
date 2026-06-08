@@ -77,6 +77,9 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
+const NETWORK_DETECTION_FAILURE_KEY: &str = "network-detection";
+const AUDIO_DETECTION_FAILURE_KEY: &str = "audio-detection";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSuspensionSnapshot {
     pub enabled: bool,
@@ -103,6 +106,8 @@ pub struct AppSuspensionManager {
     suspended: BTreeMap<u32, SuspendedProcess>,
     freezers: BTreeMap<u32, ProcessFreezer>,
     temporary_thawed: BTreeMap<u32, TemporaryThaw>,
+    failure_suppression: BTreeMap<String, AppSuspensionFailureSuppression>,
+    action_failure_suppression: BTreeMap<String, AppSuspensionFailureSuppression>,
     network_snapshot: NetworkConnectionSnapshot,
     network_wake_windows: BTreeMap<String, NetworkWakeWindow>,
     audio_wake_windows: BTreeMap<String, AudioWakeWindow>,
@@ -163,6 +168,12 @@ struct TrackedProcess {
 struct SuspendedProcess {
     process_name: String,
     suspended_since: Instant,
+}
+
+#[derive(Default)]
+struct AppSuspensionFailureSuppression {
+    attempts: u8,
+    suppression_logged: bool,
 }
 
 struct TemporaryThaw {
@@ -232,6 +243,8 @@ impl AppSuspensionManager {
 
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
+            self.failure_suppression.clear();
+            self.action_failure_suppression.clear();
             return AppSuspensionSnapshot {
                 enabled: false,
                 failed_actions: failed,
@@ -242,6 +255,8 @@ impl AppSuspensionManager {
 
         if !settings.enabled {
             let failed = self.clear_all(action_log, "App Suspension disabled");
+            self.failure_suppression.clear();
+            self.action_failure_suppression.clear();
             return AppSuspensionSnapshot {
                 enabled: false,
                 failed_actions: failed,
@@ -326,6 +341,21 @@ impl AppSuspensionManager {
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        let active_target_names = target_processes
+            .values()
+            .map(|name| process_name_key(name))
+            .collect::<BTreeSet<_>>();
+        self.failure_suppression
+            .retain(|name, _| active_target_names.contains(name));
+        let mut active_action_failure_keys = BTreeSet::new();
+        if settings.network_wake_enabled {
+            active_action_failure_keys.insert(NETWORK_DETECTION_FAILURE_KEY.to_owned());
+        }
+        if settings.audio_wake_enabled {
+            active_action_failure_keys.insert(AUDIO_DETECTION_FAILURE_KEY.to_owned());
+        }
+        self.action_failure_suppression
+            .retain(|key, _| active_action_failure_keys.contains(key));
         failed_actions += self.release_non_targets(
             &target_ids,
             action_log,
@@ -380,9 +410,15 @@ impl AppSuspensionManager {
             .map(|process| process_name_key(&process.process_name))
             .collect::<BTreeSet<_>>();
         let active_network_wake_names = self.active_network_wake_names(now);
-        let (network_snapshot, network_event_names) = if settings.network_wake_enabled {
+        let (network_snapshot, network_event_names) = if settings.network_wake_enabled
+            && !self.is_action_suppressed(
+                NETWORK_DETECTION_FAILURE_KEY,
+                "network activity detection",
+                action_log,
+            ) {
             match network_connection_snapshot(&network_target_processes) {
                 Ok(snapshot) => {
+                    self.clear_action_failure(NETWORK_DETECTION_FAILURE_KEY);
                     let wake_names = network_process_names_with_activity(
                         &self.network_snapshot,
                         &snapshot,
@@ -399,6 +435,7 @@ impl AppSuspensionManager {
                 }
                 Err(err) => {
                     failed_actions += 1;
+                    self.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         None,
@@ -417,13 +454,21 @@ impl AppSuspensionManager {
         if settings.network_wake_enabled {
             self.extend_network_wake_windows(settings, &network_event_names, now);
         }
-        if settings.audio_wake_enabled {
+        if settings.audio_wake_enabled
+            && !self.is_action_suppressed(
+                AUDIO_DETECTION_FAILURE_KEY,
+                "audio activity detection",
+                action_log,
+            )
+        {
             match audio_process_names_with_activity(&audio_target_processes) {
                 Ok(audio_event_names) => {
+                    self.clear_action_failure(AUDIO_DETECTION_FAILURE_KEY);
                     self.extend_audio_wake_windows(settings, &audio_event_names, now);
                 }
                 Err(err) => {
                     failed_actions += 1;
+                    self.record_action_failure(AUDIO_DETECTION_FAILURE_KEY);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         None,
@@ -449,6 +494,11 @@ impl AppSuspensionManager {
 
         for (process_id, process_name) in target_processes {
             if self.suspended.contains_key(&process_id) {
+                continue;
+            }
+
+            if self.is_process_suppressed(process_id, &process_name, action_log) {
+                skipped_processes += 1;
                 continue;
             }
 
@@ -491,6 +541,7 @@ impl AppSuspensionManager {
 
             match self.suspend_process(process_id, process_name.clone(), now) {
                 Ok(()) => {
+                    self.clear_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
@@ -533,6 +584,7 @@ impl AppSuspensionManager {
                 }
                 Err(SuspensionError::Failed(err)) => {
                     failed_actions += 1;
+                    self.record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
@@ -1286,6 +1338,94 @@ impl AppSuspensionManager {
             message,
             last_error,
         }
+    }
+
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let Some(suppression) = self
+            .failure_suppression
+            .get_mut(&process_name_key(process_name))
+        else {
+            return false;
+        };
+        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+            return false;
+        }
+
+        if !suppression.suppression_logged {
+            suppression.suppression_logged = true;
+            action_log.record(
+                ActionLogFeature::AppSuspension,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying App Suspension after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                ),
+            );
+        }
+
+        true
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        let suppression = self
+            .failure_suppression
+            .entry(process_name_key(process_name))
+            .or_default();
+        suppression.attempts = suppression.attempts.saturating_add(1);
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression
+            .remove(&process_name_key(process_name));
+    }
+
+    fn is_action_suppressed(
+        &mut self,
+        key: &str,
+        action_label: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let Some(suppression) = self.action_failure_suppression.get_mut(key) else {
+            return false;
+        };
+        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+            return false;
+        }
+
+        if !suppression.suppression_logged {
+            suppression.suppression_logged = true;
+            action_log.record(
+                ActionLogFeature::AppSuspension,
+                None,
+                "",
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying App Suspension {action_label} after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                ),
+            );
+        }
+
+        true
+    }
+
+    fn record_action_failure(&mut self, key: &str) {
+        let suppression = self
+            .action_failure_suppression
+            .entry(key.to_owned())
+            .or_default();
+        suppression.attempts = suppression.attempts.saturating_add(1);
+    }
+
+    fn clear_action_failure(&mut self, key: &str) {
+        self.action_failure_suppression.remove(key);
     }
 }
 
@@ -2183,6 +2323,59 @@ mod tests {
             42,
             Some("app.exe"),
         ));
+    }
+
+    #[test]
+    fn repeated_failures_suppress_future_suspension_attempts_once() {
+        let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("APP.exe");
+        manager.record_process_failure("app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(log.entries().is_empty());
+
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].process_name, "app.exe");
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
+    }
+
+    #[test]
+    fn repeated_action_failures_suppress_future_suspension_detection_once() {
+        let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+        assert!(!manager.is_action_suppressed(
+            NETWORK_DETECTION_FAILURE_KEY,
+            "network activity detection",
+            &mut log,
+        ));
+        assert!(log.entries().is_empty());
+
+        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+        assert!(manager.is_action_suppressed(
+            NETWORK_DETECTION_FAILURE_KEY,
+            "network activity detection",
+            &mut log,
+        ));
+        assert!(manager.is_action_suppressed(
+            NETWORK_DETECTION_FAILURE_KEY,
+            "network activity detection",
+            &mut log,
+        ));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 
     #[test]

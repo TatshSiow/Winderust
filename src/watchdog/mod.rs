@@ -52,6 +52,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
 ];
 
 const WATCHDOG_ALLOWED_RESTART_EXTENSIONS: &[&str] = &["exe", "com"];
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchdogSnapshot {
@@ -70,12 +71,19 @@ pub struct WatchdogSnapshot {
 pub struct WatchdogManager {
     restart_state: BTreeMap<String, RestartRuleState>,
     terminated_process_ids: BTreeSet<u32>,
+    failure_suppression: BTreeMap<String, WatchdogFailureSuppression>,
 }
 
 #[derive(Default)]
 struct RestartRuleState {
     seen_running: bool,
     missing_since: Option<Instant>,
+}
+
+#[derive(Default)]
+struct WatchdogFailureSuppression {
+    attempts: u8,
+    suppression_logged: bool,
 }
 
 #[derive(Default)]
@@ -94,6 +102,7 @@ impl WatchdogManager {
         if !automation_enabled {
             self.restart_state.clear();
             self.terminated_process_ids.clear();
+            self.failure_suppression.clear();
             return WatchdogSnapshot {
                 enabled: false,
                 message: "Automation disabled.".to_owned(),
@@ -104,6 +113,7 @@ impl WatchdogManager {
         if !settings.enabled {
             self.restart_state.clear();
             self.terminated_process_ids.clear();
+            self.failure_suppression.clear();
             return WatchdogSnapshot {
                 enabled: false,
                 message: "Watchdog Rules disabled.".to_owned(),
@@ -149,13 +159,21 @@ impl WatchdogManager {
             })
             .collect::<Vec<_>>();
 
-        let active_rule_keys = settings
+        let active_restart_rule_keys = settings
             .rules
             .iter()
             .filter(|rule| rule.enabled && rule.action == WatchdogAction::RestartIfExited)
             .map(watchdog_rule_key)
             .collect::<BTreeSet<_>>();
         self.restart_state
+            .retain(|key, _| active_restart_rule_keys.contains(key));
+        let active_rule_keys = settings
+            .rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .map(watchdog_rule_key)
+            .collect::<BTreeSet<_>>();
+        self.failure_suppression
             .retain(|key, _| active_rule_keys.contains(key));
 
         let now = Instant::now();
@@ -166,9 +184,15 @@ impl WatchdogManager {
         let mut failures = WatchdogFailures::default();
 
         for rule in settings.rules.iter().filter(|rule| rule.enabled) {
+            let key = watchdog_rule_key(rule);
+            if self.is_rule_suppressed(&key, rule, &mut skipped_processes, action_log) {
+                continue;
+            }
+
             let process_name = match watchdog_rule_process_name(rule) {
                 Ok(process_name) => process_name,
                 Err(err) => {
+                    self.record_rule_failure(&key);
                     failures.record("Watchdog rule", None, &rule.process_name, err, action_log);
                     continue;
                 }
@@ -189,6 +213,7 @@ impl WatchdogManager {
                         }
                         match terminate_process(process.id) {
                             Ok(()) => {
+                                self.clear_rule_failure(&key);
                                 self.terminated_process_ids.insert(process.id);
                                 terminated_processes += 1;
                                 action_log.record(
@@ -203,8 +228,13 @@ impl WatchdogManager {
                                     ),
                                 );
                             }
-                            Err(WatchdogError::AccessDenied | WatchdogError::ProcessExited) => {
+                            Err(
+                                err @ (WatchdogError::AccessDenied | WatchdogError::ProcessExited),
+                            ) => {
                                 skipped_processes += 1;
+                                if !matches!(err, WatchdogError::ProcessExited) {
+                                    self.record_rule_failure(&key);
+                                }
                                 action_log.record(
                                     ActionLogFeature::Watchdog,
                                     Some(process.id),
@@ -215,6 +245,7 @@ impl WatchdogManager {
                                 );
                             }
                             Err(WatchdogError::Failed(err)) => {
+                                self.record_rule_failure(&key);
                                 failures.record(
                                     "Terminate",
                                     Some(process.id),
@@ -227,30 +258,34 @@ impl WatchdogManager {
                     }
                 }
                 WatchdogAction::RestartIfExited => {
-                    let key = watchdog_rule_key(rule);
-                    let state = self.restart_state.entry(key).or_default();
-                    if !matches.is_empty() {
-                        state.seen_running = true;
-                        state.missing_since = None;
-                        continue;
-                    }
-
-                    if !state.seen_running {
-                        continue;
-                    }
-
-                    let missing_since = *state.missing_since.get_or_insert(now);
-                    if now.duration_since(missing_since)
-                        < Duration::from_secs(rule.restart_delay_seconds)
                     {
-                        continue;
+                        let state = self.restart_state.entry(key.clone()).or_default();
+                        if !matches.is_empty() {
+                            state.seen_running = true;
+                            state.missing_since = None;
+                            continue;
+                        }
+
+                        if !state.seen_running {
+                            continue;
+                        }
+
+                        let missing_since = *state.missing_since.get_or_insert(now);
+                        if now.duration_since(missing_since)
+                            < Duration::from_secs(rule.restart_delay_seconds)
+                        {
+                            continue;
+                        }
                     }
 
                     match restart_process(rule) {
                         Ok(()) => {
+                            self.clear_rule_failure(&key);
                             restarted_processes += 1;
-                            state.seen_running = false;
-                            state.missing_since = None;
+                            if let Some(state) = self.restart_state.get_mut(&key) {
+                                state.seen_running = false;
+                                state.missing_since = None;
+                            }
                             action_log.record(
                                 ActionLogFeature::Watchdog,
                                 None,
@@ -261,7 +296,10 @@ impl WatchdogManager {
                             );
                         }
                         Err(err) => {
-                            state.missing_since = Some(now);
+                            self.record_rule_failure(&key);
+                            if let Some(state) = self.restart_state.get_mut(&key) {
+                                state.missing_since = Some(now);
+                            }
                             failures.record("Restart", None, &rule.process_name, err, action_log);
                         }
                     }
@@ -280,6 +318,47 @@ impl WatchdogManager {
             message: "Watchdog Rules active.".to_owned(),
             last_error: failures.last_error,
         }
+    }
+
+    fn is_rule_suppressed(
+        &mut self,
+        key: &str,
+        rule: &WatchdogRule,
+        skipped_processes: &mut usize,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let Some(suppression) = self.failure_suppression.get_mut(key) else {
+            return false;
+        };
+        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+            return false;
+        }
+
+        if !suppression.suppression_logged {
+            suppression.suppression_logged = true;
+            action_log.record(
+                ActionLogFeature::Watchdog,
+                None,
+                rule.process_name.clone(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying Watchdog rule '{}' after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts.",
+                    rule_label(rule)
+                ),
+            );
+        }
+        *skipped_processes += 1;
+        true
+    }
+
+    fn record_rule_failure(&mut self, key: &str) {
+        let suppression = self.failure_suppression.entry(key.to_owned()).or_default();
+        suppression.attempts = suppression.attempts.saturating_add(1);
+    }
+
+    fn clear_rule_failure(&mut self, key: &str) {
+        self.failure_suppression.remove(key);
     }
 }
 
@@ -564,15 +643,6 @@ mod tests {
 
     #[test]
     fn matching_processes_are_case_insensitive() {
-        let rule = WatchdogRule {
-            enabled: true,
-            name: "Block".to_owned(),
-            process_name: "Tool.EXE".to_owned(),
-            action: WatchdogAction::TerminateOnLaunch,
-            launch_path: String::new(),
-            launch_args: Vec::new(),
-            restart_delay_seconds: 5,
-        };
         let processes = vec![ProcessInfo {
             id: 42,
             name: "tool.exe".to_owned(),
@@ -603,6 +673,40 @@ mod tests {
         second.launch_args = vec!["--two".to_owned()];
 
         assert_ne!(watchdog_rule_key(&first), watchdog_rule_key(&second));
+    }
+
+    #[test]
+    fn repeated_failures_suppress_future_watchdog_attempts_once() {
+        let mut manager = WatchdogManager::default();
+        let mut log = ActionLog::new(8);
+        let rule = WatchdogRule {
+            enabled: true,
+            name: "Restart Tool".to_owned(),
+            process_name: "Tool.EXE".to_owned(),
+            action: WatchdogAction::RestartIfExited,
+            launch_path: "C:\\Tools\\tool.exe".to_owned(),
+            launch_args: Vec::new(),
+            restart_delay_seconds: 5,
+        };
+        let key = watchdog_rule_key(&rule);
+        let mut skipped = 0;
+
+        manager.record_rule_failure(&key);
+        manager.record_rule_failure(&key);
+        assert!(!manager.is_rule_suppressed(&key, &rule, &mut skipped, &mut log));
+        assert_eq!(skipped, 0);
+        assert!(log.entries().is_empty());
+
+        manager.record_rule_failure(&key);
+        assert!(manager.is_rule_suppressed(&key, &rule, &mut skipped, &mut log));
+        assert!(manager.is_rule_suppressed(&key, &rule, &mut skipped, &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].process_name, "Tool.EXE");
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
+        assert_eq!(skipped, 2);
     }
 
     #[test]

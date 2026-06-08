@@ -43,6 +43,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "lsaiso.exe",
     "lsass.exe",
     "registry",
+    "rtkauduservice64.exe",
     "searchapp.exe",
     "searchhost.exe",
     "securityhealthservice.exe",
@@ -60,6 +61,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuAffinitySnapshot {
@@ -68,6 +70,7 @@ pub struct CpuAffinitySnapshot {
     pub adjusted_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
+    pub auto_excluded_processes: Vec<String>,
     pub adjusted_apps: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
@@ -102,15 +105,22 @@ struct CpuSetInformationHeader {
     cpu_set_type: u32,
 }
 
-#[derive(Default)]
 pub struct CpuAffinityManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
+    failure_suppression: BTreeMap<String, CpuAffinityFailureSuppression>,
+    action_log_feature: ActionLogFeature,
 }
 
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
     adjustment: AffinityAdjustment,
+}
+
+#[derive(Default)]
+struct CpuAffinityFailureSuppression {
+    attempts: u8,
+    suppression_logged: bool,
 }
 
 #[derive(Clone)]
@@ -129,6 +139,14 @@ enum AffinityAdjustment {
 }
 
 impl CpuAffinityManager {
+    pub fn with_action_log_feature(action_log_feature: ActionLogFeature) -> Self {
+        Self {
+            adjusted: BTreeMap::new(),
+            failure_suppression: BTreeMap::new(),
+            action_log_feature,
+        }
+    }
+
     pub fn adjusted_process_ids(&self) -> BTreeSet<u32> {
         self.adjusted.keys().copied().collect()
     }
@@ -142,6 +160,7 @@ impl CpuAffinityManager {
     ) -> CpuAffinitySnapshot {
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
+            self.failure_suppression.clear();
             return CpuAffinitySnapshot {
                 enabled: false,
                 failed_processes: failed,
@@ -151,11 +170,12 @@ impl CpuAffinityManager {
         }
 
         if !settings.enabled {
-            let failed = self.clear_all(action_log, "Core Steering disabled");
+            let failed = self.clear_all(action_log, &format!("{} disabled", self.feature_label()));
+            self.failure_suppression.clear();
             return CpuAffinitySnapshot {
                 enabled: false,
                 failed_processes: failed,
-                message: "Core Steering disabled.".to_owned(),
+                message: format!("{} disabled.", self.feature_label()),
                 ..Default::default()
             };
         }
@@ -234,27 +254,49 @@ impl CpuAffinityManager {
             }
         }
 
+        let active_target_names = target_processes
+            .values()
+            .map(|(name, _mode, _rule_mask)| process_failure_key(name))
+            .collect::<BTreeSet<_>>();
+        self.failure_suppression
+            .retain(|name, _| active_target_names.contains(name));
+
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut failed_processes = self.release_non_targets(
             &target_ids,
             &current_process_names,
             action_log,
-            "process no longer matches a Core Steering rule",
+            &format!("process no longer matches a {} rule", self.feature_label()),
         );
         let mut skipped_processes = 0;
         let mut last_error = None;
+        let mut auto_excluded_processes = BTreeSet::new();
 
         for (process_id, (process_name, mode, rule_mask)) in target_processes {
             let failure_process_name = process_name.clone();
+            let suppression =
+                self.check_process_suppression(process_id, &failure_process_name, action_log);
+            if suppression.suppressed {
+                skipped_processes += 1;
+                if suppression.newly_suppressed
+                    && self.action_log_feature == ActionLogFeature::BackgroundCpuRestriction
+                {
+                    auto_excluded_processes.insert(process_failure_key(&failure_process_name));
+                }
+                continue;
+            }
+
             match apply_affinity(
                 process_id,
                 process_name,
                 mode,
                 rule_mask,
                 self.adjusted.get(&process_id),
+                self.action_log_feature,
                 action_log,
             ) {
                 Ok(Some(adjusted)) => {
+                    self.clear_process_failure(&failure_process_name);
                     self.adjusted.insert(process_id, adjusted);
                 }
                 Ok(None) => {
@@ -262,8 +304,9 @@ impl CpuAffinityManager {
                 }
                 Err(AffinityError::AccessDenied) => {
                     skipped_processes += 1;
+                    self.record_process_failure(&failure_process_name);
                     action_log.record(
-                        ActionLogFeature::CoreSteering,
+                        self.action_log_feature,
                         Some(process_id),
                         failure_process_name,
                         ActionLogAction::Skip,
@@ -273,11 +316,12 @@ impl CpuAffinityManager {
                 }
                 Err(AffinityError::Failed(err)) => {
                     failed_processes += 1;
+                    self.record_process_failure(&failure_process_name);
                     if last_error.is_none() {
                         last_error = Some(err.clone());
                     }
                     action_log.record(
-                        ActionLogFeature::CoreSteering,
+                        self.action_log_feature,
                         Some(process_id),
                         failure_process_name,
                         ActionLogAction::Fail,
@@ -294,6 +338,7 @@ impl CpuAffinityManager {
             adjusted_processes: self.adjusted.len(),
             skipped_processes,
             failed_processes,
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             adjusted_apps: unique_app_names(
                 self.adjusted
                     .values()
@@ -352,7 +397,7 @@ impl CpuAffinityManager {
                     if let Err(err) = restore_affinity(*process_id, process) {
                         failed += 1;
                         action_log.record(
-                            ActionLogFeature::CoreSteering,
+                            self.action_log_feature,
                             Some(*process_id),
                             process_name,
                             ActionLogAction::Fail,
@@ -361,7 +406,7 @@ impl CpuAffinityManager {
                         );
                     } else {
                         action_log.record(
-                            ActionLogFeature::CoreSteering,
+                            self.action_log_feature,
                             Some(*process_id),
                             process_name,
                             ActionLogAction::Restore,
@@ -374,12 +419,90 @@ impl CpuAffinityManager {
         }
         failed
     }
+
+    fn check_process_suppression(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> ProcessSuppression {
+        let Some(suppression) = self
+            .failure_suppression
+            .get_mut(&process_failure_key(process_name))
+        else {
+            return ProcessSuppression::default();
+        };
+        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+            return ProcessSuppression::default();
+        }
+
+        let mut newly_suppressed = false;
+        if !suppression.suppression_logged {
+            suppression.suppression_logged = true;
+            newly_suppressed = true;
+            action_log.record(
+                self.action_log_feature,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying {} after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts.",
+                    self.feature_label(),
+                ),
+            );
+        }
+
+        ProcessSuppression {
+            suppressed: true,
+            newly_suppressed,
+        }
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        let suppression = self
+            .failure_suppression
+            .entry(process_failure_key(process_name))
+            .or_default();
+        suppression.attempts = suppression.attempts.saturating_add(1);
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression
+            .remove(&process_failure_key(process_name));
+    }
+
+    fn feature_label(&self) -> &'static str {
+        match self.action_log_feature {
+            ActionLogFeature::BackgroundCpuRestriction => "Background CPU Restriction",
+            _ => "Core Steering",
+        }
+    }
+}
+
+#[derive(Default)]
+struct ProcessSuppression {
+    suppressed: bool,
+    newly_suppressed: bool,
 }
 
 impl Drop for CpuAffinityManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
-        self.clear_all(&mut action_log, "Core Steering manager dropped");
+        self.clear_all(
+            &mut action_log,
+            &format!("{} manager dropped", self.feature_label()),
+        );
+    }
+}
+
+impl Default for CpuAffinityManager {
+    fn default() -> Self {
+        Self {
+            adjusted: BTreeMap::new(),
+            failure_suppression: BTreeMap::new(),
+            action_log_feature: ActionLogFeature::CoreSteering,
+        }
     }
 }
 
@@ -391,6 +514,7 @@ impl Default for CpuAffinitySnapshot {
             adjusted_processes: 0,
             skipped_processes: 0,
             failed_processes: 0,
+            auto_excluded_processes: Vec::new(),
             adjusted_apps: Vec::new(),
             message: "Core Steering disabled.".to_owned(),
             last_error: None,
@@ -603,6 +727,10 @@ fn should_ignore_foreground_process(
                 .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
 }
 
+fn process_failure_key(process_name: &str) -> String {
+    process_name.trim().to_ascii_lowercase()
+}
+
 fn matching_rule<'a>(
     settings: &'a CpuAffinitySettings,
     process_name: &str,
@@ -638,6 +766,7 @@ fn apply_affinity(
     mode: CpuAffinityMode,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
+    action_log_feature: ActionLogFeature,
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let process = ProcessHandle::open(process_id)?;
@@ -651,7 +780,7 @@ fn apply_affinity(
         {
             restore_adjustment(&process, &adjusted.adjustment)?;
             action_log.record(
-                ActionLogFeature::CoreSteering,
+                action_log_feature,
                 Some(process_id),
                 process_name.clone(),
                 ActionLogAction::Restore,
@@ -671,6 +800,7 @@ fn apply_affinity(
             process_name,
             rule_mask,
             reusable_existing,
+            action_log_feature,
             action_log,
         ),
         CpuAffinityMode::Soft => apply_soft_affinity(
@@ -679,6 +809,7 @@ fn apply_affinity(
             process_name,
             rule_mask,
             reusable_existing,
+            action_log_feature,
             action_log,
         ),
         CpuAffinityMode::EfficiencyOff => apply_efficiency_mode_off(
@@ -686,6 +817,7 @@ fn apply_affinity(
             &process,
             process_name,
             reusable_existing,
+            action_log_feature,
             action_log,
         ),
     }
@@ -702,6 +834,7 @@ fn apply_hard_affinity(
     process_name: String,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
+    action_log_feature: ActionLogFeature,
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let (current_affinity, system_affinity) = process.affinity_mask()?;
@@ -732,7 +865,7 @@ fn apply_hard_affinity(
         })
         .unwrap_or(current_affinity);
     action_log.record(
-        ActionLogFeature::CoreSteering,
+        action_log_feature,
         Some(process_id),
         process_name.clone(),
         ActionLogAction::Apply,
@@ -755,6 +888,7 @@ fn apply_soft_affinity(
     process_name: String,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
+    action_log_feature: ActionLogFeature,
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let Some(target_cpu_set_ids) = target_cpu_set_ids(rule_mask)? else {
@@ -786,7 +920,7 @@ fn apply_soft_affinity(
         })
         .unwrap_or(current_cpu_set_ids);
     action_log.record(
-        ActionLogFeature::CoreSteering,
+        action_log_feature,
         Some(process_id),
         process_name.clone(),
         ActionLogAction::Apply,
@@ -808,6 +942,7 @@ fn apply_efficiency_mode_off(
     process: &ProcessHandle,
     process_name: String,
     existing: Option<&AdjustedProcess>,
+    action_log_feature: ActionLogFeature,
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let current_state = process.power_throttling_state().ok();
@@ -827,7 +962,7 @@ fn apply_efficiency_mode_off(
     next_state.StateMask &= !PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
     process.set_power_throttling_state(next_state)?;
     action_log.record(
-        ActionLogFeature::CoreSteering,
+        action_log_feature,
         Some(process_id),
         process_name.clone(),
         ActionLogAction::Apply,
@@ -1196,6 +1331,7 @@ mod tests {
     fn builtin_exclusions_cover_sensitive_windows_shell_processes() {
         for process_name in [
             "explorer.exe",
+            "RtkAudUService64.exe",
             "SearchApp.exe",
             "SearchHost.exe",
             "SystemSettings.exe",
@@ -1205,6 +1341,66 @@ mod tests {
         }
 
         assert!(!is_builtin_excluded("chat.exe"));
+    }
+
+    #[test]
+    fn repeated_failures_suppress_future_core_steering_attempts_once() {
+        let mut manager = CpuAffinityManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("APP.exe");
+        manager.record_process_failure("app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(log.entries().is_empty());
+
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].process_name, "app.exe");
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
+    }
+
+    #[test]
+    fn configured_action_log_feature_is_used_for_suppression_entries() {
+        let mut manager =
+            CpuAffinityManager::with_action_log_feature(ActionLogFeature::BackgroundCpuRestriction);
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].feature,
+            ActionLogFeature::BackgroundCpuRestriction
+        );
+        assert!(entries[0].reason.contains("Background CPU Restriction"));
+    }
+
+    #[test]
+    fn first_background_cpu_suppression_reports_auto_exclusion_once() {
+        let mut manager =
+            CpuAffinityManager::with_action_log_feature(ActionLogFeature::BackgroundCpuRestriction);
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+
+        let first = manager.check_process_suppression(42, "app.exe", &mut log);
+        let second = manager.check_process_suppression(42, "app.exe", &mut log);
+
+        assert!(first.suppressed);
+        assert!(first.newly_suppressed);
+        assert!(second.suppressed);
+        assert!(!second.newly_suppressed);
     }
 
     #[test]

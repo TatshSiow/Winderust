@@ -54,6 +54,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundResponsivenessSnapshot {
@@ -94,6 +95,7 @@ pub struct ForegroundResponsivenessManager {
     boosted: Option<BoostedProcess>,
     foreground_candidate: Option<ForegroundCandidate>,
     auto_balance: BTreeMap<u32, AutoBalanceProcess>,
+    failure_suppression: BTreeMap<String, PriorityFailureSuppression>,
 }
 
 #[derive(Clone)]
@@ -101,6 +103,12 @@ struct AdjustedProcess {
     process_name: String,
     previous_priority: u32,
     applied_priority: u32,
+}
+
+#[derive(Default)]
+struct PriorityFailureSuppression {
+    attempts: u8,
+    suppression_logged: bool,
 }
 
 #[derive(Clone)]
@@ -152,6 +160,7 @@ impl ForegroundResponsivenessManager {
     ) -> ForegroundResponsivenessSnapshot {
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
+            self.failure_suppression.clear();
             return ForegroundResponsivenessSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
@@ -163,6 +172,7 @@ impl ForegroundResponsivenessManager {
 
         if !settings.enabled {
             let failed = self.clear_all(action_log, "Foreground Responsiveness disabled");
+            self.failure_suppression.clear();
             return ForegroundResponsivenessSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
@@ -314,6 +324,15 @@ impl ForegroundResponsivenessManager {
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        let mut active_target_names = target_processes
+            .values()
+            .map(|(name, _priority, _source)| process_failure_key(name))
+            .collect::<BTreeSet<_>>();
+        if let Some(name) = foreground_process_name.as_deref() {
+            active_target_names.insert(process_failure_key(name));
+        }
+        self.failure_suppression
+            .retain(|name, _| active_target_names.contains(name));
         failures.merge(self.release_non_targets(
             &target_ids,
             &current_process_names,
@@ -328,6 +347,10 @@ impl ForegroundResponsivenessManager {
             if source == PriorityTargetSource::AutoBalance {
                 auto_balanced_processes += 1;
             }
+            if self.is_process_suppressed(process_id, &failure_process_name, action_log) {
+                skipped_processes += 1;
+                continue;
+            }
             match apply_priority(
                 process_id,
                 process_name,
@@ -337,13 +360,18 @@ impl ForegroundResponsivenessManager {
                 source,
             ) {
                 Ok(Some(adjusted)) => {
+                    self.clear_process_failure(&failure_process_name);
                     self.adjusted.insert(process_id, adjusted);
                 }
                 Ok(None) => {
+                    self.clear_process_failure(&failure_process_name);
                     skipped_processes += 1;
                 }
-                Err(PriorityError::AccessDenied | PriorityError::ProcessExited) => {
+                Err(err @ (PriorityError::AccessDenied | PriorityError::ProcessExited)) => {
                     skipped_processes += 1;
+                    if !matches!(err, PriorityError::ProcessExited) {
+                        self.record_process_failure(&failure_process_name);
+                    }
                     action_log.record(
                         ActionLogFeature::ForegroundResponsiveness,
                         Some(process_id),
@@ -354,6 +382,7 @@ impl ForegroundResponsivenessManager {
                     );
                 }
                 Err(PriorityError::Failed(err)) => {
+                    self.record_process_failure(&failure_process_name);
                     failures.record_message(
                         "Apply",
                         process_id,
@@ -383,35 +412,46 @@ impl ForegroundResponsivenessManager {
                     .foreground_boost
                     .eq(&ForegroundBoostPriority::Normal)
             {
-                match self.update_foreground_boost(
-                    foreground_id,
-                    foreground_process_name.as_deref(),
-                    current_process_id,
-                    current_session_id,
-                    settings.foreground_stability_delay_ms,
-                    foreground_boost_priority_class(settings.foreground_boost),
-                    action_log,
-                ) {
-                    Ok(()) => {}
-                    Err(PriorityError::AccessDenied | PriorityError::ProcessExited) => {
-                        skipped_processes += 1;
-                        action_log.record(
-                            ActionLogFeature::ForegroundResponsiveness,
-                            Some(foreground_id),
-                            foreground_process_name.clone().unwrap_or_default(),
-                            ActionLogAction::Skip,
-                            ActionLogResult::Skipped,
-                            "Skipped foreground boost because the process could not be opened.",
-                        );
-                    }
-                    Err(PriorityError::Failed(err)) => {
-                        failures.record_message(
-                            "Boost",
-                            foreground_id,
-                            foreground_process_name.as_deref().unwrap_or(""),
-                            err,
-                            action_log,
-                        );
+                let foreground_failure_name = foreground_process_name.clone().unwrap_or_default();
+                if self.is_process_suppressed(foreground_id, &foreground_failure_name, action_log) {
+                    skipped_processes += 1;
+                } else {
+                    match self.update_foreground_boost(
+                        foreground_id,
+                        foreground_process_name.as_deref(),
+                        current_process_id,
+                        current_session_id,
+                        settings.foreground_stability_delay_ms,
+                        foreground_boost_priority_class(settings.foreground_boost),
+                        action_log,
+                    ) {
+                        Ok(()) => {
+                            self.clear_process_failure(&foreground_failure_name);
+                        }
+                        Err(err @ (PriorityError::AccessDenied | PriorityError::ProcessExited)) => {
+                            skipped_processes += 1;
+                            if !matches!(err, PriorityError::ProcessExited) {
+                                self.record_process_failure(&foreground_failure_name);
+                            }
+                            action_log.record(
+                                ActionLogFeature::ForegroundResponsiveness,
+                                Some(foreground_id),
+                                foreground_process_name.clone().unwrap_or_default(),
+                                ActionLogAction::Skip,
+                                ActionLogResult::Skipped,
+                                "Skipped foreground boost because the process could not be opened.",
+                            );
+                        }
+                        Err(PriorityError::Failed(err)) => {
+                            self.record_process_failure(&foreground_failure_name);
+                            failures.record_message(
+                                "Boost",
+                                foreground_id,
+                                foreground_process_name.as_deref().unwrap_or(""),
+                                err,
+                                action_log,
+                            );
+                        }
                     }
                 }
             } else if let Some(error) =
@@ -510,6 +550,64 @@ impl ForegroundResponsivenessManager {
             );
         }
         Some(failures)
+    }
+
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let process_name = process_name.trim();
+        if process_name.is_empty() {
+            return false;
+        }
+        let Some(suppression) = self
+            .failure_suppression
+            .get_mut(&process_failure_key(process_name))
+        else {
+            return false;
+        };
+        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+            return false;
+        }
+
+        if !suppression.suppression_logged {
+            suppression.suppression_logged = true;
+            action_log.record(
+                ActionLogFeature::ForegroundResponsiveness,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying Foreground Responsiveness after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                ),
+            );
+        }
+
+        true
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        let process_name = process_name.trim();
+        if process_name.is_empty() {
+            return;
+        }
+        let suppression = self
+            .failure_suppression
+            .entry(process_failure_key(process_name))
+            .or_default();
+        suppression.attempts = suppression.attempts.saturating_add(1);
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        let process_name = process_name.trim();
+        if process_name.is_empty() {
+            return;
+        }
+        self.failure_suppression
+            .remove(&process_failure_key(process_name));
     }
 
     fn release_processes(
@@ -1102,6 +1200,10 @@ fn process_failure_message(
     format!("{action} {name} ({process_id}): {message}")
 }
 
+fn process_failure_key(process_name: &str) -> String {
+    process_name.trim().to_ascii_lowercase()
+}
+
 fn priority_source_label(source: PriorityTargetSource) -> &'static str {
     match source {
         PriorityTargetSource::Rule => "Rule",
@@ -1232,6 +1334,27 @@ fn filetime_to_u64(value: FILETIME) -> u64 {
 mod tests {
     use super::*;
     use crate::config::ForegroundResponsivenessSettings;
+
+    #[test]
+    fn repeated_failures_suppress_future_responsiveness_attempts_once() {
+        let mut manager = ForegroundResponsivenessManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("APP.exe");
+        manager.record_process_failure("app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(log.entries().is_empty());
+
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].process_name, "app.exe");
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
+    }
 
     #[test]
     fn priority_mapping_uses_safe_classes() {

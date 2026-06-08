@@ -1432,6 +1432,7 @@ impl PowerLeafApp {
         }
 
         let mut changed = self.apply_start_minimized(window);
+        changed |= self.apply_pending_auto_exclusions();
         if tray::is_hidden_to_tray() {
             self.sync_input_hook();
             self.background_automation
@@ -1525,6 +1526,38 @@ impl PowerLeafApp {
         self.background_automation
             .update_settings(&self.background_settings());
         TickOutcome::Continue { changed }
+    }
+
+    fn apply_pending_auto_exclusions(&mut self) -> bool {
+        let pending = self.background_automation.take_pending_auto_exclusions();
+        let mut changed = false;
+
+        for process in pending.eco_qos {
+            if can_add_eco_qos_process(&self.settings.eco_qos, &process) {
+                self.settings
+                    .eco_qos
+                    .efficiency_whitelist
+                    .push(new_eco_qos_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.background_cpu_restriction {
+            if can_add_background_cpu_exclusion(&self.settings.background_cpu_restriction, &process)
+            {
+                self.settings
+                    .background_cpu_restriction
+                    .exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.save_settings();
+        }
+
+        changed
     }
 
     fn page_uses_process_candidates(&self) -> bool {
@@ -9727,6 +9760,7 @@ fn action_log_result_tag(result: ActionLogResult) -> Tag {
 fn action_log_feature_label(feature: ActionLogFeature) -> String {
     match feature {
         ActionLogFeature::AppSuspension => "App Suspension",
+        ActionLogFeature::BackgroundCpuRestriction => "Background CPU Restriction",
         ActionLogFeature::CoreSteering => "Core Steering",
         ActionLogFeature::EcoQos => "Efficiency Mode",
         ActionLogFeature::CpuLimiter => "Core Limiter",

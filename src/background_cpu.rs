@@ -1,5 +1,5 @@
 use crate::{
-    action_log::ActionLog,
+    action_log::{ActionLog, ActionLogFeature},
     affinity::{self, CpuAffinityManager, CpuAffinitySnapshot, LogicalProcessorKind},
     config::{
         BackgroundCpuRestrictionSettings, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
@@ -8,9 +8,18 @@ use crate::{
     foreground::list_processes,
 };
 
-#[derive(Default)]
 pub struct BackgroundCpuRestrictionManager {
     affinity: CpuAffinityManager,
+}
+
+impl Default for BackgroundCpuRestrictionManager {
+    fn default() -> Self {
+        Self {
+            affinity: CpuAffinityManager::with_action_log_feature(
+                ActionLogFeature::BackgroundCpuRestriction,
+            ),
+        }
+    }
 }
 
 impl BackgroundCpuRestrictionManager {
