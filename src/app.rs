@@ -110,8 +110,6 @@ const ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS: u64 = 60 * 60;
 const ACTIVITY_CHECK_INTERVAL_MIN_MS: u64 = 250;
 const ACTIVITY_CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
 const ACTIVITY_CHECK_INTERVAL_STEP_MS: u64 = 250;
-const FOREGROUND_STABILITY_DELAY_MIN_MS: u64 = 0;
-const FOREGROUND_STABILITY_DELAY_MAX_MS: u64 = 10_000;
 const AUTO_BALANCE_THRESHOLD_MIN_PERCENT: u64 = 1;
 const AUTO_BALANCE_THRESHOLD_MAX_PERCENT: u64 = 100;
 const AUTO_BALANCE_SECONDS_MIN: u64 = 1;
@@ -1896,17 +1894,6 @@ impl PowerLeafApp {
                     self.settings.app_suspension.network_wake_duration_seconds = value;
                 }
             }
-            NumericField::ForegroundStabilityDelay => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    FOREGROUND_STABILITY_DELAY_MIN_MS,
-                    FOREGROUND_STABILITY_DELAY_MAX_MS,
-                ) {
-                    self.settings
-                        .foreground_responsiveness
-                        .foreground_stability_delay_ms = value;
-                }
-            }
             NumericField::AutoBalanceThreshold => {
                 if let Some(value) = parse_u64_input(
                     &value,
@@ -1918,6 +1905,28 @@ impl PowerLeafApp {
                         .auto_balance_threshold_percent = value as u8;
                 }
             }
+            NumericField::AutoBalanceRestoreThreshold => {
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                    AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                ) {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_restore_threshold_percent = value as u8;
+                }
+            }
+            NumericField::AutoBalanceTotalThreshold => {
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                    AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                ) {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_total_threshold_percent = value as u8;
+                }
+            }
             NumericField::AutoBalanceSustain => {
                 if let Some(value) =
                     parse_u64_input(&value, AUTO_BALANCE_SECONDS_MIN, AUTO_BALANCE_SECONDS_MAX)
@@ -1925,6 +1934,15 @@ impl PowerLeafApp {
                     self.settings
                         .foreground_responsiveness
                         .auto_balance_sustain_seconds = value;
+                }
+            }
+            NumericField::AutoBalanceMinimumRestraint => {
+                if let Some(value) =
+                    parse_u64_input(&value, AUTO_BALANCE_SECONDS_MIN, AUTO_BALANCE_SECONDS_MAX)
+                {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_minimum_restraint_seconds = value;
                 }
             }
             NumericField::AutoBalanceCooldown => {
@@ -5335,9 +5353,10 @@ impl PowerLeafApp {
             .to_string();
         let enabled = self.settings.foreground_responsiveness.enabled;
         let body = feature_body(enabled)
-            .child(checkbox(
+            .child(checkbox_with_help(
                 "responsiveness-lower-background",
                 t!("responsiveness.lower_background_apps").to_string(),
+                t!("responsiveness.lower_background_apps_help").to_string(),
                 self.settings
                     .foreground_responsiveness
                     .lower_background_apps,
@@ -5346,125 +5365,22 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(checkbox(
+            .child(checkbox_with_help(
                 "responsiveness-auto-balance",
                 t!("responsiveness.auto_balance").to_string(),
+                t!("responsiveness.auto_balance_help").to_string(),
                 self.settings.foreground_responsiveness.auto_balance_enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.foreground_responsiveness.auto_balance_enabled = *checked;
                     cx.notify();
                 }),
             ))
-            .child(setting_stepper_card_u64(
-                "responsiveness-auto-threshold",
-                t!("responsiveness.auto_balance_threshold").to_string(),
-                u64::from(
-                    self.settings
-                        .foreground_responsiveness
-                        .auto_balance_threshold_percent,
-                ),
-                self.render_numeric_value(
-                    NumericField::AutoBalanceThreshold,
-                    format!(
-                        "{}%",
-                        self.settings
-                            .foreground_responsiveness
-                            .auto_balance_threshold_percent
-                    ),
-                    self.settings
-                        .foreground_responsiveness
-                        .auto_balance_threshold_percent
-                        .to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    let current = u64::from(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_threshold_percent,
-                    );
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_threshold_percent = apply_u64_step(
-                        current,
-                        change,
-                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
-                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
-                    ) as u8;
-                    cx.notify();
-                }),
-            ))
-            .child(setting_stepper_card_u64(
-                "responsiveness-auto-sustain",
-                t!("responsiveness.auto_balance_sustain").to_string(),
-                self.settings
-                    .foreground_responsiveness
-                    .auto_balance_sustain_seconds,
-                self.render_numeric_value(
-                    NumericField::AutoBalanceSustain,
-                    format!(
-                        "{} sec",
-                        self.settings
-                            .foreground_responsiveness
-                            .auto_balance_sustain_seconds
-                    ),
-                    self.settings
-                        .foreground_responsiveness
-                        .auto_balance_sustain_seconds
-                        .to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_sustain_seconds = apply_u64_step(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_sustain_seconds,
-                        change,
-                        AUTO_BALANCE_SECONDS_MIN,
-                        AUTO_BALANCE_SECONDS_MAX,
-                    );
-                    cx.notify();
-                }),
-            ))
-            .child(setting_stepper_card_u64(
-                "responsiveness-auto-cooldown",
-                t!("responsiveness.auto_balance_cooldown").to_string(),
-                self.settings
-                    .foreground_responsiveness
-                    .auto_balance_cooldown_seconds,
-                self.render_numeric_value(
-                    NumericField::AutoBalanceCooldown,
-                    format!(
-                        "{} sec",
-                        self.settings
-                            .foreground_responsiveness
-                            .auto_balance_cooldown_seconds
-                    ),
-                    self.settings
-                        .foreground_responsiveness
-                        .auto_balance_cooldown_seconds
-                        .to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_cooldown_seconds = apply_u64_step(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_cooldown_seconds,
-                        change,
-                        AUTO_BALANCE_SECONDS_MIN,
-                        AUTO_BALANCE_SECONDS_MAX,
-                    );
-                    cx.notify();
-                }),
-            ))
-            .child(checkbox(
+            .child(self.render_auto_balance_preset_selector(cx))
+            .child(self.render_auto_balance_advanced_group(window, cx, &input_value, enabled))
+            .child(checkbox_with_help(
                 "responsiveness-boost-foreground",
                 t!("responsiveness.boost_foreground_app").to_string(),
+                t!("responsiveness.boost_foreground_app_help").to_string(),
                 self.settings.foreground_responsiveness.boost_foreground_app,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.foreground_responsiveness.boost_foreground_app = *checked;
@@ -5472,40 +5388,6 @@ impl PowerLeafApp {
                 }),
             ))
             .child(self.render_foreground_boost_selector(cx))
-            .child(setting_stepper_card_u64(
-                "responsiveness-stability-delay",
-                t!("responsiveness.stability_delay").to_string(),
-                self.settings
-                    .foreground_responsiveness
-                    .foreground_stability_delay_ms,
-                self.render_numeric_value(
-                    NumericField::ForegroundStabilityDelay,
-                    format!(
-                        "{} ms",
-                        self.settings
-                            .foreground_responsiveness
-                            .foreground_stability_delay_ms
-                    ),
-                    self.settings
-                        .foreground_responsiveness
-                        .foreground_stability_delay_ms
-                        .to_string(),
-                    cx,
-                ),
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .foreground_stability_delay_ms = apply_u64_step(
-                        app.settings
-                            .foreground_responsiveness
-                            .foreground_stability_delay_ms,
-                        change,
-                        FOREGROUND_STABILITY_DELAY_MIN_MS,
-                        FOREGROUND_STABILITY_DELAY_MAX_MS,
-                    );
-                    cx.notify();
-                }),
-            ))
             .child(section_header(
                 &t!("responsiveness.rules"),
                 t!("responsiveness.rules_help").to_string(),
@@ -5576,6 +5458,287 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
+    fn render_auto_balance_preset_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let settings = &self.settings.foreground_responsiveness;
+        let mut row = h_flex().gap_1().flex_wrap();
+        for preset in AutoBalancePreset::ALL {
+            row = row.child(
+                toggle_button(
+                    format!("auto-balance-preset-{preset:?}"),
+                    auto_balance_preset_label(preset),
+                    auto_balance_matches_preset(settings, preset),
+                )
+                .tooltip(auto_balance_preset_help(preset))
+                .disabled(!settings.auto_balance_enabled)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    apply_auto_balance_preset(&mut app.settings.foreground_responsiveness, preset);
+                    cx.notify();
+                })),
+            );
+        }
+
+        setting_action_card_with_help(
+            "auto-balance-preset",
+            t!("responsiveness.auto_balance_preset").to_string(),
+            t!("responsiveness.auto_balance_preset_help").to_string(),
+            row.into_any_element(),
+        )
+        .into_any_element()
+    }
+
+    fn render_auto_balance_advanced_group(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        input_value: &str,
+        enabled: bool,
+    ) -> AnyElement {
+        let settings = &self.settings.foreground_responsiveness;
+        let collapsed =
+            self.is_setting_group_collapsed(SettingGroupTarget::ResponsivenessAutoBalance);
+        let mut rows = vec![
+            setting_group_stepper_row_u64(
+                "responsiveness-auto-total-threshold",
+                t!("responsiveness.auto_balance_total_threshold").to_string(),
+                u64::from(settings.auto_balance_total_threshold_percent),
+                self.render_numeric_value(
+                    NumericField::AutoBalanceTotalThreshold,
+                    format!("{}%", settings.auto_balance_total_threshold_percent),
+                    settings.auto_balance_total_threshold_percent.to_string(),
+                    cx,
+                ),
+                true,
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    let current = u64::from(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_total_threshold_percent,
+                    );
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_total_threshold_percent = apply_u64_step(
+                        current,
+                        change,
+                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                    ) as u8;
+                    cx.notify();
+                }),
+            ),
+            setting_group_stepper_row_u64(
+                "responsiveness-auto-threshold",
+                t!("responsiveness.auto_balance_threshold").to_string(),
+                u64::from(settings.auto_balance_threshold_percent),
+                self.render_numeric_value(
+                    NumericField::AutoBalanceThreshold,
+                    format!("{}%", settings.auto_balance_threshold_percent),
+                    settings.auto_balance_threshold_percent.to_string(),
+                    cx,
+                ),
+                true,
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    let current = u64::from(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_threshold_percent,
+                    );
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_threshold_percent = apply_u64_step(
+                        current,
+                        change,
+                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                    ) as u8;
+                    cx.notify();
+                }),
+            ),
+            setting_group_stepper_row_u64(
+                "responsiveness-auto-restore-threshold",
+                t!("responsiveness.auto_balance_restore_threshold").to_string(),
+                u64::from(settings.auto_balance_restore_threshold_percent),
+                self.render_numeric_value(
+                    NumericField::AutoBalanceRestoreThreshold,
+                    format!("{}%", settings.auto_balance_restore_threshold_percent),
+                    settings.auto_balance_restore_threshold_percent.to_string(),
+                    cx,
+                ),
+                true,
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    let current = u64::from(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_restore_threshold_percent,
+                    );
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_restore_threshold_percent = apply_u64_step(
+                        current,
+                        change,
+                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                    ) as u8;
+                    cx.notify();
+                }),
+            ),
+            setting_group_stepper_row_u64(
+                "responsiveness-auto-sustain",
+                t!("responsiveness.auto_balance_sustain").to_string(),
+                settings.auto_balance_sustain_seconds,
+                self.render_numeric_value(
+                    NumericField::AutoBalanceSustain,
+                    format!("{} sec", settings.auto_balance_sustain_seconds),
+                    settings.auto_balance_sustain_seconds.to_string(),
+                    cx,
+                ),
+                true,
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_sustain_seconds = apply_u64_step(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_sustain_seconds,
+                        change,
+                        AUTO_BALANCE_SECONDS_MIN,
+                        AUTO_BALANCE_SECONDS_MAX,
+                    );
+                    cx.notify();
+                }),
+            ),
+            setting_group_stepper_row_u64(
+                "responsiveness-auto-minimum-restraint",
+                t!("responsiveness.auto_balance_minimum_restraint").to_string(),
+                settings.auto_balance_minimum_restraint_seconds,
+                self.render_numeric_value(
+                    NumericField::AutoBalanceMinimumRestraint,
+                    format!("{} sec", settings.auto_balance_minimum_restraint_seconds),
+                    settings.auto_balance_minimum_restraint_seconds.to_string(),
+                    cx,
+                ),
+                true,
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_minimum_restraint_seconds = apply_u64_step(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_minimum_restraint_seconds,
+                        change,
+                        AUTO_BALANCE_SECONDS_MIN,
+                        AUTO_BALANCE_SECONDS_MAX,
+                    );
+                    cx.notify();
+                }),
+            ),
+            setting_group_stepper_row_u64(
+                "responsiveness-auto-cooldown",
+                t!("responsiveness.auto_balance_cooldown").to_string(),
+                settings.auto_balance_cooldown_seconds,
+                self.render_numeric_value(
+                    NumericField::AutoBalanceCooldown,
+                    format!("{} sec", settings.auto_balance_cooldown_seconds),
+                    settings.auto_balance_cooldown_seconds.to_string(),
+                    cx,
+                ),
+                true,
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_cooldown_seconds = apply_u64_step(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_cooldown_seconds,
+                        change,
+                        AUTO_BALANCE_SECONDS_MIN,
+                        AUTO_BALANCE_SECONDS_MAX,
+                    );
+                    cx.notify();
+                }),
+            ),
+        ];
+
+        let exclusion_editor = v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "responsiveness-exclusion-suggestion",
+                        &self.inputs.responsiveness_process,
+                        SuggestionTarget::Responsiveness,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-responsiveness-exclusion"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_responsiveness_exclusion(
+                                        &self.settings.foreground_responsiveness,
+                                        input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process = app
+                                    .inputs
+                                    .responsiveness_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_responsiveness_exclusion(
+                                    &app.settings.foreground_responsiveness,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_exclusions
+                                        .push(new_process_exclusion_rule(&process));
+                                    clear_input(&app.inputs.responsiveness_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_responsiveness_exclusions(cx));
+        rows.push(
+            setting_group_stacked_action_row(
+                "responsiveness-auto-exclusions",
+                t!("responsiveness.auto_balance_exclusions").to_string(),
+                exclusion_editor.into_any_element(),
+                true,
+            )
+            .into_any_element(),
+        );
+
+        setting_group_with_title_element(
+            SettingGroupTarget::ResponsivenessAutoBalance,
+            h_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap_1()
+                .items_center()
+                .child(
+                    div()
+                        .truncate()
+                        .child(t!("responsiveness.auto_balance_advanced").to_string()),
+                )
+                .child(title_info_button(
+                    "responsiveness-auto-balance-advanced-info",
+                    t!("responsiveness.auto_balance_advanced_help").to_string(),
+                ))
+                .into_any_element(),
+            div().into_any_element(),
+            collapsed,
+            rows,
+            cx,
+        )
+        .into_any_element()
+    }
+
     fn render_foreground_boost_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.settings.foreground_responsiveness.foreground_boost;
         let mut row = h_flex().gap_1().flex_wrap();
@@ -5593,9 +5756,10 @@ impl PowerLeafApp {
                 })),
             );
         }
-        setting_action_card(
+        setting_action_card_with_help(
             "foreground-boost-priority",
             t!("responsiveness.foreground_boost").to_string(),
+            t!("responsiveness.foreground_boost_help").to_string(),
             row.into_any_element(),
         )
         .into_any_element()
@@ -5695,6 +5859,78 @@ impl PowerLeafApp {
         }
         if self.settings.foreground_responsiveness.rules.is_empty() {
             list = list.child(text_muted(t!("responsiveness.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_responsiveness_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = v_flex().gap_2();
+        for (index, rule) in self
+            .settings
+            .foreground_responsiveness
+            .auto_balance_exclusions
+            .iter()
+            .enumerate()
+        {
+            let process = rule.process_name.clone();
+            list = list.child(
+                compact_rule_row(cx)
+                    .child(rule_enable_checkbox(
+                        format!("responsiveness-exclusion-enabled-{index}"),
+                        rule.enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) = app
+                                .settings
+                                .foreground_responsiveness
+                                .auto_balance_exclusions
+                                .get_mut(index)
+                            {
+                                rule.enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.0))
+                            .text_size(px(RULE_TITLE_TEXT_SIZE))
+                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                            .truncate()
+                            .child(process),
+                    )
+                    .child(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-responsiveness-exclusion-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if index
+                                < app
+                                    .settings
+                                    .foreground_responsiveness
+                                    .auto_balance_exclusions
+                                    .len()
+                            {
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_exclusions
+                                    .remove(index);
+                            }
+                            cx.notify();
+                        })),
+                    ),
+            );
+        }
+        if self
+            .settings
+            .foreground_responsiveness
+            .auto_balance_exclusions
+            .is_empty()
+        {
+            list = list.child(text_muted(
+                t!("responsiveness.no_auto_balance_exclusions").to_string(),
+            ));
         }
         list.into_any_element()
     }
@@ -7787,9 +8023,21 @@ enum RuleCardTarget {
 enum SettingGroupTarget {
     EfficiencyCpuRestriction,
     BackgroundCpuRestriction,
+    ResponsivenessAutoBalance,
     SuspensionThaw,
     SuspensionAudio,
     SuspensionNetwork,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoBalancePreset {
+    Gentle,
+    Balanced,
+    Responsive,
+}
+
+impl AutoBalancePreset {
+    const ALL: [Self; 3] = [Self::Gentle, Self::Balanced, Self::Responsive];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -7809,9 +8057,11 @@ enum NumericField {
     SuspensionThawDuration,
     SuspensionAudioRefreeze,
     SuspensionNetworkRefreeze,
-    ForegroundStabilityDelay,
+    AutoBalanceTotalThreshold,
     AutoBalanceThreshold,
+    AutoBalanceRestoreThreshold,
     AutoBalanceSustain,
+    AutoBalanceMinimumRestraint,
     AutoBalanceCooldown,
     ProcessorAcCoreParkingMin,
     ProcessorAcPerformanceMin,
@@ -9164,6 +9414,44 @@ fn setting_action_card(
     title: impl Into<SharedString>,
     action: AnyElement,
 ) -> gpui::Stateful<gpui::Div> {
+    setting_action_card_element(
+        id,
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .child(title.into())
+            .into_any_element(),
+        action,
+    )
+}
+
+fn setting_action_card_with_help(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    action: AnyElement,
+) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
+    setting_action_card_element(
+        id.clone(),
+        h_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .gap_1()
+            .items_center()
+            .child(div().truncate().child(title.into()))
+            .child(title_info_button(format!("{id}-info"), help))
+            .into_any_element(),
+        action,
+    )
+}
+
+fn setting_action_card_element(
+    id: impl Into<SharedString>,
+    title: AnyElement,
+    action: AnyElement,
+) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(id.into())
         .w_full()
@@ -9182,7 +9470,7 @@ fn setting_action_card(
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .hover(|style| style.bg(rgb(settings_card_hover_color())))
-        .child(div().flex_1().min_w(px(0.0)).truncate().child(title.into()))
+        .child(title)
         .child(
             h_flex()
                 .items_center()
@@ -9783,6 +10071,74 @@ fn checkbox(
                 }),
         )
         .child(div().child(label))
+        .on_click(move |_, window, cx| {
+            let next = !checked;
+            handler(&next, window, cx);
+        })
+        .into_any_element()
+}
+
+fn checkbox_with_help(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    checked: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let label: SharedString = label.into();
+    let help: SharedString = help.into();
+    let accent = accent_color();
+    let border_color = if checked { accent } else { border_color() };
+    let text_color = if checked {
+        primary_text_color()
+    } else {
+        muted_text_color()
+    };
+    let check_color = accent_glyph_color(accent);
+
+    h_flex()
+        .id(id.clone())
+        .min_w(px(0.0))
+        .items_center()
+        .gap_2()
+        .py_1()
+        .px_1()
+        .rounded_sm()
+        .text_color(rgb(text_color))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .hover(|style| style.opacity(0.86))
+        .cursor_pointer()
+        .child(
+            div()
+                .size(px(16.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .flex_shrink_0()
+                .rounded_sm()
+                .border_1()
+                .border_color(rgb(border_color))
+                .when(checked, |this| this.bg(rgb(accent)))
+                .when(checked, |this| {
+                    this.child(
+                        div()
+                            .text_size(px(TEXT_LABEL_SIZE))
+                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                            .font_weight(gpui::FontWeight::BOLD)
+                            .text_color(rgb(check_color))
+                            .child("✓"),
+                    )
+                }),
+        )
+        .child(
+            h_flex()
+                .min_w(px(0.0))
+                .gap_1()
+                .child(div().truncate().child(label))
+                .child(title_info_button(format!("{id}-info"), help)),
+        )
         .on_click(move |_, window, cx| {
             let next = !checked;
             handler(&next, window, cx);
@@ -11183,6 +11539,14 @@ fn can_add_responsiveness_process(
         && !responsiveness::is_builtin_excluded(process)
 }
 
+fn can_add_responsiveness_exclusion(
+    settings: &ForegroundResponsivenessSettings,
+    process: &str,
+) -> bool {
+    let process = process.trim();
+    !process.is_empty() && !settings.contains_auto_balance_exclusion(process)
+}
+
 fn can_add_cpu_limiter_process(settings: &CpuLimiterSettings, process: &str) -> bool {
     let process = process.trim();
     !process.is_empty()
@@ -11479,6 +11843,87 @@ fn process_priority_label(priority: ProcessPriority) -> String {
         ProcessPriority::Normal => t!("responsiveness.priority_normal").to_string(),
         ProcessPriority::BelowNormal => t!("responsiveness.priority_below_normal").to_string(),
         ProcessPriority::Idle => t!("responsiveness.priority_idle").to_string(),
+    }
+}
+
+fn auto_balance_preset_label(preset: AutoBalancePreset) -> String {
+    match preset {
+        AutoBalancePreset::Gentle => t!("responsiveness.preset_gentle").to_string(),
+        AutoBalancePreset::Balanced => t!("responsiveness.preset_balanced").to_string(),
+        AutoBalancePreset::Responsive => t!("responsiveness.preset_responsive").to_string(),
+    }
+}
+
+fn auto_balance_preset_help(preset: AutoBalancePreset) -> String {
+    match preset {
+        AutoBalancePreset::Gentle => t!("responsiveness.preset_gentle_help").to_string(),
+        AutoBalancePreset::Balanced => t!("responsiveness.preset_balanced_help").to_string(),
+        AutoBalancePreset::Responsive => t!("responsiveness.preset_responsive_help").to_string(),
+    }
+}
+
+fn apply_auto_balance_preset(
+    settings: &mut ForegroundResponsivenessSettings,
+    preset: AutoBalancePreset,
+) {
+    let values = auto_balance_preset_values(preset);
+    settings.auto_balance_total_threshold_percent = values.total_threshold;
+    settings.auto_balance_threshold_percent = values.process_threshold;
+    settings.auto_balance_restore_threshold_percent = values.restore_threshold;
+    settings.auto_balance_sustain_seconds = values.sustain_seconds;
+    settings.auto_balance_minimum_restraint_seconds = values.minimum_restraint_seconds;
+    settings.auto_balance_cooldown_seconds = values.cooldown_seconds;
+}
+
+fn auto_balance_matches_preset(
+    settings: &ForegroundResponsivenessSettings,
+    preset: AutoBalancePreset,
+) -> bool {
+    let values = auto_balance_preset_values(preset);
+    settings.auto_balance_total_threshold_percent == values.total_threshold
+        && settings.auto_balance_threshold_percent == values.process_threshold
+        && settings.auto_balance_restore_threshold_percent == values.restore_threshold
+        && settings.auto_balance_sustain_seconds == values.sustain_seconds
+        && settings.auto_balance_minimum_restraint_seconds == values.minimum_restraint_seconds
+        && settings.auto_balance_cooldown_seconds == values.cooldown_seconds
+}
+
+#[derive(Clone, Copy)]
+struct AutoBalancePresetValues {
+    total_threshold: u8,
+    process_threshold: u8,
+    restore_threshold: u8,
+    sustain_seconds: u64,
+    minimum_restraint_seconds: u64,
+    cooldown_seconds: u64,
+}
+
+fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetValues {
+    match preset {
+        AutoBalancePreset::Gentle => AutoBalancePresetValues {
+            total_threshold: 80,
+            process_threshold: 35,
+            restore_threshold: 8,
+            sustain_seconds: 4,
+            minimum_restraint_seconds: 4,
+            cooldown_seconds: 12,
+        },
+        AutoBalancePreset::Balanced => AutoBalancePresetValues {
+            total_threshold: 70,
+            process_threshold: 25,
+            restore_threshold: 5,
+            sustain_seconds: 2,
+            minimum_restraint_seconds: 4,
+            cooldown_seconds: 10,
+        },
+        AutoBalancePreset::Responsive => AutoBalancePresetValues {
+            total_threshold: 60,
+            process_threshold: 18,
+            restore_threshold: 5,
+            sustain_seconds: 1,
+            minimum_restraint_seconds: 6,
+            cooldown_seconds: 15,
+        },
     }
 }
 

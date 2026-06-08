@@ -104,6 +104,7 @@ struct AutoBalanceProcess {
     previous_cpu_time: Option<ProcessCpuSample>,
     high_since: Option<Instant>,
     below_since: Option<Instant>,
+    active_since: Option<Instant>,
     active: bool,
 }
 
@@ -125,6 +126,7 @@ impl ForegroundResponsivenessManager {
         settings: &ForegroundResponsivenessSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
+        total_cpu_usage_percent: Option<f32>,
         eco_qos_process_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
     ) -> ForegroundResponsivenessSnapshot {
@@ -234,7 +236,7 @@ impl ForegroundResponsivenessManager {
             }
         }
 
-        if settings.auto_balance_enabled {
+        if auto_balance_should_run(settings, total_cpu_usage_percent) {
             let now = Instant::now();
             let current_ids = processes
                 .iter()
@@ -253,6 +255,7 @@ impl ForegroundResponsivenessManager {
                         foreground_process_name.as_deref(),
                         eco_qos_process_ids,
                     )
+                    || settings.auto_balance_exclusion_enabled_for(&process.name)
                     || process_session_id(process.id) != Some(current_session_id)
                 {
                     continue;
@@ -271,6 +274,19 @@ impl ForegroundResponsivenessManager {
                     );
                 }
             }
+        } else if settings.auto_balance_enabled {
+            let auto_balance_ids = self
+                .auto_balance
+                .iter()
+                .filter_map(|(process_id, process)| process.active.then_some(*process_id))
+                .collect::<Vec<_>>();
+            self.auto_balance.clear();
+            failures.merge(self.release_processes(
+                &auto_balance_ids,
+                Some(&current_process_names),
+                action_log,
+                "total CPU contention is below auto-balance threshold",
+            ));
         } else {
             self.auto_balance.clear();
         }
@@ -616,7 +632,15 @@ impl ForegroundResponsivenessManager {
         now: Instant,
     ) -> Option<ProcessPriority> {
         let threshold = f32::from(settings.auto_balance_threshold_percent.min(100));
+        let restore_threshold = f32::from(
+            settings
+                .auto_balance_restore_threshold_percent
+                .min(settings.auto_balance_threshold_percent)
+                .min(100),
+        );
         let sustain = Duration::from_secs(settings.auto_balance_sustain_seconds);
+        let minimum_restraint =
+            Duration::from_secs(settings.auto_balance_minimum_restraint_seconds);
         let cooldown = Duration::from_secs(settings.auto_balance_cooldown_seconds);
         let state = self
             .auto_balance
@@ -626,6 +650,7 @@ impl ForegroundResponsivenessManager {
                 previous_cpu_time: None,
                 high_since: None,
                 below_since: None,
+                active_since: None,
                 active: false,
             });
         state.process_name = process_name.to_owned();
@@ -641,6 +666,9 @@ impl ForegroundResponsivenessManager {
             state.below_since = None;
             let high_since = *state.high_since.get_or_insert(now);
             if state.active || now.duration_since(high_since) >= sustain {
+                if !state.active {
+                    state.active_since = Some(now);
+                }
                 state.active = true;
                 return Some(ProcessPriority::Idle);
             }
@@ -649,12 +677,19 @@ impl ForegroundResponsivenessManager {
 
         state.high_since = None;
         if state.active {
+            let active_since = state.active_since.unwrap_or(now);
+            if usage > restore_threshold || now.duration_since(active_since) < minimum_restraint {
+                state.below_since = None;
+                return Some(ProcessPriority::Idle);
+            }
+
             let below_since = *state.below_since.get_or_insert(now);
             if now.duration_since(below_since) < cooldown {
                 return Some(ProcessPriority::BelowNormal);
             }
             state.active = false;
             state.below_since = None;
+            state.active_since = None;
         }
 
         None
@@ -739,6 +774,16 @@ fn should_skip_process(
             foreground_process_id,
             foreground_process_name,
         )
+}
+
+fn auto_balance_should_run(
+    settings: &ForegroundResponsivenessSettings,
+    total_cpu_usage_percent: Option<f32>,
+) -> bool {
+    settings.auto_balance_enabled
+        && total_cpu_usage_percent.is_some_and(|usage| {
+            usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
+        })
 }
 
 pub const fn priority_class(priority: ProcessPriority) -> u32 {
@@ -1099,9 +1144,13 @@ mod tests {
             enabled: true,
             lower_background_apps: true,
             auto_balance_enabled: false,
+            auto_balance_total_threshold_percent: 70,
             auto_balance_threshold_percent: 25,
+            auto_balance_restore_threshold_percent: 5,
             auto_balance_sustain_seconds: 2,
+            auto_balance_minimum_restraint_seconds: 4,
             auto_balance_cooldown_seconds: 10,
+            auto_balance_exclusions: Vec::new(),
             boost_foreground_app: false,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
             foreground_stability_delay_ms: 750,

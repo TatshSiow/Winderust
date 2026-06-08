@@ -122,8 +122,8 @@ mod tests {
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
         ForegroundRules, GeneralSettings, InputDetectionSettings, ManualOverride,
         NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
-        PriorityRule, ProcessPriority, ScheduleModeSettings, ScheduleRule, WatchdogAction,
-        WatchdogRule, WatchdogSettings, WeekdaySetting,
+        PriorityRule, ProcessExclusionRule, ProcessPriority, ScheduleModeSettings, ScheduleRule,
+        WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
     };
 
     #[test]
@@ -342,9 +342,16 @@ mod tests {
                 enabled: true,
                 lower_background_apps: true,
                 auto_balance_enabled: true,
+                auto_balance_total_threshold_percent: 70,
                 auto_balance_threshold_percent: 25,
+                auto_balance_restore_threshold_percent: 5,
                 auto_balance_sustain_seconds: 2,
+                auto_balance_minimum_restraint_seconds: 4,
                 auto_balance_cooldown_seconds: 10,
+                auto_balance_exclusions: vec![ProcessExclusionRule {
+                    enabled: true,
+                    process_name: "game*.exe".to_owned(),
+                }],
                 boost_foreground_app: true,
                 foreground_boost: ForegroundBoostPriority::AboveNormal,
                 foreground_stability_delay_ms: 750,

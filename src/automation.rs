@@ -1221,6 +1221,7 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
     ) -> ForegroundResponsivenessSnapshot {
+        self.refresh_cpu_usage();
         let foreground_process_id = self.foreground_detector.process_id();
         let mut excluded_process_ids = self.eco_qos_manager.throttled_process_ids();
         excluded_process_ids.extend(self.performance_mode_manager.active_process_ids());
@@ -1228,6 +1229,7 @@ impl HiddenAutomationRunner {
             &settings.foreground_responsiveness,
             settings.general.enabled,
             foreground_process_id,
+            self.cpu_usage.percent,
             &excluded_process_ids,
             &mut self.action_log,
         )
@@ -1244,13 +1246,7 @@ impl HiddenAutomationRunner {
         let activity = self.idle_detector.snapshot(Duration::from_secs(
             settings.activity_mode.idle_timeout_seconds,
         ));
-        if self
-            .next_cpu_usage_refresh
-            .map_or(true, |refresh_at| Instant::now() >= refresh_at)
-        {
-            self.cpu_usage = self.cpu_monitor.sample();
-            self.next_cpu_usage_refresh = Some(Instant::now() + CPU_USAGE_REFRESH_INTERVAL);
-        }
+        self.refresh_cpu_usage();
         let foreground_app = self.foreground_detector.process_name();
         let schedule = self.scheduler.current_decision(&settings.schedule_mode);
         let cpu_usage_decision = self
@@ -1282,6 +1278,16 @@ impl HiddenAutomationRunner {
 
         if let Ok(Some(active)) = self.power.active_plan() {
             self.current_guid = Some(active.guid);
+        }
+    }
+
+    fn refresh_cpu_usage(&mut self) {
+        if self
+            .next_cpu_usage_refresh
+            .map_or(true, |refresh_at| Instant::now() >= refresh_at)
+        {
+            self.cpu_usage = self.cpu_monitor.sample();
+            self.next_cpu_usage_refresh = Some(Instant::now() + CPU_USAGE_REFRESH_INTERVAL);
         }
     }
 

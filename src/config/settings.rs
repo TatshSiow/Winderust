@@ -493,12 +493,20 @@ pub struct ForegroundResponsivenessSettings {
     pub lower_background_apps: bool,
     #[serde(default)]
     pub auto_balance_enabled: bool,
+    #[serde(default = "default_auto_balance_total_threshold_percent")]
+    pub auto_balance_total_threshold_percent: u8,
     #[serde(default = "default_auto_balance_threshold_percent")]
     pub auto_balance_threshold_percent: u8,
+    #[serde(default = "default_auto_balance_restore_threshold_percent")]
+    pub auto_balance_restore_threshold_percent: u8,
     #[serde(default = "default_auto_balance_sustain_seconds")]
     pub auto_balance_sustain_seconds: u64,
+    #[serde(default = "default_auto_balance_minimum_restraint_seconds")]
+    pub auto_balance_minimum_restraint_seconds: u64,
     #[serde(default = "default_auto_balance_cooldown_seconds")]
     pub auto_balance_cooldown_seconds: u64,
+    #[serde(default, deserialize_with = "deserialize_process_exclusion_rules")]
+    pub auto_balance_exclusions: Vec<ProcessExclusionRule>,
     #[serde(default)]
     pub boost_foreground_app: bool,
     #[serde(default)]
@@ -786,8 +794,20 @@ const fn default_auto_balance_threshold_percent() -> u8 {
     25
 }
 
+const fn default_auto_balance_restore_threshold_percent() -> u8 {
+    5
+}
+
+const fn default_auto_balance_total_threshold_percent() -> u8 {
+    70
+}
+
 const fn default_auto_balance_sustain_seconds() -> u64 {
     2
+}
+
+const fn default_auto_balance_minimum_restraint_seconds() -> u64 {
+    4
 }
 
 const fn default_auto_balance_cooldown_seconds() -> u64 {
@@ -1000,9 +1020,15 @@ impl Default for ForegroundResponsivenessSettings {
             enabled: false,
             lower_background_apps: default_lower_background_apps(),
             auto_balance_enabled: false,
+            auto_balance_total_threshold_percent: default_auto_balance_total_threshold_percent(),
             auto_balance_threshold_percent: default_auto_balance_threshold_percent(),
+            auto_balance_restore_threshold_percent: default_auto_balance_restore_threshold_percent(
+            ),
             auto_balance_sustain_seconds: default_auto_balance_sustain_seconds(),
+            auto_balance_minimum_restraint_seconds: default_auto_balance_minimum_restraint_seconds(
+            ),
             auto_balance_cooldown_seconds: default_auto_balance_cooldown_seconds(),
+            auto_balance_exclusions: Vec::new(),
             boost_foreground_app: false,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
             foreground_stability_delay_ms: default_foreground_stability_delay_ms(),
@@ -1129,6 +1155,61 @@ impl ForegroundResponsivenessSettings {
                 .eq_ignore_ascii_case(process_name.trim())
         })
     }
+
+    pub fn contains_auto_balance_exclusion(&self, process_name: &str) -> bool {
+        self.auto_balance_exclusions.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+
+    pub fn auto_balance_exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.auto_balance_exclusions.iter().any(|rule| {
+            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+        })
+    }
+}
+
+fn process_name_matches_pattern(pattern: &str, process_name: &str) -> bool {
+    wildcard_match(
+        &pattern.trim().to_ascii_lowercase(),
+        &process_name.trim().to_ascii_lowercase(),
+    )
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let mut pattern_index = 0;
+    let mut value_index = 0;
+    let mut star_index = None;
+    let mut star_value_index = 0;
+
+    while value_index < value.len() {
+        if pattern_index < pattern.len()
+            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == value[value_index])
+        {
+            pattern_index += 1;
+            value_index += 1;
+        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+            star_index = Some(pattern_index);
+            pattern_index += 1;
+            star_value_index = value_index;
+        } else if let Some(star) = star_index {
+            pattern_index = star + 1;
+            star_value_index += 1;
+            value_index = star_value_index;
+        } else {
+            return false;
+        }
+    }
+
+    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
+        pattern_index += 1;
+    }
+
+    pattern_index == pattern.len()
 }
 
 #[derive(Deserialize)]
@@ -1479,6 +1560,30 @@ mod tests {
             NetworkThresholdUnit::Megabits.threshold_value_from_bytes(125_000),
             1.0
         );
+    }
+
+    #[test]
+    fn auto_balance_exclusions_support_wildcards() {
+        let mut settings = ForegroundResponsivenessSettings::default();
+        settings.auto_balance_exclusions = vec![
+            ProcessExclusionRule {
+                enabled: true,
+                process_name: "game*.exe".to_owned(),
+            },
+            ProcessExclusionRule {
+                enabled: true,
+                process_name: "worker?.exe".to_owned(),
+            },
+            ProcessExclusionRule {
+                enabled: false,
+                process_name: "disabled.exe".to_owned(),
+            },
+        ];
+
+        assert!(settings.auto_balance_exclusion_enabled_for("GameClient.exe"));
+        assert!(settings.auto_balance_exclusion_enabled_for("worker1.exe"));
+        assert!(!settings.auto_balance_exclusion_enabled_for("worker12.exe"));
+        assert!(!settings.auto_balance_exclusion_enabled_for("disabled.exe"));
     }
 
     #[test]
