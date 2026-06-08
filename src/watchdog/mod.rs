@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant},
 };
@@ -49,6 +50,8 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
+
+const WATCHDOG_ALLOWED_RESTART_EXTENSIONS: &[&str] = &["exe", "com"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchdogSnapshot {
@@ -163,11 +166,19 @@ impl WatchdogManager {
         let mut failures = WatchdogFailures::default();
 
         for rule in settings.rules.iter().filter(|rule| rule.enabled) {
-            if rule.process_name.trim().is_empty() {
+            let process_name = match watchdog_rule_process_name(rule) {
+                Ok(process_name) => process_name,
+                Err(err) => {
+                    failures.record("Watchdog rule", None, &rule.process_name, err, action_log);
+                    continue;
+                }
+            };
+
+            if process_name.is_empty() {
                 continue;
             }
 
-            let matches = matching_processes(rule, &eligible_processes);
+            let matches = matching_processes(&process_name, &eligible_processes);
             matched_processes += matches.len();
 
             match rule.action {
@@ -323,31 +334,82 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 }
 
 fn matching_processes<'a>(
-    rule: &WatchdogRule,
+    process_name: &str,
     processes: &'a [ProcessInfo],
 ) -> Vec<&'a ProcessInfo> {
     processes
         .iter()
-        .filter(|process| {
-            process
-                .name
-                .trim()
-                .eq_ignore_ascii_case(rule.process_name.trim())
-        })
+        .filter(|process| process.name.trim().eq_ignore_ascii_case(process_name))
         .collect()
 }
 
 fn restart_process(rule: &WatchdogRule) -> Result<(), String> {
-    let launch_path = rule.launch_path.trim();
+    let launch_path = canonical_watchdog_launch_path(&rule.launch_path)?;
+    let launch_args = rule
+        .launch_args
+        .iter()
+        .map(|arg| validate_watchdog_arg(arg))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Command::new(&launch_path)
+        .args(launch_args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|err| format!("Failed to start {}: {err}", launch_path.display()))
+}
+
+fn canonical_watchdog_launch_path(launch_path: &str) -> Result<PathBuf, String> {
+    let launch_path = normalize_watchdog_launch_path(launch_path);
     if launch_path.is_empty() {
         return Err("Restart rule has no executable path.".to_owned());
     }
+    if contains_invalid_watchdog_text(&launch_path) {
+        return Err("Restart path contains an invalid character.".to_owned());
+    }
 
-    Command::new(launch_path)
-        .args(rule.launch_args.iter().map(String::as_str))
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| format!("Failed to start {launch_path}: {err}"))
+    let path = Path::new(&launch_path);
+    if !path.is_absolute() {
+        return Err(format!(
+            "Restart path must be an absolute executable path: {launch_path}"
+        ));
+    }
+
+    let path = path
+        .canonicalize()
+        .map_err(|err| format!("Failed to resolve executable path '{launch_path}': {err}"))?;
+    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+        if !WATCHDOG_ALLOWED_RESTART_EXTENSIONS
+            .iter()
+            .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        {
+            return Err(format!(
+                "Restart path must use an executable extension ({:?}): {}",
+                WATCHDOG_ALLOWED_RESTART_EXTENSIONS,
+                path.display()
+            ));
+        }
+    } else {
+        return Err(format!(
+            "Restart path must include a file extension: {}",
+            path.display()
+        ));
+    }
+
+    let metadata = path.metadata().map_err(|err| {
+        format!(
+            "Failed to read executable metadata for '{}': {err}",
+            path.display()
+        )
+    })?;
+
+    if !metadata.is_file() {
+        return Err(format!(
+            "Restart path is not an executable file: {}",
+            path.display()
+        ));
+    }
+
+    Ok(path)
 }
 
 fn terminate_process(process_id: u32) -> Result<(), WatchdogError> {
@@ -372,10 +434,61 @@ fn process_session_id(process_id: u32) -> Option<u32> {
 fn watchdog_rule_key(rule: &WatchdogRule) -> String {
     format!(
         "{}\0{}\0{}",
-        rule.process_name.trim().to_ascii_lowercase(),
-        rule.launch_path.trim().to_ascii_lowercase(),
+        watchdog_rule_process_name(rule)
+            .unwrap_or_else(|_| rule.process_name.trim().to_ascii_lowercase()),
+        watchdog_launch_path_key(rule),
         rule.launch_args.join("\0")
     )
+}
+
+fn watchdog_rule_process_name(rule: &WatchdogRule) -> Result<String, String> {
+    let process_name = rule.process_name.trim();
+    if process_name.is_empty() {
+        return Err("Watchdog rule has no process name.".to_owned());
+    }
+    if process_name.contains('\0') {
+        return Err("Watchdog process name contains an invalid character.".to_owned());
+    }
+
+    let has_invalid_character = process_name.chars().any(|character| {
+        character.is_control()
+            || matches!(
+                character,
+                '\\' | '/' | ':' | '*' | '?' | '\"' | '<' | '>' | '|'
+            )
+    });
+    if has_invalid_character {
+        return Err(format!(
+            "Watchdog process name contains invalid characters: {process_name}"
+        ));
+    }
+
+    Ok(process_name.to_ascii_lowercase())
+}
+
+fn normalize_watchdog_launch_path(value: &str) -> String {
+    value.trim().trim_matches('"').to_owned()
+}
+
+fn validate_watchdog_arg(value: &str) -> Result<String, String> {
+    if contains_invalid_watchdog_text(value) {
+        return Err("Restart argument contains an invalid character.".to_owned());
+    }
+
+    Ok(value.to_owned())
+}
+
+fn contains_invalid_watchdog_text(value: &str) -> bool {
+    value
+        .chars()
+        .any(|character| character.is_control() || character == '\0')
+}
+
+fn watchdog_launch_path_key(rule: &WatchdogRule) -> String {
+    match canonical_watchdog_launch_path(&rule.launch_path) {
+        Ok(path) => path.to_string_lossy().to_ascii_lowercase(),
+        Err(_) => rule.launch_path.trim().to_ascii_lowercase(),
+    }
 }
 
 fn rule_label(rule: &WatchdogRule) -> String {
@@ -397,13 +510,24 @@ struct ProcessHandle(HANDLE);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, WatchdogError> {
-        let handle = unsafe {
+        let mut handle = unsafe {
             OpenProcess(
                 PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
                 0,
                 process_id,
             )
         };
+        if handle.is_null() && last_error() == ERROR_ACCESS_DENIED {
+            if crate::privilege::enable_debug_privilege() {
+                handle = unsafe {
+                    OpenProcess(
+                        PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                        0,
+                        process_id,
+                    )
+                };
+            }
+        }
         if !handle.is_null() {
             Ok(Self(handle))
         } else {
@@ -454,7 +578,7 @@ mod tests {
             name: "tool.exe".to_owned(),
         }];
 
-        assert_eq!(matching_processes(&rule, &processes).len(), 1);
+        assert_eq!(matching_processes("tool.exe", &processes).len(), 1);
     }
 
     #[test]
@@ -479,5 +603,23 @@ mod tests {
         second.launch_args = vec!["--two".to_owned()];
 
         assert_ne!(watchdog_rule_key(&first), watchdog_rule_key(&second));
+    }
+
+    #[test]
+    fn restart_extensions_exclude_command_scripts() {
+        assert!(WATCHDOG_ALLOWED_RESTART_EXTENSIONS.contains(&"exe"));
+        assert!(WATCHDOG_ALLOWED_RESTART_EXTENSIONS.contains(&"com"));
+        assert!(!WATCHDOG_ALLOWED_RESTART_EXTENSIONS.contains(&"bat"));
+        assert!(!WATCHDOG_ALLOWED_RESTART_EXTENSIONS.contains(&"cmd"));
+    }
+
+    #[test]
+    fn watchdog_args_reject_control_characters() {
+        assert_eq!(
+            validate_watchdog_arg("--label=hello").unwrap(),
+            "--label=hello"
+        );
+        assert!(validate_watchdog_arg("--label=hello\nworld").is_err());
+        assert!(validate_watchdog_arg("bad\0arg").is_err());
     }
 }

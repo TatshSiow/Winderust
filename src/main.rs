@@ -42,8 +42,6 @@ fn main() {
         return;
     };
 
-    privilege::enable_debug_privilege();
-
     Application::new()
         .with_assets(assets::Assets)
         .run(|cx: &mut App| {
@@ -74,11 +72,11 @@ struct SingleInstanceGuard(windows_sys::Win32::Foundation::HANDLE);
 impl SingleInstanceGuard {
     fn acquire() -> Option<Self> {
         use windows_sys::Win32::{
-            Foundation::{CloseHandle, ERROR_ALREADY_EXISTS},
-            System::Threading::CreateMutexW,
+            Foundation::{CloseHandle, WAIT_TIMEOUT},
+            System::Threading::{CreateMutexW, WaitForSingleObject},
         };
 
-        let name = "Local\\PowerLeaf.SingleInstance.Mutex"
+        let name = single_instance_mutex_name()
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
@@ -89,7 +87,8 @@ impl SingleInstanceGuard {
                 return None;
             }
 
-            if windows_sys::Win32::Foundation::GetLastError() == ERROR_ALREADY_EXISTS {
+            let wait_status = WaitForSingleObject(handle, 0);
+            if wait_status == WAIT_TIMEOUT || wait_status == 0xFFFFFFFF {
                 CloseHandle(handle);
                 return None;
             }
@@ -97,6 +96,26 @@ impl SingleInstanceGuard {
             Some(Self(handle))
         }
     }
+}
+
+fn single_instance_mutex_name() -> String {
+    let digest = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+        .and_then(|path| path.to_str().map(str::to_owned))
+        .map(fnv1a64)
+        .unwrap_or(0x5f3f_2a4e_13a5_59f0);
+
+    format!("Local\\PowerLeaf.SingleInstance.{digest:016x}")
+}
+
+fn fnv1a64(input: impl AsRef<str>) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in input.as_ref().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x00000100000001b3);
+    }
+    hash
 }
 
 impl Drop for SingleInstanceGuard {

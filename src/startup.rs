@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::{mem::size_of, ptr::null_mut};
 
 use windows_sys::Win32::{
@@ -10,6 +11,7 @@ use windows_sys::Win32::{
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE_NAME: &str = "PowerLeaf";
+const STARTUP_ALLOWED_EXTENSIONS: &[&str] = &["exe", "com"];
 
 pub fn set_startup_with_windows(enabled: bool) -> Result<(), String> {
     if enabled {
@@ -107,7 +109,32 @@ fn open_run_key_for_write() -> Result<Option<RegKey>, String> {
 fn startup_command() -> Result<String, String> {
     let exe = std::env::current_exe()
         .map_err(|err| format!("failed to read PowerLeaf executable path: {err}"))?;
+    let exe = sanitize_startup_executable(exe)?;
     Ok(format!("\"{}\"", exe.display()))
+}
+
+fn sanitize_startup_executable(exe: PathBuf) -> Result<PathBuf, String> {
+    let exe = exe
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve PowerLeaf executable path: {err}"))?;
+
+    if !exe.is_file() {
+        return Err("PowerLeaf executable path is not a file.".to_owned());
+    }
+    if let Some(extension) = exe.extension().and_then(|extension| extension.to_str()) {
+        if !STARTUP_ALLOWED_EXTENSIONS
+            .iter()
+            .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        {
+            return Err(format!(
+                "PowerLeaf executable path has unexpected extension ({extension:?})."
+            ));
+        }
+    } else {
+        return Err("PowerLeaf executable path has no extension.".to_owned());
+    }
+
+    Ok(exe)
 }
 
 fn wide_null(value: &str) -> Vec<u16> {

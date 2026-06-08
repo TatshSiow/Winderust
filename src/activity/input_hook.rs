@@ -20,8 +20,8 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             CallNextHookEx, DispatchMessageW, GetMessageW, PeekMessageW, PostThreadMessageW,
             SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HC_ACTION, HHOOK,
-            KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN,
-            WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN,
+            KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, WH_KEYBOARD_LL, WH_MOUSE_LL,
+            WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN,
         },
     },
 };
@@ -30,6 +30,10 @@ const KEYBOARD_EVENT: u8 = 0b01;
 const MOUSE_EVENT: u8 = 0b10;
 const APP_SWITCH_EVENT: u8 = 0b100;
 const MOUSE_CLICK_EVENT: u8 = 0b1000;
+const LLKHF_INJECTED: u32 = 0x0000_0010;
+const LLKHF_INJECTED_LOWER_IL: u32 = 0x0000_0002;
+const LLMHF_INJECTED: u32 = 0x0000_0001;
+const LLMHF_INJECTED_LOWER_IL: u32 = 0x0000_0002;
 
 static INPUT_EVENTS: AtomicU8 = AtomicU8::new(0);
 
@@ -168,8 +172,20 @@ fn hook_thread(
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
+        let kb_event = &*(lparam as *const KBDLLHOOKSTRUCT);
+        if kb_event.flags & (LLKHF_INJECTED | LLKHF_INJECTED_LOWER_IL) != 0 {
+            return unsafe {
+                CallNextHookEx(
+                    std::ptr::null_mut::<std::ffi::c_void>() as HHOOK,
+                    code,
+                    wparam,
+                    lparam,
+                )
+            };
+        }
+
         let mut event = KEYBOARD_EVENT;
-        if is_app_switch_key_event(wparam, lparam) {
+        if is_app_switch_key_event(wparam, kb_event) {
             event |= APP_SWITCH_EVENT;
         }
         record_input_event(event);
@@ -186,6 +202,18 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
+        let mouse_event = &*(lparam as *const MSLLHOOKSTRUCT);
+        if mouse_event.flags & (LLMHF_INJECTED | LLMHF_INJECTED_LOWER_IL) != 0 {
+            return unsafe {
+                CallNextHookEx(
+                    std::ptr::null_mut::<std::ffi::c_void>() as HHOOK,
+                    code,
+                    wparam,
+                    lparam,
+                )
+            };
+        }
+
         let mut event = MOUSE_EVENT;
         if is_mouse_button_down(wparam) {
             event |= MOUSE_CLICK_EVENT;
@@ -226,12 +254,11 @@ fn input_events_from_bits(events: u8) -> InputHookEvents {
     }
 }
 
-unsafe fn is_app_switch_key_event(wparam: WPARAM, lparam: LPARAM) -> bool {
+unsafe fn is_app_switch_key_event(wparam: WPARAM, event: &KBDLLHOOKSTRUCT) -> bool {
     if wparam != WM_KEYDOWN as WPARAM && wparam != WM_SYSKEYDOWN as WPARAM {
         return false;
     }
 
-    let event = &*(lparam as *const KBDLLHOOKSTRUCT);
     let alt_down = virtual_key_pressed(VK_MENU);
     let win_down = virtual_key_pressed(VK_LWIN) || virtual_key_pressed(VK_RWIN);
     let ctrl_down = virtual_key_pressed(VK_CONTROL);

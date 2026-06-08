@@ -2162,7 +2162,8 @@ impl PowerLeafApp {
         }
         for (index, rule) in self.settings.watchdog.rules.iter_mut().enumerate() {
             if let Some(input) = self.inputs.watchdog_launch_paths.get(index) {
-                rule.launch_path = input.read(cx).value().to_string();
+                let launch_path = input.read(cx).value().to_string();
+                rule.launch_path = sanitize_watchdog_launch_path(&launch_path);
             }
             if let Some(input) = self.inputs.watchdog_launch_args.get(index) {
                 rule.launch_args = split_watchdog_args(&input.read(cx).value());
@@ -11247,28 +11248,103 @@ fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
 
 fn new_watchdog_rule(process: &str, action: WatchdogAction) -> WatchdogRule {
     let process_name = process.trim().to_ascii_lowercase();
+    let launch_path = if action == WatchdogAction::RestartIfExited {
+        if Path::new(process).is_absolute() {
+            process_name.clone()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
     WatchdogRule {
         enabled: true,
         name: process_name.clone(),
         process_name: process_name.clone(),
         action,
-        launch_path: if action == WatchdogAction::RestartIfExited {
-            process_name
-        } else {
-            String::new()
-        },
+        launch_path,
         launch_args: Vec::new(),
         restart_delay_seconds: 5,
     }
 }
 
 fn split_watchdog_args(value: &str) -> Vec<String> {
-    value
-        .split_whitespace()
-        .map(str::trim)
-        .filter(|arg| !arg.is_empty())
-        .map(str::to_owned)
-        .collect()
+    let mut args = Vec::new();
+    let mut token = String::new();
+    let mut in_quotes = false;
+    let mut escaping = false;
+    let mut token_started = false;
+
+    for character in value.chars() {
+        if in_quotes {
+            if escaping {
+                if matches!(character, '"' | '\\') {
+                    token.push(character);
+                } else {
+                    token.push('\\');
+                    token.push(character);
+                }
+                token_started = true;
+                escaping = false;
+                continue;
+            }
+
+            match character {
+                '"' => {
+                    in_quotes = false;
+                    token_started = true;
+                }
+                '\\' => {
+                    escaping = true;
+                }
+                _ => {
+                    token.push(character);
+                    token_started = true;
+                }
+            }
+            continue;
+        }
+
+        match character {
+            '"' => {
+                in_quotes = true;
+                token_started = true;
+            }
+            '\\' => {
+                token.push('\\');
+                token_started = true;
+            }
+            character if character.is_whitespace() => {
+                if token_started {
+                    args.push(sanitize_watchdog_arg(&token));
+                    token = String::new();
+                    token_started = false;
+                }
+            }
+            _ => {
+                token.push(character);
+                token_started = true;
+            }
+        }
+    }
+
+    if escaping {
+        token.push('\\');
+    }
+
+    if token_started {
+        args.push(sanitize_watchdog_arg(&token));
+    }
+
+    args
+}
+
+fn sanitize_watchdog_launch_path(value: &str) -> String {
+    value.trim().trim_matches('"').to_owned()
+}
+
+fn sanitize_watchdog_arg(value: &str) -> String {
+    value.to_owned()
 }
 
 fn watchdog_action_label(action: WatchdogAction) -> String {
@@ -12097,6 +12173,29 @@ mod tests {
                 keyboard: true,
                 mouse: true,
             }
+        );
+    }
+
+    #[test]
+    fn split_watchdog_args_supports_quoted_and_spaced_values() {
+        assert_eq!(
+            split_watchdog_args(
+                r#"--timeout 5 "C:\Program Files\Test\app.exe" "--label=hello world""#
+            ),
+            vec![
+                "--timeout",
+                "5",
+                r#"C:\Program Files\Test\app.exe"#,
+                "--label=hello world",
+            ]
+        );
+    }
+
+    #[test]
+    fn split_watchdog_args_preserves_quoted_empty_argument() {
+        assert_eq!(
+            split_watchdog_args(r#""--flag" ""#),
+            vec!["--flag".to_owned(), String::new(),]
         );
     }
 }
