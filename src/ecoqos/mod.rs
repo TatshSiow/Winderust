@@ -34,6 +34,10 @@ use crate::{
         EcoQosSettings,
     },
     foreground::list_processes,
+    rules::{
+        Action, ActionExecution, ActionExecutor, AffinityPolicy, AppMatcher,
+        AppResourceActionBackend,
+    },
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -254,51 +258,40 @@ impl EcoQosManager {
                 continue;
             }
 
-            if let Some(process_state) = self.throttled.get_mut(&process_id) {
-                if let Err(err) = sync_efficiency_cpu_sets(
-                    process_id,
-                    &name,
-                    process_state,
-                    settings.prefer_efficiency_cores,
-                    settings.limit_cpu_sets_on_non_hybrid,
-                    cpu_restriction(settings),
-                    action_log,
-                ) {
-                    failures.record_error("CPU Sets", process_id, &name, err, action_log);
-                    self.record_process_failure(&name);
-                }
-                continue;
-            }
-
-            match enable_efficiency_mode(
+            let action = Action::SetAppEfficiencyMode {
+                app: AppMatcher::ProcessName(name.clone()),
+                enabled: true,
+            };
+            let mut backend = EcoQosActionBackend {
                 process_id,
-                name.clone(),
-                settings.prefer_efficiency_cores,
-                settings.limit_cpu_sets_on_non_hybrid,
-                cpu_restriction(settings),
-            ) {
-                Ok(process) => {
-                    self.clear_process_failure(&name);
-                    self.throttled.insert(process_id, process);
-                    let cpu_sets_note = if settings.prefer_efficiency_cores {
-                        " and preferred efficiency CPU sets"
-                    } else {
-                        ""
-                    };
-                    action_log.record(
-                        ActionLogFeature::EcoQos,
-                        Some(process_id),
-                        name,
-                        ActionLogAction::Apply,
-                        ActionLogResult::Applied,
-                        format!(
-                            "Enabled Windows Efficiency Mode, lowered priority{cpu_sets_note}."
-                        ),
-                    );
+                process_name: name.clone(),
+                throttled: &mut self.throttled,
+                prefer_efficiency_cores: settings.prefer_efficiency_cores,
+                limit_cpu_sets_on_non_hybrid: settings.limit_cpu_sets_on_non_hybrid,
+                restriction: cpu_restriction(settings),
+                action_log,
+                last_error: None,
+                enabled_new_process: false,
+            };
+            let execution = ActionExecutor.apply_app_resource_action(&action, &mut backend);
+            let last_error = backend.last_error.take();
+            let enabled_new_process = backend.enabled_new_process;
+            drop(backend);
+
+            match execution {
+                ActionExecution::Applied | ActionExecution::AlreadyApplied => {
+                    if enabled_new_process {
+                        self.clear_process_failure(&name);
+                    }
                 }
-                Err(err @ (EcoQosError::AccessDenied | EcoQosError::ProcessExited)) => {
+                ActionExecution::Failed(_)
+                    if matches!(
+                        last_error.as_ref(),
+                        Some(EcoQosError::AccessDenied | EcoQosError::ProcessExited)
+                    ) =>
+                {
                     skipped_processes += 1;
-                    if !matches!(err, EcoQosError::ProcessExited) {
+                    if !matches!(last_error.as_ref(), Some(EcoQosError::ProcessExited)) {
                         self.record_process_failure(&name);
                     }
                     action_log.record(
@@ -310,7 +303,9 @@ impl EcoQosManager {
                         "Skipped because the process could not be opened.",
                     );
                 }
-                Err(EcoQosError::Unsupported) => {
+                ActionExecution::Failed(_)
+                    if matches!(last_error.as_ref(), Some(EcoQosError::Unsupported)) =>
+                {
                     skipped_processes += 1;
                     unsupported = true;
                     self.record_process_failure(&name);
@@ -323,8 +318,18 @@ impl EcoQosManager {
                         "Skipped because Windows process power throttling is unsupported.",
                     );
                 }
-                Err(EcoQosError::Failed(err)) => {
+                ActionExecution::Failed(err) => {
                     failures.record_message("Apply", process_id, &name, err, action_log);
+                    self.record_process_failure(&name);
+                }
+                ActionExecution::Unsupported => {
+                    failures.record_message(
+                        "Apply",
+                        process_id,
+                        &name,
+                        "EcoQoS action was not supported by the generic executor.".to_owned(),
+                        action_log,
+                    );
                     self.record_process_failure(&name);
                 }
             }
@@ -435,6 +440,17 @@ impl EcoQosManager {
             suppressed: true,
             newly_suppressed,
         }
+    }
+
+    #[cfg(test)]
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        self.check_process_suppression(process_id, process_name, action_log)
+            .suppressed
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
@@ -570,6 +586,141 @@ impl EcoQosFailures {
             ActionLogResult::Failed,
             message,
         );
+    }
+}
+
+struct EcoQosActionBackend<'a> {
+    process_id: u32,
+    process_name: String,
+    throttled: &'a mut BTreeMap<u32, ThrottledProcess>,
+    prefer_efficiency_cores: bool,
+    limit_cpu_sets_on_non_hybrid: bool,
+    restriction: EcoQosCpuRestriction,
+    action_log: &'a mut ActionLog,
+    last_error: Option<EcoQosError>,
+    enabled_new_process: bool,
+}
+
+impl EcoQosActionBackend<'_> {
+    fn unsupported_action() -> Result<(), String> {
+        Err("EcoQoS backend only supports per-process efficiency-mode actions.".to_owned())
+    }
+}
+
+impl AppResourceActionBackend for EcoQosActionBackend<'_> {
+    fn set_app_efficiency_mode(&mut self, app: &AppMatcher, enabled: bool) -> Result<(), String> {
+        if !enabled {
+            return Err(
+                "EcoQoS backend enables efficiency mode; restore is handled by release paths."
+                    .to_owned(),
+            );
+        }
+
+        if !app_matches_process_name(app, &self.process_name) {
+            return Err(format!(
+                "EcoQoS action target does not match selected process {}.",
+                self.process_name
+            ));
+        }
+
+        if let Some(process_state) = self.throttled.get_mut(&self.process_id) {
+            if let Err(error) = sync_efficiency_cpu_sets(
+                self.process_id,
+                &self.process_name,
+                process_state,
+                self.prefer_efficiency_cores,
+                self.limit_cpu_sets_on_non_hybrid,
+                self.restriction,
+                self.action_log,
+            ) {
+                let message = eco_qos_error_message(&error);
+                self.last_error = Some(error);
+                return Err(message);
+            }
+            return Ok(());
+        }
+
+        match enable_efficiency_mode(
+            self.process_id,
+            self.process_name.clone(),
+            self.prefer_efficiency_cores,
+            self.limit_cpu_sets_on_non_hybrid,
+            self.restriction,
+        ) {
+            Ok(process) => {
+                self.throttled.insert(self.process_id, process);
+                self.enabled_new_process = true;
+                let cpu_sets_note = if self.prefer_efficiency_cores {
+                    " and preferred efficiency CPU sets"
+                } else {
+                    ""
+                };
+                self.action_log.record(
+                    ActionLogFeature::EcoQos,
+                    Some(self.process_id),
+                    self.process_name.clone(),
+                    ActionLogAction::Apply,
+                    ActionLogResult::Applied,
+                    format!("Enabled Windows Efficiency Mode, lowered priority{cpu_sets_note}."),
+                );
+                Ok(())
+            }
+            Err(error) => {
+                let message = eco_qos_error_message(&error);
+                self.last_error = Some(error);
+                Err(message)
+            }
+        }
+    }
+
+    fn set_app_affinity(
+        &mut self,
+        _app: &AppMatcher,
+        _affinity: &AffinityPolicy,
+    ) -> Result<(), String> {
+        Self::unsupported_action()
+    }
+
+    fn set_app_cpu_limit(
+        &mut self,
+        _app: &AppMatcher,
+        _logical_processor_percent: u8,
+    ) -> Result<(), String> {
+        Self::unsupported_action()
+    }
+
+    fn suspend_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
+        Self::unsupported_action()
+    }
+
+    fn resume_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
+        Self::unsupported_action()
+    }
+
+    fn configure_background_efficiency_policy(
+        &mut self,
+        _exclusions: &[AppMatcher],
+        _prefer_efficiency_cores: bool,
+        _logical_processor_percent: Option<u8>,
+    ) -> Result<(), String> {
+        Self::unsupported_action()
+    }
+}
+
+fn app_matches_process_name(app: &AppMatcher, process_name: &str) -> bool {
+    match app {
+        AppMatcher::ProcessName(name) | AppMatcher::Path(name) | AppMatcher::Pattern(name) => {
+            name.trim().eq_ignore_ascii_case(process_name.trim())
+        }
+    }
+}
+
+fn eco_qos_error_message(error: &EcoQosError) -> String {
+    match error {
+        EcoQosError::AccessDenied => "Access denied.".to_owned(),
+        EcoQosError::ProcessExited => "Process exited.".to_owned(),
+        EcoQosError::Unsupported => "Operation unsupported.".to_owned(),
+        EcoQosError::Failed(message) => message.clone(),
     }
 }
 
@@ -1548,6 +1699,42 @@ mod tests {
         assert_eq!(failures.count, 0);
         assert!(log.entries().is_empty());
         assert!(manager.throttled.is_empty());
+    }
+
+    #[test]
+    fn eco_qos_backend_rejects_non_efficiency_resource_actions() {
+        let mut throttled = BTreeMap::new();
+        let mut log = ActionLog::new(8);
+        let mut backend = EcoQosActionBackend {
+            process_id: 42,
+            process_name: "worker.exe".to_owned(),
+            throttled: &mut throttled,
+            prefer_efficiency_cores: false,
+            limit_cpu_sets_on_non_hybrid: false,
+            restriction: EcoQosCpuRestriction {
+                mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+                strategy: EcoQosCpuRestrictionStrategy::Off,
+                control_style: EcoQosCpuRestrictionControlStyle::Percentage,
+                percent: 50,
+                max_logical_processors: 0,
+                core_mask: 0,
+            },
+            action_log: &mut log,
+            last_error: None,
+            enabled_new_process: false,
+        };
+        let action = Action::SuspendApp {
+            app: AppMatcher::ProcessName("worker.exe".to_owned()),
+        };
+
+        assert_eq!(
+            ActionExecutor.apply_app_resource_action(&action, &mut backend),
+            ActionExecution::Failed(
+                "EcoQoS backend only supports per-process efficiency-mode actions.".to_owned()
+            )
+        );
+        assert!(backend.throttled.is_empty());
+        assert!(backend.action_log.entries().is_empty());
     }
 
     fn limited_cpu_set_ids_for_test(

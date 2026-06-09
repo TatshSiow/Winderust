@@ -19,7 +19,12 @@ use crate::{
     power::PowerPlanManager,
     power_source,
     responsiveness::{ForegroundResponsivenessManager, ForegroundResponsivenessSnapshot},
-    rules::{DecisionEngine, DecisionInput, DecisionOutcome, PerformanceModeDecision},
+    rules::{
+        active_app_resource_rules_for_settings, active_power_plan_rules_for_context, Action,
+        ActionExecution, ActionExecutor, AppliedActionStore, ConflictGroup, DecisionEngine,
+        DecisionInput, DetectorEvent, PerformanceModeDecision, PowerPlanActionBackend,
+        PreviousValue, ResolvedAction, RuleEngine, RuntimeProcessInfo, RuntimeState,
+    },
     scheduler::{CpuUsageScheduler, Scheduler},
     suspension::{AppSuspensionManager, AppSuspensionSnapshot},
     tray,
@@ -445,9 +450,20 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             settings_changed || feature_refresh_required(&settings, settings.watchdog.enabled);
         let foreground_responsiveness_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.foreground_responsiveness.enabled);
+        let app_resource_shadow_required = eco_qos_refresh_required
+            || app_suspension_refresh_required
+            || cpu_affinity_refresh_required
+            || background_cpu_restriction_refresh_required
+            || cpu_limiter_refresh_required
+            || watchdog_refresh_required
+            || foreground_responsiveness_refresh_required;
 
         if !app_suspension_freeze_requests.is_empty() {
             next_app_suspension_refresh = Instant::now();
+        }
+
+        if app_resource_shadow_required {
+            runner.run_app_resource_shadow_evaluation(&settings);
         }
 
         if scan_process_appearance && Instant::now() >= next_process_appearance_scan {
@@ -1071,7 +1087,6 @@ struct HiddenAutomationRunner {
     foreground_detector: ForegroundDetector,
     scheduler: Scheduler,
     cpu_usage_scheduler: CpuUsageScheduler,
-    decision_engine: DecisionEngine,
     eco_qos_manager: EcoQosManager,
     app_suspension_manager: AppSuspensionManager,
     last_app_suspension_shell_user_intent: Option<Instant>,
@@ -1083,6 +1098,8 @@ struct HiddenAutomationRunner {
     action_log: ActionLog,
     foreground_responsiveness_manager: ForegroundResponsivenessManager,
     known_process_ids: BTreeSet<u32>,
+    applied_action_store: AppliedActionStore,
+    runtime_state: RuntimeState,
 }
 
 #[derive(Default)]
@@ -1280,6 +1297,27 @@ impl HiddenAutomationRunner {
         )
     }
 
+    fn run_app_resource_shadow_evaluation(&mut self, settings: &Settings) {
+        self.refresh_cpu_usage();
+        let foreground_app = self.foreground_detector.process_name();
+        let rules = active_app_resource_rules_for_settings(
+            settings,
+            foreground_app.as_deref(),
+            self.cpu_usage.percent,
+        );
+        let evaluation =
+            RuleEngine::default().evaluate_active_rules(&rules, &self.applied_action_store);
+        sync_app_resource_applied_actions(
+            &mut self.applied_action_store,
+            &evaluation.desired_actions,
+        );
+        self.runtime_state.active_rules = evaluation
+            .desired_actions
+            .iter()
+            .map(|action| action.rule_id.clone())
+            .collect();
+    }
+
     fn run_check(&mut self, settings: &Settings) {
         let should_refresh_active_plan = self
             .next_active_plan_refresh
@@ -1292,30 +1330,72 @@ impl HiddenAutomationRunner {
             settings.activity_mode.idle_timeout_seconds,
         ));
         self.refresh_cpu_usage();
+        let foreground_process_id = self.foreground_detector.process_id();
         let foreground_app = self.foreground_detector.process_name();
         let schedule = self.scheduler.current_decision(&settings.schedule_mode);
         let cpu_usage_decision = self
             .cpu_usage_scheduler
             .current_decision(&settings.cpu_usage_mode, self.cpu_usage.percent);
-        let decision = self.decision_engine.decide(
-            settings,
-            DecisionInput {
-                activity_state: activity.state,
-                foreground_app,
-                plugged_in: power_source::is_plugged_in(),
-                performance_mode: self.performance_mode_manager.active_decision().map(
-                    |(rule_name, process_name, power_plan_guid)| PerformanceModeDecision {
-                        rule_name,
-                        process_name,
-                        power_plan_guid,
-                    },
-                ),
-                schedule,
-                cpu_usage: cpu_usage_decision,
-            },
-        );
+        self.runtime_state
+            .apply_event(DetectorEvent::ForegroundChanged(
+                foreground_process_id.and_then(|process_id| {
+                    foreground_app
+                        .clone()
+                        .map(|process_name| RuntimeProcessInfo {
+                            process_id,
+                            process_name,
+                        })
+                }),
+            ));
+        if let Some(cpu_load_percent) = self.cpu_usage.percent {
+            self.runtime_state
+                .apply_event(DetectorEvent::CpuLoadChanged(cpu_load_percent));
+        }
+        if let Some(idle_for) = activity.idle_for {
+            self.runtime_state
+                .apply_event(DetectorEvent::UserIdleChanged {
+                    idle_secs: idle_for.as_secs(),
+                });
+        }
+        self.runtime_state
+            .apply_event(DetectorEvent::ActiveSchedulesChanged(
+                schedule
+                    .as_ref()
+                    .map(|schedule| vec![schedule.rule_name.clone()])
+                    .unwrap_or_default(),
+            ));
+        let decision_input = DecisionInput {
+            activity_state: activity.state,
+            foreground_app,
+            plugged_in: power_source::is_plugged_in(),
+            performance_mode: self.performance_mode_manager.active_decision().map(
+                |(rule_name, process_name, power_plan_guid)| PerformanceModeDecision {
+                    rule_name,
+                    process_name,
+                    power_plan_guid,
+                },
+            ),
+            schedule,
+            cpu_usage: cpu_usage_decision,
+        };
+        let rules = active_power_plan_rules_for_context(settings, &decision_input);
+        let evaluation =
+            RuleEngine::default().evaluate_active_rules(&rules, &self.applied_action_store);
 
-        self.apply_decision(&decision);
+        #[cfg(debug_assertions)]
+        {
+            let decision = DecisionEngine.decide(settings, decision_input.clone());
+            debug_assert_eq!(
+                decision.target_guid.as_deref(),
+                power_plan_target_guid_from_resolved_actions(&evaluation.desired_actions)
+                    .as_deref(),
+                "generic power-plan rule engine diverged from DecisionEngine output"
+            );
+        }
+
+        self.apply_power_plan_action(power_plan_action_from_resolved_actions(
+            &evaluation.desired_actions,
+        ));
     }
 
     fn refresh_active_plan(&mut self) {
@@ -1336,41 +1416,57 @@ impl HiddenAutomationRunner {
         }
     }
 
-    fn apply_decision(&mut self, decision: &DecisionOutcome) {
-        let Some(target_guid) = decision.target_guid.as_deref() else {
+    fn apply_power_plan_action(&mut self, resolved: Option<&ResolvedAction>) {
+        let Some(resolved) = resolved else {
+            return;
+        };
+        let action = &resolved.action;
+        let Action::SwitchPowerPlan { plan_guid } = action else {
             return;
         };
 
         let already_active = self
             .current_guid
             .as_deref()
-            .is_some_and(|guid| guid.eq_ignore_ascii_case(target_guid));
+            .is_some_and(|guid| guid.eq_ignore_ascii_case(&plan_guid));
         if already_active {
-            self.clear_switch_failure(target_guid);
+            self.clear_switch_failure(plan_guid);
             return;
         }
 
-        if self.is_switch_suppressed(target_guid) {
+        if self.is_switch_suppressed(plan_guid) {
             return;
         }
 
         if let Some((last_guid, attempted_at)) = &self.last_switch_attempt {
-            if last_guid.eq_ignore_ascii_case(target_guid)
+            if last_guid.eq_ignore_ascii_case(&plan_guid)
                 && attempted_at.elapsed() < SWITCH_RETRY_INTERVAL
             {
                 return;
             }
         }
 
-        self.last_switch_attempt = Some((target_guid.to_owned(), Instant::now()));
+        self.last_switch_attempt = Some((plan_guid.clone(), Instant::now()));
 
-        match self.power.set_active(target_guid) {
-            Ok(()) => {
-                self.clear_switch_failure(target_guid);
-                self.current_guid = Some(target_guid.to_owned());
+        let previous_guid = self.current_guid.clone();
+        let mut backend = CachedPowerPlanBackend {
+            power: &self.power,
+            current_guid: &mut self.current_guid,
+        };
+        match ActionExecutor.apply_power_plan_action(action, &mut backend) {
+            ActionExecution::Applied => {
+                self.clear_switch_failure(plan_guid);
+                self.applied_action_store.record(
+                    resolved.rule_id.clone(),
+                    resolved.action.clone(),
+                    previous_guid.map(PreviousValue::PowerPlanGuid),
+                );
             }
-            Err(_err) => {
-                self.record_switch_failure(target_guid);
+            ActionExecution::AlreadyApplied => {
+                self.clear_switch_failure(plan_guid);
+            }
+            ActionExecution::Unsupported | ActionExecution::Failed(_) => {
+                self.record_switch_failure(plan_guid);
             }
         }
     }
@@ -1399,9 +1495,142 @@ fn switch_failure_key(target_guid: &str) -> String {
     target_guid.trim().to_ascii_lowercase()
 }
 
+fn sync_app_resource_applied_actions(
+    applied_action_store: &mut AppliedActionStore,
+    desired_actions: &[ResolvedAction],
+) {
+    applied_action_store.retain(|group, _| !is_app_resource_conflict_group(group));
+    for desired in desired_actions {
+        if is_app_resource_conflict_group(&desired.conflict_group) {
+            applied_action_store.record_resolved(desired, None);
+        }
+    }
+}
+
+fn is_app_resource_conflict_group(group: &ConflictGroup) -> bool {
+    matches!(
+        group,
+        ConflictGroup::SystemCpuLimit
+            | ConflictGroup::AppEfficiencyMode(_)
+            | ConflictGroup::BackgroundEfficiencyPolicy
+            | ConflictGroup::AppPriority(_)
+            | ConflictGroup::AppAffinity(_)
+            | ConflictGroup::AppSuspension(_)
+            | ConflictGroup::AppLifecycle(_)
+            | ConflictGroup::BackgroundAppPriorityPolicy
+            | ConflictGroup::BackgroundAppAffinityPolicy
+    )
+}
+
+#[cfg(test)]
+fn shadow_app_resource_evaluation(
+    settings: &Settings,
+    foreground_app: Option<&str>,
+    total_cpu_usage_percent: Option<f32>,
+) -> crate::rules::EngineEvaluation {
+    let rules =
+        active_app_resource_rules_for_settings(settings, foreground_app, total_cpu_usage_percent);
+    RuleEngine::default().evaluate_active_rules(&rules, &AppliedActionStore::default())
+}
+
+fn power_plan_action_from_resolved_actions(actions: &[ResolvedAction]) -> Option<&ResolvedAction> {
+    actions
+        .iter()
+        .find(|resolved| matches!(resolved.action, Action::SwitchPowerPlan { .. }))
+}
+
+fn power_plan_target_guid_from_resolved_actions(actions: &[ResolvedAction]) -> Option<String> {
+    power_plan_action_from_resolved_actions(actions).and_then(|resolved| match &resolved.action {
+        Action::SwitchPowerPlan { plan_guid } => Some(plan_guid.clone()),
+        _ => None,
+    })
+}
+
+struct CachedPowerPlanBackend<'a> {
+    power: &'a PowerPlanManager,
+    current_guid: &'a mut Option<String>,
+}
+
+impl PowerPlanActionBackend for CachedPowerPlanBackend<'_> {
+    fn active_power_plan_guid(&mut self) -> Result<Option<String>, String> {
+        Ok(self.current_guid.clone())
+    }
+
+    fn set_active_power_plan(&mut self, plan_guid: &str) -> Result<(), String> {
+        self.power.set_active(plan_guid)?;
+        *self.current_guid = Some(plan_guid.to_owned());
+        Ok(())
+    }
+
+    fn set_core_parking(
+        &mut self,
+        plan_guid: &str,
+        min_cores_percent: u8,
+        max_cores_percent: u8,
+    ) -> Result<(), String> {
+        let values =
+            crate::power::ProcessorPowerAcDcValues::same(crate::power::ProcessorPowerValues::new(
+                u32::from(min_cores_percent),
+                u32::from(min_cores_percent),
+                u32::from(max_cores_percent),
+            ));
+        self.power.apply_processor_power_values(plan_guid, values)
+    }
+
+    fn set_processor_power_values(
+        &mut self,
+        plan_guid: &str,
+        ac_core_parking_min_percent: u8,
+        ac_performance_min_percent: u8,
+        ac_performance_max_percent: u8,
+        dc_core_parking_min_percent: u8,
+        dc_performance_min_percent: u8,
+        dc_performance_max_percent: u8,
+    ) -> Result<(), String> {
+        let values = crate::power::ProcessorPowerAcDcValues {
+            ac: crate::power::ProcessorPowerValues::new(
+                u32::from(ac_core_parking_min_percent),
+                u32::from(ac_performance_min_percent),
+                u32::from(ac_performance_max_percent),
+            ),
+            dc: crate::power::ProcessorPowerValues::new(
+                u32::from(dc_core_parking_min_percent),
+                u32::from(dc_performance_min_percent),
+                u32::from(dc_performance_max_percent),
+            ),
+        };
+        self.power.apply_processor_power_values(plan_guid, values)
+    }
+}
+
+#[cfg(test)]
+fn generic_power_plan_action(decision: &crate::rules::DecisionOutcome) -> Option<Action> {
+    let action = crate::rules::resolved_power_plan_action_for_decision(decision);
+    debug_assert_eq!(
+        decision.target_guid.as_deref(),
+        generic_power_plan_target_guid_from_action(action.as_ref()).as_deref(),
+        "generic power-plan rule adapter diverged from DecisionEngine output"
+    );
+    action
+}
+
+#[cfg(test)]
+fn generic_power_plan_target_guid(decision: &crate::rules::DecisionOutcome) -> Option<String> {
+    generic_power_plan_target_guid_from_action(generic_power_plan_action(decision).as_ref())
+}
+
+#[cfg(test)]
+fn generic_power_plan_target_guid_from_action(action: Option<&Action>) -> Option<String> {
+    match action {
+        Some(Action::SwitchPowerPlan { plan_guid }) => Some(plan_guid.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::{DecisionOutcome, DecisionState};
 
     #[test]
     fn process_appearance_detector_ignores_initial_snapshot() {
@@ -1574,5 +1803,157 @@ mod tests {
         settings.performance_mode.enabled = false;
 
         assert!(!power_plan_checks_required(&settings));
+    }
+
+    #[test]
+    fn generic_power_plan_target_preserves_decision_target() {
+        let decision = DecisionOutcome {
+            target_guid: Some("target-guid".to_owned()),
+            state: DecisionState::ForegroundRule,
+            reason: "Matched foreground rule.".to_owned(),
+        };
+
+        assert_eq!(
+            generic_power_plan_target_guid(&decision).as_deref(),
+            Some("target-guid")
+        );
+    }
+
+    #[test]
+    fn generic_power_plan_action_preserves_switch_action() {
+        let decision = DecisionOutcome {
+            target_guid: Some("target-guid".to_owned()),
+            state: DecisionState::ForegroundRule,
+            reason: "Matched foreground rule.".to_owned(),
+        };
+
+        assert!(matches!(
+            generic_power_plan_action(&decision),
+            Some(Action::SwitchPowerPlan { plan_guid }) if plan_guid == "target-guid"
+        ));
+    }
+
+    #[test]
+    fn context_power_plan_action_preserves_switch_action() {
+        let mut settings = Settings::default();
+        settings.activity_mode.enabled = false;
+        settings.power_plans.performance_guid = Some("target-guid".to_owned());
+        let input = DecisionInput {
+            activity_state: crate::activity::ActivityState::Active,
+            foreground_app: None,
+            plugged_in: None,
+            performance_mode: None,
+            schedule: None,
+            cpu_usage: None,
+        };
+
+        assert!(matches!(
+            crate::rules::resolved_power_plan_action_for_context(&settings, &input),
+            Some(Action::SwitchPowerPlan { plan_guid }) if plan_guid == "target-guid"
+        ));
+    }
+
+    #[test]
+    fn shadow_app_resource_evaluation_accepts_default_settings() {
+        let evaluation =
+            shadow_app_resource_evaluation(&Settings::default(), Some("app.exe"), Some(50.0));
+
+        assert!(evaluation.desired_actions.is_empty());
+        assert!(evaluation.actions_to_restore.is_empty());
+    }
+
+    #[test]
+    fn shadow_app_resource_evaluation_exposes_resolved_rule_ids() {
+        let mut settings = Settings::default();
+        settings.foreground_responsiveness.enabled = true;
+        settings.foreground_responsiveness.boost_foreground_app = true;
+        settings.foreground_responsiveness.foreground_boost =
+            crate::config::ForegroundBoostPriority::AboveNormal;
+
+        let evaluation = shadow_app_resource_evaluation(&settings, Some("Game.EXE"), Some(90.0));
+        let rule_ids = evaluation
+            .desired_actions
+            .iter()
+            .map(|action| action.rule_id.0.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(rule_ids.contains(&"foreground-responsiveness.boost.game.exe"));
+    }
+
+    #[test]
+    fn power_plan_target_guid_reads_rule_engine_switch_action() {
+        let action = Action::SwitchPowerPlan {
+            plan_guid: "target-guid".to_owned(),
+        };
+        let resolved = ResolvedAction {
+            rule_id: crate::rules::RuleId("power-plan.test".to_owned()),
+            rule_name: "Power plan test".to_owned(),
+            priority: crate::rules::PRIORITY_ACTIVITY,
+            conflict_group: action.conflict_group(),
+            action,
+        };
+
+        assert_eq!(
+            power_plan_target_guid_from_resolved_actions(&[resolved]).as_deref(),
+            Some("target-guid")
+        );
+    }
+
+    #[test]
+    fn app_resource_sync_preserves_power_plan_records_and_replaces_resource_records() {
+        let mut store = AppliedActionStore::default();
+        store.record(
+            crate::rules::RuleId("power".to_owned()),
+            Action::SwitchPowerPlan {
+                plan_guid: "target-guid".to_owned(),
+            },
+            None,
+        );
+        store.record(
+            crate::rules::RuleId("old-resource".to_owned()),
+            Action::SuspendApp {
+                app: crate::rules::AppMatcher::ProcessName("old.exe".to_owned()),
+            },
+            None,
+        );
+
+        let action = Action::SetAppCpuLimit {
+            app: crate::rules::AppMatcher::ProcessName("worker.exe".to_owned()),
+            logical_processor_percent: 50,
+        };
+        let resolved = ResolvedAction {
+            rule_id: crate::rules::RuleId("resource".to_owned()),
+            rule_name: "Resource".to_owned(),
+            priority: crate::rules::PRIORITY_BACKGROUND_APP,
+            conflict_group: action.conflict_group(),
+            action,
+        };
+
+        sync_app_resource_applied_actions(&mut store, &[resolved]);
+
+        assert!(store
+            .get(&ConflictGroup::PowerPlan)
+            .is_some_and(|applied| applied.rule_id.0 == "power"));
+        assert!(store
+            .get(&ConflictGroup::AppSuspension(
+                crate::rules::ProcessIdentity("old.exe".to_owned())
+            ))
+            .is_none());
+        assert!(store
+            .get(&ConflictGroup::AppAffinity(crate::rules::ProcessIdentity(
+                "worker.exe".to_owned()
+            )))
+            .is_some_and(|applied| applied.rule_id.0 == "resource"));
+    }
+
+    #[test]
+    fn generic_power_plan_target_stays_empty_without_decision_target() {
+        let decision = DecisionOutcome {
+            target_guid: None,
+            state: DecisionState::PluggedInPause,
+            reason: "Power-plan switching is paused while plugged in.".to_owned(),
+        };
+
+        assert_eq!(generic_power_plan_target_guid(&decision), None);
     }
 }

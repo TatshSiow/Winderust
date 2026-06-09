@@ -45,9 +45,12 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult};
 use crate::config::AppSuspensionSettings;
 use crate::foreground::list_processes;
+use crate::{
+    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    rules::{Action, ActionExecution, ActionExecutor, AppMatcher, AppResourceActionBackend},
+};
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "audiodg.exe",
@@ -539,7 +542,7 @@ impl AppSuspensionManager {
                 TemporaryThawState::None => {}
             }
 
-            match self.suspend_process(process_id, process_name.clone(), now) {
+            match self.apply_suspend_action(process_id, process_name.clone(), now) {
                 Ok(()) => {
                     self.clear_process_failure(&process_name);
                     action_log.record(
@@ -1433,6 +1436,99 @@ impl Drop for AppSuspensionManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
         self.clear_all(&mut action_log, "App Suspension manager dropped");
+    }
+}
+
+impl AppSuspensionManager {
+    fn apply_suspend_action(
+        &mut self,
+        process_id: u32,
+        process_name: String,
+        now: Instant,
+    ) -> Result<(), SuspensionError> {
+        let action = Action::SuspendApp {
+            app: AppMatcher::ProcessName(process_name.clone()),
+        };
+        let mut backend = AppSuspensionActionBackend {
+            manager: self,
+            process_id,
+            process_name,
+            now,
+            last_error: None,
+        };
+        let execution = ActionExecutor.apply_app_resource_action(&action, &mut backend);
+        let last_error = backend.last_error.take();
+        drop(backend);
+
+        match execution {
+            ActionExecution::Applied | ActionExecution::AlreadyApplied => Ok(()),
+            ActionExecution::Failed(err) => Err(last_error.unwrap_or(SuspensionError::Failed(err))),
+            ActionExecution::Unsupported => Err(SuspensionError::Failed(
+                "App Suspension action was not supported by the generic executor.".to_owned(),
+            )),
+        }
+    }
+}
+
+struct AppSuspensionActionBackend<'a> {
+    manager: &'a mut AppSuspensionManager,
+    process_id: u32,
+    process_name: String,
+    now: Instant,
+    last_error: Option<SuspensionError>,
+}
+
+impl AppResourceActionBackend for AppSuspensionActionBackend<'_> {
+    fn set_app_efficiency_mode(&mut self, _app: &AppMatcher, _enabled: bool) -> Result<(), String> {
+        Err("App Suspension backend only supports suspension actions.".to_owned())
+    }
+
+    fn set_app_affinity(
+        &mut self,
+        _app: &AppMatcher,
+        _affinity: &crate::rules::AffinityPolicy,
+    ) -> Result<(), String> {
+        Err("App Suspension backend only supports suspension actions.".to_owned())
+    }
+
+    fn set_app_cpu_limit(
+        &mut self,
+        _app: &AppMatcher,
+        _logical_processor_percent: u8,
+    ) -> Result<(), String> {
+        Err("App Suspension backend only supports suspension actions.".to_owned())
+    }
+
+    fn suspend_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
+        match self
+            .manager
+            .suspend_process(self.process_id, self.process_name.clone(), self.now)
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let message = suspension_error_message(match &error {
+                    SuspensionError::AccessDenied => SuspensionError::AccessDenied,
+                    SuspensionError::NotSupported => SuspensionError::NotSupported,
+                    SuspensionError::Unsupported => SuspensionError::Unsupported,
+                    SuspensionError::Failed(message) => SuspensionError::Failed(message.clone()),
+                });
+                self.last_error = Some(error);
+                Err(message)
+            }
+        }
+    }
+
+    fn resume_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
+        Err("App Suspension resume is handled by release paths.".to_owned())
+    }
+
+    fn configure_background_efficiency_policy(
+        &mut self,
+        _exclusions: &[AppMatcher],
+        _prefer_efficiency_cores: bool,
+        _logical_processor_percent: Option<u8>,
+    ) -> Result<(), String> {
+        Err("App Suspension backend only supports suspension actions.".to_owned())
     }
 }
 
@@ -3078,5 +3174,32 @@ mod tests {
         assert!(is_builtin_excluded("winlogon.exe"));
         assert!(!is_builtin_excluded("browser.exe"));
         assert!(!is_builtin_excluded("ms-teams.exe"));
+    }
+
+    #[test]
+    fn suspension_backend_rejects_non_suspension_resource_actions() {
+        let mut manager = AppSuspensionManager::default();
+        let mut backend = AppSuspensionActionBackend {
+            manager: &mut manager,
+            process_id: 42,
+            process_name: "chat.exe".to_owned(),
+            now: Instant::now(),
+            last_error: None,
+        };
+
+        assert_eq!(
+            ActionExecutor.apply_app_resource_action(
+                &Action::SetAppCpuLimit {
+                    app: AppMatcher::ProcessName("chat.exe".to_owned()),
+                    logical_processor_percent: 50,
+                },
+                &mut backend,
+            ),
+            ActionExecution::Failed(
+                "App Suspension backend only supports suspension actions.".to_owned()
+            )
+        );
+        assert!(backend.manager.suspended.is_empty());
+        assert!(backend.manager.freezers.is_empty());
     }
 }

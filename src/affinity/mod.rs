@@ -30,6 +30,10 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings},
     foreground::list_processes,
+    rules::{
+        Action, ActionExecution, ActionExecutor, AffinityPolicy, AppMatcher,
+        AppResourceActionBackend,
+    },
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -250,13 +254,19 @@ impl CpuAffinityManager {
             }
 
             if let Some(rule) = matching_rule(settings, &process.name) {
-                target_processes.insert(process.id, (process.name, rule.mode, rule.core_mask));
+                target_processes.insert(
+                    process.id,
+                    (
+                        process.name,
+                        affinity_policy_for_rule(rule.mode, rule.core_mask),
+                    ),
+                );
             }
         }
 
         let active_target_names = target_processes
             .values()
-            .map(|(name, _mode, _rule_mask)| process_failure_key(name))
+            .map(|(name, _)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
         self.failure_suppression
             .retain(|name, _| active_target_names.contains(name));
@@ -272,7 +282,7 @@ impl CpuAffinityManager {
         let mut last_error = None;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        for (process_id, (process_name, mode, rule_mask)) in target_processes {
+        for (process_id, (process_name, affinity)) in target_processes {
             let failure_process_name = process_name.clone();
             let suppression =
                 self.check_process_suppression(process_id, &failure_process_name, action_log);
@@ -286,23 +296,34 @@ impl CpuAffinityManager {
                 continue;
             }
 
-            match apply_affinity(
+            let action = Action::SetAppAffinity {
+                app: AppMatcher::ProcessName(process_name.clone()),
+                affinity,
+            };
+            let mut backend = CpuAffinityActionBackend {
                 process_id,
                 process_name,
-                mode,
-                rule_mask,
-                self.adjusted.get(&process_id),
-                self.action_log_feature,
+                existing: self.adjusted.get(&process_id),
+                action_log_feature: self.action_log_feature,
                 action_log,
-            ) {
-                Ok(Some(adjusted)) => {
-                    self.clear_process_failure(&failure_process_name);
-                    self.adjusted.insert(process_id, adjusted);
+                adjusted: None,
+                access_denied: false,
+            };
+            let execution = ActionExecutor.apply_app_resource_action(&action, &mut backend);
+            let adjusted = backend.adjusted.take();
+            let access_denied = backend.access_denied;
+            drop(backend);
+
+            match execution {
+                ActionExecution::Applied | ActionExecution::AlreadyApplied => {
+                    if let Some(adjusted) = adjusted {
+                        self.clear_process_failure(&failure_process_name);
+                        self.adjusted.insert(process_id, adjusted);
+                    } else {
+                        skipped_processes += 1;
+                    }
                 }
-                Ok(None) => {
-                    skipped_processes += 1;
-                }
-                Err(AffinityError::AccessDenied) => {
+                ActionExecution::Failed(_) if access_denied => {
                     skipped_processes += 1;
                     self.record_process_failure(&failure_process_name);
                     action_log.record(
@@ -314,7 +335,23 @@ impl CpuAffinityManager {
                         "Skipped because the process could not be opened.",
                     );
                 }
-                Err(AffinityError::Failed(err)) => {
+                ActionExecution::Failed(err) => {
+                    failed_processes += 1;
+                    if last_error.is_none() {
+                        last_error = Some(err.clone());
+                    }
+                    action_log.record(
+                        ActionLogFeature::CoreSteering,
+                        Some(process_id),
+                        failure_process_name,
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        err,
+                    );
+                }
+                ActionExecution::Unsupported => {
+                    let err = "Core Steering action was not supported by the generic executor."
+                        .to_owned();
                     failed_processes += 1;
                     self.record_process_failure(&failure_process_name);
                     if last_error.is_none() {
@@ -459,6 +496,17 @@ impl CpuAffinityManager {
         }
     }
 
+    #[cfg(test)]
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        self.check_process_suppression(process_id, process_name, action_log)
+            .suppressed
+    }
+
     fn record_process_failure(&mut self, process_name: &str) {
         let suppression = self
             .failure_suppression
@@ -532,6 +580,100 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 pub fn contains_process(list: &[String], process_name: &str) -> bool {
     list.iter()
         .any(|name| name.trim().eq_ignore_ascii_case(process_name.trim()))
+}
+
+fn affinity_policy_for_rule(mode: CpuAffinityMode, core_mask: u64) -> AffinityPolicy {
+    match mode {
+        CpuAffinityMode::Hard => AffinityPolicy::CustomMask(core_mask),
+        CpuAffinityMode::Soft => AffinityPolicy::CpuSetMask(core_mask),
+        CpuAffinityMode::EfficiencyOff => AffinityPolicy::DisableEfficiencyMode,
+    }
+}
+
+fn affinity_target_from_policy(policy: &AffinityPolicy) -> Option<(CpuAffinityMode, u64)> {
+    match policy {
+        AffinityPolicy::CustomMask(mask) => Some((CpuAffinityMode::Hard, *mask)),
+        AffinityPolicy::CpuSetMask(mask) => Some((CpuAffinityMode::Soft, *mask)),
+        AffinityPolicy::DisableEfficiencyMode => Some((CpuAffinityMode::EfficiencyOff, 0)),
+        AffinityPolicy::AllLogicalProcessors
+        | AffinityPolicy::LogicalProcessorPercent(_)
+        | AffinityPolicy::FirstLogicalProcessors(_)
+        | AffinityPolicy::PreferPerformanceCores
+        | AffinityPolicy::PreferEfficiencyCores => None,
+    }
+}
+
+struct CpuAffinityActionBackend<'a, 'log> {
+    process_id: u32,
+    process_name: String,
+    existing: Option<&'a AdjustedProcess>,
+    action_log_feature: ActionLogFeature,
+    action_log: &'log mut ActionLog,
+    adjusted: Option<AdjustedProcess>,
+    access_denied: bool,
+}
+
+impl AppResourceActionBackend for CpuAffinityActionBackend<'_, '_> {
+    fn set_app_efficiency_mode(&mut self, _app: &AppMatcher, _enabled: bool) -> Result<(), String> {
+        Err("Core Steering backend only supports affinity actions.".to_owned())
+    }
+
+    fn set_app_affinity(
+        &mut self,
+        _app: &AppMatcher,
+        affinity: &AffinityPolicy,
+    ) -> Result<(), String> {
+        let Some((mode, rule_mask)) = affinity_target_from_policy(affinity) else {
+            return Err(format!(
+                "Unsupported Core Steering affinity policy: {affinity:?}"
+            ));
+        };
+
+        match apply_affinity(
+            self.process_id,
+            self.process_name.clone(),
+            mode,
+            rule_mask,
+            self.existing,
+            self.action_log_feature,
+            self.action_log,
+        ) {
+            Ok(adjusted) => {
+                self.adjusted = adjusted;
+                Ok(())
+            }
+            Err(AffinityError::AccessDenied) => {
+                self.access_denied = true;
+                Err("Access denied.".to_owned())
+            }
+            Err(error) => Err(affinity_error_message(error)),
+        }
+    }
+
+    fn set_app_cpu_limit(
+        &mut self,
+        _app: &AppMatcher,
+        _logical_processor_percent: u8,
+    ) -> Result<(), String> {
+        Err("Core Steering backend only supports affinity actions.".to_owned())
+    }
+
+    fn suspend_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
+        Err("Core Steering backend only supports affinity actions.".to_owned())
+    }
+
+    fn resume_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
+        Err("Core Steering backend only supports affinity actions.".to_owned())
+    }
+
+    fn configure_background_efficiency_policy(
+        &mut self,
+        _exclusions: &[AppMatcher],
+        _prefer_efficiency_cores: bool,
+        _logical_processor_percent: Option<u8>,
+    ) -> Result<(), String> {
+        Err("Core Steering backend only supports affinity actions.".to_owned())
+    }
 }
 
 pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
@@ -1423,6 +1565,42 @@ mod tests {
         assert_eq!(target_affinity_mask(0b1110, 0b0110), Some(0b0110));
         assert_eq!(target_affinity_mask(0b1000, 0b0111), None);
         assert_eq!(target_affinity_mask(0, 0b0111), None);
+    }
+
+    #[test]
+    fn generic_affinity_policy_maps_to_core_steering_target() {
+        assert_eq!(
+            affinity_target_from_policy(&AffinityPolicy::CustomMask(0b11)),
+            Some((CpuAffinityMode::Hard, 0b11))
+        );
+        assert_eq!(
+            affinity_target_from_policy(&AffinityPolicy::CpuSetMask(0b10)),
+            Some((CpuAffinityMode::Soft, 0b10))
+        );
+        assert_eq!(
+            affinity_target_from_policy(&AffinityPolicy::DisableEfficiencyMode),
+            Some((CpuAffinityMode::EfficiencyOff, 0))
+        );
+        assert_eq!(
+            affinity_target_from_policy(&AffinityPolicy::PreferEfficiencyCores),
+            None
+        );
+    }
+
+    #[test]
+    fn core_steering_rule_maps_to_generic_affinity_policy() {
+        assert_eq!(
+            affinity_policy_for_rule(CpuAffinityMode::Hard, 0b11),
+            AffinityPolicy::CustomMask(0b11)
+        );
+        assert_eq!(
+            affinity_policy_for_rule(CpuAffinityMode::Soft, 0b10),
+            AffinityPolicy::CpuSetMask(0b10)
+        );
+        assert_eq!(
+            affinity_policy_for_rule(CpuAffinityMode::EfficiencyOff, 0),
+            AffinityPolicy::DisableEfficiencyMode
+        );
     }
 
     #[test]

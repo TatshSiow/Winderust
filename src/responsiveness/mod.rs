@@ -24,6 +24,10 @@ use crate::{
         ForegroundBoostPriority, ForegroundResponsivenessSettings, PriorityRule, ProcessPriority,
     },
     foreground::list_processes,
+    rules::{
+        Action, ActionExecution, ActionExecutor, AppMatcher, AppPriorityActionBackend,
+        RuleProcessPriority,
+    },
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -351,25 +355,44 @@ impl ForegroundResponsivenessManager {
                 skipped_processes += 1;
                 continue;
             }
-            match apply_priority(
+            let action = Action::SetAppPriority {
+                app: AppMatcher::ProcessName(process_name.clone()),
+                priority: rule_process_priority(priority),
+            };
+            let mut backend = ForegroundResponsivenessPriorityBackend {
                 process_id,
                 process_name,
-                priority_class(priority),
-                self.adjusted.get(&process_id),
+                existing: self.adjusted.get(&process_id),
                 action_log,
                 source,
-            ) {
-                Ok(Some(adjusted)) => {
-                    self.clear_process_failure(&failure_process_name);
-                    self.adjusted.insert(process_id, adjusted);
+                adjusted: None,
+                skipped: false,
+                last_error: None,
+            };
+            let execution = ActionExecutor.apply_app_priority_action(&action, &mut backend);
+            let adjusted = backend.adjusted.take();
+            let skipped = backend.skipped;
+            let last_error = backend.last_error.take();
+            drop(backend);
+
+            match execution {
+                ActionExecution::Applied | ActionExecution::AlreadyApplied => {
+                    if let Some(adjusted) = adjusted {
+                        self.clear_process_failure(&failure_process_name);
+                        self.adjusted.insert(process_id, adjusted);
+                    } else if skipped {
+                        self.clear_process_failure(&failure_process_name);
+                        skipped_processes += 1;
+                    }
                 }
-                Ok(None) => {
-                    self.clear_process_failure(&failure_process_name);
+                ActionExecution::Failed(_)
+                    if matches!(
+                        last_error.as_ref(),
+                        Some(PriorityError::AccessDenied | PriorityError::ProcessExited)
+                    ) =>
+                {
                     skipped_processes += 1;
-                }
-                Err(err @ (PriorityError::AccessDenied | PriorityError::ProcessExited)) => {
-                    skipped_processes += 1;
-                    if !matches!(err, PriorityError::ProcessExited) {
+                    if !matches!(last_error.as_ref(), Some(PriorityError::ProcessExited)) {
                         self.record_process_failure(&failure_process_name);
                     }
                     action_log.record(
@@ -381,13 +404,24 @@ impl ForegroundResponsivenessManager {
                         "Skipped because the process could not be opened.",
                     );
                 }
-                Err(PriorityError::Failed(err)) => {
+                ActionExecution::Failed(err) => {
                     self.record_process_failure(&failure_process_name);
                     failures.record_message(
                         "Apply",
                         process_id,
                         &failure_process_name,
                         err,
+                        action_log,
+                    );
+                }
+                ActionExecution::Unsupported => {
+                    self.record_process_failure(&failure_process_name);
+                    failures.record_message(
+                        "Apply",
+                        process_id,
+                        &failure_process_name,
+                        "Foreground Responsiveness action was not supported by the generic executor."
+                            .to_owned(),
                         action_log,
                     );
                 }
@@ -416,13 +450,13 @@ impl ForegroundResponsivenessManager {
                 if self.is_process_suppressed(foreground_id, &foreground_failure_name, action_log) {
                     skipped_processes += 1;
                 } else {
-                    match self.update_foreground_boost(
+                    match self.apply_foreground_boost_action(
                         foreground_id,
                         foreground_process_name.as_deref(),
                         current_process_id,
                         current_session_id,
                         settings.foreground_stability_delay_ms,
-                        foreground_boost_priority_class(settings.foreground_boost),
+                        settings.foreground_boost,
                         action_log,
                     ) {
                         Ok(()) => {
@@ -509,6 +543,44 @@ impl ForegroundResponsivenessManager {
             action_log,
             reason,
         )
+    }
+
+    fn apply_foreground_boost_action(
+        &mut self,
+        process_id: u32,
+        process_name: Option<&str>,
+        current_process_id: u32,
+        current_session_id: u32,
+        stability_delay_ms: u64,
+        foreground_boost: ForegroundBoostPriority,
+        action_log: &mut ActionLog,
+    ) -> Result<(), PriorityError> {
+        let action = Action::BoostForegroundPriority {
+            app: AppMatcher::ProcessName(process_name.unwrap_or_default().to_owned()),
+            priority: foreground_boost_rule_priority(foreground_boost),
+        };
+        let mut backend = ForegroundBoostPriorityBackend {
+            manager: self,
+            process_id,
+            process_name,
+            current_process_id,
+            current_session_id,
+            stability_delay_ms,
+            priority_class: foreground_boost_priority_class(foreground_boost),
+            action_log,
+            last_error: None,
+        };
+        let execution = ActionExecutor.apply_app_priority_action(&action, &mut backend);
+        let last_error = backend.last_error.take();
+        drop(backend);
+
+        match execution {
+            ActionExecution::Applied | ActionExecution::AlreadyApplied => Ok(()),
+            ActionExecution::Failed(err) => Err(last_error.unwrap_or(PriorityError::Failed(err))),
+            ActionExecution::Unsupported => Err(PriorityError::Failed(
+                "Foreground boost action was not supported by the generic executor.".to_owned(),
+            )),
+        }
     }
 
     fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> PriorityFailures {
@@ -996,6 +1068,7 @@ fn auto_balance_should_run(
         })
 }
 
+#[cfg(test)]
 pub const fn priority_class(priority: ProcessPriority) -> u32 {
     match priority {
         ProcessPriority::Normal => NORMAL_PRIORITY_CLASS,
@@ -1004,10 +1077,149 @@ pub const fn priority_class(priority: ProcessPriority) -> u32 {
     }
 }
 
+fn rule_process_priority(priority: ProcessPriority) -> RuleProcessPriority {
+    match priority {
+        ProcessPriority::Normal => RuleProcessPriority::Normal,
+        ProcessPriority::BelowNormal => RuleProcessPriority::BelowNormal,
+        ProcessPriority::Idle => RuleProcessPriority::Idle,
+    }
+}
+
+fn priority_class_from_rule_priority(priority: RuleProcessPriority) -> Option<u32> {
+    match priority {
+        RuleProcessPriority::Idle => Some(IDLE_PRIORITY_CLASS),
+        RuleProcessPriority::BelowNormal => Some(BELOW_NORMAL_PRIORITY_CLASS),
+        RuleProcessPriority::Normal => Some(NORMAL_PRIORITY_CLASS),
+        RuleProcessPriority::AboveNormal | RuleProcessPriority::High => None,
+    }
+}
+
 pub const fn foreground_boost_priority_class(priority: ForegroundBoostPriority) -> u32 {
     match priority {
         ForegroundBoostPriority::Normal => NORMAL_PRIORITY_CLASS,
         ForegroundBoostPriority::AboveNormal => ABOVE_NORMAL_PRIORITY_CLASS,
+    }
+}
+
+fn foreground_boost_rule_priority(priority: ForegroundBoostPriority) -> RuleProcessPriority {
+    match priority {
+        ForegroundBoostPriority::Normal => RuleProcessPriority::Normal,
+        ForegroundBoostPriority::AboveNormal => RuleProcessPriority::AboveNormal,
+    }
+}
+
+struct ForegroundBoostPriorityBackend<'a, 'name, 'log> {
+    manager: &'a mut ForegroundResponsivenessManager,
+    process_id: u32,
+    process_name: Option<&'name str>,
+    current_process_id: u32,
+    current_session_id: u32,
+    stability_delay_ms: u64,
+    priority_class: u32,
+    action_log: &'log mut ActionLog,
+    last_error: Option<PriorityError>,
+}
+
+impl AppPriorityActionBackend for ForegroundBoostPriorityBackend<'_, '_, '_> {
+    fn app_priority(&mut self, _app: &AppMatcher) -> Result<Option<RuleProcessPriority>, String> {
+        Ok(None)
+    }
+
+    fn set_app_priority(
+        &mut self,
+        _app: &AppMatcher,
+        priority: RuleProcessPriority,
+    ) -> Result<(), String> {
+        if priority != RuleProcessPriority::AboveNormal {
+            return Err(format!(
+                "Foreground boost does not support {priority:?} priority."
+            ));
+        }
+
+        match self.manager.update_foreground_boost(
+            self.process_id,
+            self.process_name,
+            self.current_process_id,
+            self.current_session_id,
+            self.stability_delay_ms,
+            self.priority_class,
+            self.action_log,
+        ) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let message = priority_error_message(&error);
+                self.last_error = Some(error);
+                Err(message)
+            }
+        }
+    }
+
+    fn lower_background_apps(
+        &mut self,
+        _priority: RuleProcessPriority,
+        _exclusions: &[AppMatcher],
+    ) -> Result<(), String> {
+        Err("Foreground boost backend expects a foreground boost action.".to_owned())
+    }
+}
+
+struct ForegroundResponsivenessPriorityBackend<'a, 'log> {
+    process_id: u32,
+    process_name: String,
+    existing: Option<&'a AdjustedProcess>,
+    action_log: &'log mut ActionLog,
+    source: PriorityTargetSource,
+    adjusted: Option<AdjustedProcess>,
+    skipped: bool,
+    last_error: Option<PriorityError>,
+}
+
+impl AppPriorityActionBackend for ForegroundResponsivenessPriorityBackend<'_, '_> {
+    fn app_priority(&mut self, _app: &AppMatcher) -> Result<Option<RuleProcessPriority>, String> {
+        Ok(None)
+    }
+
+    fn set_app_priority(
+        &mut self,
+        _app: &AppMatcher,
+        priority: RuleProcessPriority,
+    ) -> Result<(), String> {
+        let Some(priority_class) = priority_class_from_rule_priority(priority) else {
+            return Err(format!(
+                "Foreground Responsiveness does not support {priority:?} background priority."
+            ));
+        };
+
+        match apply_priority(
+            self.process_id,
+            self.process_name.clone(),
+            priority_class,
+            self.existing,
+            self.action_log,
+            self.source,
+        ) {
+            Ok(Some(adjusted)) => {
+                self.adjusted = Some(adjusted);
+                Ok(())
+            }
+            Ok(None) => {
+                self.skipped = true;
+                Ok(())
+            }
+            Err(error) => {
+                let message = priority_error_message(&error);
+                self.last_error = Some(error);
+                Err(message)
+            }
+        }
+    }
+
+    fn lower_background_apps(
+        &mut self,
+        _priority: RuleProcessPriority,
+        _exclusions: &[AppMatcher],
+    ) -> Result<(), String> {
+        Err("Foreground Responsiveness backend expects per-process priority actions.".to_owned())
     }
 }
 
@@ -1119,6 +1331,14 @@ enum PriorityError {
     AccessDenied,
     ProcessExited,
     Failed(String),
+}
+
+fn priority_error_message(error: &PriorityError) -> String {
+    match error {
+        PriorityError::AccessDenied => "Access denied.".to_owned(),
+        PriorityError::ProcessExited => "Process exited.".to_owned(),
+        PriorityError::Failed(message) => message.clone(),
+    }
 }
 
 #[derive(Default)]
@@ -1371,6 +1591,97 @@ mod tests {
             foreground_boost_priority_class(ForegroundBoostPriority::AboveNormal),
             ABOVE_NORMAL_PRIORITY_CLASS
         );
+    }
+
+    #[test]
+    fn process_priority_maps_to_generic_rule_priority() {
+        assert_eq!(
+            rule_process_priority(ProcessPriority::Normal),
+            RuleProcessPriority::Normal
+        );
+        assert_eq!(
+            rule_process_priority(ProcessPriority::BelowNormal),
+            RuleProcessPriority::BelowNormal
+        );
+        assert_eq!(
+            rule_process_priority(ProcessPriority::Idle),
+            RuleProcessPriority::Idle
+        );
+    }
+
+    #[test]
+    fn foreground_boost_maps_to_generic_rule_priority() {
+        assert_eq!(
+            foreground_boost_rule_priority(ForegroundBoostPriority::Normal),
+            RuleProcessPriority::Normal
+        );
+        assert_eq!(
+            foreground_boost_rule_priority(ForegroundBoostPriority::AboveNormal),
+            RuleProcessPriority::AboveNormal
+        );
+    }
+
+    #[test]
+    fn responsiveness_priority_backend_rejects_boost_priorities() {
+        let mut log = ActionLog::new(8);
+        let mut backend = ForegroundResponsivenessPriorityBackend {
+            process_id: 42,
+            process_name: "worker.exe".to_owned(),
+            existing: None,
+            action_log: &mut log,
+            source: PriorityTargetSource::Rule,
+            adjusted: None,
+            skipped: false,
+            last_error: None,
+        };
+
+        assert_eq!(
+            ActionExecutor.apply_app_priority_action(
+                &Action::SetAppPriority {
+                    app: AppMatcher::ProcessName("worker.exe".to_owned()),
+                    priority: RuleProcessPriority::AboveNormal,
+                },
+                &mut backend,
+            ),
+            ActionExecution::Failed(
+                "Foreground Responsiveness does not support AboveNormal background priority."
+                    .to_owned()
+            )
+        );
+        assert!(backend.adjusted.is_none());
+        assert!(log.entries().is_empty());
+    }
+
+    #[test]
+    fn foreground_boost_backend_rejects_non_boost_priority() {
+        let mut manager = ForegroundResponsivenessManager::default();
+        let mut log = ActionLog::new(8);
+        let mut backend = ForegroundBoostPriorityBackend {
+            manager: &mut manager,
+            process_id: 42,
+            process_name: Some("game.exe"),
+            current_process_id: 1,
+            current_session_id: 0,
+            stability_delay_ms: 0,
+            priority_class: ABOVE_NORMAL_PRIORITY_CLASS,
+            action_log: &mut log,
+            last_error: None,
+        };
+
+        assert_eq!(
+            ActionExecutor.apply_app_priority_action(
+                &Action::BoostForegroundPriority {
+                    app: AppMatcher::ProcessName("game.exe".to_owned()),
+                    priority: RuleProcessPriority::Normal,
+                },
+                &mut backend,
+            ),
+            ActionExecution::Failed(
+                "Foreground boost does not support Normal priority.".to_owned()
+            )
+        );
+        assert!(backend.manager.boosted.is_none());
+        assert!(log.entries().is_empty());
     }
 
     #[test]

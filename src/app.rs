@@ -63,7 +63,8 @@ use crate::{
     power_source,
     responsiveness::{self, AutoBalanceProcessState, ForegroundResponsivenessSnapshot},
     rules::{
-        DecisionEngine, DecisionInput, DecisionOutcome, DecisionState, PerformanceModeDecision,
+        Action, ActionExecution, ActionExecutor, DecisionEngine, DecisionInput, DecisionOutcome,
+        DecisionState, PerformanceModeDecision, PowerPlanActionBackend,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
     startup,
@@ -298,6 +299,72 @@ struct InitialProcessorPowerState {
     target_plan_guid: Option<String>,
     loaded_plan_guid: Option<String>,
     status_message: String,
+}
+
+struct UiPowerPlanBackend<'a> {
+    power: &'a PowerPlanManager,
+}
+
+impl PowerPlanActionBackend for UiPowerPlanBackend<'_> {
+    fn active_power_plan_guid(&mut self) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
+    fn set_active_power_plan(&mut self, plan_guid: &str) -> Result<(), String> {
+        self.power.set_active(plan_guid)
+    }
+
+    fn set_core_parking(
+        &mut self,
+        plan_guid: &str,
+        min_cores_percent: u8,
+        max_cores_percent: u8,
+    ) -> Result<(), String> {
+        let values = ProcessorPowerAcDcValues::same(ProcessorPowerValues::new(
+            u32::from(min_cores_percent),
+            u32::from(min_cores_percent),
+            u32::from(max_cores_percent),
+        ));
+        self.power.apply_processor_power_values(plan_guid, values)
+    }
+
+    fn set_processor_power_values(
+        &mut self,
+        plan_guid: &str,
+        ac_core_parking_min_percent: u8,
+        ac_performance_min_percent: u8,
+        ac_performance_max_percent: u8,
+        dc_core_parking_min_percent: u8,
+        dc_performance_min_percent: u8,
+        dc_performance_max_percent: u8,
+    ) -> Result<(), String> {
+        let values = ProcessorPowerAcDcValues {
+            ac: ProcessorPowerValues::new(
+                u32::from(ac_core_parking_min_percent),
+                u32::from(ac_performance_min_percent),
+                u32::from(ac_performance_max_percent),
+            ),
+            dc: ProcessorPowerValues::new(
+                u32::from(dc_core_parking_min_percent),
+                u32::from(dc_performance_min_percent),
+                u32::from(dc_performance_max_percent),
+            ),
+        };
+        self.power.apply_processor_power_values(plan_guid, values)
+    }
+}
+
+fn processor_power_action(plan_guid: &str, values: ProcessorPowerAcDcValues) -> Action {
+    let values = values.normalized();
+    Action::SetProcessorPowerValues {
+        plan_guid: plan_guid.to_owned(),
+        ac_core_parking_min_percent: values.ac.core_parking_min as u8,
+        ac_performance_min_percent: values.ac.performance_min as u8,
+        ac_performance_max_percent: values.ac.performance_max as u8,
+        dc_core_parking_min_percent: values.dc.core_parking_min as u8,
+        dc_performance_min_percent: values.dc.performance_min as u8,
+        dc_performance_max_percent: values.dc.performance_max as u8,
+    }
 }
 
 #[derive(Clone)]
@@ -1067,15 +1134,20 @@ impl PowerLeafApp {
         let values = self.processor_power_values();
         self.set_processor_power_values(values);
 
-        match self.power.apply_processor_power_values(&plan.guid, values) {
-            Ok(()) => {
+        let action = processor_power_action(&plan.guid, values);
+        let mut backend = UiPowerPlanBackend { power: &self.power };
+        match ActionExecutor.apply_power_plan_action(&action, &mut backend) {
+            ActionExecution::Applied | ActionExecution::AlreadyApplied => {
                 self.processor_power_loaded_plan_guid = Some(plan.guid.clone());
                 self.processor_power_dirty = false;
                 self.status_message =
                     t!("processor_power.applied_custom", plan = plan.display_name()).to_string();
                 self.refresh_active_plan();
             }
-            Err(err) => self.status_message = err,
+            ActionExecution::Failed(err) => self.status_message = err,
+            ActionExecution::Unsupported => {
+                self.status_message = "Processor power action is not supported.".to_owned();
+            }
         }
     }
 
@@ -1219,13 +1291,20 @@ impl PowerLeafApp {
 
         self.last_switch_attempt = Some((target_guid.to_owned(), Instant::now()));
 
-        match self.power.set_active(target_guid) {
-            Ok(()) => {
+        let action = Action::SwitchPowerPlan {
+            plan_guid: target_guid.to_owned(),
+        };
+        let mut backend = UiPowerPlanBackend { power: &self.power };
+        match ActionExecutor.apply_power_plan_action(&action, &mut backend) {
+            ActionExecution::Applied | ActionExecution::AlreadyApplied => {
                 self.status_message =
                     t!("status.switched_power_plan", reason = self.decision.reason).to_string();
                 self.refresh_power_plans();
             }
-            Err(err) => self.status_message = err,
+            ActionExecution::Failed(err) => self.status_message = err,
+            ActionExecution::Unsupported => {
+                self.status_message = "Power plan action is not supported.".to_owned();
+            }
         }
     }
 
@@ -12701,6 +12780,30 @@ mod tests {
             ProcessorPowerSlider::DcCoreParkingMin.paired_power_source(),
             ProcessorPowerSlider::AcCoreParkingMin
         );
+    }
+
+    #[test]
+    fn processor_power_action_preserves_ac_and_dc_values() {
+        let action = processor_power_action(
+            "plan-guid",
+            ProcessorPowerAcDcValues {
+                ac: ProcessorPowerValues::new(10, 20, 90),
+                dc: ProcessorPowerValues::new(5, 15, 70),
+            },
+        );
+
+        assert!(matches!(
+            action,
+            Action::SetProcessorPowerValues {
+                plan_guid,
+                ac_core_parking_min_percent: 10,
+                ac_performance_min_percent: 20,
+                ac_performance_max_percent: 90,
+                dc_core_parking_min_percent: 5,
+                dc_performance_min_percent: 15,
+                dc_performance_max_percent: 70,
+            } if plan_guid == "plan-guid"
+        ));
     }
 
     #[test]
