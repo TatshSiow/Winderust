@@ -49,7 +49,10 @@ use crate::config::AppSuspensionSettings;
 use crate::foreground::list_processes;
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    rules::{Action, ActionExecution, ActionExecutor, AppMatcher, AppResourceActionBackend},
+    rules::{
+        Action, ActionExecution, ActionExecutor, AppMatcher, AppResourceActionBackend,
+        ExecutionFailureState, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+    },
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -80,7 +83,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
 const NETWORK_DETECTION_FAILURE_KEY: &str = "network-detection";
 const AUDIO_DETECTION_FAILURE_KEY: &str = "audio-detection";
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,11 +176,7 @@ struct SuspendedProcess {
     suspended_since: Instant,
 }
 
-#[derive(Default)]
-struct AppSuspensionFailureSuppression {
-    attempts: u8,
-    suppression_logged: bool,
-}
+type AppSuspensionFailureSuppression = ExecutionFailureState;
 
 struct TemporaryThaw {
     process_name: String,
@@ -1355,12 +1354,11 @@ impl AppSuspensionManager {
         else {
             return false;
         };
-        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
             return false;
         }
 
-        if !suppression.suppression_logged {
-            suppression.suppression_logged = true;
+        if suppression.mark_suppression_logged() {
             action_log.record(
                 ActionLogFeature::AppSuspension,
                 Some(process_id),
@@ -1381,7 +1379,7 @@ impl AppSuspensionManager {
             .failure_suppression
             .entry(process_name_key(process_name))
             .or_default();
-        suppression.attempts = suppression.attempts.saturating_add(1);
+        suppression.record_failure();
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
@@ -1398,12 +1396,11 @@ impl AppSuspensionManager {
         let Some(suppression) = self.action_failure_suppression.get_mut(key) else {
             return false;
         };
-        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
             return false;
         }
 
-        if !suppression.suppression_logged {
-            suppression.suppression_logged = true;
+        if suppression.mark_suppression_logged() {
             action_log.record(
                 ActionLogFeature::AppSuspension,
                 None,
@@ -1424,7 +1421,7 @@ impl AppSuspensionManager {
             .action_failure_suppression
             .entry(key.to_owned())
             .or_default();
-        suppression.attempts = suppression.attempts.saturating_add(1);
+        suppression.record_failure();
     }
 
     fn clear_action_failure(&mut self, key: &str) {

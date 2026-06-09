@@ -22,8 +22,9 @@ use crate::{
     rules::{
         active_app_resource_rules_for_settings, active_power_plan_rules_for_context, Action,
         ActionExecution, ActionExecutor, AppliedActionStore, ConflictGroup, DecisionEngine,
-        DecisionInput, DetectorEvent, PerformanceModeDecision, PowerPlanActionBackend,
-        PreviousValue, ResolvedAction, RuleEngine, RuntimeProcessInfo, RuntimeState,
+        DecisionInput, DetectorEvent, ExecutionFailureState, PerformanceModeDecision,
+        PowerPlanActionBackend, PreviousValue, ResolvedAction, RuleEngine, RuntimeProcessInfo,
+        RuntimeState, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
     suspension::{AppSuspensionManager, AppSuspensionSnapshot},
@@ -48,7 +49,7 @@ const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
-const SWITCH_FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
+const SWITCH_FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
 
 pub struct BackgroundAutomation {
     shared: Arc<SharedAutomationState>,
@@ -1102,10 +1103,7 @@ struct HiddenAutomationRunner {
     runtime_state: RuntimeState,
 }
 
-#[derive(Default)]
-struct SwitchFailureSuppression {
-    attempts: u8,
-}
+type SwitchFailureSuppression = ExecutionFailureState;
 
 impl HiddenAutomationRunner {
     fn note_settings(&mut self, settings: &Settings) -> bool {
@@ -1474,7 +1472,9 @@ impl HiddenAutomationRunner {
     fn is_switch_suppressed(&self, target_guid: &str) -> bool {
         self.switch_failure_suppression
             .get(&switch_failure_key(target_guid))
-            .is_some_and(|suppression| suppression.attempts >= SWITCH_FAILURE_SUPPRESSION_THRESHOLD)
+            .is_some_and(|suppression| {
+                suppression.is_suppressed_at(SWITCH_FAILURE_SUPPRESSION_THRESHOLD)
+            })
     }
 
     fn record_switch_failure(&mut self, target_guid: &str) {
@@ -1482,7 +1482,7 @@ impl HiddenAutomationRunner {
             .switch_failure_suppression
             .entry(switch_failure_key(target_guid))
             .or_default();
-        suppression.attempts = suppression.attempts.saturating_add(1);
+        suppression.record_failure();
     }
 
     fn clear_switch_failure(&mut self, target_guid: &str) {

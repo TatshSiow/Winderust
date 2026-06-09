@@ -20,7 +20,10 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{WatchdogAction, WatchdogRule, WatchdogSettings},
     foreground::{list_processes, ProcessInfo},
-    rules::{Action, ActionExecution, ActionExecutor, AppLifecycleActionBackend, AppMatcher},
+    rules::{
+        Action, ActionExecution, ActionExecutor, AppLifecycleActionBackend, AppMatcher,
+        ExecutionFailureState, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+    },
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -53,7 +56,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
 ];
 
 const WATCHDOG_ALLOWED_RESTART_EXTENSIONS: &[&str] = &["exe", "com"];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchdogSnapshot {
@@ -81,11 +84,7 @@ struct RestartRuleState {
     missing_since: Option<Instant>,
 }
 
-#[derive(Default)]
-struct WatchdogFailureSuppression {
-    attempts: u8,
-    suppression_logged: bool,
-}
+type WatchdogFailureSuppression = ExecutionFailureState;
 
 #[derive(Default)]
 struct WatchdogFailures {
@@ -354,12 +353,11 @@ impl WatchdogManager {
         let Some(suppression) = self.failure_suppression.get_mut(key) else {
             return false;
         };
-        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
             return false;
         }
 
-        if !suppression.suppression_logged {
-            suppression.suppression_logged = true;
+        if suppression.mark_suppression_logged() {
             action_log.record(
                 ActionLogFeature::Watchdog,
                 None,
@@ -378,7 +376,7 @@ impl WatchdogManager {
 
     fn record_rule_failure(&mut self, key: &str) {
         let suppression = self.failure_suppression.entry(key.to_owned()).or_default();
-        suppression.attempts = suppression.attempts.saturating_add(1);
+        suppression.record_failure();
     }
 
     fn clear_rule_failure(&mut self, key: &str) {

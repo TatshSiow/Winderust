@@ -21,7 +21,10 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{CpuLimiterRule, CpuLimiterSettings},
     foreground::list_processes,
-    rules::{Action, ActionExecution, ActionExecutor, AppMatcher, AppResourceActionBackend},
+    rules::{
+        Action, ActionExecution, ActionExecutor, AppMatcher, AppResourceActionBackend,
+        ExecutionFailureState, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+    },
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -52,7 +55,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuLimiterSnapshot {
@@ -89,11 +92,7 @@ struct LimitedProcess {
     applied_affinity: usize,
 }
 
-#[derive(Default)]
-struct CpuLimiterFailureSuppression {
-    attempts: u8,
-    suppression_logged: bool,
-}
+type CpuLimiterFailureSuppression = ExecutionFailureState;
 
 #[derive(Clone, Copy)]
 struct ProcessCpuSample {
@@ -467,12 +466,11 @@ impl CpuLimiterManager {
         else {
             return false;
         };
-        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
             return false;
         }
 
-        if !suppression.suppression_logged {
-            suppression.suppression_logged = true;
+        if suppression.mark_suppression_logged() {
             action_log.record(
                 ActionLogFeature::CpuLimiter,
                 Some(process_id),
@@ -493,7 +491,7 @@ impl CpuLimiterManager {
             .failure_suppression
             .entry(process_failure_key(process_name))
             .or_default();
-        suppression.attempts = suppression.attempts.saturating_add(1);
+        suppression.record_failure();
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {

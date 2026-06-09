@@ -36,7 +36,8 @@ use crate::{
     foreground::list_processes,
     rules::{
         Action, ActionExecution, ActionExecutor, AffinityPolicy, AppMatcher,
-        AppResourceActionBackend,
+        AppResourceActionBackend, ExecutionFailureState, ExecutionSuppression,
+        DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
 };
 
@@ -66,7 +67,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
+const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EcoQosSnapshot {
@@ -97,11 +98,7 @@ struct ThrottledProcess {
     applied_affinity: Option<usize>,
 }
 
-#[derive(Default)]
-struct EcoQosFailureSuppression {
-    attempts: u8,
-    suppression_logged: bool,
-}
+type EcoQosFailureSuppression = ExecutionFailureState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EcoQosCpuRestriction {
@@ -416,14 +413,12 @@ impl EcoQosManager {
         else {
             return ProcessSuppression::default();
         };
-        if suppression.attempts < FAILURE_SUPPRESSION_THRESHOLD {
+        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
             return ProcessSuppression::default();
         }
 
-        let mut newly_suppressed = false;
-        if !suppression.suppression_logged {
-            suppression.suppression_logged = true;
-            newly_suppressed = true;
+        let newly_suppressed = suppression.mark_suppression_logged();
+        if newly_suppressed {
             action_log.record(
                 ActionLogFeature::EcoQos,
                 Some(process_id),
@@ -436,10 +431,7 @@ impl EcoQosManager {
             );
         }
 
-        ProcessSuppression {
-            suppressed: true,
-            newly_suppressed,
-        }
+        ProcessSuppression::active(newly_suppressed)
     }
 
     #[cfg(test)]
@@ -458,7 +450,7 @@ impl EcoQosManager {
             .failure_suppression
             .entry(process_failure_key(process_name))
             .or_default();
-        suppression.attempts = suppression.attempts.saturating_add(1);
+        suppression.record_failure();
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
@@ -467,11 +459,7 @@ impl EcoQosManager {
     }
 }
 
-#[derive(Default)]
-struct ProcessSuppression {
-    suppressed: bool,
-    newly_suppressed: bool,
-}
+type ProcessSuppression = ExecutionSuppression;
 
 fn should_ignore_foreground_process(
     settings: &EcoQosSettings,

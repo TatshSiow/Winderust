@@ -2,6 +2,7 @@ pub mod action_executor;
 pub mod app_resource_adapter;
 pub mod decision_engine;
 pub mod engine;
+pub mod execution_failure;
 pub mod model;
 pub mod power_plan_adapter;
 pub mod resolver;
@@ -23,6 +24,10 @@ pub use decision_engine::{
 };
 #[allow(unused_imports)]
 pub use engine::{EngineEvaluation, RuleEngine};
+#[allow(unused_imports)]
+pub use execution_failure::{
+    ExecutionFailureState, ExecutionSuppression, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+};
 #[allow(unused_imports)]
 pub use model::{
     Action, AffinityPolicy, AppMatcher, AppResourcePolicy, AppStatePolicy, AppliedAction,
