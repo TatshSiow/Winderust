@@ -20,11 +20,11 @@ use crate::{
     power_source,
     responsiveness::{ForegroundResponsivenessManager, ForegroundResponsivenessSnapshot},
     rules::{
-        active_app_resource_rules_for_settings, active_power_plan_rules_for_context, Action,
-        ActionExecution, ActionExecutor, AppliedActionStore, ConflictGroup, DecisionEngine,
-        DecisionInput, DetectorEvent, ExecutionFailureState, PerformanceModeDecision,
-        PowerPlanActionBackend, PreviousValue, ResolvedAction, RuleEngine, RuntimeProcessInfo,
-        RuntimeState, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+        active_app_resource_rules_for_settings, active_power_plan_rules_for_context,
+        set_execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
+        AppliedActionStore, ConflictGroup, DecisionInput, DetectorEvent, ExecutionFailureState,
+        PerformanceModeDecision, PowerPlanActionBackend, PreviousValue, ResolvedAction, RuleEngine,
+        RuntimeProcessInfo, RuntimeState,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
     suspension::{AppSuspensionManager, AppSuspensionSnapshot},
@@ -49,7 +49,6 @@ const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
-const SWITCH_FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
 
 pub struct BackgroundAutomation {
     shared: Arc<SharedAutomationState>,
@@ -1108,6 +1107,9 @@ type SwitchFailureSuppression = ExecutionFailureState;
 impl HiddenAutomationRunner {
     fn note_settings(&mut self, settings: &Settings) -> bool {
         self.action_log.set_mode(settings.advanced.action_log_mode);
+        set_execution_failure_suppression_threshold(
+            settings.advanced.execution_failure_suppression_threshold(),
+        );
 
         let changed = self.last_settings.as_ref() != Some(settings);
         if changed {
@@ -1382,7 +1384,7 @@ impl HiddenAutomationRunner {
 
         #[cfg(debug_assertions)]
         {
-            let decision = DecisionEngine.decide(settings, decision_input.clone());
+            let decision = crate::rules::DecisionEngine.decide(settings, decision_input.clone());
             debug_assert_eq!(
                 decision.target_guid.as_deref(),
                 power_plan_target_guid_from_resolved_actions(&evaluation.desired_actions)
@@ -1472,9 +1474,7 @@ impl HiddenAutomationRunner {
     fn is_switch_suppressed(&self, target_guid: &str) -> bool {
         self.switch_failure_suppression
             .get(&switch_failure_key(target_guid))
-            .is_some_and(|suppression| {
-                suppression.is_suppressed_at(SWITCH_FAILURE_SUPPRESSION_THRESHOLD)
-            })
+            .is_some_and(ExecutionFailureState::is_suppressed)
     }
 
     fn record_switch_failure(&mut self, target_guid: &str) {
@@ -1539,6 +1539,7 @@ fn power_plan_action_from_resolved_actions(actions: &[ResolvedAction]) -> Option
         .find(|resolved| matches!(resolved.action, Action::SwitchPowerPlan { .. }))
 }
 
+#[cfg(any(debug_assertions, test))]
 fn power_plan_target_guid_from_resolved_actions(actions: &[ResolvedAction]) -> Option<String> {
     power_plan_action_from_resolved_actions(actions).and_then(|resolved| match &resolved.action {
         Action::SwitchPowerPlan { plan_guid } => Some(plan_guid.clone()),

@@ -31,9 +31,9 @@ use crate::{
     config::{CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings},
     foreground::list_processes,
     rules::{
-        Action, ActionExecution, ActionExecutor, AffinityPolicy, AppMatcher,
-        AppResourceActionBackend, ExecutionFailureState, ExecutionSuppression,
-        DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
+        AffinityPolicy, AppMatcher, AppResourceActionBackend, ExecutionFailureState,
+        ExecutionSuppression,
     },
 };
 
@@ -66,8 +66,6 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuAffinitySnapshot {
     pub enabled: bool,
@@ -466,7 +464,7 @@ impl CpuAffinityManager {
         else {
             return ProcessSuppression::default();
         };
-        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
+        if !suppression.is_suppressed() {
             return ProcessSuppression::default();
         }
 
@@ -479,8 +477,9 @@ impl CpuAffinityManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying {} after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts.",
+                    "Stopped retrying {} after {} failed attempts.",
                     self.feature_label(),
+                    execution_failure_suppression_threshold(),
                 ),
             );
         }

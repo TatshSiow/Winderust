@@ -143,6 +143,7 @@ mod tests {
             },
             advanced: AdvancedSettings {
                 action_log_mode: ActionLogMode::Error,
+                execution_failure_suppression_threshold: 5,
             },
             power_plans: PowerPlanSettings {
                 power_save_guid: Some("idle-guid".to_owned()),
@@ -341,7 +342,15 @@ mod tests {
             foreground_responsiveness: ForegroundResponsivenessSettings {
                 enabled: true,
                 lower_background_apps: true,
+                lower_background_affinity_enabled: true,
+                lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+                lower_background_cpu_percent: 50,
+                lower_background_max_logical_processors: 0,
+                lower_background_auto_cpu_percent: true,
                 auto_balance_enabled: true,
+                auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+                auto_balance_cpu_percent: 50,
+                auto_balance_max_logical_processors: 0,
                 auto_balance_total_threshold_percent: 70,
                 auto_balance_threshold_percent: 25,
                 auto_balance_restore_threshold_percent: 5,

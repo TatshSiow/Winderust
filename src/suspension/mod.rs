@@ -50,8 +50,8 @@ use crate::foreground::list_processes;
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     rules::{
-        Action, ActionExecution, ActionExecutor, AppMatcher, AppResourceActionBackend,
-        ExecutionFailureState, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
+        AppMatcher, AppResourceActionBackend, ExecutionFailureState,
     },
 };
 
@@ -83,7 +83,6 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
 const NETWORK_DETECTION_FAILURE_KEY: &str = "network-detection";
 const AUDIO_DETECTION_FAILURE_KEY: &str = "audio-detection";
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1354,7 +1353,7 @@ impl AppSuspensionManager {
         else {
             return false;
         };
-        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
+        if !suppression.is_suppressed() {
             return false;
         }
 
@@ -1366,7 +1365,8 @@ impl AppSuspensionManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying App Suspension after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                    "Stopped retrying App Suspension after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
                 ),
             );
         }
@@ -1396,7 +1396,7 @@ impl AppSuspensionManager {
         let Some(suppression) = self.action_failure_suppression.get_mut(key) else {
             return false;
         };
-        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
+        if !suppression.is_suppressed() {
             return false;
         }
 
@@ -1408,7 +1408,8 @@ impl AppSuspensionManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying App Suspension {action_label} after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                    "Stopped retrying App Suspension {action_label} after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
                 ),
             );
         }

@@ -21,8 +21,8 @@ use crate::{
     config::{WatchdogAction, WatchdogRule, WatchdogSettings},
     foreground::{list_processes, ProcessInfo},
     rules::{
-        Action, ActionExecution, ActionExecutor, AppLifecycleActionBackend, AppMatcher,
-        ExecutionFailureState, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
+        AppLifecycleActionBackend, AppMatcher, ExecutionFailureState,
     },
 };
 
@@ -56,7 +56,6 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
 ];
 
 const WATCHDOG_ALLOWED_RESTART_EXTENSIONS: &[&str] = &["exe", "com"];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchdogSnapshot {
@@ -353,7 +352,7 @@ impl WatchdogManager {
         let Some(suppression) = self.failure_suppression.get_mut(key) else {
             return false;
         };
-        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
+        if !suppression.is_suppressed() {
             return false;
         }
 
@@ -365,8 +364,9 @@ impl WatchdogManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Watchdog rule '{}' after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts.",
-                    rule_label(rule)
+                    "Stopped retrying Watchdog rule '{}' after {} failed attempts.",
+                    rule_label(rule),
+                    execution_failure_suppression_threshold(),
                 ),
             );
         }

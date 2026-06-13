@@ -26,7 +26,10 @@ pub use decision_engine::{
 pub use engine::{EngineEvaluation, RuleEngine};
 #[allow(unused_imports)]
 pub use execution_failure::{
-    ExecutionFailureState, ExecutionSuppression, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+    execution_failure_suppression_threshold, normalize_execution_failure_suppression_threshold,
+    set_execution_failure_suppression_threshold, ExecutionFailureState, ExecutionSuppression,
+    DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+    MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };
 #[allow(unused_imports)]
 pub use model::{

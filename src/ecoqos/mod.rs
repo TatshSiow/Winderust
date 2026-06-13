@@ -35,9 +35,9 @@ use crate::{
     },
     foreground::list_processes,
     rules::{
-        Action, ActionExecution, ActionExecutor, AffinityPolicy, AppMatcher,
-        AppResourceActionBackend, ExecutionFailureState, ExecutionSuppression,
-        DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
+        AffinityPolicy, AppMatcher, AppResourceActionBackend, ExecutionFailureState,
+        ExecutionSuppression,
     },
 };
 
@@ -67,8 +67,6 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EcoQosSnapshot {
     pub enabled: bool,
@@ -413,7 +411,7 @@ impl EcoQosManager {
         else {
             return ProcessSuppression::default();
         };
-        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
+        if !suppression.is_suppressed() {
             return ProcessSuppression::default();
         }
 
@@ -426,7 +424,8 @@ impl EcoQosManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Efficiency Mode after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                    "Stopped retrying Efficiency Mode after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
                 ),
             );
         }

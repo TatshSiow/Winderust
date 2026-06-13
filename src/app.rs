@@ -65,6 +65,7 @@ use crate::{
     rules::{
         Action, ActionExecution, ActionExecutor, DecisionEngine, DecisionInput, DecisionOutcome,
         DecisionState, PerformanceModeDecision, PowerPlanActionBackend,
+        MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
     startup,
@@ -1971,6 +1972,17 @@ impl PowerLeafApp {
                     self.set_activity_slider_value(ActivitySlider::CheckInterval, value);
                 }
             }
+            NumericField::ExecutionFailureSuppressionThreshold => {
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    u64::from(MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD),
+                    u64::from(MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD),
+                ) {
+                    self.settings
+                        .advanced
+                        .execution_failure_suppression_threshold = value as u8;
+                }
+            }
             NumericField::EcoQosRestrictionPercent => {
                 if let Some(value) = parse_u64_input(&value, 1, 100) {
                     self.settings.eco_qos.cpu_restriction_percent = value as u8;
@@ -2037,6 +2049,17 @@ impl PowerLeafApp {
                     self.settings
                         .foreground_responsiveness
                         .auto_balance_total_threshold_percent = value as u8;
+                }
+            }
+            NumericField::AutoBalanceCpuPercent => {
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                    AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                ) {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_cpu_percent = value as u8;
                 }
             }
             NumericField::AutoBalanceSustain => {
@@ -5467,90 +5490,10 @@ impl PowerLeafApp {
             .to_string();
         let enabled = self.settings.foreground_responsiveness.enabled;
         let body = feature_body(enabled)
-            .child(checkbox_with_help(
-                "responsiveness-lower-background",
-                t!("responsiveness.lower_background_apps").to_string(),
-                t!("responsiveness.lower_background_apps_help").to_string(),
-                self.settings
-                    .foreground_responsiveness
-                    .lower_background_apps,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.foreground_responsiveness.lower_background_apps = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(checkbox_with_help(
-                "responsiveness-auto-balance",
-                t!("responsiveness.auto_balance").to_string(),
-                t!("responsiveness.auto_balance_help").to_string(),
-                self.settings.foreground_responsiveness.auto_balance_enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.foreground_responsiveness.auto_balance_enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(self.render_auto_balance_preset_selector(cx))
-            .child(self.render_auto_balance_insight())
-            .child(self.render_auto_balance_advanced_group(window, cx, &input_value, enabled))
-            .child(checkbox_with_help(
-                "responsiveness-boost-foreground",
-                t!("responsiveness.boost_foreground_app").to_string(),
-                t!("responsiveness.boost_foreground_app_help").to_string(),
-                self.settings.foreground_responsiveness.boost_foreground_app,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.foreground_responsiveness.boost_foreground_app = *checked;
-                    cx.notify();
-                }),
-            ))
+            .child(self.render_lower_background_efficiency_card(cx))
             .child(self.render_foreground_boost_selector(cx))
-            .child(section_header(
-                &t!("responsiveness.rules"),
-                t!("responsiveness.rules_help").to_string(),
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_start()
-                    .flex_wrap()
-                    .child(self.render_process_picker(
-                        "responsiveness-suggestion",
-                        &self.inputs.responsiveness_process,
-                        SuggestionTarget::Responsiveness,
-                        window,
-                        cx,
-                    ))
-                    .child(
-                        primary_control_button(Button::new("add-responsiveness-process"), cx)
-                            .label(t!("common.add").to_string())
-                            .disabled(
-                                !enabled
-                                    || !can_add_responsiveness_process(
-                                        &self.settings.foreground_responsiveness,
-                                        &input_value,
-                                    ),
-                            )
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .responsiveness_process
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
-                                if can_add_responsiveness_process(
-                                    &app.settings.foreground_responsiveness,
-                                    &process,
-                                ) {
-                                    app.settings
-                                        .foreground_responsiveness
-                                        .rules
-                                        .push(new_responsiveness_rule(&process));
-                                    clear_input(&app.inputs.responsiveness_process, window, cx);
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(self.render_responsiveness_rules(cx));
+            .child(self.render_auto_balance_preset_selector(cx))
+            .child(self.render_auto_balance_advanced_group(window, cx, &input_value, enabled));
 
         let help = tooltip_lines(vec![
             t!("responsiveness.intro_1").to_string(),
@@ -5573,20 +5516,45 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
+    fn render_lower_background_efficiency_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self
+            .settings
+            .foreground_responsiveness
+            .lower_background_apps;
+        let action = switch_toggle_action(
+            "responsiveness-lower-background-toggle",
+            selected,
+            cx.listener(|app, checked, _, cx| {
+                app.settings.foreground_responsiveness.lower_background_apps = *checked;
+                cx.notify();
+            }),
+        );
+
+        setting_action_card_with_help(
+            "responsiveness-lower-background-efficiency",
+            t!("responsiveness.lower_background_efficiency").to_string(),
+            t!("responsiveness.lower_background_efficiency_help").to_string(),
+            action,
+        )
+        .into_any_element()
+    }
+
     fn render_auto_balance_preset_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let settings = &self.settings.foreground_responsiveness;
         let mut row = h_flex().gap_1().flex_wrap();
-        for preset in AutoBalancePreset::ALL {
+        for behavior in AutoBalanceBehavior::ALL {
             row = row.child(
                 toggle_button(
-                    format!("auto-balance-preset-{preset:?}"),
-                    auto_balance_preset_label(preset),
-                    auto_balance_matches_preset(settings, preset),
+                    format!("auto-balance-behavior-{behavior:?}"),
+                    auto_balance_behavior_label(behavior),
+                    auto_balance_matches_behavior(settings, behavior),
                 )
-                .tooltip(auto_balance_preset_help(preset))
-                .disabled(!settings.auto_balance_enabled)
+                .tooltip(auto_balance_behavior_help(behavior))
                 .on_click(cx.listener(move |app, _, _, cx| {
-                    apply_auto_balance_preset(&mut app.settings.foreground_responsiveness, preset);
+                    apply_auto_balance_behavior(
+                        &mut app.settings.foreground_responsiveness,
+                        behavior,
+                    );
                     cx.notify();
                 })),
             );
@@ -5601,6 +5569,7 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
+    #[allow(dead_code)]
     fn render_auto_balance_insight(&self) -> AnyElement {
         let status = &self.foreground_responsiveness_status;
         let total_cpu = status
@@ -5733,6 +5702,41 @@ impl PowerLeafApp {
                     app.settings
                         .foreground_responsiveness
                         .auto_balance_restore_threshold_percent = apply_u64_step(
+                        current,
+                        change,
+                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                    ) as u8;
+                    cx.notify();
+                }),
+            ),
+            setting_group_action_row(
+                "responsiveness-auto-affinity-mode",
+                t!("responsiveness.auto_balance_affinity_mode").to_string(),
+                self.render_auto_balance_affinity_mode_selector(cx),
+                true,
+            )
+            .into_any_element(),
+            setting_group_stepper_row_u64(
+                "responsiveness-auto-cpu-percent",
+                t!("responsiveness.auto_balance_cpu_percent").to_string(),
+                u64::from(settings.auto_balance_cpu_percent),
+                self.render_numeric_value(
+                    NumericField::AutoBalanceCpuPercent,
+                    format!("{}%", settings.auto_balance_cpu_percent),
+                    settings.auto_balance_cpu_percent.to_string(),
+                    cx,
+                ),
+                true,
+                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                    let current = u64::from(
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_cpu_percent,
+                    );
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_cpu_percent = apply_u64_step(
                         current,
                         change,
                         AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
@@ -5902,15 +5906,27 @@ impl PowerLeafApp {
     fn render_foreground_boost_selector(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.settings.foreground_responsiveness.foreground_boost;
         let mut row = h_flex().gap_1().flex_wrap();
+        row = row.child(
+            toggle_button(
+                "foreground-boost-none",
+                t!("common.none").to_string(),
+                !self.settings.foreground_responsiveness.boost_foreground_app,
+            )
+            .on_click(cx.listener(|app, _, _, cx| {
+                app.settings.foreground_responsiveness.boost_foreground_app = false;
+                cx.notify();
+            })),
+        );
         for priority in ForegroundBoostPriority::ALL {
             row = row.child(
                 toggle_button(
                     format!("foreground-boost-{priority:?}"),
                     foreground_boost_priority_label(priority),
-                    selected == priority,
+                    self.settings.foreground_responsiveness.boost_foreground_app
+                        && selected == priority,
                 )
-                .disabled(!self.settings.foreground_responsiveness.boost_foreground_app)
                 .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings.foreground_responsiveness.boost_foreground_app = true;
                     app.settings.foreground_responsiveness.foreground_boost = priority;
                     cx.notify();
                 })),
@@ -5925,6 +5941,32 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
+    fn render_auto_balance_affinity_mode_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self
+            .settings
+            .foreground_responsiveness
+            .auto_balance_affinity_mode;
+        let mut row = h_flex().gap_1().flex_wrap();
+        for mode in EcoQosCpuRestrictionMode::ALL {
+            row = row.child(
+                toggle_button(
+                    format!("responsiveness-auto-affinity-mode-{mode:?}"),
+                    efficiency_cpu_restriction_mode_label(mode),
+                    selected == mode,
+                )
+                .tooltip(efficiency_cpu_restriction_mode_help(mode))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_affinity_mode = mode;
+                    cx.notify();
+                })),
+            );
+        }
+        row.into_any_element()
+    }
+
+    #[allow(dead_code)]
     fn render_responsiveness_rules(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list();
         for (index, rule) in self
@@ -6095,6 +6137,7 @@ impl PowerLeafApp {
         list.into_any_element()
     }
 
+    #[allow(dead_code)]
     fn render_priority_selector(
         &self,
         index: usize,
@@ -7085,6 +7128,7 @@ impl PowerLeafApp {
             )
             .child(
                 section_card(&t!("settings.advanced"))
+                    .child(self.render_failure_suppression_threshold_setting(cx))
                     .child(self.render_action_log_mode_selector(cx)),
             )
             .child(
@@ -7135,6 +7179,25 @@ impl PowerLeafApp {
 
         labeled_element(&t!("settings.action_log_mode"), options.into_any_element())
             .into_any_element()
+    }
+
+    fn render_failure_suppression_threshold_setting(&self, cx: &mut Context<Self>) -> AnyElement {
+        let threshold = self
+            .settings
+            .advanced
+            .execution_failure_suppression_threshold();
+        setting_action_card_with_help(
+            "execution-failure-suppression-threshold",
+            t!("settings.failure_suppression_threshold").to_string(),
+            t!("settings.failure_suppression_threshold_help").to_string(),
+            self.render_numeric_value(
+                NumericField::ExecutionFailureSuppressionThreshold,
+                threshold.to_string(),
+                threshold.to_string(),
+                cx,
+            ),
+        )
+        .into_any_element()
     }
 
     fn render_core_parking_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -8175,6 +8238,7 @@ enum RuleCardTarget {
     Suspension(String),
     CpuLimiter(String),
     Watchdog(String),
+    #[allow(dead_code)]
     Responsiveness(String),
     Affinity(String),
 }
@@ -8196,8 +8260,19 @@ enum AutoBalancePreset {
     Responsive,
 }
 
-impl AutoBalancePreset {
-    const ALL: [Self; 3] = [Self::Gentle, Self::Balanced, Self::Responsive];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoBalanceBehavior {
+    None,
+    Preset(AutoBalancePreset),
+}
+
+impl AutoBalanceBehavior {
+    const ALL: [Self; 4] = [
+        Self::None,
+        Self::Preset(AutoBalancePreset::Gentle),
+        Self::Preset(AutoBalancePreset::Balanced),
+        Self::Preset(AutoBalancePreset::Responsive),
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -8210,6 +8285,7 @@ enum ThresholdField {
 enum NumericField {
     ActivityIdleTimeout,
     GeneralCheckInterval,
+    ExecutionFailureSuppressionThreshold,
     EcoQosRestrictionPercent,
     BackgroundCpuRestrictionPercent,
     SuspensionBackgroundDelay,
@@ -8220,6 +8296,7 @@ enum NumericField {
     AutoBalanceTotalThreshold,
     AutoBalanceThreshold,
     AutoBalanceRestoreThreshold,
+    AutoBalanceCpuPercent,
     AutoBalanceSustain,
     AutoBalanceMinimumRestraint,
     AutoBalanceCooldown,
@@ -9988,10 +10065,12 @@ fn app_list_label(apps: &[String], count: usize) -> String {
     format!("{count}: {}", names.join(", "))
 }
 
+#[allow(dead_code)]
 fn format_percent_tenths(value: u16) -> String {
     format!("{}.{:01}%", value / 10, value % 10)
 }
 
+#[allow(dead_code)]
 fn auto_balance_status_row(detail: &responsiveness::AutoBalanceProcessStatus) -> gpui::Div {
     let cpu_usage = detail
         .cpu_usage_tenths
@@ -10035,6 +10114,7 @@ fn auto_balance_status_row(detail: &responsiveness::AutoBalanceProcessStatus) ->
         .child(auto_balance_state_tag(detail.state))
 }
 
+#[allow(dead_code)]
 fn auto_balance_state_tag(state: AutoBalanceProcessState) -> Tag {
     match state {
         AutoBalanceProcessState::Watching => Tag::warning()
@@ -10300,6 +10380,7 @@ fn checkbox(
         .into_any_element()
 }
 
+#[allow(dead_code)]
 fn checkbox_with_help(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -11995,6 +12076,7 @@ fn cpu_limiter_app_contains(apps: &[String], process: &str) -> bool {
         .any(|app| app.trim().eq_ignore_ascii_case(process.trim()))
 }
 
+#[allow(dead_code)]
 fn new_responsiveness_rule(process: &str) -> PriorityRule {
     PriorityRule {
         enabled: true,
@@ -12060,6 +12142,7 @@ fn performance_mode_decision(status: &PerformanceModeSnapshot) -> Option<Perform
     })
 }
 
+#[allow(dead_code)]
 fn process_priority_label(priority: ProcessPriority) -> String {
     match priority {
         ProcessPriority::Normal => t!("responsiveness.priority_normal").to_string(),
@@ -12081,6 +12164,47 @@ fn auto_balance_preset_help(preset: AutoBalancePreset) -> String {
         AutoBalancePreset::Gentle => t!("responsiveness.preset_gentle_help").to_string(),
         AutoBalancePreset::Balanced => t!("responsiveness.preset_balanced_help").to_string(),
         AutoBalancePreset::Responsive => t!("responsiveness.preset_responsive_help").to_string(),
+    }
+}
+
+fn auto_balance_behavior_label(behavior: AutoBalanceBehavior) -> String {
+    match behavior {
+        AutoBalanceBehavior::None => t!("common.none").to_string(),
+        AutoBalanceBehavior::Preset(preset) => auto_balance_preset_label(preset),
+    }
+}
+
+fn auto_balance_behavior_help(behavior: AutoBalanceBehavior) -> String {
+    match behavior {
+        AutoBalanceBehavior::None => t!("responsiveness.auto_balance_none_help").to_string(),
+        AutoBalanceBehavior::Preset(preset) => auto_balance_preset_help(preset),
+    }
+}
+
+fn apply_auto_balance_behavior(
+    settings: &mut ForegroundResponsivenessSettings,
+    behavior: AutoBalanceBehavior,
+) {
+    match behavior {
+        AutoBalanceBehavior::None => {
+            settings.auto_balance_enabled = false;
+        }
+        AutoBalanceBehavior::Preset(preset) => {
+            settings.auto_balance_enabled = true;
+            apply_auto_balance_preset(settings, preset);
+        }
+    }
+}
+
+fn auto_balance_matches_behavior(
+    settings: &ForegroundResponsivenessSettings,
+    behavior: AutoBalanceBehavior,
+) -> bool {
+    match behavior {
+        AutoBalanceBehavior::None => !settings.auto_balance_enabled,
+        AutoBalanceBehavior::Preset(preset) => {
+            settings.auto_balance_enabled && auto_balance_matches_preset(settings, preset)
+        }
     }
 }
 

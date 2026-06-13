@@ -1,6 +1,31 @@
 #![allow(dead_code)]
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 pub const DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
+pub const MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD: u8 = 1;
+pub const MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD: u8 = 100;
+
+static EXECUTION_FAILURE_SUPPRESSION_THRESHOLD: AtomicU8 =
+    AtomicU8::new(DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD);
+
+pub fn normalize_execution_failure_suppression_threshold(threshold: u8) -> u8 {
+    threshold.clamp(
+        MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+        MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+    )
+}
+
+pub fn set_execution_failure_suppression_threshold(threshold: u8) {
+    EXECUTION_FAILURE_SUPPRESSION_THRESHOLD.store(
+        normalize_execution_failure_suppression_threshold(threshold),
+        Ordering::Relaxed,
+    );
+}
+
+pub fn execution_failure_suppression_threshold() -> u8 {
+    EXECUTION_FAILURE_SUPPRESSION_THRESHOLD.load(Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExecutionFailureState {
@@ -14,7 +39,7 @@ impl ExecutionFailureState {
     }
 
     pub fn is_suppressed(&self) -> bool {
-        self.attempts >= DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD
+        self.is_suppressed_at(execution_failure_suppression_threshold())
     }
 
     pub fn is_suppressed_at(&self, threshold: u8) -> bool {

@@ -1,6 +1,11 @@
 use chrono::{NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 
+use crate::rules::{
+    normalize_execution_failure_suppression_threshold,
+    DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub general: GeneralSettings,
@@ -34,6 +39,16 @@ pub struct Settings {
 pub struct AdvancedSettings {
     #[serde(default)]
     pub action_log_mode: ActionLogMode,
+    #[serde(default = "default_execution_failure_suppression_threshold")]
+    pub execution_failure_suppression_threshold: u8,
+}
+
+impl AdvancedSettings {
+    pub fn execution_failure_suppression_threshold(&self) -> u8 {
+        normalize_execution_failure_suppression_threshold(
+            self.execution_failure_suppression_threshold,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -492,7 +507,23 @@ pub struct ForegroundResponsivenessSettings {
     #[serde(default = "default_lower_background_apps")]
     pub lower_background_apps: bool,
     #[serde(default)]
+    pub lower_background_affinity_enabled: bool,
+    #[serde(default)]
+    pub lower_background_affinity_mode: EcoQosCpuRestrictionMode,
+    #[serde(default = "default_eco_qos_cpu_restriction_percent")]
+    pub lower_background_cpu_percent: u8,
+    #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
+    pub lower_background_max_logical_processors: u8,
+    #[serde(default)]
+    pub lower_background_auto_cpu_percent: bool,
+    #[serde(default)]
     pub auto_balance_enabled: bool,
+    #[serde(default)]
+    pub auto_balance_affinity_mode: EcoQosCpuRestrictionMode,
+    #[serde(default = "default_eco_qos_cpu_restriction_percent")]
+    pub auto_balance_cpu_percent: u8,
+    #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
+    pub auto_balance_max_logical_processors: u8,
     #[serde(default = "default_auto_balance_total_threshold_percent")]
     pub auto_balance_total_threshold_percent: u8,
     #[serde(default = "default_auto_balance_threshold_percent")]
@@ -535,6 +566,7 @@ pub enum ProcessPriority {
 }
 
 impl ProcessPriority {
+    #[allow(dead_code)]
     pub const ALL: [Self; 3] = [Self::Normal, Self::BelowNormal, Self::Idle];
 }
 
@@ -699,8 +731,14 @@ impl Default for AdvancedSettings {
     fn default() -> Self {
         Self {
             action_log_mode: ActionLogMode::Full,
+            execution_failure_suppression_threshold:
+                default_execution_failure_suppression_threshold(),
         }
     }
+}
+
+fn default_execution_failure_suppression_threshold() -> u8 {
+    DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD
 }
 
 impl Default for InputDetectionSettings {
@@ -1019,7 +1057,17 @@ impl Default for ForegroundResponsivenessSettings {
         Self {
             enabled: false,
             lower_background_apps: default_lower_background_apps(),
+            lower_background_affinity_enabled: false,
+            lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            lower_background_cpu_percent: default_eco_qos_cpu_restriction_percent(),
+            lower_background_max_logical_processors:
+                default_eco_qos_cpu_restriction_max_logical_processors(),
+            lower_background_auto_cpu_percent: false,
             auto_balance_enabled: false,
+            auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            auto_balance_cpu_percent: default_eco_qos_cpu_restriction_percent(),
+            auto_balance_max_logical_processors:
+                default_eco_qos_cpu_restriction_max_logical_processors(),
             auto_balance_total_threshold_percent: default_auto_balance_total_threshold_percent(),
             auto_balance_threshold_percent: default_auto_balance_threshold_percent(),
             auto_balance_restore_threshold_percent: default_auto_balance_restore_threshold_percent(

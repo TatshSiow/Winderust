@@ -22,8 +22,8 @@ use crate::{
     config::{CpuLimiterRule, CpuLimiterSettings},
     foreground::list_processes,
     rules::{
-        Action, ActionExecution, ActionExecutor, AppMatcher, AppResourceActionBackend,
-        ExecutionFailureState, DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
+        AppMatcher, AppResourceActionBackend, ExecutionFailureState,
     },
 };
 
@@ -55,8 +55,6 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuLimiterSnapshot {
     pub enabled: bool,
@@ -466,7 +464,7 @@ impl CpuLimiterManager {
         else {
             return false;
         };
-        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
+        if !suppression.is_suppressed() {
             return false;
         }
 
@@ -478,7 +476,8 @@ impl CpuLimiterManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Core Limiter after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                    "Stopped retrying Core Limiter after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
                 ),
             );
         }

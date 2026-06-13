@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::c_void,
     time::{Duration, Instant},
 };
 
@@ -10,24 +11,27 @@ use windows_sys::Win32::{
     System::{
         RemoteDesktop::ProcessIdToSessionId,
         Threading::{
-            GetCurrentProcessId, GetPriorityClass, GetProcessTimes, OpenProcess, SetPriorityClass,
+            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
+            OpenProcess, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation,
             ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
-            IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
+            IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
         },
     },
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    affinity::{self, CpuAffinityManager, LogicalProcessorKind},
     config::{
+        CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, EcoQosCpuRestrictionMode,
         ForegroundBoostPriority, ForegroundResponsivenessSettings, PriorityRule, ProcessPriority,
     },
     foreground::list_processes,
     rules::{
-        Action, ActionExecution, ActionExecutor, AppMatcher, AppPriorityActionBackend,
-        ExecutionFailureState, RuleProcessPriority,
-        DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
+        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
+        AppMatcher, AppPriorityActionBackend, ExecutionFailureState, RuleProcessPriority,
     },
 };
 
@@ -59,8 +63,6 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
     "wudfhost.exe",
 ];
-const FAILURE_SUPPRESSION_THRESHOLD: u8 = DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundResponsivenessSnapshot {
     pub enabled: bool,
@@ -94,13 +96,34 @@ pub enum AutoBalanceProcessState {
     CoolingDown,
 }
 
-#[derive(Default)]
 pub struct ForegroundResponsivenessManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
     boosted: Option<BoostedProcess>,
     foreground_candidate: Option<ForegroundCandidate>,
+    foreground_cpu_sample: Option<(u32, ProcessCpuSample)>,
+    lower_background_affinity: CpuAffinityManager,
     auto_balance: BTreeMap<u32, AutoBalanceProcess>,
+    auto_balance_affinity: CpuAffinityManager,
     failure_suppression: BTreeMap<String, PriorityFailureSuppression>,
+}
+
+impl Default for ForegroundResponsivenessManager {
+    fn default() -> Self {
+        Self {
+            adjusted: BTreeMap::new(),
+            boosted: None,
+            foreground_candidate: None,
+            foreground_cpu_sample: None,
+            lower_background_affinity: CpuAffinityManager::with_action_log_feature(
+                ActionLogFeature::ForegroundResponsiveness,
+            ),
+            auto_balance: BTreeMap::new(),
+            auto_balance_affinity: CpuAffinityManager::with_action_log_feature(
+                ActionLogFeature::ForegroundResponsiveness,
+            ),
+            failure_suppression: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -108,6 +131,8 @@ struct AdjustedProcess {
     process_name: String,
     previous_priority: u32,
     applied_priority: u32,
+    previous_efficiency_state: Option<PROCESS_POWER_THROTTLING_STATE>,
+    applied_efficiency_mode: bool,
 }
 
 type PriorityFailureSuppression = ExecutionFailureState;
@@ -145,8 +170,8 @@ struct ProcessCpuSample {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PriorityTargetSource {
+    BackgroundPolicy,
     Rule,
-    AutoBalance,
 }
 
 impl ForegroundResponsivenessManager {
@@ -155,7 +180,7 @@ impl ForegroundResponsivenessManager {
         settings: &ForegroundResponsivenessSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
-        total_cpu_usage_percent: Option<f32>,
+        _total_cpu_usage_percent: Option<f32>,
         eco_qos_process_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
     ) -> ForegroundResponsivenessSnapshot {
@@ -210,7 +235,8 @@ impl ForegroundResponsivenessManager {
         };
 
         let scanned_processes = processes.len();
-        let total_cpu_usage_tenths = total_cpu_usage_percent.map(percent_tenths);
+        let foreground_cpu_usage_percent = self.update_foreground_cpu_usage(foreground_process_id);
+        let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
         let current_process_names = processes
             .iter()
             .map(|process| (process.id, process.name.clone()))
@@ -225,7 +251,6 @@ impl ForegroundResponsivenessManager {
         let mut failures = PriorityFailures::default();
         let keep_current_boost = self.boosted.as_ref().is_some_and(|boosted| {
             settings.boost_foreground_app
-                && settings.foreground_boost != ForegroundBoostPriority::Normal
                 && foreground_process_id == Some(boosted.process_id)
                 && !eco_qos_process_ids.contains(&boosted.process_id)
         });
@@ -237,38 +262,80 @@ impl ForegroundResponsivenessManager {
             }
         }
 
+        let mut lowerable_background_processes = BTreeMap::new();
+        for process in &processes {
+            if should_skip_process(
+                process.id,
+                &process.name,
+                current_process_id,
+                foreground_process_id,
+                foreground_process_name.as_deref(),
+                eco_qos_process_ids,
+            ) {
+                continue;
+            }
+
+            if process_session_id(process.id) != Some(current_session_id) {
+                continue;
+            }
+
+            lowerable_background_processes.insert(process.id, process.name.clone());
+        }
+
         let mut target_processes = BTreeMap::new();
         if settings.lower_background_apps {
-            for process in &processes {
-                if should_skip_process(
-                    process.id,
-                    &process.name,
-                    current_process_id,
-                    foreground_process_id,
-                    foreground_process_name.as_deref(),
-                    eco_qos_process_ids,
-                ) {
-                    continue;
-                }
-
-                if process_session_id(process.id) != Some(current_session_id) {
-                    continue;
-                }
-
-                if let Some(rule) = matching_rule(settings, &process.name) {
-                    target_processes.insert(
-                        process.id,
-                        (
-                            process.name.clone(),
-                            rule.priority,
-                            PriorityTargetSource::Rule,
-                        ),
-                    );
-                }
+            for (process_id, process_name) in &lowerable_background_processes {
+                let priority = matching_rule(settings, process_name)
+                    .map(|rule| rule.priority)
+                    .unwrap_or(ProcessPriority::Idle);
+                let source = if matching_rule(settings, process_name).is_some() {
+                    PriorityTargetSource::Rule
+                } else {
+                    PriorityTargetSource::BackgroundPolicy
+                };
+                target_processes.insert(*process_id, (process_name.clone(), priority, source));
             }
         }
 
-        let auto_balance_running = auto_balance_should_run(settings, total_cpu_usage_percent);
+        let auto_balance_running = auto_balance_should_run(settings, foreground_cpu_usage_percent);
+        let lower_background_affinity_percent =
+            smart_background_affinity_percent(settings, foreground_cpu_usage_percent);
+        let lower_background_affinity_active =
+            settings.auto_balance_enabled && auto_balance_running;
+        let lower_background_affinity_rules = if lower_background_affinity_active {
+            lower_background_core_mask(settings, lower_background_affinity_percent)
+                .map(|core_mask| {
+                    lowerable_background_processes
+                        .values()
+                        .map(|process_name| CpuAffinityRule {
+                            enabled: true,
+                            mode: auto_balance_affinity_mode(settings.auto_balance_affinity_mode),
+                            process_name: process_name.clone(),
+                            core_mask,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let lower_background_affinity_settings = CpuAffinitySettings {
+            enabled: settings.enabled && lower_background_affinity_active,
+            exclude_foreground_app: true,
+            rules: lower_background_affinity_rules,
+        };
+        let lower_background_affinity_snapshot = self.lower_background_affinity.update(
+            &lower_background_affinity_settings,
+            automation_enabled,
+            foreground_process_id,
+            action_log,
+        );
+        failures.count += lower_background_affinity_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = lower_background_affinity_snapshot.last_error.clone();
+        }
+
+        let mut auto_balance_rules = Vec::new();
         if auto_balance_running {
             let now = Instant::now();
             let current_ids = processes
@@ -279,49 +346,53 @@ impl ForegroundResponsivenessManager {
                 .retain(|process_id, _| current_ids.contains(process_id));
 
             for process in &processes {
-                if target_processes.contains_key(&process.id)
-                    || should_skip_process(
-                        process.id,
-                        &process.name,
-                        current_process_id,
-                        foreground_process_id,
-                        foreground_process_name.as_deref(),
-                        eco_qos_process_ids,
-                    )
-                    || settings.auto_balance_exclusion_enabled_for(&process.name)
+                if should_skip_process(
+                    process.id,
+                    &process.name,
+                    current_process_id,
+                    foreground_process_id,
+                    foreground_process_name.as_deref(),
+                    eco_qos_process_ids,
+                ) || settings.auto_balance_exclusion_enabled_for(&process.name)
                     || process_session_id(process.id) != Some(current_session_id)
                 {
                     continue;
                 }
 
-                let target =
-                    self.update_auto_balance_process(process.id, &process.name, settings, now);
-                if let Some(priority) = target {
-                    target_processes.insert(
-                        process.id,
-                        (
-                            process.name.clone(),
-                            priority,
-                            PriorityTargetSource::AutoBalance,
-                        ),
-                    );
+                if self
+                    .update_auto_balance_process(process.id, &process.name, settings, now)
+                    .is_some()
+                {
+                    if let Some(core_mask) = auto_balance_core_mask(settings) {
+                        auto_balance_rules.push(CpuAffinityRule {
+                            enabled: true,
+                            mode: auto_balance_affinity_mode(settings.auto_balance_affinity_mode),
+                            process_name: process.name.clone(),
+                            core_mask,
+                        });
+                    }
                 }
             }
         } else if settings.auto_balance_enabled {
-            let auto_balance_ids = self
-                .auto_balance
-                .iter()
-                .filter_map(|(process_id, process)| process.active.then_some(*process_id))
-                .collect::<Vec<_>>();
             self.auto_balance.clear();
-            failures.merge(self.release_processes(
-                &auto_balance_ids,
-                Some(&current_process_names),
-                action_log,
-                "total CPU contention is below auto-balance threshold",
-            ));
         } else {
             self.auto_balance.clear();
+        }
+
+        let affinity_settings = CpuAffinitySettings {
+            enabled: settings.enabled && settings.auto_balance_enabled && auto_balance_running,
+            exclude_foreground_app: true,
+            rules: auto_balance_rules,
+        };
+        let auto_balance_affinity_snapshot = self.auto_balance_affinity.update(
+            &affinity_settings,
+            automation_enabled,
+            foreground_process_id,
+            action_log,
+        );
+        failures.count += auto_balance_affinity_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = auto_balance_affinity_snapshot.last_error.clone();
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
@@ -342,12 +413,9 @@ impl ForegroundResponsivenessManager {
         ));
         let mut skipped_processes = 0;
 
-        let mut auto_balanced_processes = 0;
+        let auto_balanced_processes = auto_balance_affinity_snapshot.adjusted_processes;
         for (process_id, (process_name, priority, source)) in target_processes {
             let failure_process_name = process_name.clone();
-            if source == PriorityTargetSource::AutoBalance {
-                auto_balanced_processes += 1;
-            }
             if self.is_process_suppressed(process_id, &failure_process_name, action_log) {
                 skipped_processes += 1;
                 continue;
@@ -362,6 +430,7 @@ impl ForegroundResponsivenessManager {
                 existing: self.adjusted.get(&process_id),
                 action_log,
                 source,
+                apply_efficiency_mode: true,
                 adjusted: None,
                 skipped: false,
                 last_error: None,
@@ -428,7 +497,7 @@ impl ForegroundResponsivenessManager {
         let auto_balance_details = self.auto_balance_statuses(Instant::now());
         let auto_balance_message = auto_balance_status_message(
             settings,
-            total_cpu_usage_percent,
+            foreground_cpu_usage_percent,
             auto_balance_running,
             auto_balance_details
                 .iter()
@@ -437,12 +506,7 @@ impl ForegroundResponsivenessManager {
         );
 
         if let Some(foreground_id) = foreground_process_id {
-            if settings.boost_foreground_app
-                && !eco_qos_process_ids.contains(&foreground_id)
-                && !settings
-                    .foreground_boost
-                    .eq(&ForegroundBoostPriority::Normal)
-            {
+            if settings.boost_foreground_app && !eco_qos_process_ids.contains(&foreground_id) {
                 let foreground_failure_name = foreground_process_name.clone().unwrap_or_default();
                 if self.is_process_suppressed(foreground_id, &foreground_failure_name, action_log) {
                     skipped_processes += 1;
@@ -506,7 +570,7 @@ impl ForegroundResponsivenessManager {
                 .map(|process| format!("{} ({})", process.process_name, process.process_id)),
             auto_balanced_processes,
             auto_balance_message,
-            auto_balance_total_cpu_usage_tenths: total_cpu_usage_tenths,
+            auto_balance_total_cpu_usage_tenths: foreground_cpu_usage_tenths,
             auto_balance_details,
             skipped_processes,
             failed_processes: failures.count,
@@ -587,7 +651,27 @@ impl ForegroundResponsivenessManager {
         let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
         failures.merge(self.release_processes(&process_ids, None, action_log, reason));
         self.foreground_candidate = None;
+        self.foreground_cpu_sample = None;
         self.auto_balance.clear();
+        let affinity_settings = CpuAffinitySettings {
+            enabled: false,
+            exclude_foreground_app: true,
+            rules: Vec::new(),
+        };
+        let lower_affinity_snapshot =
+            self.lower_background_affinity
+                .update(&affinity_settings, true, None, action_log);
+        failures.count += lower_affinity_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = lower_affinity_snapshot.last_error;
+        }
+        let affinity_snapshot =
+            self.auto_balance_affinity
+                .update(&affinity_settings, true, None, action_log);
+        failures.count += affinity_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = affinity_snapshot.last_error;
+        }
         failures
     }
 
@@ -637,7 +721,7 @@ impl ForegroundResponsivenessManager {
         else {
             return false;
         };
-        if !suppression.is_suppressed_at(FAILURE_SUPPRESSION_THRESHOLD) {
+        if !suppression.is_suppressed() {
             return false;
         }
 
@@ -649,7 +733,8 @@ impl ForegroundResponsivenessManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Foreground Responsiveness after {FAILURE_SUPPRESSION_THRESHOLD} failed attempts."
+                    "Stopped retrying Foreground Responsiveness after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
                 ),
             );
         }
@@ -832,7 +917,7 @@ impl ForegroundResponsivenessManager {
         process_name: &str,
         settings: &ForegroundResponsivenessSettings,
         now: Instant,
-    ) -> Option<ProcessPriority> {
+    ) -> Option<()> {
         let threshold = f32::from(settings.auto_balance_threshold_percent.min(100));
         let restore_threshold = f32::from(
             settings
@@ -874,7 +959,7 @@ impl ForegroundResponsivenessManager {
                     state.active_since = Some(now);
                 }
                 state.active = true;
-                return Some(ProcessPriority::Idle);
+                return Some(());
             }
             return None;
         }
@@ -884,12 +969,12 @@ impl ForegroundResponsivenessManager {
             let active_since = state.active_since.unwrap_or(now);
             if usage > restore_threshold || now.duration_since(active_since) < minimum_restraint {
                 state.below_since = None;
-                return Some(ProcessPriority::Idle);
+                return Some(());
             }
 
             let below_since = *state.below_since.get_or_insert(now);
             if now.duration_since(below_since) < cooldown {
-                return Some(ProcessPriority::BelowNormal);
+                return Some(());
             }
             state.active = false;
             state.below_since = None;
@@ -897,6 +982,20 @@ impl ForegroundResponsivenessManager {
         }
 
         None
+    }
+
+    fn update_foreground_cpu_usage(&mut self, foreground_process_id: Option<u32>) -> Option<f32> {
+        let process_id = foreground_process_id?;
+        let current = process_cpu_sample(process_id).ok()?;
+        let usage = self
+            .foreground_cpu_sample
+            .and_then(|(previous_id, previous)| {
+                (previous_id == process_id)
+                    .then_some(previous)
+                    .and_then(|previous| process_cpu_usage_percent(previous, current))
+            });
+        self.foreground_cpu_sample = Some((process_id, current));
+        usage
     }
 
     fn auto_balance_statuses(&self, now: Instant) -> Vec<AutoBalanceProcessStatus> {
@@ -969,6 +1068,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
         .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
 }
 
+#[allow(dead_code)]
 pub fn contains_process(list: &[String], process_name: &str) -> bool {
     list.iter()
         .any(|name| name.trim().eq_ignore_ascii_case(process_name.trim()))
@@ -991,16 +1091,16 @@ fn auto_balance_status_message(
     if !running {
         return match total_cpu_usage_percent {
             Some(usage) => format!(
-                "Waiting for total CPU contention: {:.1}% of {}%.",
+                "Waiting for foreground CPU pressure: {:.1}% of {}%.",
                 usage.clamp(0.0, 100.0),
                 settings.auto_balance_total_threshold_percent.min(100)
             ),
-            None => "Waiting for a total CPU sample before auto-balance can act.".to_owned(),
+            None => "Waiting for a foreground CPU sample before auto-balance can act.".to_owned(),
         };
     }
 
     if restrained_count == 0 {
-        return "CPU contention is high; watching background processes for sustained spikes."
+        return "Foreground CPU pressure is high; watching background processes for sustained spikes."
             .to_owned();
     }
 
@@ -1056,12 +1156,116 @@ fn should_skip_process(
 
 fn auto_balance_should_run(
     settings: &ForegroundResponsivenessSettings,
-    total_cpu_usage_percent: Option<f32>,
+    foreground_cpu_usage_percent: Option<f32>,
 ) -> bool {
     settings.auto_balance_enabled
-        && total_cpu_usage_percent.is_some_and(|usage| {
+        && foreground_cpu_usage_percent.is_some_and(|usage| {
             usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
         })
+}
+
+fn auto_balance_affinity_mode(mode: EcoQosCpuRestrictionMode) -> CpuAffinityMode {
+    match mode {
+        EcoQosCpuRestrictionMode::SoftCpuSets => CpuAffinityMode::Soft,
+        EcoQosCpuRestrictionMode::HardAffinity => CpuAffinityMode::Hard,
+    }
+}
+
+fn auto_balance_core_mask(settings: &ForegroundResponsivenessSettings) -> Option<u64> {
+    limited_efficiency_preferred_core_mask(
+        settings.auto_balance_cpu_percent,
+        settings.auto_balance_max_logical_processors,
+    )
+}
+
+fn lower_background_core_mask(
+    settings: &ForegroundResponsivenessSettings,
+    percent: u8,
+) -> Option<u64> {
+    limited_efficiency_preferred_core_mask(
+        percent,
+        settings.lower_background_max_logical_processors,
+    )
+}
+
+fn smart_background_affinity_percent(
+    settings: &ForegroundResponsivenessSettings,
+    foreground_cpu_usage_percent: Option<f32>,
+) -> u8 {
+    let maximum = settings.auto_balance_cpu_percent.clamp(1, 100);
+
+    let threshold = f32::from(settings.auto_balance_total_threshold_percent.min(100));
+    let Some(usage) = foreground_cpu_usage_percent else {
+        return maximum;
+    };
+    if usage < threshold {
+        return maximum;
+    }
+
+    let pressure = if threshold >= 100.0 {
+        1.0
+    } else {
+        ((usage.clamp(0.0, 100.0) - threshold) / (100.0 - threshold)).clamp(0.0, 1.0)
+    };
+    let target = if pressure >= 0.66 {
+        25
+    } else if pressure >= 0.33 {
+        38
+    } else {
+        50
+    };
+    maximum.min(target).max(1)
+}
+
+fn limited_efficiency_preferred_core_mask(percent: u8, max_logical_processors: u8) -> Option<u64> {
+    let processors = affinity::logical_processors();
+    if processors.is_empty() {
+        return None;
+    }
+
+    let e_core_indices = processors
+        .iter()
+        .filter(|processor| processor.kind == LogicalProcessorKind::Efficiency)
+        .map(|processor| processor.index)
+        .collect::<Vec<_>>();
+    let mut selected = if e_core_indices.is_empty() {
+        processors
+            .iter()
+            .map(|processor| processor.index)
+            .collect::<Vec<_>>()
+    } else {
+        e_core_indices
+    };
+    selected.sort_unstable();
+    selected.dedup();
+
+    logical_indices_to_limited_mask(&selected, percent, max_logical_processors)
+}
+
+fn logical_indices_to_limited_mask(
+    indices: &[usize],
+    percent: u8,
+    max_logical_processors: u8,
+) -> Option<u64> {
+    if indices.is_empty() {
+        return None;
+    }
+    let percent_count = (indices.len() * usize::from(percent.clamp(1, 100))).div_ceil(100);
+    let max_count = usize::from(max_logical_processors);
+    let limit = if max_count == 0 {
+        percent_count
+    } else {
+        percent_count.min(max_count)
+    }
+    .clamp(1, indices.len());
+
+    let mut mask = 0_u64;
+    for index in indices.iter().take(limit) {
+        if *index < u64::BITS as usize {
+            mask |= 1_u64 << index;
+        }
+    }
+    (mask != 0).then_some(mask)
 }
 
 #[cfg(test)]
@@ -1126,7 +1330,10 @@ impl AppPriorityActionBackend for ForegroundBoostPriorityBackend<'_, '_, '_> {
         _app: &AppMatcher,
         priority: RuleProcessPriority,
     ) -> Result<(), String> {
-        if priority != RuleProcessPriority::AboveNormal {
+        if !matches!(
+            priority,
+            RuleProcessPriority::Normal | RuleProcessPriority::AboveNormal
+        ) {
             return Err(format!(
                 "Foreground boost does not support {priority:?} priority."
             ));
@@ -1165,6 +1372,7 @@ struct ForegroundResponsivenessPriorityBackend<'a, 'log> {
     existing: Option<&'a AdjustedProcess>,
     action_log: &'log mut ActionLog,
     source: PriorityTargetSource,
+    apply_efficiency_mode: bool,
     adjusted: Option<AdjustedProcess>,
     skipped: bool,
     last_error: Option<PriorityError>,
@@ -1193,6 +1401,7 @@ impl AppPriorityActionBackend for ForegroundResponsivenessPriorityBackend<'_, '_
             self.existing,
             self.action_log,
             self.source,
+            self.apply_efficiency_mode,
         ) {
             Ok(Some(adjusted)) => {
                 self.adjusted = Some(adjusted);
@@ -1226,6 +1435,7 @@ fn apply_priority(
     existing: Option<&AdjustedProcess>,
     action_log: &mut ActionLog,
     source: PriorityTargetSource,
+    apply_efficiency_mode: bool,
 ) -> Result<Option<AdjustedProcess>, PriorityError> {
     let process = ProcessHandle::open(process_id)?;
     let reusable_existing =
@@ -1233,7 +1443,7 @@ fn apply_priority(
 
     if let Some(adjusted) = existing {
         if !adjusted.process_name.eq_ignore_ascii_case(&process_name) {
-            process.set_priority_class(adjusted.previous_priority)?;
+            restore_adjusted_process(&process, adjusted)?;
             action_log.record(
                 ActionLogFeature::ForegroundResponsiveness,
                 Some(process_id),
@@ -1249,8 +1459,29 @@ fn apply_priority(
     if current_priority == HIGH_PRIORITY_CLASS || current_priority == REALTIME_PRIORITY_CLASS {
         return Ok(None);
     }
+    let previous_efficiency_state = if apply_efficiency_mode {
+        let current_state = process.power_throttling_state().ok();
+        if !current_state.is_some_and(power_throttling_execution_enabled) {
+            process.set_power_throttling_state(power_throttling_enabled_state(current_state))?;
+            action_log.record(
+                ActionLogFeature::ForegroundResponsiveness,
+                Some(process_id),
+                process_name.clone(),
+                ActionLogAction::Apply,
+                ActionLogResult::Applied,
+                "Enabled Windows Efficiency Mode for background responsiveness.",
+            );
+        }
+        reusable_existing
+            .and_then(|adjusted| adjusted.previous_efficiency_state)
+            .or(current_state)
+    } else {
+        reusable_existing.and_then(|adjusted| adjusted.previous_efficiency_state)
+    };
     if reusable_existing.is_some_and(|adjusted| {
-        adjusted.applied_priority == priority_class && current_priority == priority_class
+        adjusted.applied_priority == priority_class
+            && current_priority == priority_class
+            && adjusted.applied_efficiency_mode == apply_efficiency_mode
     }) {
         return Ok(existing.cloned());
     }
@@ -1279,6 +1510,8 @@ fn apply_priority(
         process_name,
         previous_priority,
         applied_priority: priority_class,
+        previous_efficiency_state,
+        applied_efficiency_mode: apply_efficiency_mode,
     }))
 }
 
@@ -1287,7 +1520,29 @@ fn restore_adjusted_priority(
     process_state: AdjustedProcess,
 ) -> Result<(), PriorityError> {
     let process = ProcessHandle::open(process_id)?;
-    process.set_priority_class(process_state.previous_priority)
+    restore_adjusted_process(&process, &process_state)
+}
+
+fn restore_adjusted_process(
+    process: &ProcessHandle,
+    process_state: &AdjustedProcess,
+) -> Result<(), PriorityError> {
+    let mut last_error = None;
+    if process_state.applied_efficiency_mode {
+        let state = process_state
+            .previous_efficiency_state
+            .unwrap_or_else(power_throttling_disabled_state);
+        if let Err(err) = process.set_power_throttling_state(state) {
+            last_error = Some(err);
+        }
+    }
+    if let Err(err) = process.set_priority_class(process_state.previous_priority) {
+        last_error = Some(err);
+    }
+    match last_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 fn restore_boosted_priority(process_state: BoostedProcess) -> Result<(), PriorityError> {
@@ -1321,6 +1576,28 @@ fn process_cpu_usage_percent(previous: ProcessCpuSample, current: ProcessCpuSamp
         .unwrap_or(1)
         .max(1) as f64;
     Some(((cpu_delta / (elapsed_100ns as f64 * processor_count)) * 100.0).clamp(0.0, 100.0) as f32)
+}
+
+fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
+    PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: 0,
+    }
+}
+
+fn power_throttling_enabled_state(
+    previous: Option<PROCESS_POWER_THROTTLING_STATE>,
+) -> PROCESS_POWER_THROTTLING_STATE {
+    let mut state = previous.unwrap_or_else(power_throttling_disabled_state);
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    state
+}
+
+fn power_throttling_execution_enabled(state: PROCESS_POWER_THROTTLING_STATE) -> bool {
+    (state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) != 0
 }
 
 enum PriorityError {
@@ -1422,8 +1699,8 @@ fn process_failure_key(process_name: &str) -> String {
 
 fn priority_source_label(source: PriorityTargetSource) -> &'static str {
     match source {
+        PriorityTargetSource::BackgroundPolicy => "Background policy",
         PriorityTargetSource::Rule => "Rule",
-        PriorityTargetSource::AutoBalance => "Auto-balance",
     }
 }
 
@@ -1492,6 +1769,48 @@ impl ProcessHandle {
         if ok == 0 {
             Err(PriorityError::Failed(format!(
                 "SetPriorityClass failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn power_throttling_state(&self) -> Result<PROCESS_POWER_THROTTLING_STATE, PriorityError> {
+        let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+        let ok = unsafe {
+            GetProcessInformation(
+                self.0,
+                ProcessPowerThrottling,
+                &mut state as *mut _ as *mut c_void,
+                std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            )
+        };
+        if ok == 0 {
+            Err(PriorityError::Failed(format!(
+                "GetProcessInformation ProcessPowerThrottling failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(state)
+        }
+    }
+
+    fn set_power_throttling_state(
+        &self,
+        state: PROCESS_POWER_THROTTLING_STATE,
+    ) -> Result<(), PriorityError> {
+        let ok = unsafe {
+            SetProcessInformation(
+                self.0,
+                ProcessPowerThrottling,
+                &state as *const _ as *const c_void,
+                std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            )
+        };
+        if ok == 0 {
+            Err(PriorityError::Failed(format!(
+                "SetProcessInformation ProcessPowerThrottling failed with error {}.",
                 last_error()
             )))
         } else {
@@ -1626,6 +1945,7 @@ mod tests {
             existing: None,
             action_log: &mut log,
             source: PriorityTargetSource::Rule,
+            apply_efficiency_mode: true,
             adjusted: None,
             skipped: false,
             last_error: None,
@@ -1668,12 +1988,12 @@ mod tests {
             ActionExecutor.apply_app_priority_action(
                 &Action::BoostForegroundPriority {
                     app: AppMatcher::ProcessName("game.exe".to_owned()),
-                    priority: RuleProcessPriority::Normal,
+                    priority: RuleProcessPriority::BelowNormal,
                 },
                 &mut backend,
             ),
             ActionExecution::Failed(
-                "Foreground boost does not support Normal priority.".to_owned()
+                "Foreground boost does not support BelowNormal priority.".to_owned()
             )
         );
         assert!(backend.manager.boosted.is_none());
@@ -1685,7 +2005,15 @@ mod tests {
         let settings = ForegroundResponsivenessSettings {
             enabled: true,
             lower_background_apps: true,
+            lower_background_affinity_enabled: false,
+            lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            lower_background_cpu_percent: 50,
+            lower_background_max_logical_processors: 0,
+            lower_background_auto_cpu_percent: false,
             auto_balance_enabled: false,
+            auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            auto_balance_cpu_percent: 50,
+            auto_balance_max_logical_processors: 0,
             auto_balance_total_threshold_percent: 70,
             auto_balance_threshold_percent: 25,
             auto_balance_restore_threshold_percent: 5,
@@ -1745,6 +2073,8 @@ mod tests {
                 process_name: "exited.exe".to_owned(),
                 previous_priority: NORMAL_PRIORITY_CLASS,
                 applied_priority: BELOW_NORMAL_PRIORITY_CLASS,
+                previous_efficiency_state: None,
+                applied_efficiency_mode: false,
             },
         );
         let mut log = ActionLog::new(8);
