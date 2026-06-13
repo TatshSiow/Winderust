@@ -76,8 +76,9 @@ use crate::{
 };
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND, POINT};
 use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
-    REG_BINARY, REG_DWORD,
+    RegCloseKey, RegCreateKeyExW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_BINARY, REG_DWORD,
+    REG_OPTION_NON_VOLATILE,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::{
     CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY,
@@ -116,6 +117,13 @@ const AUTO_BALANCE_THRESHOLD_MIN_PERCENT: u64 = 1;
 const AUTO_BALANCE_THRESHOLD_MAX_PERCENT: u64 = 100;
 const AUTO_BALANCE_SECONDS_MIN: u64 = 1;
 const AUTO_BALANCE_SECONDS_MAX: u64 = 3_600;
+const WIN32_PRIORITY_SEPARATION_MIN: u64 = 0;
+const WIN32_PRIORITY_SEPARATION_MAX: u64 = 63;
+const WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT: u32 = 0x26;
+const WIN32_PRIORITY_CONTROL_SUB_KEY: &str = "SYSTEM\\CurrentControlSet\\Control\\PriorityControl";
+const WIN32_PRIORITY_SEPARATION_VALUE: &str = "Win32PrioritySeparation";
+const POWERLEAF_REGISTRY_SUB_KEY: &str = "Software\\PowerLeaf";
+const WIN32_PRIORITY_SEPARATION_BACKUP_VALUE: &str = "Win32PrioritySeparationBackup";
 const RULE_TITLE_TEXT_SIZE: f32 = 14.0;
 const RULE_TITLE_LINE_HEIGHT: f32 = 20.0;
 const MAX_CUSTOM_ACCENT_COLORS: usize = 8;
@@ -243,6 +251,10 @@ pub struct PowerLeafApp {
     processor_power_loaded_plan_guid: Option<String>,
     processor_power_link_ac_dc: bool,
     processor_power_dirty: bool,
+    win32_priority_separation_value: Option<u32>,
+    win32_priority_separation_edit_value: u32,
+    win32_priority_separation_backup: Option<u32>,
+    win32_priority_separation_status: String,
     start_minimized_applied: bool,
     editing_rule_title: Option<RuleTitleTarget>,
     editing_numeric: Option<NumericField>,
@@ -380,6 +392,18 @@ impl Render for DragStableSlider {
 enum TickOutcome {
     Continue { changed: bool },
     Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Win32PrioritySeparationField {
+    QuantumDuration,
+    QuantumBehaviour,
+    ForegroundBoost,
+}
+
+#[derive(Clone, Copy)]
+struct Win32PrioritySeparationFieldOption {
+    bits: u32,
 }
 
 impl UiInputs {
@@ -676,6 +700,12 @@ impl PowerLeafApp {
         let power = PowerPlanManager;
         let initial_processor_power = load_initial_processor_power_state(&power);
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
+        let (win32_priority_separation_value, win32_priority_separation_status) =
+            read_win32_priority_separation_with_status();
+        let win32_priority_separation_edit_value = win32_priority_separation_value
+            .map(normalize_win32_priority_separation_value)
+            .unwrap_or(WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT);
+        let win32_priority_separation_backup = read_win32_priority_separation_backup();
 
         let mut app = Self {
             saved_settings: settings.clone(),
@@ -742,6 +772,10 @@ impl PowerLeafApp {
             processor_power_link_ac_dc: initial_processor_power.values.ac
                 == initial_processor_power.values.dc,
             processor_power_dirty: false,
+            win32_priority_separation_value,
+            win32_priority_separation_edit_value,
+            win32_priority_separation_backup,
+            win32_priority_separation_status,
             start_minimized_applied: false,
             editing_rule_title: None,
             editing_numeric: None,
@@ -2417,7 +2451,7 @@ impl PowerLeafApp {
                 settings.schedule_mode.rules.len(),
             )),
             Page::ActionLog => None,
-            Page::Settings | Page::About => None,
+            Page::Settings | Page::Win32PrioritySeparation | Page::About => None,
         }
     }
 }
@@ -2673,6 +2707,7 @@ impl PowerLeafApp {
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::ActionLog => self.render_action_log_page(cx),
             Page::Settings => self.render_settings_page(window, cx),
+            Page::Win32PrioritySeparation => self.render_win32_priority_separation_page(window, cx),
             Page::About => self.render_about_page(),
         }
     }
@@ -7200,6 +7235,408 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
+    fn render_win32_priority_separation_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        page_shell(Page::Win32PrioritySeparation)
+            .child(self.render_win32_priority_separation_card(window, cx))
+            .into_any_element()
+    }
+
+    fn render_win32_priority_separation_card(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let edit_value = self.win32_priority_separation_edit_value;
+        let backup_value = self
+            .win32_priority_separation_backup
+            .map(format_win32_priority_separation_with_description)
+            .unwrap_or_else(|| t!("settings.win32_priority_separation_no_backup").to_string());
+        let has_backup = self.win32_priority_separation_backup.is_some();
+
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .gap_2()
+            .child(text_muted(
+                t!("settings.win32_priority_separation_warning").to_string(),
+            ))
+            .child(self.render_win32_priority_separation_target_card())
+            .child(
+                v_flex()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .gap_1()
+                    .child(processor_power_column_header(
+                        t!("settings.win32_priority_separation_tuning").to_string(),
+                    ))
+                    .child(win32_priority_row(
+                        "win32-priority-separation-duration-row",
+                        t!("settings.win32_priority_separation_quantum_duration").to_string(),
+                        Some(
+                            t!("settings.win32_priority_separation_quantum_duration_help")
+                                .to_string(),
+                        ),
+                        self.render_win32_priority_separation_field_picker(
+                            Win32PrioritySeparationField::QuantumDuration,
+                            window,
+                            cx,
+                        ),
+                    ))
+                    .child(win32_priority_row(
+                        "win32-priority-separation-behaviour-row",
+                        t!("settings.win32_priority_separation_quantum_behaviour").to_string(),
+                        Some(
+                            t!("settings.win32_priority_separation_quantum_behaviour_help")
+                                .to_string(),
+                        ),
+                        self.render_win32_priority_separation_field_picker(
+                            Win32PrioritySeparationField::QuantumBehaviour,
+                            window,
+                            cx,
+                        ),
+                    ))
+                    .child(win32_priority_row(
+                        "win32-priority-separation-boost-row",
+                        t!("settings.win32_priority_separation_foreground_boost").to_string(),
+                        Some(
+                            t!("settings.win32_priority_separation_foreground_boost_help")
+                                .to_string(),
+                        ),
+                        self.render_win32_priority_separation_field_picker(
+                            Win32PrioritySeparationField::ForegroundBoost,
+                            window,
+                            cx,
+                        ),
+                    ))
+                    .child(win32_priority_row(
+                        "win32-priority-separation-result-row",
+                        t!("settings.win32_priority_separation_resulting_value").to_string(),
+                        Some(win32_priority_separation_description(edit_value)),
+                        value_pill(format_win32_priority_separation(edit_value)).into_any_element(),
+                    )),
+            )
+            .child(win32_priority_row(
+                "win32-priority-separation-backup-row",
+                t!("settings.win32_priority_separation_backup").to_string(),
+                None,
+                value_pill(backup_value).into_any_element(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .flex_wrap()
+                    .child(
+                        control_button(Button::new("refresh-win32-priority-separation"))
+                            .label(t!("settings.refresh").to_string())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.refresh_win32_priority_separation();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        control_button(Button::new("save-win32-priority-separation-backup"))
+                            .label(t!("settings.save_backup").to_string())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.save_win32_priority_separation_backup();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        control_button(Button::new("restore-win32-priority-separation-backup"))
+                            .label(t!("settings.restore_backup").to_string())
+                            .disabled(!has_backup)
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.restore_win32_priority_separation_backup();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        control_button(
+                            Button::new("apply-win32-priority-separation")
+                                .primary()
+                                .text_color(cx.theme().primary_foreground),
+                        )
+                        .label(t!("settings.apply").to_string())
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.apply_win32_priority_separation(
+                                app.win32_priority_separation_edit_value,
+                            );
+                            cx.notify();
+                        })),
+                    ),
+            )
+            .child(text_muted(self.win32_priority_separation_status.clone()))
+            .into_any_element()
+    }
+
+    fn render_win32_priority_separation_target_card(&self) -> AnyElement {
+        let current_value = self
+            .win32_priority_separation_value
+            .map(format_win32_priority_separation_with_description)
+            .unwrap_or_else(|| t!("settings.win32_priority_separation_unavailable").to_string());
+        h_flex()
+            .id("win32-priority-separation-target-card")
+            .min_h(px(58.0))
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .py_3()
+            .px_4()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(border_color()))
+            .bg(rgb(settings_card_color()))
+            .text_color(rgb(primary_text_color()))
+            .text_size(px(TEXT_BODY_SIZE))
+            .line_height(px(TEXT_BODY_LINE_HEIGHT))
+            .hover(|style| style.bg(rgb(settings_card_hover_color())))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(t!("settings.win32_priority_separation_current").to_string()),
+                    )
+                    .child(title_info_button(
+                        "win32-priority-separation-current-info",
+                        t!("settings.win32_priority_separation_warning").to_string(),
+                    )),
+            )
+            .child(value_pill(current_value))
+            .into_any_element()
+    }
+
+    fn render_win32_priority_separation_field_picker(
+        &self,
+        field: Win32PrioritySeparationField,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let picker_id = win32_priority_separation_field_picker_id(field);
+        let options = win32_priority_separation_field_options(field);
+        let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id);
+        let placement =
+            self.dropdown_placement(picker_id, dropdown_list_height(options.len()), window);
+        let mut options = dropdown_surface(cx, placement.max_height);
+        for option in win32_priority_separation_field_options(field) {
+            let selected = win32_priority_separation_field_bits(
+                self.win32_priority_separation_edit_value,
+                field,
+            ) == option.bits;
+            options = options.child(
+                dropdown_option_row(
+                    SharedString::from(format!("{}-option-{:02x}", picker_id, option.bits)),
+                    win32_priority_separation_field_option_label(field, option.bits),
+                    selected,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.set_win32_priority_separation_field(field, option.bits);
+                    app.active_power_plan_picker = None;
+                    cx.notify();
+                })),
+            );
+        }
+
+        let current_label =
+            win32_priority_separation_field_label(field, self.win32_priority_separation_edit_value);
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .relative()
+            .min_h(px(32.0))
+            .child(
+                h_flex()
+                    .id(SharedString::from(format!("{picker_id}-control")))
+                    .h(px(32.0))
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .rounded_sm()
+                    .bg(rgb(dropdown_control_color()))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .text_color(cx.theme().foreground)
+                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(current_label),
+                    )
+                    .child(dropdown_chevron(cx))
+                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                            != Some(picker_id))
+                        .then_some(picker_id.to_owned());
+                        cx.notify();
+                    })),
+            )
+            .child(dropdown_anchor_sensor(
+                picker_id,
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
+            .child(if is_open {
+                deferred(
+                    dropdown_popup_layer(placement)
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
+                        .child(options),
+                )
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+            } else {
+                Empty.into_any_element()
+            })
+            .into_any_element()
+    }
+    fn refresh_win32_priority_separation(&mut self) {
+        let (value, status) = read_win32_priority_separation_with_status();
+        self.win32_priority_separation_value = value;
+        if let Some(value) = value {
+            self.win32_priority_separation_edit_value =
+                normalize_win32_priority_separation_value(value);
+        }
+        self.win32_priority_separation_backup = read_win32_priority_separation_backup();
+        self.win32_priority_separation_status = status.clone();
+        self.status_message = status;
+    }
+
+    fn set_win32_priority_separation_field(
+        &mut self,
+        field: Win32PrioritySeparationField,
+        bits: u32,
+    ) {
+        let value =
+            normalize_win32_priority_separation_value(self.win32_priority_separation_edit_value);
+        self.win32_priority_separation_edit_value = match field {
+            Win32PrioritySeparationField::QuantumDuration => (value & !0x30) | bits,
+            Win32PrioritySeparationField::QuantumBehaviour => (value & !0x0C) | bits,
+            Win32PrioritySeparationField::ForegroundBoost => (value & !0x03) | bits,
+        };
+    }
+
+    fn save_win32_priority_separation_backup(&mut self) {
+        let Some(value) = read_win32_priority_separation() else {
+            self.win32_priority_separation_status =
+                t!("settings.win32_priority_separation_load_failed").to_string();
+            self.status_message = self.win32_priority_separation_status.clone();
+            return;
+        };
+
+        match write_win32_priority_separation_backup(value) {
+            Ok(()) => {
+                self.win32_priority_separation_backup = Some(value);
+                self.win32_priority_separation_status = t!(
+                    "settings.win32_priority_separation_backup_saved",
+                    value = format_win32_priority_separation_with_description(value)
+                )
+                .to_string();
+            }
+            Err(err) => {
+                self.win32_priority_separation_status = t!(
+                    "settings.win32_priority_separation_backup_failed",
+                    error = err
+                )
+                .to_string();
+            }
+        }
+        self.status_message = self.win32_priority_separation_status.clone();
+    }
+
+    fn apply_win32_priority_separation(&mut self, value: u32) {
+        let value = value.clamp(
+            WIN32_PRIORITY_SEPARATION_MIN as u32,
+            WIN32_PRIORITY_SEPARATION_MAX as u32,
+        );
+        if let Err(err) = self.ensure_win32_priority_separation_backup() {
+            self.win32_priority_separation_status = t!(
+                "settings.win32_priority_separation_backup_failed",
+                error = err
+            )
+            .to_string();
+            self.status_message = self.win32_priority_separation_status.clone();
+            return;
+        }
+        match write_win32_priority_separation(value) {
+            Ok(()) => {
+                self.win32_priority_separation_value = Some(value);
+                self.win32_priority_separation_edit_value = value;
+                self.win32_priority_separation_status = t!(
+                    "settings.win32_priority_separation_saved",
+                    value = format_win32_priority_separation_with_description(value)
+                )
+                .to_string();
+            }
+            Err(err) => {
+                self.win32_priority_separation_status = t!(
+                    "settings.win32_priority_separation_save_failed",
+                    error = err
+                )
+                .to_string();
+            }
+        }
+        self.status_message = self.win32_priority_separation_status.clone();
+    }
+
+    fn restore_win32_priority_separation_backup(&mut self) {
+        let Some(value) = self.win32_priority_separation_backup else {
+            self.win32_priority_separation_status =
+                t!("settings.win32_priority_separation_no_backup").to_string();
+            self.status_message = self.win32_priority_separation_status.clone();
+            return;
+        };
+
+        match write_win32_priority_separation(value) {
+            Ok(()) => {
+                self.win32_priority_separation_value = Some(value);
+                self.win32_priority_separation_edit_value = value;
+                self.win32_priority_separation_status = t!(
+                    "settings.win32_priority_separation_restored",
+                    value = format_win32_priority_separation_with_description(value)
+                )
+                .to_string();
+            }
+            Err(err) => {
+                self.win32_priority_separation_status = t!(
+                    "settings.win32_priority_separation_restore_failed",
+                    error = err
+                )
+                .to_string();
+            }
+        }
+        self.status_message = self.win32_priority_separation_status.clone();
+    }
+
+    fn ensure_win32_priority_separation_backup(&mut self) -> Result<(), String> {
+        if self.win32_priority_separation_backup.is_some() {
+            return Ok(());
+        }
+        let current = read_win32_priority_separation()
+            .ok_or_else(|| "Current Win32PrioritySeparation value could not be read.".to_owned())?;
+        write_win32_priority_separation_backup(current)?;
+        self.win32_priority_separation_backup = Some(current);
+        Ok(())
+    }
+
     fn render_core_parking_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         page_shell(Page::CoreParking)
             .child(self.render_processor_power_card(window, cx))
@@ -8780,18 +9217,14 @@ fn switch_accent_color() -> u32 {
 }
 
 fn read_registry_dword(sub_key: &str, value_name: &str) -> Option<u32> {
+    read_registry_dword_root(HKEY_CURRENT_USER, sub_key, value_name)
+}
+
+fn read_registry_dword_root(root: HKEY, sub_key: &str, value_name: &str) -> Option<u32> {
     let sub_key = wide_null(sub_key);
     let value_name = wide_null(value_name);
     let mut key: HKEY = null_mut();
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            sub_key.as_ptr(),
-            0,
-            KEY_QUERY_VALUE,
-            &mut key,
-        )
-    };
+    let status = unsafe { RegOpenKeyExW(root, sub_key.as_ptr(), 0, KEY_QUERY_VALUE, &mut key) };
     if status != ERROR_SUCCESS {
         return None;
     }
@@ -8816,6 +9249,276 @@ fn read_registry_dword(sub_key: &str, value_name: &str) -> Option<u32> {
     } else {
         None
     }
+}
+
+fn write_registry_dword_root(
+    root: HKEY,
+    sub_key: &str,
+    value_name: &str,
+    value: u32,
+) -> Result<(), String> {
+    let sub_key = wide_null(sub_key);
+    let value_name = wide_null(value_name);
+    let mut key: HKEY = null_mut();
+    let status = unsafe { RegOpenKeyExW(root, sub_key.as_ptr(), 0, KEY_SET_VALUE, &mut key) };
+    if status != ERROR_SUCCESS {
+        return Err(registry_error_message(
+            "open registry key for write",
+            status,
+        ));
+    }
+
+    let key = RegistryKey(key);
+    let status = unsafe {
+        RegSetValueExW(
+            key.0,
+            value_name.as_ptr(),
+            0,
+            REG_DWORD,
+            &value as *const u32 as *const u8,
+            size_of::<u32>() as u32,
+        )
+    };
+    if status == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(registry_error_message("write registry value", status))
+    }
+}
+
+fn write_registry_dword_create_root(
+    root: HKEY,
+    sub_key: &str,
+    value_name: &str,
+    value: u32,
+) -> Result<(), String> {
+    let sub_key = wide_null(sub_key);
+    let value_name = wide_null(value_name);
+    let mut key: HKEY = null_mut();
+    let mut disposition = 0_u32;
+    let status = unsafe {
+        RegCreateKeyExW(
+            root,
+            sub_key.as_ptr(),
+            0,
+            null_mut(),
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            null_mut(),
+            &mut key,
+            &mut disposition,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(registry_error_message(
+            "create registry key for backup",
+            status,
+        ));
+    }
+
+    let key = RegistryKey(key);
+    let status = unsafe {
+        RegSetValueExW(
+            key.0,
+            value_name.as_ptr(),
+            0,
+            REG_DWORD,
+            &value as *const u32 as *const u8,
+            size_of::<u32>() as u32,
+        )
+    };
+    if status == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(registry_error_message("write registry backup", status))
+    }
+}
+
+fn read_win32_priority_separation() -> Option<u32> {
+    read_registry_dword_root(
+        HKEY_LOCAL_MACHINE,
+        WIN32_PRIORITY_CONTROL_SUB_KEY,
+        WIN32_PRIORITY_SEPARATION_VALUE,
+    )
+}
+
+fn read_win32_priority_separation_with_status() -> (Option<u32>, String) {
+    match read_win32_priority_separation() {
+        Some(value) => (
+            Some(value),
+            t!(
+                "settings.win32_priority_separation_loaded",
+                value = format_win32_priority_separation_with_description(value)
+            )
+            .to_string(),
+        ),
+        None => (
+            None,
+            t!("settings.win32_priority_separation_load_failed").to_string(),
+        ),
+    }
+}
+
+fn write_win32_priority_separation(value: u32) -> Result<(), String> {
+    write_registry_dword_root(
+        HKEY_LOCAL_MACHINE,
+        WIN32_PRIORITY_CONTROL_SUB_KEY,
+        WIN32_PRIORITY_SEPARATION_VALUE,
+        value,
+    )
+}
+
+fn read_win32_priority_separation_backup() -> Option<u32> {
+    read_registry_dword_root(
+        HKEY_CURRENT_USER,
+        POWERLEAF_REGISTRY_SUB_KEY,
+        WIN32_PRIORITY_SEPARATION_BACKUP_VALUE,
+    )
+}
+
+fn write_win32_priority_separation_backup(value: u32) -> Result<(), String> {
+    write_registry_dword_create_root(
+        HKEY_CURRENT_USER,
+        POWERLEAF_REGISTRY_SUB_KEY,
+        WIN32_PRIORITY_SEPARATION_BACKUP_VALUE,
+        value,
+    )
+}
+
+fn format_win32_priority_separation(value: u32) -> String {
+    format!("0x{value:02X} ({value})")
+}
+
+fn format_win32_priority_separation_with_description(value: u32) -> String {
+    format!(
+        "{} - {}",
+        format_win32_priority_separation(value),
+        win32_priority_separation_description(value)
+    )
+}
+
+fn win32_priority_separation_description(value: u32) -> String {
+    match value {
+        0x14 => t!("settings.win32_priority_separation_desc_long_variable_none").to_string(),
+        0x15 => t!("settings.win32_priority_separation_desc_long_variable_medium").to_string(),
+        0x16 => t!("settings.win32_priority_separation_desc_long_variable_high").to_string(),
+        0x18 => t!("settings.win32_priority_separation_desc_long_fixed_none").to_string(),
+        0x19 => t!("settings.win32_priority_separation_desc_long_fixed_medium").to_string(),
+        0x1A => t!("settings.win32_priority_separation_desc_long_fixed_high").to_string(),
+        0x24 => t!("settings.win32_priority_separation_desc_short_variable_none").to_string(),
+        0x25 => t!("settings.win32_priority_separation_desc_short_variable_medium").to_string(),
+        0x26 => t!("settings.win32_priority_separation_desc_short_variable_high").to_string(),
+        0x28 => t!("settings.win32_priority_separation_desc_short_fixed_none").to_string(),
+        0x29 => t!("settings.win32_priority_separation_desc_short_fixed_medium").to_string(),
+        0x2A => t!("settings.win32_priority_separation_desc_short_fixed_high").to_string(),
+        _ => t!("settings.win32_priority_separation_desc_custom").to_string(),
+    }
+}
+
+fn normalize_win32_priority_separation_value(value: u32) -> u32 {
+    win32_priority_separation_field_bits(value, Win32PrioritySeparationField::QuantumDuration)
+        | win32_priority_separation_field_bits(
+            value,
+            Win32PrioritySeparationField::QuantumBehaviour,
+        )
+        | win32_priority_separation_field_bits(value, Win32PrioritySeparationField::ForegroundBoost)
+}
+
+fn win32_priority_separation_field_bits(value: u32, field: Win32PrioritySeparationField) -> u32 {
+    match field {
+        Win32PrioritySeparationField::QuantumDuration => match value & 0x30 {
+            0x10 | 0x20 => value & 0x30,
+            _ => 0x20,
+        },
+        Win32PrioritySeparationField::QuantumBehaviour => match value & 0x0C {
+            0x04 | 0x08 => value & 0x0C,
+            _ => 0x04,
+        },
+        Win32PrioritySeparationField::ForegroundBoost => match value & 0x03 {
+            0x00 | 0x01 | 0x02 => value & 0x03,
+            _ => 0x02,
+        },
+    }
+}
+
+fn win32_priority_separation_field_picker_id(field: Win32PrioritySeparationField) -> &'static str {
+    match field {
+        Win32PrioritySeparationField::QuantumDuration => {
+            "win32-priority-separation-quantum-duration"
+        }
+        Win32PrioritySeparationField::QuantumBehaviour => {
+            "win32-priority-separation-quantum-behaviour"
+        }
+        Win32PrioritySeparationField::ForegroundBoost => {
+            "win32-priority-separation-foreground-boost"
+        }
+    }
+}
+
+fn win32_priority_separation_field_options(
+    field: Win32PrioritySeparationField,
+) -> Vec<Win32PrioritySeparationFieldOption> {
+    match field {
+        Win32PrioritySeparationField::QuantumDuration => vec![
+            Win32PrioritySeparationFieldOption { bits: 0x20 },
+            Win32PrioritySeparationFieldOption { bits: 0x10 },
+        ],
+        Win32PrioritySeparationField::QuantumBehaviour => vec![
+            Win32PrioritySeparationFieldOption { bits: 0x04 },
+            Win32PrioritySeparationFieldOption { bits: 0x08 },
+        ],
+        Win32PrioritySeparationField::ForegroundBoost => vec![
+            Win32PrioritySeparationFieldOption { bits: 0x00 },
+            Win32PrioritySeparationFieldOption { bits: 0x01 },
+            Win32PrioritySeparationFieldOption { bits: 0x02 },
+        ],
+    }
+}
+
+fn win32_priority_separation_field_option_label(
+    field: Win32PrioritySeparationField,
+    bits: u32,
+) -> String {
+    match (field, bits) {
+        (Win32PrioritySeparationField::QuantumDuration, 0x20) => {
+            t!("settings.win32_priority_separation_quantum_duration_short").to_string()
+        }
+        (Win32PrioritySeparationField::QuantumDuration, 0x10) => {
+            t!("settings.win32_priority_separation_quantum_duration_long").to_string()
+        }
+        (Win32PrioritySeparationField::QuantumBehaviour, 0x04) => {
+            t!("settings.win32_priority_separation_quantum_behaviour_variable").to_string()
+        }
+        (Win32PrioritySeparationField::QuantumBehaviour, 0x08) => {
+            t!("settings.win32_priority_separation_quantum_behaviour_fixed").to_string()
+        }
+        (Win32PrioritySeparationField::ForegroundBoost, 0x00) => {
+            t!("settings.win32_priority_separation_foreground_boost_none").to_string()
+        }
+        (Win32PrioritySeparationField::ForegroundBoost, 0x01) => {
+            t!("settings.win32_priority_separation_foreground_boost_medium").to_string()
+        }
+        (Win32PrioritySeparationField::ForegroundBoost, 0x02) => {
+            t!("settings.win32_priority_separation_foreground_boost_high").to_string()
+        }
+        _ => t!("settings.win32_priority_separation_unavailable").to_string(),
+    }
+}
+
+fn win32_priority_separation_field_label(
+    field: Win32PrioritySeparationField,
+    value: u32,
+) -> String {
+    let selected_bits = win32_priority_separation_field_bits(value, field);
+    win32_priority_separation_field_options(field)
+        .into_iter()
+        .find(|option| option.bits == selected_bits)
+        .map(|option| win32_priority_separation_field_option_label(field, option.bits))
+        .unwrap_or_else(|| t!("settings.win32_priority_separation_unavailable").to_string())
+}
+
+fn registry_error_message(action: &str, status: u32) -> String {
+    format!("Failed to {action}: Windows error {status}.")
 }
 
 fn read_registry_bytes(sub_key: &str, value_name: &str) -> Option<Vec<u8>> {
@@ -10730,6 +11433,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::Schedule => NavIcon::Calendar,
         Page::ActionLog => NavIcon::Info,
         Page::Settings => NavIcon::Settings,
+        Page::Win32PrioritySeparation => NavIcon::Chip,
         Page::About => NavIcon::Info,
     }
 }
@@ -11116,6 +11820,54 @@ fn processor_power_slider(
         cx,
         handler,
     )
+}
+
+fn win32_priority_row(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    help: Option<String>,
+    value_element: AnyElement,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let mut label_row = h_flex()
+        .flex_1()
+        .min_w(px(0.0))
+        .items_center()
+        .gap_1()
+        .child(div().min_w(px(0.0)).truncate().child(label.into()));
+    if let Some(help) = help {
+        label_row = label_row.child(title_info_button(format!("{id}-info"), help));
+    }
+
+    h_flex()
+        .id(id)
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .py_3()
+        .px_4()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .child(label_row)
+        .child(
+            h_flex()
+                .w(px(260.0))
+                .max_w(px(260.0))
+                .items_center()
+                .justify_end()
+                .flex_shrink_0()
+                .child(value_element),
+        )
+        .into_any_element()
 }
 
 fn threshold_level_slider(

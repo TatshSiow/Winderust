@@ -18,6 +18,7 @@ pub enum Page {
     Schedule,
     ActionLog,
     Settings,
+    Win32PrioritySeparation,
     About,
 }
 
@@ -47,7 +48,8 @@ const PROCESS_POLICY_PAGES: [Page; 4] = [
     Page::Watchdog,
 ];
 const APP_PAGES: [Page; 3] = [Page::ActionLog, Page::Settings, Page::About];
-const PAGE_SECTIONS: [PageSection; 5] = [
+const ADVANCED_PAGES: [Page; 1] = [Page::Win32PrioritySeparation];
+const PAGE_SECTIONS: [PageSection; 6] = [
     PageSection {
         label: "Overview",
         pages: &OVERVIEW_PAGES,
@@ -67,6 +69,10 @@ const PAGE_SECTIONS: [PageSection; 5] = [
     PageSection {
         label: "App",
         pages: &APP_PAGES,
+    },
+    PageSection {
+        label: "Advanced",
+        pages: &ADVANCED_PAGES,
     },
 ];
 
@@ -89,6 +95,7 @@ impl Page {
             Self::Schedule => t!("nav.schedule"),
             Self::ActionLog => t!("nav.action_log"),
             Self::Settings => t!("nav.settings"),
+            Self::Win32PrioritySeparation => t!("nav.win32_priority_separation"),
             Self::About => t!("nav.about"),
         }
         .to_string()
@@ -113,6 +120,7 @@ impl Page {
             | Self::AppSuspension
             | Self::Watchdog => t!("nav.process_policies"),
             Self::ActionLog | Self::Settings | Self::About => t!("nav.app"),
+            Self::Win32PrioritySeparation => t!("nav.advanced"),
         }
         .to_string()
     }
@@ -129,6 +137,7 @@ pub fn section_label(label: &str) -> String {
         "Processor Controls" => t!("nav.processor_controls"),
         "Process Policies" => t!("nav.process_policies"),
         "App" => t!("nav.app"),
+        "Advanced" => t!("nav.advanced"),
         _ => label.into(),
     }
     .to_string()
