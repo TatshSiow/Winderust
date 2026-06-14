@@ -44,7 +44,7 @@ use crate::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AppLanguage, AppSuspensionRule,
         AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings, CpuAffinityMode,
         CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
-        CpuUsageComparison, CpuUsageRule, EcoQosCpuRestrictionControlStyle,
+        CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
         ForegroundRules, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
@@ -3880,6 +3880,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
+            .child(self.render_efficiency_aggressiveness_selector(window, cx))
             .child(self.render_efficiency_cpu_set_preference(cx))
             .child(section_header(
                 &t!("efficiency.whitelist"),
@@ -3941,6 +3942,141 @@ impl PowerLeafApp {
                 }),
             ))
             .child(disabled_feature_body(body, enabled))
+            .into_any_element()
+    }
+
+    fn render_efficiency_aggressiveness_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.settings.eco_qos.aggressiveness;
+        h_flex()
+            .id("eco-qos-aggressiveness-row")
+            .w_full()
+            .min_w(px(0.0))
+            .min_h(px(58.0))
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .py_3()
+            .px_4()
+            .text_color(rgb(primary_text_color()))
+            .text_size(px(TEXT_BODY_SIZE))
+            .line_height(px(TEXT_BODY_LINE_HEIGHT))
+            .border_t_1()
+            .border_color(rgb(border_color()))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(t!("efficiency.aggressiveness").to_string()),
+                    )
+                    .child(title_info_button(
+                        "eco-qos-aggressiveness-info",
+                        t!("efficiency.aggressiveness_help").to_string(),
+                    )),
+            )
+            .child(
+                div()
+                    .w(px(190.0))
+                    .max_w_full()
+                    .child(self.render_efficiency_aggressiveness_picker(selected, window, cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_efficiency_aggressiveness_picker(
+        &self,
+        selected: EcoQosAggressiveness,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let picker_id = "eco-qos-aggressiveness";
+        let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id);
+        let placement = self.dropdown_placement(
+            picker_id,
+            dropdown_list_height(EcoQosAggressiveness::ALL.len()),
+            window,
+        );
+        let mut options = dropdown_surface(cx, placement.max_height);
+        for aggressiveness in EcoQosAggressiveness::ALL {
+            options = options.child(
+                dropdown_option_row(
+                    SharedString::from(format!("{picker_id}-option-{aggressiveness:?}")),
+                    efficiency_aggressiveness_label(aggressiveness),
+                    selected == aggressiveness,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.settings.eco_qos.aggressiveness = aggressiveness;
+                    app.active_power_plan_picker = None;
+                    cx.notify();
+                })),
+            );
+        }
+
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .relative()
+            .min_h(px(32.0))
+            .child(
+                h_flex()
+                    .id("eco-qos-aggressiveness-control")
+                    .h(px(32.0))
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .rounded_sm()
+                    .bg(rgb(dropdown_control_color()))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .text_color(cx.theme().foreground)
+                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(efficiency_aggressiveness_label(selected)),
+                    )
+                    .child(dropdown_chevron(cx))
+                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                            != Some(picker_id))
+                        .then_some(picker_id.to_owned());
+                        cx.notify();
+                    })),
+            )
+            .child(dropdown_anchor_sensor(
+                picker_id,
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
+            .child(if is_open {
+                deferred(
+                    dropdown_popup_layer(placement)
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
+                        .child(options),
+                )
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+            } else {
+                Empty.into_any_element()
+            })
             .into_any_element()
     }
 
@@ -5556,19 +5692,29 @@ impl PowerLeafApp {
             .settings
             .foreground_responsiveness
             .lower_background_apps;
-        let action = switch_toggle_action(
-            "responsiveness-lower-background-toggle",
-            selected,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.foreground_responsiveness.lower_background_apps = *checked;
-                cx.notify();
-            }),
-        );
+        let background_efficiency_managed = self.settings.eco_qos.enabled;
+        let action = if background_efficiency_managed {
+            value_pill(t!("responsiveness.background_efficiency_handled").to_string())
+                .into_any_element()
+        } else {
+            switch_toggle_action(
+                "responsiveness-lower-background-toggle",
+                selected,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.foreground_responsiveness.lower_background_apps = *checked;
+                    cx.notify();
+                }),
+            )
+        };
 
         setting_action_card_with_help(
             "responsiveness-lower-background-efficiency",
             t!("responsiveness.lower_background_efficiency").to_string(),
-            t!("responsiveness.lower_background_efficiency_help").to_string(),
+            if background_efficiency_managed {
+                t!("responsiveness.lower_background_efficiency_managed_help").to_string()
+            } else {
+                t!("responsiveness.lower_background_efficiency_help").to_string()
+            },
             action,
         )
         .into_any_element()
@@ -5749,6 +5895,22 @@ impl PowerLeafApp {
                 "responsiveness-auto-affinity-mode",
                 t!("responsiveness.auto_balance_affinity_mode").to_string(),
                 self.render_auto_balance_affinity_mode_selector(cx),
+                true,
+            )
+            .into_any_element(),
+            setting_group_action_row(
+                "responsiveness-auto-cpu-share-mode",
+                t!("responsiveness.auto_balance_auto_cpu_share").to_string(),
+                setting_group_switch_action(
+                    "responsiveness-auto-cpu-share-mode-switch",
+                    settings.lower_background_auto_cpu_percent,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings
+                            .foreground_responsiveness
+                            .lower_background_auto_cpu_percent = *checked;
+                        cx.notify();
+                    }),
+                ),
                 true,
             )
             .into_any_element(),
@@ -10823,9 +10985,12 @@ fn auto_balance_state_tag(state: AutoBalanceProcessState) -> Tag {
         AutoBalanceProcessState::Watching => Tag::warning()
             .outline()
             .child(t!("responsiveness.auto_balance_state_watching").to_string()),
-        AutoBalanceProcessState::Restrained => Tag::success()
+        AutoBalanceProcessState::Lowered => Tag::success()
             .outline()
-            .child(t!("responsiveness.auto_balance_state_restrained").to_string()),
+            .child(t!("responsiveness.auto_balance_state_lowered").to_string()),
+        AutoBalanceProcessState::AffinityRestrained => Tag::success()
+            .outline()
+            .child(t!("responsiveness.auto_balance_state_affinity").to_string()),
         AutoBalanceProcessState::CoolingDown => Tag::secondary()
             .outline()
             .child(t!("responsiveness.auto_balance_state_cooling").to_string()),
@@ -12965,6 +13130,10 @@ fn apply_auto_balance_preset(
     preset: AutoBalancePreset,
 ) {
     let values = auto_balance_preset_values(preset);
+    settings.boost_foreground_app = true;
+    settings.foreground_boost = ForegroundBoostPriority::Auto;
+    settings.lower_background_auto_cpu_percent = true;
+    settings.auto_balance_cpu_percent = values.manual_cpu_percent;
     settings.auto_balance_total_threshold_percent = values.total_threshold;
     settings.auto_balance_threshold_percent = values.process_threshold;
     settings.auto_balance_restore_threshold_percent = values.restore_threshold;
@@ -12978,7 +13147,8 @@ fn auto_balance_matches_preset(
     preset: AutoBalancePreset,
 ) -> bool {
     let values = auto_balance_preset_values(preset);
-    settings.auto_balance_total_threshold_percent == values.total_threshold
+    settings.lower_background_auto_cpu_percent
+        && settings.auto_balance_total_threshold_percent == values.total_threshold
         && settings.auto_balance_threshold_percent == values.process_threshold
         && settings.auto_balance_restore_threshold_percent == values.restore_threshold
         && settings.auto_balance_sustain_seconds == values.sustain_seconds
@@ -12988,6 +13158,7 @@ fn auto_balance_matches_preset(
 
 #[derive(Clone, Copy)]
 struct AutoBalancePresetValues {
+    manual_cpu_percent: u8,
     total_threshold: u8,
     process_threshold: u8,
     restore_threshold: u8,
@@ -12999,38 +13170,50 @@ struct AutoBalancePresetValues {
 fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetValues {
     match preset {
         AutoBalancePreset::Gentle => AutoBalancePresetValues {
-            total_threshold: 80,
-            process_threshold: 35,
-            restore_threshold: 8,
-            sustain_seconds: 4,
-            minimum_restraint_seconds: 4,
-            cooldown_seconds: 12,
+            manual_cpu_percent: 90,
+            total_threshold: 82,
+            process_threshold: 40,
+            restore_threshold: 15,
+            sustain_seconds: 5,
+            minimum_restraint_seconds: 2,
+            cooldown_seconds: 4,
         },
         AutoBalancePreset::Balanced => AutoBalancePresetValues {
-            total_threshold: 70,
-            process_threshold: 25,
-            restore_threshold: 5,
-            sustain_seconds: 2,
-            minimum_restraint_seconds: 4,
-            cooldown_seconds: 10,
+            manual_cpu_percent: 75,
+            total_threshold: 75,
+            process_threshold: 30,
+            restore_threshold: 10,
+            sustain_seconds: 3,
+            minimum_restraint_seconds: 3,
+            cooldown_seconds: 6,
         },
         AutoBalancePreset::Responsive => AutoBalancePresetValues {
-            total_threshold: 60,
-            process_threshold: 18,
-            restore_threshold: 5,
-            sustain_seconds: 1,
-            minimum_restraint_seconds: 6,
-            cooldown_seconds: 15,
+            manual_cpu_percent: 60,
+            total_threshold: 65,
+            process_threshold: 22,
+            restore_threshold: 8,
+            sustain_seconds: 2,
+            minimum_restraint_seconds: 5,
+            cooldown_seconds: 10,
         },
     }
 }
 
 fn foreground_boost_priority_label(priority: ForegroundBoostPriority) -> String {
     match priority {
+        ForegroundBoostPriority::Auto => t!("responsiveness.priority_auto").to_string(),
         ForegroundBoostPriority::Normal => t!("responsiveness.priority_normal").to_string(),
         ForegroundBoostPriority::AboveNormal => {
             t!("responsiveness.priority_above_normal").to_string()
         }
+    }
+}
+
+fn efficiency_aggressiveness_label(aggressiveness: EcoQosAggressiveness) -> String {
+    match aggressiveness {
+        EcoQosAggressiveness::Safe => t!("efficiency.aggressiveness_safe").to_string(),
+        EcoQosAggressiveness::Balanced => t!("efficiency.aggressiveness_balanced").to_string(),
+        EcoQosAggressiveness::Aggressive => t!("efficiency.aggressiveness_aggressive").to_string(),
     }
 }
 

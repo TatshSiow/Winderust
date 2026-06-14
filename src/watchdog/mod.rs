@@ -718,6 +718,7 @@ mod tests {
     fn matching_processes_are_case_insensitive() {
         let processes = vec![ProcessInfo {
             id: 42,
+            parent_id: None,
             name: "tool.exe".to_owned(),
         }];
 

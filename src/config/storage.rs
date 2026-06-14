@@ -117,13 +117,14 @@ mod tests {
         AccentSettings, ActionLogMode, ActivityModeSettings, AdvancedSettings, AppLanguage,
         AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
         CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
-        CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, EcoQosCpuRestrictionControlStyle,
-        EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
-        EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, GeneralSettings, InputDetectionSettings, ManualOverride,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
-        PriorityRule, ProcessExclusionRule, ProcessPriority, ScheduleModeSettings, ScheduleRule,
-        WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
+        CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, EcoQosAggressiveness,
+        EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
+        EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
+        ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GeneralSettings,
+        InputDetectionSettings, ManualOverride, NetworkThresholdUnit, PerformanceModeRule,
+        PerformanceModeSettings, PowerPlanSettings, PriorityRule, ProcessExclusionRule,
+        ProcessPriority, ScheduleModeSettings, ScheduleRule, WatchdogAction, WatchdogRule,
+        WatchdogSettings, WeekdaySetting,
     };
 
     #[test]
@@ -226,6 +227,7 @@ mod tests {
                 cpu_restriction_percent: 50,
                 cpu_restriction_max_logical_processors: 0,
                 cpu_restriction_core_mask: 0,
+                aggressiveness: EcoQosAggressiveness::Safe,
                 efficiency_whitelist: vec![
                     EcoQosExclusionRule {
                         enabled: true,

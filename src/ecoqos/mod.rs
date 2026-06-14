@@ -30,8 +30,8 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     affinity::{self, LogicalProcessorKind},
     config::{
-        EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
-        EcoQosSettings,
+        EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode,
+        EcoQosCpuRestrictionStrategy, EcoQosSettings,
     },
     foreground::list_processes,
     rules::{
@@ -66,6 +66,42 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "wininit.exe",
     "winlogon.exe",
     "wudfhost.exe",
+];
+
+const BALANCED_BUILT_IN_EXCLUSIONS: &[&str] = &[
+    "audiodg.exe",
+    "conhost.exe",
+    "csrss.exe",
+    "ctfmon.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "fontdrvhost.exe",
+    "lsaiso.exe",
+    "lsass.exe",
+    "registry",
+    "securityhealthservice.exe",
+    "securityhealthsystray.exe",
+    "services.exe",
+    "sihost.exe",
+    "smss.exe",
+    "startmenuexperiencehost.exe",
+    "system",
+    "taskmgr.exe",
+    "textinputhost.exe",
+    "wininit.exe",
+    "winlogon.exe",
+];
+
+const AGGRESSIVE_BUILT_IN_EXCLUSIONS: &[&str] = &[
+    "csrss.exe",
+    "lsaiso.exe",
+    "lsass.exe",
+    "registry",
+    "services.exe",
+    "smss.exe",
+    "system",
+    "wininit.exe",
+    "winlogon.exe",
 ];
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EcoQosSnapshot {
@@ -501,14 +537,27 @@ impl Default for EcoQosSnapshot {
 }
 
 pub fn is_process_excluded(process_name: &str, settings: &EcoQosSettings) -> bool {
-    is_builtin_excluded(process_name) || settings.efficiency_exclusion_enabled_for(process_name)
+    is_builtin_excluded_for(process_name, settings.aggressiveness)
+        || settings.efficiency_exclusion_enabled_for(process_name)
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
+    is_builtin_excluded_for(process_name, EcoQosAggressiveness::Safe)
+}
+
+fn is_builtin_excluded_for(process_name: &str, aggressiveness: EcoQosAggressiveness) -> bool {
     let process_name = process_name.trim();
-    BUILT_IN_EXCLUSIONS
+    built_in_exclusions_for(aggressiveness)
         .iter()
         .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+}
+
+fn built_in_exclusions_for(aggressiveness: EcoQosAggressiveness) -> &'static [&'static str] {
+    match aggressiveness {
+        EcoQosAggressiveness::Safe => BUILT_IN_EXCLUSIONS,
+        EcoQosAggressiveness::Balanced => BALANCED_BUILT_IN_EXCLUSIONS,
+        EcoQosAggressiveness::Aggressive => AGGRESSIVE_BUILT_IN_EXCLUSIONS,
+    }
 }
 
 fn process_session_id(process_id: u32) -> Option<u32> {
@@ -1493,6 +1542,7 @@ mod tests {
             cpu_restriction_percent: 50,
             cpu_restriction_max_logical_processors: 0,
             cpu_restriction_core_mask: 0,
+            aggressiveness: EcoQosAggressiveness::Safe,
             efficiency_whitelist: vec![crate::config::EcoQosExclusionRule {
                 enabled: true,
                 process_name: "mouse.exe".to_owned(),
@@ -1504,6 +1554,26 @@ mod tests {
         assert!(is_process_excluded("winlogon.exe", &settings));
         assert!(is_process_excluded("Mouse.exe", &settings));
         assert!(!is_process_excluded("browser.exe", &settings));
+    }
+
+    #[test]
+    fn aggressiveness_profiles_control_builtin_exclusions() {
+        let mut settings = EcoQosSettings::default();
+
+        settings.aggressiveness = EcoQosAggressiveness::Safe;
+        assert!(is_process_excluded("SearchHost.exe", &settings));
+        assert!(is_process_excluded("dwm.exe", &settings));
+        assert!(is_process_excluded("winlogon.exe", &settings));
+
+        settings.aggressiveness = EcoQosAggressiveness::Balanced;
+        assert!(!is_process_excluded("SearchHost.exe", &settings));
+        assert!(is_process_excluded("dwm.exe", &settings));
+        assert!(is_process_excluded("winlogon.exe", &settings));
+
+        settings.aggressiveness = EcoQosAggressiveness::Aggressive;
+        assert!(!is_process_excluded("SearchHost.exe", &settings));
+        assert!(!is_process_excluded("dwm.exe", &settings));
+        assert!(is_process_excluded("winlogon.exe", &settings));
     }
 
     #[test]
@@ -1519,6 +1589,7 @@ mod tests {
             cpu_restriction_percent: 50,
             cpu_restriction_max_logical_processors: 0,
             cpu_restriction_core_mask: 0,
+            aggressiveness: EcoQosAggressiveness::Safe,
             efficiency_whitelist: vec![crate::config::EcoQosExclusionRule {
                 enabled: false,
                 process_name: "mouse.exe".to_owned(),

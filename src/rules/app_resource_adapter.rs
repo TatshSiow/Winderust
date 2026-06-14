@@ -13,6 +13,8 @@ use crate::{
     },
 };
 
+const AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT: f32 = 85.0;
+
 pub fn active_app_resource_rules_for_settings(
     settings: &Settings,
     foreground_app: Option<&str>,
@@ -23,6 +25,7 @@ pub fn active_app_resource_rules_for_settings(
         &settings.foreground_responsiveness,
         foreground_app,
         total_cpu_usage_percent,
+        settings.eco_qos.enabled,
     ));
     rules.extend(watchdog_rules(&settings.watchdog));
     rules.extend(cpu_affinity_rules(&settings.cpu_affinity));
@@ -255,6 +258,7 @@ pub fn foreground_responsiveness_rules(
     settings: &ForegroundResponsivenessSettings,
     foreground_app: Option<&str>,
     total_cpu_usage_percent: Option<f32>,
+    background_efficiency_managed: bool,
 ) -> Vec<Rule> {
     if !settings.enabled {
         return Vec::new();
@@ -262,15 +266,18 @@ pub fn foreground_responsiveness_rules(
 
     let mut rules = Vec::new();
 
-    if settings.lower_background_apps {
-        let mut actions = vec![Action::ConfigureBackgroundEfficiencyPolicy {
-            exclusions: foreground_app
-                .map(|app| AppMatcher::ProcessName(app.trim().to_ascii_lowercase()))
-                .into_iter()
-                .collect(),
-            prefer_efficiency_cores: true,
-            logical_processor_percent: None,
-        }];
+    if settings.lower_background_apps && !background_efficiency_managed {
+        let mut actions = Vec::new();
+        if smart_efficiency_should_run(settings, total_cpu_usage_percent) {
+            actions.push(Action::ConfigureBackgroundEfficiencyPolicy {
+                exclusions: foreground_app
+                    .map(|app| AppMatcher::ProcessName(app.trim().to_ascii_lowercase()))
+                    .into_iter()
+                    .collect(),
+                prefer_efficiency_cores: true,
+                logical_processor_percent: None,
+            });
+        }
         actions.extend(
             settings
                 .rules
@@ -284,42 +291,20 @@ pub fn foreground_responsiveness_rules(
                     })
                 }),
         );
-        rules.push(Rule {
-            id: RuleId("foreground-responsiveness.background-efficiency".to_owned()),
-            name: "Foreground Responsiveness background efficiency".to_owned(),
-            enabled: true,
-            priority: PRIORITY_FOREGROUND_RESPONSIVENESS,
-            trigger: Trigger::AppBackground {
-                app: AppMatcher::Pattern("*".to_owned()),
-                duration_secs: 0,
-            },
-            actions,
-            restore_actions: Vec::new(),
-            cooldown_secs: 0,
-        });
-    }
-
-    if settings.auto_balance_enabled {
-        let auto_pressure_active = total_cpu_usage_percent.is_some_and(|usage| {
-            usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
-        });
-        if auto_pressure_active {
-            let percent = smart_background_affinity_percent(settings, total_cpu_usage_percent);
-            if let Some(action) = smart_background_affinity_action(settings, percent) {
-                rules.push(Rule {
-                    id: RuleId("foreground-responsiveness.background-affinity".to_owned()),
-                    name: "Foreground Responsiveness background affinity".to_owned(),
-                    enabled: true,
-                    priority: PRIORITY_FOREGROUND_RESPONSIVENESS,
-                    trigger: Trigger::AppBackground {
-                        app: AppMatcher::Pattern("*".to_owned()),
-                        duration_secs: 0,
-                    },
-                    actions: vec![action],
-                    restore_actions: Vec::new(),
-                    cooldown_secs: 0,
-                });
-            }
+        if !actions.is_empty() {
+            rules.push(Rule {
+                id: RuleId("foreground-responsiveness.background-efficiency".to_owned()),
+                name: "Foreground Responsiveness background efficiency".to_owned(),
+                enabled: true,
+                priority: PRIORITY_FOREGROUND_RESPONSIVENESS,
+                trigger: Trigger::AppBackground {
+                    app: AppMatcher::Pattern("*".to_owned()),
+                    duration_secs: 0,
+                },
+                actions,
+                restore_actions: Vec::new(),
+                cooldown_secs: 0,
+            });
         }
     }
 
@@ -338,7 +323,10 @@ pub fn foreground_responsiveness_rules(
                 },
                 actions: vec![Action::BoostForegroundPriority {
                     app: AppMatcher::ProcessName(app.to_ascii_lowercase()),
-                    priority: map_foreground_boost_priority(settings.foreground_boost),
+                    priority: map_foreground_boost_priority(
+                        settings.foreground_boost,
+                        total_cpu_usage_percent,
+                    ),
                 }],
                 restore_actions: Vec::new(),
                 cooldown_secs: 0,
@@ -349,78 +337,138 @@ pub fn foreground_responsiveness_rules(
     if settings.auto_balance_enabled
         && total_cpu_usage_percent.is_some_and(|usage| {
             usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
+                && !foreground_cpu_saturates_workload(usage)
         })
     {
-        rules.push(Rule {
-            id: RuleId("foreground-responsiveness.auto-balance".to_owned()),
-            name: "Foreground Responsiveness auto-balance".to_owned(),
-            enabled: true,
-            priority: PRIORITY_FOREGROUND_RESPONSIVENESS,
-            trigger: Trigger::ForegroundCpuPressure {
-                foreground: foreground_app
-                    .map(|app| AppMatcher::ProcessName(app.trim().to_ascii_lowercase()))
-                    .unwrap_or_else(|| AppMatcher::Pattern("*".to_owned())),
-                total_cpu_above_percent: settings.auto_balance_total_threshold_percent.min(100),
-                background_process_above_percent: settings.auto_balance_threshold_percent.min(100),
-                duration_secs: settings.auto_balance_sustain_seconds,
-            },
-            actions: auto_balance_affinity_action(settings).into_iter().collect(),
-            restore_actions: Vec::new(),
-            cooldown_secs: settings.auto_balance_cooldown_seconds,
-        });
+        if let Some(action) = auto_balance_affinity_action(settings, total_cpu_usage_percent) {
+            rules.push(Rule {
+                id: RuleId("foreground-responsiveness.auto-balance".to_owned()),
+                name: "Foreground Responsiveness auto-balance".to_owned(),
+                enabled: true,
+                priority: PRIORITY_FOREGROUND_RESPONSIVENESS,
+                trigger: Trigger::ForegroundCpuPressure {
+                    foreground: foreground_app
+                        .map(|app| AppMatcher::ProcessName(app.trim().to_ascii_lowercase()))
+                        .unwrap_or_else(|| AppMatcher::Pattern("*".to_owned())),
+                    total_cpu_above_percent: settings.auto_balance_total_threshold_percent.min(100),
+                    background_process_above_percent: settings
+                        .auto_balance_threshold_percent
+                        .min(100),
+                    duration_secs: settings.auto_balance_sustain_seconds,
+                },
+                actions: vec![action],
+                restore_actions: Vec::new(),
+                cooldown_secs: settings.auto_balance_cooldown_seconds,
+            });
+        }
     }
 
     rules
 }
 
-fn map_foreground_boost_priority(priority: ForegroundBoostPriority) -> RuleProcessPriority {
+fn map_foreground_boost_priority(
+    priority: ForegroundBoostPriority,
+    foreground_cpu_usage_percent: Option<f32>,
+) -> RuleProcessPriority {
     match priority {
+        ForegroundBoostPriority::Auto => {
+            if foreground_cpu_usage_percent.is_some_and(foreground_cpu_saturates_workload) {
+                RuleProcessPriority::Normal
+            } else {
+                RuleProcessPriority::AboveNormal
+            }
+        }
         ForegroundBoostPriority::Normal => RuleProcessPriority::Normal,
         ForegroundBoostPriority::AboveNormal => RuleProcessPriority::AboveNormal,
     }
 }
 
-fn auto_balance_affinity_action(settings: &ForegroundResponsivenessSettings) -> Option<Action> {
-    percent_affinity_action(
-        settings.auto_balance_affinity_mode,
-        settings.auto_balance_cpu_percent,
-    )
-}
-
-fn smart_background_affinity_action(
+fn auto_balance_affinity_action(
     settings: &ForegroundResponsivenessSettings,
-    percent: u8,
+    foreground_cpu_usage_percent: Option<f32>,
 ) -> Option<Action> {
-    percent_affinity_action(settings.auto_balance_affinity_mode, percent)
-}
-
-fn smart_background_affinity_percent(
-    settings: &ForegroundResponsivenessSettings,
-    total_cpu_usage_percent: Option<f32>,
-) -> u8 {
-    let maximum = settings.auto_balance_cpu_percent.clamp(1, 100);
-
-    let threshold = f32::from(settings.auto_balance_total_threshold_percent.min(100));
-    let Some(usage) = total_cpu_usage_percent else {
-        return maximum;
-    };
-    if usage < threshold {
-        return maximum;
+    if settings.lower_background_auto_cpu_percent {
+        return None;
     }
 
-    let pressure = if threshold >= 100.0 {
-        1.0
+    let percent = auto_balance_effective_cpu_percent(settings, foreground_cpu_usage_percent);
+    if percent >= 100 {
+        return None;
+    }
+
+    percent_affinity_action(auto_balance_effective_restriction_mode(settings), percent)
+}
+
+fn foreground_cpu_saturates_workload(usage: f32) -> bool {
+    usage >= AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT
+}
+
+fn smart_efficiency_should_run(
+    settings: &ForegroundResponsivenessSettings,
+    foreground_cpu_usage_percent: Option<f32>,
+) -> bool {
+    if !settings.lower_background_auto_cpu_percent {
+        return true;
+    }
+
+    foreground_cpu_usage_percent.is_some_and(|usage| {
+        usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
+            && !foreground_cpu_saturates_workload(usage)
+    })
+}
+
+fn auto_balance_effective_restriction_mode(
+    settings: &ForegroundResponsivenessSettings,
+) -> EcoQosCpuRestrictionMode {
+    if settings.lower_background_auto_cpu_percent {
+        EcoQosCpuRestrictionMode::SoftCpuSets
     } else {
-        ((usage.clamp(0.0, 100.0) - threshold) / (100.0 - threshold)).clamp(0.0, 1.0)
+        settings.auto_balance_affinity_mode
+    }
+}
+
+fn auto_balance_effective_cpu_percent(
+    settings: &ForegroundResponsivenessSettings,
+    foreground_cpu_usage_percent: Option<f32>,
+) -> u8 {
+    let configured = auto_balance_minimum_cpu_percent(settings);
+    let Some(usage) = foreground_cpu_usage_percent else {
+        return configured;
     };
-    let target = if pressure >= 0.66 {
-        25
-    } else if pressure >= 0.33 {
-        38
+    let threshold = f32::from(settings.auto_balance_total_threshold_percent.min(100));
+    let saturation = AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT;
+    if usage >= saturation || threshold >= saturation {
+        return if settings.lower_background_auto_cpu_percent {
+            100
+        } else {
+            configured
+        };
+    }
+
+    let relaxed = if settings.lower_background_auto_cpu_percent {
+        100.0
     } else {
-        50
+        ((u16::from(configured) + 100) / 2) as f32
     };
-    maximum.min(target).max(1)
+    let pressure = ((usage - threshold) / (saturation - threshold)).clamp(0.0, 1.0);
+    (relaxed - ((relaxed - f32::from(configured)) * pressure))
+        .round()
+        .clamp(f32::from(configured), 100.0) as u8
+}
+
+fn auto_balance_minimum_cpu_percent(settings: &ForegroundResponsivenessSettings) -> u8 {
+    if !settings.lower_background_auto_cpu_percent {
+        return settings.auto_balance_cpu_percent.clamp(1, 100);
+    }
+
+    let trigger = settings.auto_balance_total_threshold_percent.min(100);
+    if trigger >= 80 {
+        85
+    } else if trigger >= 70 {
+        75
+    } else {
+        65
+    }
 }
 
 fn percent_affinity_action(mode: EcoQosCpuRestrictionMode, percent: u8) -> Option<Action> {
@@ -459,7 +507,10 @@ mod tests {
     fn disabled_foreground_responsiveness_emits_no_rules() {
         let settings = ForegroundResponsivenessSettings::default();
 
-        assert!(foreground_responsiveness_rules(&settings, Some("app.exe"), Some(90.0)).is_empty());
+        assert!(
+            foreground_responsiveness_rules(&settings, Some("app.exe"), Some(90.0), false)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -743,6 +794,7 @@ mod tests {
         let mut settings = ForegroundResponsivenessSettings {
             enabled: true,
             lower_background_apps: true,
+            boost_foreground_app: false,
             ..Default::default()
         };
         settings.rules.push(PriorityRule {
@@ -751,18 +803,47 @@ mod tests {
             priority: ConfigPriority::BelowNormal,
         });
 
-        let rules = foreground_responsiveness_rules(&settings, Some("app.exe"), None);
+        let rules = foreground_responsiveness_rules(&settings, Some("app.exe"), None, false);
 
         assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].actions.len(), 1);
         assert!(matches!(
             &rules[0].actions[0],
-            Action::ConfigureBackgroundEfficiencyPolicy { .. }
-        ));
-        assert!(matches!(
-            &rules[0].actions[1],
             Action::SetAppPriority { app: AppMatcher::ProcessName(name), priority }
                 if name == "worker.exe" && *priority == RuleProcessPriority::BelowNormal
         ));
+    }
+
+    #[test]
+    fn global_efficiency_suppresses_auto_balance_efficiency_policy() {
+        let settings = ForegroundResponsivenessSettings {
+            enabled: true,
+            lower_background_apps: true,
+            boost_foreground_app: true,
+            foreground_boost: ForegroundBoostPriority::AboveNormal,
+            auto_balance_enabled: true,
+            auto_balance_total_threshold_percent: 70,
+            ..Default::default()
+        };
+
+        let rules = foreground_responsiveness_rules(&settings, Some("game.exe"), Some(80.0), true);
+
+        assert_eq!(rules.len(), 1);
+        assert!(!rules.iter().any(|rule| {
+            rule.actions
+                .iter()
+                .any(|action| matches!(action, Action::ConfigureBackgroundEfficiencyPolicy { .. }))
+        }));
+        assert!(rules.iter().any(|rule| {
+            rule.actions
+                .iter()
+                .any(|action| matches!(action, Action::BoostForegroundPriority { .. }))
+        }));
+        assert!(!rules.iter().any(|rule| {
+            rule.actions
+                .iter()
+                .any(|action| matches!(action, Action::SetAppAffinity { .. }))
+        }));
     }
 
     #[test]
@@ -775,7 +856,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rules = foreground_responsiveness_rules(&settings, Some("Game.EXE"), None);
+        let rules = foreground_responsiveness_rules(&settings, Some("Game.EXE"), None, false);
 
         assert_eq!(rules.len(), 1);
         assert!(matches!(
@@ -795,7 +876,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rules = foreground_responsiveness_rules(&settings, Some("Game.EXE"), None);
+        let rules = foreground_responsiveness_rules(&settings, Some("Game.EXE"), None, false);
 
         assert_eq!(rules.len(), 1);
         assert!(matches!(
@@ -806,28 +887,163 @@ mod tests {
     }
 
     #[test]
-    fn auto_balance_emits_affinity_actions_only_when_total_cpu_is_high() {
+    fn foreground_boost_auto_adapts_to_foreground_cpu_pressure() {
         let settings = ForegroundResponsivenessSettings {
             enabled: true,
             lower_background_apps: false,
+            boost_foreground_app: true,
+            foreground_boost: ForegroundBoostPriority::Auto,
+            ..Default::default()
+        };
+
+        let rules = foreground_responsiveness_rules(&settings, Some("Game.EXE"), Some(50.0), false);
+        assert!(matches!(
+            &rules[0].actions[0],
+            Action::BoostForegroundPriority { priority, .. }
+                if *priority == RuleProcessPriority::AboveNormal
+        ));
+
+        let rules = foreground_responsiveness_rules(&settings, Some("Game.EXE"), Some(85.0), false);
+        assert!(matches!(
+            &rules[0].actions[0],
+            Action::BoostForegroundPriority { priority, .. }
+                if *priority == RuleProcessPriority::Normal
+        ));
+    }
+
+    #[test]
+    fn auto_balance_emits_affinity_action_only_when_total_cpu_is_high() {
+        let settings = ForegroundResponsivenessSettings {
+            enabled: true,
+            lower_background_apps: false,
+            lower_background_auto_cpu_percent: false,
+            boost_foreground_app: false,
             auto_balance_enabled: true,
+            auto_balance_cpu_percent: 50,
             auto_balance_total_threshold_percent: 70,
             auto_balance_threshold_percent: 25,
             auto_balance_restore_threshold_percent: 5,
             ..Default::default()
         };
 
-        assert!(foreground_responsiveness_rules(&settings, Some("app.exe"), Some(69.0)).is_empty());
-        let rules = foreground_responsiveness_rules(&settings, Some("app.exe"), Some(70.0));
+        assert!(
+            foreground_responsiveness_rules(&settings, Some("app.exe"), Some(69.0), false)
+                .is_empty()
+        );
+        let rules = foreground_responsiveness_rules(&settings, Some("app.exe"), Some(80.0), false);
 
-        assert_eq!(rules.len(), 2);
-        assert!(rules.iter().all(|rule| matches!(
-            rule.actions.first(),
+        assert_eq!(rules.len(), 1);
+        assert!(matches!(
+            rules[0].actions.first(),
             Some(Action::SetAppAffinity {
                 app: AppMatcher::Pattern(pattern),
-                affinity: AffinityPolicy::LogicalProcessorPercent(50),
+                affinity: AffinityPolicy::LogicalProcessorPercent(58),
             }) if pattern == "*"
-        )));
+        ));
+        assert!(matches!(
+            rules[0].trigger,
+            Trigger::ForegroundCpuPressure { .. }
+        ));
+        assert!(
+            foreground_responsiveness_rules(&settings, Some("app.exe"), Some(85.0), false)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn auto_balance_affinity_share_tightens_with_foreground_pressure() {
+        let settings = ForegroundResponsivenessSettings {
+            lower_background_auto_cpu_percent: false,
+            auto_balance_cpu_percent: 50,
+            auto_balance_total_threshold_percent: 70,
+            ..Default::default()
+        };
+
+        assert_eq!(auto_balance_effective_cpu_percent(&settings, None), 50);
+        assert_eq!(
+            auto_balance_effective_cpu_percent(&settings, Some(70.0)),
+            75
+        );
+        assert_eq!(
+            auto_balance_effective_cpu_percent(&settings, Some(77.5)),
+            63
+        );
+        assert_eq!(
+            auto_balance_effective_cpu_percent(&settings, Some(85.0)),
+            50
+        );
+    }
+
+    #[test]
+    fn auto_balance_auto_affinity_share_uses_behavior_floor() {
+        let settings = ForegroundResponsivenessSettings {
+            lower_background_auto_cpu_percent: true,
+            auto_balance_cpu_percent: 25,
+            auto_balance_total_threshold_percent: 75,
+            ..Default::default()
+        };
+
+        assert_eq!(auto_balance_minimum_cpu_percent(&settings), 75);
+        assert_eq!(
+            auto_balance_effective_cpu_percent(&settings, Some(75.0)),
+            100
+        );
+        assert_eq!(
+            auto_balance_effective_cpu_percent(&settings, Some(80.0)),
+            88
+        );
+    }
+
+    #[test]
+    fn auto_balance_auto_mode_uses_soft_affinity_and_skips_noop_actions() {
+        let settings = ForegroundResponsivenessSettings {
+            enabled: true,
+            lower_background_apps: false,
+            lower_background_auto_cpu_percent: true,
+            boost_foreground_app: false,
+            auto_balance_enabled: true,
+            auto_balance_affinity_mode: EcoQosCpuRestrictionMode::HardAffinity,
+            auto_balance_total_threshold_percent: 75,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            auto_balance_effective_restriction_mode(&settings),
+            EcoQosCpuRestrictionMode::SoftCpuSets
+        );
+        assert!(
+            foreground_responsiveness_rules(&settings, Some("app.exe"), Some(75.0), false)
+                .is_empty()
+        );
+
+        assert!(
+            foreground_responsiveness_rules(&settings, Some("app.exe"), Some(80.0), false)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn smart_efficiency_auto_mode_waits_for_foreground_pressure() {
+        let settings = ForegroundResponsivenessSettings {
+            enabled: true,
+            lower_background_apps: true,
+            lower_background_auto_cpu_percent: true,
+            boost_foreground_app: false,
+            auto_balance_total_threshold_percent: 75,
+            ..Default::default()
+        };
+
+        assert!(
+            foreground_responsiveness_rules(&settings, Some("app.exe"), None, false).is_empty()
+        );
+        assert!(
+            foreground_responsiveness_rules(&settings, Some("app.exe"), Some(85.0), false)
+                .is_empty()
+        );
+        assert_eq!(
+            foreground_responsiveness_rules(&settings, Some("app.exe"), Some(75.0), false).len(),
+            1
+        );
     }
 
     #[test]
@@ -845,7 +1061,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rules = foreground_responsiveness_rules(&settings, Some("game.exe"), Some(90.0));
+        let rules = foreground_responsiveness_rules(&settings, Some("game.exe"), Some(90.0), false);
         let resolved = PriorityResolver.resolve(&rules);
 
         assert!(resolved

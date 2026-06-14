@@ -11,6 +11,7 @@ use windows_sys::Win32::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub id: u32,
+    pub parent_id: Option<u32>,
     pub name: String,
 }
 
@@ -41,6 +42,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
         if let Some(name) = process_name_from_entry(&entry) {
             processes.push(ProcessInfo {
                 id: entry.th32ProcessID,
+                parent_id: (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID),
                 name,
             });
         }

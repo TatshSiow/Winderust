@@ -273,6 +273,8 @@ pub struct EcoQosSettings {
     pub cpu_restriction_max_logical_processors: u8,
     #[serde(default)]
     pub cpu_restriction_core_mask: u64,
+    #[serde(default)]
+    pub aggressiveness: EcoQosAggressiveness,
     #[serde(
         default,
         alias = "excluded_processes",
@@ -286,6 +288,19 @@ pub struct EcoQosExclusionRule {
     #[serde(default = "default_rule_enabled")]
     pub enabled: bool,
     pub process_name: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EcoQosAggressiveness {
+    #[default]
+    Safe,
+    Balanced,
+    Aggressive,
+}
+
+impl EcoQosAggressiveness {
+    pub const ALL: [Self; 3] = [Self::Safe, Self::Balanced, Self::Aggressive];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -514,13 +529,13 @@ pub struct ForegroundResponsivenessSettings {
     pub lower_background_cpu_percent: u8,
     #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
     pub lower_background_max_logical_processors: u8,
-    #[serde(default)]
+    #[serde(default = "default_auto_balance_auto_cpu_percent")]
     pub lower_background_auto_cpu_percent: bool,
     #[serde(default)]
     pub auto_balance_enabled: bool,
     #[serde(default)]
     pub auto_balance_affinity_mode: EcoQosCpuRestrictionMode,
-    #[serde(default = "default_eco_qos_cpu_restriction_percent")]
+    #[serde(default = "default_auto_balance_cpu_percent")]
     pub auto_balance_cpu_percent: u8,
     #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
     pub auto_balance_max_logical_processors: u8,
@@ -573,13 +588,14 @@ impl ProcessPriority {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForegroundBoostPriority {
-    Normal,
     #[default]
+    Auto,
+    Normal,
     AboveNormal,
 }
 
 impl ForegroundBoostPriority {
-    pub const ALL: [Self; 2] = [Self::Normal, Self::AboveNormal];
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Normal, Self::AboveNormal];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -811,6 +827,7 @@ impl Default for EcoQosSettings {
             cpu_restriction_max_logical_processors:
                 default_eco_qos_cpu_restriction_max_logical_processors(),
             cpu_restriction_core_mask: 0,
+            aggressiveness: EcoQosAggressiveness::Safe,
             efficiency_whitelist: Vec::new(),
         }
     }
@@ -829,27 +846,35 @@ const fn default_lower_background_apps() -> bool {
 }
 
 const fn default_auto_balance_threshold_percent() -> u8 {
-    25
+    30
 }
 
 const fn default_auto_balance_restore_threshold_percent() -> u8 {
-    5
+    10
 }
 
 const fn default_auto_balance_total_threshold_percent() -> u8 {
-    70
+    75
+}
+
+const fn default_auto_balance_cpu_percent() -> u8 {
+    75
+}
+
+const fn default_auto_balance_auto_cpu_percent() -> bool {
+    true
 }
 
 const fn default_auto_balance_sustain_seconds() -> u64 {
-    2
+    3
 }
 
 const fn default_auto_balance_minimum_restraint_seconds() -> u64 {
-    4
+    3
 }
 
 const fn default_auto_balance_cooldown_seconds() -> u64 {
-    10
+    6
 }
 
 const fn default_foreground_stability_delay_ms() -> u64 {
@@ -1062,10 +1087,10 @@ impl Default for ForegroundResponsivenessSettings {
             lower_background_cpu_percent: default_eco_qos_cpu_restriction_percent(),
             lower_background_max_logical_processors:
                 default_eco_qos_cpu_restriction_max_logical_processors(),
-            lower_background_auto_cpu_percent: false,
+            lower_background_auto_cpu_percent: default_auto_balance_auto_cpu_percent(),
             auto_balance_enabled: false,
             auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            auto_balance_cpu_percent: default_eco_qos_cpu_restriction_percent(),
+            auto_balance_cpu_percent: default_auto_balance_cpu_percent(),
             auto_balance_max_logical_processors:
                 default_eco_qos_cpu_restriction_max_logical_processors(),
             auto_balance_total_threshold_percent: default_auto_balance_total_threshold_percent(),
@@ -1077,8 +1102,8 @@ impl Default for ForegroundResponsivenessSettings {
             ),
             auto_balance_cooldown_seconds: default_auto_balance_cooldown_seconds(),
             auto_balance_exclusions: Vec::new(),
-            boost_foreground_app: false,
-            foreground_boost: ForegroundBoostPriority::AboveNormal,
+            boost_foreground_app: true,
+            foreground_boost: ForegroundBoostPriority::Auto,
             foreground_stability_delay_ms: default_foreground_stability_delay_ms(),
             rules: Vec::new(),
         }

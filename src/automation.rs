@@ -1292,6 +1292,7 @@ impl HiddenAutomationRunner {
             settings.general.enabled,
             foreground_process_id,
             self.cpu_usage.percent,
+            settings.eco_qos.enabled,
             &excluded_process_ids,
             &mut self.action_log,
         )

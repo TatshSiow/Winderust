@@ -374,6 +374,7 @@ mod tests {
         };
         let processes = vec![ProcessInfo {
             id: 42,
+            parent_id: None,
             name: "game.exe".to_owned(),
         }];
 
@@ -404,6 +405,7 @@ mod tests {
         };
         let processes = vec![ProcessInfo {
             id: 42,
+            parent_id: None,
             name: "game.exe".to_owned(),
         }];
 
@@ -442,6 +444,7 @@ mod tests {
         };
         let processes = vec![ProcessInfo {
             id: 42,
+            parent_id: None,
             name: "game.exe".to_owned(),
         }];
 
@@ -471,6 +474,7 @@ mod tests {
         };
         let processes = vec![ProcessInfo {
             id: 42,
+            parent_id: None,
             name: "game.exe".to_owned(),
         }];
 
