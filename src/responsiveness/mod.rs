@@ -10,6 +10,7 @@ use windows_sys::Win32::{
     },
     System::{
         RemoteDesktop::ProcessIdToSessionId,
+        SystemInformation::GetSystemTimeAsFileTime,
         Threading::{
             GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
             OpenProcess, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation,
@@ -67,6 +68,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
 const AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT: f32 = 85.0;
 const AUTO_BALANCE_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
 const AUTO_BALANCE_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
+const FOREGROUND_LAUNCH_BOOST_WINDOW: Duration = Duration::from_secs(8);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundResponsivenessSnapshot {
     pub enabled: bool,
@@ -209,7 +211,7 @@ impl ForegroundResponsivenessManager {
         settings: &ForegroundResponsivenessSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
-        _total_cpu_usage_percent: Option<f32>,
+        total_cpu_usage_percent: Option<f32>,
         background_efficiency_managed: bool,
         eco_qos_process_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
@@ -307,7 +309,11 @@ impl ForegroundResponsivenessManager {
         let mut target_processes = BTreeMap::new();
         let lower_background_policy_enabled = settings.lower_background_apps
             && !background_efficiency_managed
-            && smart_efficiency_should_run(settings, foreground_cpu_usage_percent);
+            && smart_efficiency_should_run(
+                settings,
+                foreground_cpu_usage_percent,
+                total_cpu_usage_percent,
+            );
         if settings.lower_background_apps && !background_efficiency_managed {
             for (process_id, process_name) in &lowerable_background_processes {
                 let matched_rule = matching_rule(settings, process_name);
@@ -325,7 +331,11 @@ impl ForegroundResponsivenessManager {
             }
         }
 
-        let auto_balance_running = auto_balance_should_run(settings, foreground_cpu_usage_percent);
+        let auto_balance_running = auto_balance_should_run(
+            settings,
+            foreground_cpu_usage_percent,
+            total_cpu_usage_percent,
+        );
         let lower_background_affinity_settings = CpuAffinitySettings {
             enabled: false,
             exclude_foreground_app: true,
@@ -529,6 +539,7 @@ impl ForegroundResponsivenessManager {
         let auto_balance_message = auto_balance_status_message(
             settings,
             foreground_cpu_usage_percent,
+            total_cpu_usage_percent,
             auto_balance_running,
             auto_balanced_processes,
         );
@@ -838,6 +849,15 @@ impl ForegroundResponsivenessManager {
         stability_delay_ms: u64,
     ) -> bool {
         let now = Instant::now();
+        if foreground_launch_boost_eligible(process_id) {
+            self.foreground_candidate = Some(ForegroundCandidate {
+                process_id,
+                process_name: process_name.to_owned(),
+                first_seen: now,
+            });
+            return true;
+        }
+
         match &mut self.foreground_candidate {
             Some(candidate)
                 if candidate.process_id == process_id
@@ -1030,7 +1050,7 @@ impl ForegroundResponsivenessManager {
                 .min(settings.auto_balance_threshold_percent)
                 .min(100),
         );
-        let sustain = Duration::from_secs(settings.auto_balance_sustain_seconds);
+        let priority_sustain = auto_balance_priority_sustain(settings);
         let minimum_restraint =
             Duration::from_secs(settings.auto_balance_minimum_restraint_seconds);
         let cooldown = Duration::from_secs(settings.auto_balance_cooldown_seconds);
@@ -1060,7 +1080,7 @@ impl ForegroundResponsivenessManager {
         if usage >= threshold {
             state.below_since = None;
             let high_since = *state.high_since.get_or_insert(now);
-            if state.active || now.duration_since(high_since) >= sustain {
+            if state.active || now.duration_since(high_since) >= priority_sustain {
                 if !state.active {
                     state.active_since = Some(now);
                 }
@@ -1278,6 +1298,7 @@ fn percent_tenths(usage: f32) -> u16 {
 
 fn auto_balance_status_message(
     settings: &ForegroundResponsivenessSettings,
+    foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
     running: bool,
     restrained_count: usize,
@@ -1287,22 +1308,35 @@ fn auto_balance_status_message(
     }
 
     if !running {
-        return match total_cpu_usage_percent {
-            Some(usage) if foreground_cpu_saturates_workload(usage) => format!(
+        return match (foreground_cpu_usage_percent, total_cpu_usage_percent) {
+            (Some(usage), _) if foreground_cpu_saturates_workload(usage) => format!(
                 "Paused: foreground workload is saturating CPU ({:.1}%).",
                 usage.clamp(0.0, 100.0)
             ),
-            Some(usage) => format!(
-                "Waiting for foreground CPU pressure: {:.1}% of {}%.",
-                usage.clamp(0.0, 100.0),
+            (Some(foreground), Some(total)) => format!(
+                "Waiting for CPU pressure: foreground {:.1}%, system {:.1}% of {}%.",
+                foreground.clamp(0.0, 100.0),
+                total.clamp(0.0, 100.0),
                 settings.auto_balance_total_threshold_percent.min(100)
             ),
-            None => "Waiting for a foreground CPU sample before auto-balance can act.".to_owned(),
+            (Some(foreground), None) => format!(
+                "Waiting for CPU pressure: foreground {:.1}% of {}%.",
+                foreground.clamp(0.0, 100.0),
+                settings.auto_balance_total_threshold_percent.min(100)
+            ),
+            (None, Some(total)) => format!(
+                "Waiting for CPU pressure: system {:.1}% of {}%.",
+                total.clamp(0.0, 100.0),
+                settings.auto_balance_total_threshold_percent.min(100)
+            ),
+            (None, None) => {
+                "Waiting for a CPU pressure sample before auto-balance can act.".to_owned()
+            }
         };
     }
 
     if restrained_count == 0 {
-        return "Foreground CPU pressure is high; watching background processes for sustained spikes."
+        return "CPU pressure is high; watching background processes for sustained spikes."
             .to_owned();
     }
 
@@ -1402,26 +1436,49 @@ fn foreground_process_group_ids(
 fn auto_balance_should_run(
     settings: &ForegroundResponsivenessSettings,
     foreground_cpu_usage_percent: Option<f32>,
+    total_cpu_usage_percent: Option<f32>,
 ) -> bool {
     settings.auto_balance_enabled
-        && foreground_cpu_usage_percent.is_some_and(|usage| {
-            usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
-                && !foreground_cpu_saturates_workload(usage)
-        })
+        && cpu_pressure_should_run(
+            settings,
+            foreground_cpu_usage_percent,
+            total_cpu_usage_percent,
+        )
 }
 
 fn smart_efficiency_should_run(
     settings: &ForegroundResponsivenessSettings,
     foreground_cpu_usage_percent: Option<f32>,
+    total_cpu_usage_percent: Option<f32>,
 ) -> bool {
     if !settings.lower_background_auto_cpu_percent {
         return true;
     }
 
-    foreground_cpu_usage_percent.is_some_and(|usage| {
+    cpu_pressure_should_run(
+        settings,
+        foreground_cpu_usage_percent,
+        total_cpu_usage_percent,
+    )
+}
+
+fn cpu_pressure_should_run(
+    settings: &ForegroundResponsivenessSettings,
+    foreground_cpu_usage_percent: Option<f32>,
+    total_cpu_usage_percent: Option<f32>,
+) -> bool {
+    let foreground_saturated =
+        foreground_cpu_usage_percent.is_some_and(foreground_cpu_saturates_workload);
+    let foreground_pressure = foreground_cpu_usage_percent.is_some_and(|usage| {
         usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
             && !foreground_cpu_saturates_workload(usage)
-    })
+    });
+    let system_pressure = !foreground_saturated
+        && total_cpu_usage_percent.is_some_and(|usage| {
+            usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
+        });
+
+    foreground_pressure || system_pressure
 }
 
 fn foreground_cpu_saturates_workload(usage: f32) -> bool {
@@ -1466,6 +1523,14 @@ fn auto_balance_process_decision(
         AutoBalanceDecision::RestrictAffinity
     } else {
         AutoBalanceDecision::LowerPriority
+    }
+}
+
+fn auto_balance_priority_sustain(settings: &ForegroundResponsivenessSettings) -> Duration {
+    if settings.lower_background_auto_cpu_percent && settings.auto_balance_sustain_seconds <= 1 {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(settings.auto_balance_sustain_seconds)
     }
 }
 
@@ -1666,6 +1731,15 @@ fn foreground_boost_rule_priority(
         ForegroundBoostPriority::Normal => RuleProcessPriority::Normal,
         ForegroundBoostPriority::AboveNormal => RuleProcessPriority::AboveNormal,
     }
+}
+
+fn foreground_launch_boost_eligible(process_id: u32) -> bool {
+    process_age(process_id)
+        .is_some_and(|age| process_age_in_launch_boost_window(age, FOREGROUND_LAUNCH_BOOST_WINDOW))
+}
+
+fn process_age_in_launch_boost_window(age: Duration, launch_window: Duration) -> bool {
+    age <= launch_window
 }
 
 struct ForegroundBoostPriorityBackend<'a, 'name, 'log> {
@@ -1919,6 +1993,17 @@ fn process_session_id(process_id: u32) -> Option<u32> {
 fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, PriorityError> {
     let process = ProcessHandle::open_query(process_id)?;
     process.cpu_sample()
+}
+
+fn process_age(process_id: u32) -> Option<Duration> {
+    let process = ProcessHandle::open_query(process_id).ok()?;
+    let creation_time_100ns = process.creation_time_100ns().ok()?;
+    let mut now = FILETIME::default();
+    unsafe {
+        GetSystemTimeAsFileTime(&mut now);
+    }
+    let age_100ns = filetime_to_u64(now).saturating_sub(creation_time_100ns);
+    Some(Duration::from_nanos(age_100ns.saturating_mul(100)))
 }
 
 fn process_group_cpu_sample(process_ids: &BTreeSet<u32>) -> Option<ProcessCpuSample> {
@@ -2218,6 +2303,23 @@ impl ProcessHandle {
             })
         }
     }
+
+    fn creation_time_100ns(&self) -> Result<u64, PriorityError> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let ok =
+            unsafe { GetProcessTimes(self.0, &mut creation, &mut exit, &mut kernel, &mut user) };
+        if ok == 0 {
+            Err(PriorityError::Failed(format!(
+                "GetProcessTimes failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(filetime_to_u64(creation))
+        }
+    }
 }
 
 impl Drop for ProcessHandle {
@@ -2295,6 +2397,22 @@ mod tests {
             foreground_boost_priority_class(ForegroundBoostPriority::AboveNormal, Some(100.0)),
             ABOVE_NORMAL_PRIORITY_CLASS
         );
+    }
+
+    #[test]
+    fn foreground_launch_boost_window_includes_new_processes_only() {
+        assert!(process_age_in_launch_boost_window(
+            Duration::from_secs(2),
+            FOREGROUND_LAUNCH_BOOST_WINDOW,
+        ));
+        assert!(process_age_in_launch_boost_window(
+            FOREGROUND_LAUNCH_BOOST_WINDOW,
+            FOREGROUND_LAUNCH_BOOST_WINDOW,
+        ));
+        assert!(!process_age_in_launch_boost_window(
+            FOREGROUND_LAUNCH_BOOST_WINDOW + Duration::from_millis(1),
+            FOREGROUND_LAUNCH_BOOST_WINDOW,
+        ));
     }
 
     #[test]
@@ -2509,10 +2627,24 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(!auto_balance_should_run(&settings, Some(69.0)));
-        assert!(auto_balance_should_run(&settings, Some(70.0)));
-        assert!(!auto_balance_should_run(&settings, Some(85.0)));
-        assert!(!auto_balance_should_run(&settings, Some(100.0)));
+        assert!(!auto_balance_should_run(&settings, Some(69.0), None));
+        assert!(auto_balance_should_run(&settings, Some(70.0), None));
+        assert!(!auto_balance_should_run(&settings, Some(85.0), None));
+        assert!(!auto_balance_should_run(&settings, Some(100.0), None));
+        assert!(!auto_balance_should_run(&settings, Some(85.0), Some(100.0)));
+    }
+
+    #[test]
+    fn auto_balance_runs_under_system_cpu_pressure() {
+        let settings = ForegroundResponsivenessSettings {
+            auto_balance_enabled: true,
+            auto_balance_total_threshold_percent: 70,
+            ..Default::default()
+        };
+
+        assert!(!auto_balance_should_run(&settings, Some(10.0), Some(69.0)));
+        assert!(auto_balance_should_run(&settings, Some(10.0), Some(70.0)));
+        assert!(auto_balance_should_run(&settings, None, Some(70.0)));
     }
 
     #[test]
@@ -2602,23 +2734,65 @@ mod tests {
     }
 
     #[test]
-    fn smart_efficiency_auto_mode_runs_only_under_foreground_pressure() {
+    fn auto_balance_responsive_priority_sustain_is_immediate() {
+        let responsive_settings = ForegroundResponsivenessSettings {
+            lower_background_auto_cpu_percent: true,
+            auto_balance_sustain_seconds: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            auto_balance_priority_sustain(&responsive_settings),
+            Duration::ZERO
+        );
+
+        let balanced_settings = ForegroundResponsivenessSettings {
+            lower_background_auto_cpu_percent: true,
+            auto_balance_sustain_seconds: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            auto_balance_priority_sustain(&balanced_settings),
+            Duration::from_secs(2)
+        );
+
+        let manual_settings = ForegroundResponsivenessSettings {
+            lower_background_auto_cpu_percent: false,
+            auto_balance_sustain_seconds: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            auto_balance_priority_sustain(&manual_settings),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn smart_efficiency_auto_mode_runs_under_cpu_pressure() {
         let settings = ForegroundResponsivenessSettings {
             lower_background_auto_cpu_percent: true,
             auto_balance_total_threshold_percent: 75,
             ..Default::default()
         };
 
-        assert!(!smart_efficiency_should_run(&settings, None));
-        assert!(!smart_efficiency_should_run(&settings, Some(74.0)));
-        assert!(smart_efficiency_should_run(&settings, Some(75.0)));
-        assert!(!smart_efficiency_should_run(&settings, Some(85.0)));
+        assert!(!smart_efficiency_should_run(&settings, None, None));
+        assert!(!smart_efficiency_should_run(&settings, Some(74.0), None));
+        assert!(smart_efficiency_should_run(&settings, Some(75.0), None));
+        assert!(smart_efficiency_should_run(
+            &settings,
+            Some(10.0),
+            Some(75.0)
+        ));
+        assert!(!smart_efficiency_should_run(
+            &settings,
+            Some(85.0),
+            Some(100.0)
+        ));
 
         let manual_settings = ForegroundResponsivenessSettings {
             lower_background_auto_cpu_percent: false,
             ..settings
         };
-        assert!(smart_efficiency_should_run(&manual_settings, None));
+        assert!(smart_efficiency_should_run(&manual_settings, None, None));
     }
 
     #[test]

@@ -46,6 +46,8 @@ const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const WATCHDOG_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const FOREGROUND_RESPONSIVENESS_FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
+const FOREGROUND_RESPONSIVENESS_FAST_REFRESH_WINDOW: Duration = Duration::from_secs(8);
 const IO_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -361,6 +363,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_foreground_responsiveness_refresh = Instant::now();
     let mut next_io_priority_refresh = Instant::now();
     let mut next_process_appearance_scan = Instant::now();
+    let mut foreground_responsiveness_fast_until: Option<Instant> = None;
 
     loop {
         let snapshot = match automation_snapshot(&shared) {
@@ -393,7 +396,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, PERFORMANCE_MODE_REFRESH_INTERVAL);
         let watchdog_refresh_interval =
             automation_refresh_interval(hidden_to_tray, WATCHDOG_REFRESH_INTERVAL);
-        let foreground_responsiveness_refresh_interval =
+        let mut foreground_responsiveness_refresh_interval =
             automation_refresh_interval(hidden_to_tray, FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL);
         let io_priority_refresh_interval =
             automation_refresh_interval(hidden_to_tray, IO_PRIORITY_REFRESH_INTERVAL);
@@ -411,6 +414,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_foreground_responsiveness_refresh = Instant::now();
             next_io_priority_refresh = Instant::now();
             next_process_appearance_scan = Instant::now();
+            foreground_responsiveness_fast_until = None;
         }
         if wake_events.foreground_changed || wake_events.session_changed {
             next_check = Instant::now();
@@ -421,10 +425,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_foreground_responsiveness_refresh = Instant::now();
             next_io_priority_refresh = Instant::now();
             next_app_suspension_foreground_release = Instant::now();
+            foreground_responsiveness_fast_until =
+                foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
         }
         if wake_events.window_created || wake_events.session_changed {
             next_process_appearance_scan = Instant::now();
             next_app_suspension_refresh = Instant::now();
+            foreground_responsiveness_fast_until =
+                foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
         }
         if wake_events.power_changed || wake_events.session_changed {
             next_check = Instant::now();
@@ -482,6 +490,15 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_app_suspension_refresh = Instant::now();
         }
 
+        if foreground_responsiveness_fast_refresh_active(
+            &settings,
+            foreground_responsiveness_fast_until,
+            Instant::now(),
+        ) {
+            foreground_responsiveness_refresh_interval =
+                FOREGROUND_RESPONSIVENESS_FAST_REFRESH_INTERVAL;
+        }
+
         if app_resource_shadow_required {
             runner.run_app_resource_shadow_evaluation(&settings);
         }
@@ -496,6 +513,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_watchdog_refresh = Instant::now();
                 next_foreground_responsiveness_refresh = Instant::now();
                 next_io_priority_refresh = Instant::now();
+                foreground_responsiveness_fast_until =
+                    foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
             }
             next_process_appearance_scan = Instant::now() + PROCESS_APPEARANCE_SCAN_INTERVAL;
         } else if !scan_process_appearance {
@@ -525,6 +544,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         {
             let foreground_responsiveness_status =
                 runner.run_foreground_responsiveness_update(&settings);
+            if foreground_responsiveness_status
+                .foreground_boosted_process
+                .is_some()
+                || foreground_responsiveness_status.auto_balanced_processes > 0
+            {
+                foreground_responsiveness_fast_until =
+                    foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
+            }
             update_foreground_responsiveness_status(&shared, foreground_responsiveness_status);
             update_action_log_entries(&shared, runner.action_log.entries());
             next_foreground_responsiveness_refresh =
@@ -875,6 +902,23 @@ fn automation_refresh_interval(hidden_to_tray: bool, hidden_interval: Duration) 
     } else {
         VISIBLE_AUTOMATION_REFRESH_INTERVAL
     }
+}
+
+fn foreground_responsiveness_fast_refresh_deadline(
+    settings: &Settings,
+    now: Instant,
+) -> Option<Instant> {
+    feature_refresh_required(settings, settings.foreground_responsiveness.enabled)
+        .then_some(now + FOREGROUND_RESPONSIVENESS_FAST_REFRESH_WINDOW)
+}
+
+fn foreground_responsiveness_fast_refresh_active(
+    settings: &Settings,
+    fast_until: Option<Instant>,
+    now: Instant,
+) -> bool {
+    feature_refresh_required(settings, settings.foreground_responsiveness.enabled)
+        && fast_until.is_some_and(|until| now < until)
 }
 
 fn feature_refresh_required(settings: &Settings, feature_enabled: bool) -> bool {
@@ -1784,6 +1828,38 @@ mod tests {
         settings.eco_qos.enabled = true;
 
         assert!(automation_worker_required(&settings));
+    }
+
+    #[test]
+    fn foreground_responsiveness_fast_refresh_requires_enabled_feature() {
+        let now = Instant::now();
+        let mut settings = Settings::default();
+
+        assert!(foreground_responsiveness_fast_refresh_deadline(&settings, now).is_none());
+        assert!(!foreground_responsiveness_fast_refresh_active(
+            &settings,
+            Some(now + FOREGROUND_RESPONSIVENESS_FAST_REFRESH_WINDOW),
+            now,
+        ));
+
+        settings.general.enabled = true;
+        settings.foreground_responsiveness.enabled = true;
+        let deadline = foreground_responsiveness_fast_refresh_deadline(&settings, now)
+            .expect("foreground responsiveness should enable fast refresh");
+        assert_eq!(
+            deadline.duration_since(now),
+            FOREGROUND_RESPONSIVENESS_FAST_REFRESH_WINDOW
+        );
+        assert!(foreground_responsiveness_fast_refresh_active(
+            &settings,
+            Some(deadline),
+            now,
+        ));
+        assert!(!foreground_responsiveness_fast_refresh_active(
+            &settings,
+            Some(deadline),
+            deadline,
+        ));
     }
 
     #[test]
