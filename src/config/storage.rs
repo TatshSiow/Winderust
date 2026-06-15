@@ -353,6 +353,7 @@ mod tests {
                 lower_background_max_logical_processors: 0,
                 lower_background_auto_cpu_percent: true,
                 auto_balance_enabled: true,
+                auto_balance_affinity_escalation_enabled: true,
                 auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
                 auto_balance_cpu_percent: 50,
                 auto_balance_max_logical_processors: 0,

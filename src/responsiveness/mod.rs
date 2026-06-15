@@ -1454,6 +1454,10 @@ fn auto_balance_process_decision(
         return AutoBalanceDecision::RestrictAffinity;
     }
 
+    if !settings.auto_balance_affinity_escalation_enabled {
+        return AutoBalanceDecision::LowerPriority;
+    }
+
     let Some(active_since) = active_since else {
         return AutoBalanceDecision::LowerPriority;
     };
@@ -2406,6 +2410,7 @@ mod tests {
             lower_background_max_logical_processors: 0,
             lower_background_auto_cpu_percent: false,
             auto_balance_enabled: false,
+            auto_balance_affinity_escalation_enabled: false,
             auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             auto_balance_cpu_percent: 50,
             auto_balance_max_logical_processors: 0,
@@ -2558,6 +2563,7 @@ mod tests {
     fn auto_balance_auto_mode_escalates_from_priority_to_affinity() {
         let settings = ForegroundResponsivenessSettings {
             lower_background_auto_cpu_percent: true,
+            auto_balance_affinity_escalation_enabled: false,
             auto_balance_sustain_seconds: 3,
             ..Default::default()
         };
@@ -2569,12 +2575,25 @@ mod tests {
         );
         assert_eq!(
             auto_balance_process_decision(&settings, Some(now), now + Duration::from_secs(3)),
+            AutoBalanceDecision::LowerPriority
+        );
+
+        let escalating_settings = ForegroundResponsivenessSettings {
+            auto_balance_affinity_escalation_enabled: true,
+            ..settings.clone()
+        };
+        assert_eq!(
+            auto_balance_process_decision(
+                &escalating_settings,
+                Some(now),
+                now + Duration::from_secs(3)
+            ),
             AutoBalanceDecision::RestrictAffinity
         );
 
         let manual_settings = ForegroundResponsivenessSettings {
             lower_background_auto_cpu_percent: false,
-            ..settings
+            ..escalating_settings
         };
         assert_eq!(
             auto_balance_process_decision(&manual_settings, Some(now), now),

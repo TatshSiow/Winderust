@@ -5966,6 +5966,22 @@ impl PowerLeafApp {
                 }),
             ),
             setting_group_action_row(
+                "responsiveness-auto-affinity-escalation",
+                t!("responsiveness.auto_balance_affinity_escalation").to_string(),
+                setting_group_switch_action(
+                    "responsiveness-auto-affinity-escalation-switch",
+                    settings.auto_balance_affinity_escalation_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_affinity_escalation_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                true,
+            )
+            .into_any_element(),
+            setting_group_action_row(
                 "responsiveness-auto-affinity-mode",
                 t!("responsiveness.auto_balance_affinity_mode").to_string(),
                 self.render_auto_balance_affinity_mode_selector(cx),
@@ -13445,8 +13461,15 @@ fn apply_auto_balance_preset(
     preset: AutoBalancePreset,
 ) {
     let values = auto_balance_preset_values(preset);
-    settings.boost_foreground_app = true;
-    settings.foreground_boost = ForegroundBoostPriority::Auto;
+    settings.lower_background_apps = values.lower_background_apps;
+    settings.lower_background_io_priority_enabled = values.lower_background_io_priority_enabled;
+    settings.lower_background_io_priority = values.lower_background_io_priority;
+    settings.auto_balance_affinity_escalation_enabled =
+        values.auto_balance_affinity_escalation_enabled;
+    settings.boost_foreground_app = values.boost_foreground_app;
+    if values.boost_foreground_app {
+        settings.foreground_boost = ForegroundBoostPriority::Auto;
+    }
     settings.lower_background_auto_cpu_percent = true;
     settings.auto_balance_cpu_percent = values.manual_cpu_percent;
     settings.auto_balance_total_threshold_percent = values.total_threshold;
@@ -13462,7 +13485,16 @@ fn auto_balance_matches_preset(
     preset: AutoBalancePreset,
 ) -> bool {
     let values = auto_balance_preset_values(preset);
-    settings.lower_background_auto_cpu_percent
+    settings.lower_background_apps == values.lower_background_apps
+        && settings.lower_background_io_priority_enabled
+            == values.lower_background_io_priority_enabled
+        && settings.lower_background_io_priority == values.lower_background_io_priority
+        && settings.auto_balance_affinity_escalation_enabled
+            == values.auto_balance_affinity_escalation_enabled
+        && settings.boost_foreground_app == values.boost_foreground_app
+        && (!values.boost_foreground_app
+            || settings.foreground_boost == ForegroundBoostPriority::Auto)
+        && settings.lower_background_auto_cpu_percent
         && settings.auto_balance_total_threshold_percent == values.total_threshold
         && settings.auto_balance_threshold_percent == values.process_threshold
         && settings.auto_balance_restore_threshold_percent == values.restore_threshold
@@ -13473,6 +13505,11 @@ fn auto_balance_matches_preset(
 
 #[derive(Clone, Copy)]
 struct AutoBalancePresetValues {
+    lower_background_apps: bool,
+    lower_background_io_priority_enabled: bool,
+    lower_background_io_priority: ProcessIoPriority,
+    auto_balance_affinity_escalation_enabled: bool,
+    boost_foreground_app: bool,
     manual_cpu_percent: u8,
     total_threshold: u8,
     process_threshold: u8,
@@ -13485,6 +13522,11 @@ struct AutoBalancePresetValues {
 fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetValues {
     match preset {
         AutoBalancePreset::Gentle => AutoBalancePresetValues {
+            lower_background_apps: false,
+            lower_background_io_priority_enabled: false,
+            lower_background_io_priority: ProcessIoPriority::Low,
+            auto_balance_affinity_escalation_enabled: false,
+            boost_foreground_app: false,
             manual_cpu_percent: 90,
             total_threshold: 82,
             process_threshold: 40,
@@ -13494,6 +13536,11 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             cooldown_seconds: 4,
         },
         AutoBalancePreset::Balanced => AutoBalancePresetValues {
+            lower_background_apps: true,
+            lower_background_io_priority_enabled: true,
+            lower_background_io_priority: ProcessIoPriority::Low,
+            auto_balance_affinity_escalation_enabled: false,
+            boost_foreground_app: true,
             manual_cpu_percent: 75,
             total_threshold: 75,
             process_threshold: 30,
@@ -13503,6 +13550,11 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             cooldown_seconds: 6,
         },
         AutoBalancePreset::Responsive => AutoBalancePresetValues {
+            lower_background_apps: true,
+            lower_background_io_priority_enabled: true,
+            lower_background_io_priority: ProcessIoPriority::Low,
+            auto_balance_affinity_escalation_enabled: true,
+            boost_foreground_app: true,
             manual_cpu_percent: 60,
             total_threshold: 65,
             process_threshold: 22,

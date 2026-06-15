@@ -540,6 +540,8 @@ pub struct ForegroundResponsivenessSettings {
     #[serde(default)]
     pub auto_balance_enabled: bool,
     #[serde(default)]
+    pub auto_balance_affinity_escalation_enabled: bool,
+    #[serde(default)]
     pub auto_balance_affinity_mode: EcoQosCpuRestrictionMode,
     #[serde(default = "default_auto_balance_cpu_percent")]
     pub auto_balance_cpu_percent: u8,
@@ -1131,6 +1133,7 @@ impl Default for ForegroundResponsivenessSettings {
                 default_eco_qos_cpu_restriction_max_logical_processors(),
             lower_background_auto_cpu_percent: default_auto_balance_auto_cpu_percent(),
             auto_balance_enabled: false,
+            auto_balance_affinity_escalation_enabled: false,
             auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             auto_balance_cpu_percent: default_auto_balance_cpu_percent(),
             auto_balance_max_logical_processors:
