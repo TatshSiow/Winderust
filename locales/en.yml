@@ -423,6 +423,8 @@ responsiveness:
   auto_balance_restrained: "Restrained now"
   auto_balance_process_cpu: "Process CPU"
   auto_balance_elapsed: "Elapsed"
+  auto_balance_reaction: "Reaction"
+  auto_balance_repeats: "Repeats"
   auto_balance_state_watching: "Watching"
   auto_balance_state_lowered: "Lowered"
   auto_balance_state_affinity: "Affinity"

@@ -5684,6 +5684,7 @@ impl PowerLeafApp {
             .child(self.render_lower_background_io_priority_card(cx))
             .child(self.render_foreground_boost_selector(cx))
             .child(self.render_auto_balance_preset_selector(cx))
+            .child(self.render_auto_balance_insight())
             .child(self.render_auto_balance_advanced_group(window, cx, &input_value, enabled));
 
         let help = tooltip_lines(vec![
@@ -5824,7 +5825,6 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
-    #[allow(dead_code)]
     fn render_auto_balance_insight(&self) -> AnyElement {
         let status = &self.foreground_responsiveness_status;
         let total_cpu = status
@@ -11235,6 +11235,10 @@ fn auto_balance_status_row(detail: &responsiveness::AutoBalanceProcessStatus) ->
         .elapsed_seconds
         .map(|seconds| format!("{seconds}s"))
         .unwrap_or_else(|| "-".to_owned());
+    let reaction = detail
+        .reaction_millis
+        .map(format_millis)
+        .unwrap_or_else(|| "-".to_owned());
 
     h_flex()
         .w_full()
@@ -11260,13 +11264,27 @@ fn auto_balance_status_row(detail: &responsiveness::AutoBalanceProcessStatus) ->
                         .text_size(px(TEXT_BODY_SIZE))
                         .child(format!("{} ({})", detail.process_name, detail.process_id)),
                 )
-                .child(text_muted(format!(
-                    "{}: {cpu_usage} | {}: {elapsed}",
-                    t!("responsiveness.auto_balance_process_cpu"),
-                    t!("responsiveness.auto_balance_elapsed")
-                ))),
+                .child(
+                    text_muted(format!(
+                        "{}: {cpu_usage} | {}: {elapsed} | {}: {reaction} | {}: {}",
+                        t!("responsiveness.auto_balance_process_cpu"),
+                        t!("responsiveness.auto_balance_elapsed"),
+                        t!("responsiveness.auto_balance_reaction"),
+                        t!("responsiveness.auto_balance_repeats"),
+                        detail.restraint_count
+                    ))
+                    .truncate(),
+                ),
         )
         .child(auto_balance_state_tag(detail.state))
+}
+
+fn format_millis(value: u64) -> String {
+    if value >= 1_000 {
+        format!("{:.1}s", value as f64 / 1_000.0)
+    } else {
+        format!("{value}ms")
+    }
 }
 
 #[allow(dead_code)]

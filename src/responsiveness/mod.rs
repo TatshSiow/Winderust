@@ -69,6 +69,7 @@ const AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT: f32 = 85.0;
 const AUTO_BALANCE_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
 const AUTO_BALANCE_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
 const FOREGROUND_LAUNCH_BOOST_WINDOW: Duration = Duration::from_secs(8);
+const AUTO_BALANCE_REPEAT_OFFENDER_SUSTAIN_DIVISOR: u32 = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundResponsivenessSnapshot {
     pub enabled: bool,
@@ -93,6 +94,8 @@ pub struct AutoBalanceProcessStatus {
     pub state: AutoBalanceProcessState,
     pub cpu_usage_tenths: Option<u16>,
     pub elapsed_seconds: Option<u64>,
+    pub reaction_millis: Option<u64>,
+    pub restraint_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +179,8 @@ struct AutoBalanceProcess {
     high_since: Option<Instant>,
     below_since: Option<Instant>,
     active_since: Option<Instant>,
+    last_reaction_millis: Option<u64>,
+    restraint_count: u32,
     decision: Option<AutoBalanceDecision>,
     active: bool,
 }
@@ -1050,7 +1055,6 @@ impl ForegroundResponsivenessManager {
                 .min(settings.auto_balance_threshold_percent)
                 .min(100),
         );
-        let priority_sustain = auto_balance_priority_sustain(settings);
         let minimum_restraint =
             Duration::from_secs(settings.auto_balance_minimum_restraint_seconds);
         let cooldown = Duration::from_secs(settings.auto_balance_cooldown_seconds);
@@ -1064,10 +1068,13 @@ impl ForegroundResponsivenessManager {
                 high_since: None,
                 below_since: None,
                 active_since: None,
+                last_reaction_millis: None,
+                restraint_count: 0,
                 decision: None,
                 active: false,
             });
         state.process_name = process_name.to_owned();
+        let priority_sustain = auto_balance_priority_sustain(settings, state.restraint_count);
 
         let current = process_cpu_sample(process_id).ok()?;
         let usage = state
@@ -1083,6 +1090,9 @@ impl ForegroundResponsivenessManager {
             if state.active || now.duration_since(high_since) >= priority_sustain {
                 if !state.active {
                     state.active_since = Some(now);
+                    state.last_reaction_millis =
+                        Some(duration_millis_u64(now.duration_since(high_since)));
+                    state.restraint_count = state.restraint_count.saturating_add(1);
                 }
                 state.active = true;
                 let decision = auto_balance_process_decision(settings, state.active_since, now);
@@ -1172,6 +1182,8 @@ impl ForegroundResponsivenessManager {
                     state,
                     cpu_usage_tenths: process.last_usage_tenths,
                     elapsed_seconds,
+                    reaction_millis: process.last_reaction_millis,
+                    restraint_count: process.restraint_count,
                 })
             })
             .collect()
@@ -1294,6 +1306,10 @@ pub fn contains_process(list: &[String], process_name: &str) -> bool {
 
 fn percent_tenths(usage: f32) -> u16 {
     (usage.clamp(0.0, 100.0) * 10.0).round() as u16
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 fn auto_balance_status_message(
@@ -1526,11 +1542,19 @@ fn auto_balance_process_decision(
     }
 }
 
-fn auto_balance_priority_sustain(settings: &ForegroundResponsivenessSettings) -> Duration {
+fn auto_balance_priority_sustain(
+    settings: &ForegroundResponsivenessSettings,
+    restraint_count: u32,
+) -> Duration {
     if settings.lower_background_auto_cpu_percent && settings.auto_balance_sustain_seconds <= 1 {
-        Duration::ZERO
+        return Duration::ZERO;
+    }
+
+    let sustain = Duration::from_secs(settings.auto_balance_sustain_seconds);
+    if settings.lower_background_auto_cpu_percent && restraint_count > 0 {
+        sustain / AUTO_BALANCE_REPEAT_OFFENDER_SUSTAIN_DIVISOR
     } else {
-        Duration::from_secs(settings.auto_balance_sustain_seconds)
+        sustain
     }
 }
 
@@ -2741,7 +2765,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            auto_balance_priority_sustain(&responsive_settings),
+            auto_balance_priority_sustain(&responsive_settings, 0),
             Duration::ZERO
         );
 
@@ -2751,8 +2775,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            auto_balance_priority_sustain(&balanced_settings),
+            auto_balance_priority_sustain(&balanced_settings, 0),
             Duration::from_secs(2)
+        );
+        assert_eq!(
+            auto_balance_priority_sustain(&balanced_settings, 1),
+            Duration::from_secs(1)
         );
 
         let manual_settings = ForegroundResponsivenessSettings {
@@ -2761,7 +2789,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            auto_balance_priority_sustain(&manual_settings),
+            auto_balance_priority_sustain(&manual_settings, 1),
             Duration::from_secs(1)
         );
     }

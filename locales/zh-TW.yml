@@ -393,6 +393,8 @@ responsiveness:
   auto_balance_restrained: "目前限制"
   auto_balance_process_cpu: "程序 CPU"
   auto_balance_elapsed: "經過時間"
+  auto_balance_reaction: "反應時間"
+  auto_balance_repeats: "重複次數"
   auto_balance_state_watching: "觀察中"
   auto_balance_state_lowered: "已降低"
   auto_balance_state_affinity: "親和性限制"
