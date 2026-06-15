@@ -15,6 +15,7 @@ mod cpu;
 mod cpu_limiter;
 mod ecoqos;
 mod foreground;
+mod io_priority;
 mod performance_mode;
 mod power;
 mod power_source;

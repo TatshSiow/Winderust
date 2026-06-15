@@ -10,11 +10,12 @@ use crate::{
     activity::{input_hook, input_tracker, IdleDetector, InputHookEvents},
     affinity::{CpuAffinityManager, CpuAffinitySnapshot},
     background_cpu::BackgroundCpuRestrictionManager,
-    config::{PowerPlanSettings, Settings},
+    config::{IoPriorityRule, PowerPlanSettings, Settings},
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
     foreground::{list_processes, top_level_window_process_ids, ForegroundDetector},
+    io_priority::{IoPriorityManager, IoPrioritySnapshot},
     performance_mode::{PerformanceModeManager, PerformanceModeSnapshot},
     power::PowerPlanManager,
     power_source,
@@ -45,6 +46,7 @@ const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const WATCHDOG_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const IO_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -72,6 +74,7 @@ struct AutomationWorkerState {
     performance_mode_status: PerformanceModeSnapshot,
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
+    io_priority_status: IoPrioritySnapshot,
     action_log_entries: Vec<ActionLogEntry>,
     pending_auto_exclusions: PendingAutoExclusions,
     app_suspension_freeze_requests: Vec<String>,
@@ -124,6 +127,7 @@ impl BackgroundAutomation {
                 performance_mode_status: PerformanceModeSnapshot::default(),
                 watchdog_status: WatchdogSnapshot::default(),
                 foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
+                io_priority_status: IoPrioritySnapshot::default(),
                 action_log_entries: Vec::new(),
                 pending_auto_exclusions: PendingAutoExclusions::default(),
                 app_suspension_freeze_requests: Vec::new(),
@@ -208,6 +212,14 @@ impl BackgroundAutomation {
             .state
             .lock()
             .map(|state| state.foreground_responsiveness_status.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn io_priority_status(&self) -> IoPrioritySnapshot {
+        self.shared
+            .state
+            .lock()
+            .map(|state| state.io_priority_status.clone())
             .unwrap_or_default()
     }
 
@@ -347,6 +359,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_performance_mode_refresh = Instant::now();
     let mut next_watchdog_refresh = Instant::now();
     let mut next_foreground_responsiveness_refresh = Instant::now();
+    let mut next_io_priority_refresh = Instant::now();
     let mut next_process_appearance_scan = Instant::now();
 
     loop {
@@ -382,6 +395,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, WATCHDOG_REFRESH_INTERVAL);
         let foreground_responsiveness_refresh_interval =
             automation_refresh_interval(hidden_to_tray, FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL);
+        let io_priority_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, IO_PRIORITY_REFRESH_INTERVAL);
         let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
         if settings_changed {
             next_check = Instant::now();
@@ -394,6 +409,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_performance_mode_refresh = Instant::now();
             next_watchdog_refresh = Instant::now();
             next_foreground_responsiveness_refresh = Instant::now();
+            next_io_priority_refresh = Instant::now();
             next_process_appearance_scan = Instant::now();
         }
         if wake_events.foreground_changed || wake_events.session_changed {
@@ -403,6 +419,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_background_cpu_restriction_refresh = Instant::now();
             next_cpu_limiter_refresh = Instant::now();
             next_foreground_responsiveness_refresh = Instant::now();
+            next_io_priority_refresh = Instant::now();
             next_app_suspension_foreground_release = Instant::now();
         }
         if wake_events.window_created || wake_events.session_changed {
@@ -450,13 +467,16 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             settings_changed || feature_refresh_required(&settings, settings.watchdog.enabled);
         let foreground_responsiveness_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.foreground_responsiveness.enabled);
+        let io_priority_refresh_required = settings_changed
+            || feature_refresh_required(&settings, io_priority_required(&settings));
         let app_resource_shadow_required = eco_qos_refresh_required
             || app_suspension_refresh_required
             || cpu_affinity_refresh_required
             || background_cpu_restriction_refresh_required
             || cpu_limiter_refresh_required
             || watchdog_refresh_required
-            || foreground_responsiveness_refresh_required;
+            || foreground_responsiveness_refresh_required
+            || io_priority_refresh_required;
 
         if !app_suspension_freeze_requests.is_empty() {
             next_app_suspension_refresh = Instant::now();
@@ -475,6 +495,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_performance_mode_refresh = Instant::now();
                 next_watchdog_refresh = Instant::now();
                 next_foreground_responsiveness_refresh = Instant::now();
+                next_io_priority_refresh = Instant::now();
             }
             next_process_appearance_scan = Instant::now() + PROCESS_APPEARANCE_SCAN_INTERVAL;
         } else if !scan_process_appearance {
@@ -508,6 +529,12 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             update_action_log_entries(&shared, runner.action_log.entries());
             next_foreground_responsiveness_refresh =
                 Instant::now() + foreground_responsiveness_refresh_interval;
+        }
+        if io_priority_refresh_required && Instant::now() >= next_io_priority_refresh {
+            let io_priority_status = runner.run_io_priority_update(&settings);
+            update_io_priority_status(&shared, io_priority_status);
+            update_action_log_entries(&shared, runner.action_log.entries());
+            next_io_priority_refresh = Instant::now() + io_priority_refresh_interval;
         }
         if app_suspension_refresh_required && Instant::now() >= next_app_suspension_refresh {
             let app_suspension_status =
@@ -644,6 +671,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_foreground_responsiveness_refresh
                     .saturating_duration_since(Instant::now())
                     .min(foreground_responsiveness_refresh_interval),
+            ));
+        }
+        if io_priority_refresh_required {
+            wait_for = Some(min_worker_wait(
+                wait_for,
+                next_io_priority_refresh
+                    .saturating_duration_since(Instant::now())
+                    .min(io_priority_refresh_interval),
             ));
         }
         if scan_process_appearance {
@@ -822,6 +857,12 @@ fn update_foreground_responsiveness_status(
     }
 }
 
+fn update_io_priority_status(shared: &SharedAutomationState, status: IoPrioritySnapshot) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.io_priority_status = status;
+    }
+}
+
 fn update_action_log_entries(shared: &SharedAutomationState, entries: Vec<ActionLogEntry>) {
     if let Ok(mut state) = shared.state.lock() {
         state.action_log_entries = entries;
@@ -840,6 +881,34 @@ fn feature_refresh_required(settings: &Settings, feature_enabled: bool) -> bool 
     settings.general.enabled && feature_enabled
 }
 
+fn io_priority_required(settings: &Settings) -> bool {
+    settings.io_priority.enabled
+        || (settings.foreground_responsiveness.enabled
+            && settings
+                .foreground_responsiveness
+                .lower_background_io_priority_enabled)
+}
+
+fn effective_io_priority_settings(settings: &Settings) -> crate::config::IoPrioritySettings {
+    let mut io_priority = settings.io_priority.clone();
+    if settings.foreground_responsiveness.enabled
+        && settings
+            .foreground_responsiveness
+            .lower_background_io_priority_enabled
+    {
+        io_priority.enabled = true;
+        io_priority.exclude_foreground_app = true;
+        io_priority.rules.push(IoPriorityRule {
+            enabled: true,
+            process_name: "*".to_owned(),
+            priority: settings
+                .foreground_responsiveness
+                .lower_background_io_priority,
+        });
+    }
+    io_priority
+}
+
 fn process_appearance_scan_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (settings.eco_qos.enabled
@@ -848,7 +917,8 @@ fn process_appearance_scan_required(settings: &Settings) -> bool {
             || settings.cpu_limiter.enabled
             || settings.performance_mode.enabled
             || settings.watchdog.enabled
-            || settings.foreground_responsiveness.enabled)
+            || settings.foreground_responsiveness.enabled
+            || io_priority_required(settings))
 }
 
 fn power_plan_checks_required(settings: &Settings) -> bool {
@@ -870,7 +940,8 @@ fn automation_worker_required(settings: &Settings) -> bool {
             || settings.cpu_limiter.enabled
             || settings.performance_mode.enabled
             || settings.watchdog.enabled
-            || settings.foreground_responsiveness.enabled)
+            || settings.foreground_responsiveness.enabled
+            || io_priority_required(settings))
 }
 
 fn windows_event_watcher_required(settings: &Settings) -> bool {
@@ -1097,6 +1168,7 @@ struct HiddenAutomationRunner {
     watchdog_manager: WatchdogManager,
     action_log: ActionLog,
     foreground_responsiveness_manager: ForegroundResponsivenessManager,
+    io_priority_manager: IoPriorityManager,
     known_process_ids: BTreeSet<u32>,
     applied_action_store: AppliedActionStore,
     runtime_state: RuntimeState,
@@ -1294,6 +1366,16 @@ impl HiddenAutomationRunner {
             self.cpu_usage.percent,
             settings.eco_qos.enabled,
             &excluded_process_ids,
+            &mut self.action_log,
+        )
+    }
+
+    fn run_io_priority_update(&mut self, settings: &Settings) -> IoPrioritySnapshot {
+        let io_priority_settings = effective_io_priority_settings(settings);
+        self.io_priority_manager.update(
+            &io_priority_settings,
+            settings.general.enabled,
+            self.foreground_detector.process_id(),
             &mut self.action_log,
         )
     }

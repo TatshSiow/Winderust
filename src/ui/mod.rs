@@ -13,6 +13,7 @@ pub enum Page {
     Watchdog,
     PerformanceMode,
     ForegroundResponsiveness,
+    IoPriority,
     CpuAffinity,
     ForegroundRules,
     Schedule,
@@ -41,9 +42,10 @@ const CPU_CONTROL_PAGES: [Page; 4] = [
     Page::BackgroundCpuRestriction,
     Page::CpuAffinity,
 ];
-const PROCESS_POLICY_PAGES: [Page; 4] = [
+const PROCESS_POLICY_PAGES: [Page; 5] = [
     Page::EfficiencyMode,
     Page::ForegroundResponsiveness,
+    Page::IoPriority,
     Page::AppSuspension,
     Page::Watchdog,
 ];
@@ -90,6 +92,7 @@ impl Page {
             Self::Watchdog => t!("nav.watchdog"),
             Self::PerformanceMode => t!("nav.performance_mode"),
             Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
+            Self::IoPriority => t!("nav.io_priority"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
             Self::Schedule => t!("nav.schedule"),
@@ -117,6 +120,7 @@ impl Page {
             }
             Self::EfficiencyMode
             | Self::ForegroundResponsiveness
+            | Self::IoPriority
             | Self::AppSuspension
             | Self::Watchdog => t!("nav.process_policies"),
             Self::ActionLog | Self::Settings | Self::About => t!("nav.app"),

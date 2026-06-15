@@ -47,14 +47,16 @@ use crate::{
         CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
-        PriorityRule, ProcessExclusionRule, ProcessPriority, ScheduleRule, Settings,
-        WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
+        ForegroundRules, IoPriorityRule, IoPrioritySettings, NetworkThresholdUnit,
+        PerformanceModeRule, PerformanceModeSettings, PriorityRule, ProcessExclusionRule,
+        ProcessIoPriority, ProcessPriority, ScheduleRule, Settings, WatchdogAction, WatchdogRule,
+        WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
     ecoqos::{self, EcoQosSnapshot},
     foreground::{list_process_names, ForegroundDetector},
+    io_priority::{self, IoPrioritySnapshot},
     performance_mode::{self, PerformanceModeSnapshot},
     power::{
         PowerPlan, PowerPlanManager, ProcessorPowerAcDcValues, ProcessorPowerPreset,
@@ -217,6 +219,7 @@ pub struct PowerLeafApp {
     performance_mode_status: PerformanceModeSnapshot,
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
+    io_priority_status: IoPrioritySnapshot,
     action_log_entries: Vec<ActionLogEntry>,
     action_log_filter: ActionLogResultFilter,
     foreground_app: Option<String>,
@@ -294,6 +297,7 @@ struct UiInputs {
     performance_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
     responsiveness_process: Entity<InputState>,
+    io_priority_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
     activity_idle_timeout: Entity<SliderState>,
     activity_check_interval: Entity<SliderState>,
@@ -486,6 +490,7 @@ impl UiInputs {
             performance_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
             responsiveness_process: make_input(window, cx, "", "Search running apps..."),
+            io_priority_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
             activity_idle_timeout: make_range_slider(
                 cx,
@@ -727,6 +732,7 @@ impl PowerLeafApp {
             performance_mode_status: PerformanceModeSnapshot::default(),
             watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
+            io_priority_status: IoPrioritySnapshot::default(),
             action_log_entries: Vec::new(),
             action_log_filter: ActionLogResultFilter::All,
             foreground_app: None,
@@ -1606,6 +1612,12 @@ impl PowerLeafApp {
             changed = true;
         }
 
+        let io_priority_status = self.background_automation.io_priority_status();
+        if self.io_priority_status != io_priority_status {
+            self.io_priority_status = io_priority_status;
+            changed = true;
+        }
+
         let action_log_entries = self.background_automation.action_log_entries();
         if self.action_log_entries != action_log_entries {
             self.action_log_entries = action_log_entries;
@@ -1684,6 +1696,7 @@ impl PowerLeafApp {
                 | Page::BackgroundCpuRestriction
                 | Page::Watchdog
                 | Page::ForegroundResponsiveness
+                | Page::IoPriority
                 | Page::PerformanceMode
                 | Page::CpuAffinity
         )
@@ -2442,6 +2455,11 @@ impl PowerLeafApp {
                 self.foreground_responsiveness_status.failed_processes,
                 self.foreground_responsiveness_status.last_error.is_some(),
             )),
+            Page::IoPriority => Some(process_nav_status(
+                settings.io_priority.enabled,
+                self.io_priority_status.failed_processes,
+                self.io_priority_status.last_error.is_some(),
+            )),
             Page::ForegroundRules => Some(rule_based_nav_status(
                 settings.foreground_rules.enabled,
                 settings.foreground_rules.rules.len(),
@@ -2704,6 +2722,7 @@ impl PowerLeafApp {
             Page::ForegroundResponsiveness => {
                 self.render_foreground_responsiveness_page(window, cx)
             }
+            Page::IoPriority => self.render_io_priority_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::ActionLog => self.render_action_log_page(cx),
             Page::Settings => self.render_settings_page(window, cx),
@@ -5662,6 +5681,7 @@ impl PowerLeafApp {
         let enabled = self.settings.foreground_responsiveness.enabled;
         let body = feature_body(enabled)
             .child(self.render_lower_background_efficiency_card(cx))
+            .child(self.render_lower_background_io_priority_card(cx))
             .child(self.render_foreground_boost_selector(cx))
             .child(self.render_auto_balance_preset_selector(cx))
             .child(self.render_auto_balance_advanced_group(window, cx, &input_value, enabled));
@@ -5716,6 +5736,60 @@ impl PowerLeafApp {
                 t!("responsiveness.lower_background_efficiency_help").to_string()
             },
             action,
+        )
+        .into_any_element()
+    }
+
+    fn render_lower_background_io_priority_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self
+            .settings
+            .foreground_responsiveness
+            .lower_background_io_priority_enabled;
+        let priority = self
+            .settings
+            .foreground_responsiveness
+            .lower_background_io_priority;
+        let mut row = h_flex()
+            .gap_2()
+            .items_center()
+            .justify_end()
+            .flex_wrap()
+            .child(switch_toggle_action(
+                "responsiveness-lower-background-io-toggle",
+                selected,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .lower_background_io_priority_enabled = *checked;
+                    cx.notify();
+                }),
+            ));
+        for option in ProcessIoPriority::ALL {
+            row = row.child(
+                toggle_button(
+                    format!("responsiveness-background-io-priority-{option:?}"),
+                    process_io_priority_label(option),
+                    selected && priority == option,
+                )
+                .tooltip(process_io_priority_help(option))
+                .disabled(!selected)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .lower_background_io_priority_enabled = true;
+                    app.settings
+                        .foreground_responsiveness
+                        .lower_background_io_priority = option;
+                    cx.notify();
+                })),
+            );
+        }
+
+        setting_action_card_with_help(
+            "responsiveness-lower-background-io-priority",
+            t!("responsiveness.lower_background_io_priority").to_string(),
+            t!("responsiveness.lower_background_io_priority_help").to_string(),
+            row.into_any_element(),
         )
         .into_any_element()
     }
@@ -6361,6 +6435,200 @@ impl PowerLeafApp {
         rule_action_row(
             format!("responsiveness-priority-row-{index}"),
             t!("responsiveness.background_priority").to_string(),
+            row.into_any_element(),
+        )
+        .into_any_element()
+    }
+
+    fn render_io_priority_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self.inputs.io_priority_process.read(cx).value().to_string();
+        let enabled = self.settings.io_priority.enabled;
+        let help = tooltip_lines(vec![
+            t!("io_priority.intro_1").to_string(),
+            t!("io_priority.intro_2").to_string(),
+        ]);
+        let body = feature_body(enabled)
+            .child(setting_action_card_with_help(
+                "io-priority-exclude-foreground",
+                t!("io_priority.exclude_foreground").to_string(),
+                t!("io_priority.exclude_foreground_help").to_string(),
+                switch_toggle_action(
+                    "io-priority-exclude-foreground-toggle",
+                    self.settings.io_priority.exclude_foreground_app,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.io_priority.exclude_foreground_app = *checked;
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "io-priority-process-suggestion",
+                        &self.inputs.io_priority_process,
+                        SuggestionTarget::IoPriority,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-io-priority-rule"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_io_priority_process(
+                                        &self.settings.io_priority,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.io_priority_process.read(cx).value().to_string();
+                                if can_add_io_priority_process(&app.settings.io_priority, &process)
+                                {
+                                    app.settings
+                                        .io_priority
+                                        .rules
+                                        .push(new_io_priority_rule(&process));
+                                    clear_input(&app.inputs.io_priority_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_io_priority_rules(cx));
+
+        page_shell(Page::IoPriority)
+            .child(feature_toggle_switch_with_help(
+                "io-priority-enabled",
+                t!("io_priority.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.io_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
+    }
+
+    fn render_io_priority_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.io_priority.rules.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let adjusted =
+                io_priority_contains_process(&self.io_priority_status.adjusted_apps, &process);
+            let indicator = if io_priority::is_builtin_excluded(&process) {
+                (
+                    t!("affinity.indicator.protected").to_string(),
+                    settings_card_hover_color(),
+                    accent_color(),
+                )
+            } else if adjusted {
+                (
+                    t!("io_priority.indicator_adjusted").to_string(),
+                    success_bg_color(),
+                    success_text_color(),
+                )
+            } else if self.io_priority_status.enabled {
+                (
+                    t!("affinity.indicator.ready").to_string(),
+                    panel_active_color(),
+                    muted_text_color(),
+                )
+            } else {
+                (
+                    t!("affinity.indicator.off").to_string(),
+                    panel_active_color(),
+                    dim_text_color(),
+                )
+            };
+            let card_target = RuleCardTarget::IoPriority(process.clone());
+            let collapsed = self.is_rule_card_collapsed(&card_target);
+            let mut card = rule_card(
+                static_rule_title(&process),
+                rule_enable_checkbox(
+                    format!("io-priority-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.io_priority.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ),
+                rule_card_collapse_indicator(collapsed),
+                card_target.clone(),
+                cx,
+            );
+            if !collapsed {
+                card = card
+                    .child(rule_card_body_row(vec![rule_action_row(
+                        format!("io-priority-rule-status-{index}"),
+                        t!("common.status").to_string(),
+                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                    )
+                    .into_any_element()]))
+                    .child(rule_card_body_row(vec![self.render_io_priority_selector(
+                        index,
+                        rule.priority,
+                        cx,
+                    )]))
+                    .child(rule_card_body_action(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-io-priority-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener({
+                            let card_target = card_target.clone();
+                            move |app, _, _, cx| {
+                                if index < app.settings.io_priority.rules.len() {
+                                    app.settings.io_priority.rules.remove(index);
+                                }
+                                app.expanded_rule_cards.remove(&card_target);
+                                cx.notify();
+                            }
+                        }))
+                        .into_any_element(),
+                    ));
+            }
+            list = list.child(card);
+        }
+        if self.settings.io_priority.rules.is_empty() {
+            list = list.child(text_muted(t!("io_priority.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_io_priority_selector(
+        &self,
+        index: usize,
+        selected_priority: ProcessIoPriority,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut row = h_flex().gap_1().flex_wrap();
+        for priority in ProcessIoPriority::ALL {
+            row = row.child(
+                toggle_button(
+                    format!("io-priority-{index}-{priority:?}"),
+                    process_io_priority_label(priority),
+                    selected_priority == priority,
+                )
+                .tooltip(process_io_priority_help(priority))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if let Some(rule) = app.settings.io_priority.rules.get_mut(index) {
+                        rule.priority = priority;
+                    }
+                    cx.notify();
+                })),
+            );
+        }
+        rule_action_row(
+            format!("io-priority-row-{index}"),
+            t!("io_priority.priority").to_string(),
             row.into_any_element(),
         )
         .into_any_element()
@@ -8622,6 +8890,9 @@ impl PowerLeafApp {
             SuggestionTarget::Responsiveness => {
                 clear_input_to(&self.inputs.responsiveness_process, process, window, cx);
             }
+            SuggestionTarget::IoPriority => {
+                clear_input_to(&self.inputs.io_priority_process, process, window, cx);
+            }
             SuggestionTarget::Affinity => {
                 clear_input_to(&self.inputs.affinity_process, process, window, cx);
             }
@@ -8821,6 +9092,7 @@ enum SuggestionTarget {
     Watchdog,
     PerformanceMode,
     Responsiveness,
+    IoPriority,
     Affinity,
 }
 
@@ -8839,6 +9111,7 @@ enum RuleCardTarget {
     Watchdog(String),
     #[allow(dead_code)]
     Responsiveness(String),
+    IoPriority(String),
     Affinity(String),
 }
 
@@ -10788,6 +11061,7 @@ fn action_log_feature_label(feature: ActionLogFeature) -> String {
         ActionLogFeature::PerformanceMode => "Running App Detection",
         ActionLogFeature::Watchdog => "Watchdog Rules",
         ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
+        ActionLogFeature::IoPriority => "I/O Priority",
     }
     .to_owned()
 }
@@ -11593,6 +11867,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::Watchdog => NavIcon::Frame,
         Page::PerformanceMode => NavIcon::Zap,
         Page::ForegroundResponsiveness => NavIcon::Zap,
+        Page::IoPriority => NavIcon::Chip,
         Page::CpuAffinity => NavIcon::Chip,
         Page::ForegroundRules => NavIcon::Frame,
         Page::Schedule => NavIcon::Calendar,
@@ -12681,6 +12956,7 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::Responsiveness => {
             can_add_responsiveness_process(&settings.foreground_responsiveness, process)
         }
+        SuggestionTarget::IoPriority => can_add_io_priority_process(&settings.io_priority, process),
         SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
     }
 }
@@ -12759,6 +13035,15 @@ fn can_add_responsiveness_process(
         && !responsiveness::is_builtin_excluded(process)
 }
 
+fn can_add_io_priority_process(settings: &IoPrioritySettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !settings
+            .rules
+            .iter()
+            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+}
+
 fn can_add_responsiveness_exclusion(
     settings: &ForegroundResponsivenessSettings,
     process: &str,
@@ -12816,6 +13101,14 @@ fn new_affinity_rule(process: &str) -> CpuAffinityRule {
         mode: CpuAffinityMode::Soft,
         process_name: process.trim().to_ascii_lowercase(),
         core_mask: default_affinity_mask(),
+    }
+}
+
+fn new_io_priority_rule(process: &str) -> IoPriorityRule {
+    IoPriorityRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+        priority: ProcessIoPriority::VeryLow,
     }
 }
 
@@ -13066,6 +13359,28 @@ fn process_priority_label(priority: ProcessPriority) -> String {
         ProcessPriority::BelowNormal => t!("responsiveness.priority_below_normal").to_string(),
         ProcessPriority::Idle => t!("responsiveness.priority_idle").to_string(),
     }
+}
+
+fn process_io_priority_label(priority: ProcessIoPriority) -> String {
+    match priority {
+        ProcessIoPriority::Normal => t!("io_priority.priority_normal").to_string(),
+        ProcessIoPriority::Low => t!("io_priority.priority_low").to_string(),
+        ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low").to_string(),
+    }
+}
+
+fn process_io_priority_help(priority: ProcessIoPriority) -> String {
+    match priority {
+        ProcessIoPriority::Normal => t!("io_priority.priority_normal_help").to_string(),
+        ProcessIoPriority::Low => t!("io_priority.priority_low_help").to_string(),
+        ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low_help").to_string(),
+    }
+}
+
+fn io_priority_contains_process(processes: &[String], process: &str) -> bool {
+    processes
+        .iter()
+        .any(|name| name.trim().eq_ignore_ascii_case(process.trim()))
 }
 
 fn auto_balance_preset_label(preset: AutoBalancePreset) -> String {

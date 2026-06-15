@@ -29,6 +29,7 @@ pub enum ActionLogFeature {
     PerformanceMode,
     Watchdog,
     ForegroundResponsiveness,
+    IoPriority,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

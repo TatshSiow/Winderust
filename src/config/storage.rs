@@ -121,10 +121,11 @@ mod tests {
         EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
         EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
         ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GeneralSettings,
-        InputDetectionSettings, ManualOverride, NetworkThresholdUnit, PerformanceModeRule,
-        PerformanceModeSettings, PowerPlanSettings, PriorityRule, ProcessExclusionRule,
-        ProcessPriority, ScheduleModeSettings, ScheduleRule, WatchdogAction, WatchdogRule,
-        WatchdogSettings, WeekdaySetting,
+        InputDetectionSettings, IoPriorityRule, IoPrioritySettings, ManualOverride,
+        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
+        PriorityRule, ProcessExclusionRule, ProcessIoPriority, ProcessPriority,
+        ScheduleModeSettings, ScheduleRule, WatchdogAction, WatchdogRule, WatchdogSettings,
+        WeekdaySetting,
     };
 
     #[test]
@@ -345,6 +346,8 @@ mod tests {
                 enabled: true,
                 lower_background_apps: true,
                 lower_background_affinity_enabled: true,
+                lower_background_io_priority_enabled: true,
+                lower_background_io_priority: ProcessIoPriority::VeryLow,
                 lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
                 lower_background_cpu_percent: 50,
                 lower_background_max_logical_processors: 0,
@@ -370,6 +373,15 @@ mod tests {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
                     priority: ProcessPriority::BelowNormal,
+                }],
+            },
+            io_priority: IoPrioritySettings {
+                enabled: true,
+                exclude_foreground_app: true,
+                rules: vec![IoPriorityRule {
+                    enabled: true,
+                    process_name: "backup.exe".to_owned(),
+                    priority: ProcessIoPriority::Low,
                 }],
             },
         };

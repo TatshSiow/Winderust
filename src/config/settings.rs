@@ -33,6 +33,8 @@ pub struct Settings {
     pub watchdog: WatchdogSettings,
     #[serde(default)]
     pub foreground_responsiveness: ForegroundResponsivenessSettings,
+    #[serde(default)]
+    pub io_priority: IoPrioritySettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +526,10 @@ pub struct ForegroundResponsivenessSettings {
     #[serde(default)]
     pub lower_background_affinity_enabled: bool,
     #[serde(default)]
+    pub lower_background_io_priority_enabled: bool,
+    #[serde(default)]
+    pub lower_background_io_priority: ProcessIoPriority,
+    #[serde(default)]
     pub lower_background_affinity_mode: EcoQosCpuRestrictionMode,
     #[serde(default = "default_eco_qos_cpu_restriction_percent")]
     pub lower_background_cpu_percent: u8,
@@ -561,6 +567,39 @@ pub struct ForegroundResponsivenessSettings {
     pub foreground_stability_delay_ms: u64,
     #[serde(default)]
     pub rules: Vec<PriorityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IoPrioritySettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub exclude_foreground_app: bool,
+    #[serde(default)]
+    pub rules: Vec<IoPriorityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IoPriorityRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+    pub priority: ProcessIoPriority,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessIoPriority {
+    Normal,
+    Low,
+    #[default]
+    VeryLow,
+}
+
+impl ProcessIoPriority {
+    pub const ALL: [Self; 3] = [Self::Normal, Self::Low, Self::VeryLow];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -739,6 +778,7 @@ impl Default for Settings {
             performance_mode: PerformanceModeSettings::default(),
             watchdog: WatchdogSettings::default(),
             foreground_responsiveness: ForegroundResponsivenessSettings::default(),
+            io_priority: IoPrioritySettings::default(),
         }
     }
 }
@@ -1083,6 +1123,8 @@ impl Default for ForegroundResponsivenessSettings {
             enabled: false,
             lower_background_apps: default_lower_background_apps(),
             lower_background_affinity_enabled: false,
+            lower_background_io_priority_enabled: false,
+            lower_background_io_priority: ProcessIoPriority::VeryLow,
             lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             lower_background_cpu_percent: default_eco_qos_cpu_restriction_percent(),
             lower_background_max_logical_processors:
@@ -1107,6 +1149,32 @@ impl Default for ForegroundResponsivenessSettings {
             foreground_stability_delay_ms: default_foreground_stability_delay_ms(),
             rules: Vec::new(),
         }
+    }
+}
+
+impl Default for IoPrioritySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exclude_foreground_app: default_exclude_foreground_app(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+impl IoPrioritySettings {
+    pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessIoPriority> {
+        self.rules
+            .iter()
+            .find(|rule| {
+                rule.enabled
+                    && !rule.process_name.trim().is_empty()
+                    && wildcard_match(
+                        &rule.process_name.trim().to_ascii_lowercase(),
+                        &process_name.trim().to_ascii_lowercase(),
+                    )
+            })
+            .map(|rule| rule.priority)
     }
 }
 

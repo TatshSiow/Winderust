@@ -2399,6 +2399,8 @@ mod tests {
             enabled: true,
             lower_background_apps: true,
             lower_background_affinity_enabled: false,
+            lower_background_io_priority_enabled: false,
+            lower_background_io_priority: crate::config::ProcessIoPriority::VeryLow,
             lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             lower_background_cpu_percent: 50,
             lower_background_max_logical_processors: 0,
