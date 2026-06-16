@@ -83,7 +83,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 
 ## Processor Power Plan Tuning
 
-PowerLeaf can apply separate AC and battery processor-power percentages to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process Core Steering.
+PowerLeaf can apply separate AC and battery processor-power percentages and processor boost modes to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process Core Steering.
 
 Implementation entry point:
 
@@ -96,6 +96,7 @@ Implementation entry point:
 | Processor settings subgroup | Contains core parking and processor performance settings. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/configuration-for-processor-power-management-settings |
 | Core parking minimum cores | Sets the percentage of logical processors that must remain unparked. | https://bitsum.com/parkcontrol/ |
 | Processor performance min/max | Sets minimum and maximum processor performance percentages. | https://bitsum.com/parkcontrol/ |
+| Processor performance boost mode | Controls Windows processor boost policy values such as disabled, enabled, aggressive, and efficient modes. | https://learn.microsoft.com/en-us/windows-hardware/customize/power-settings/options-for-perf-state-engine-perfboostmode |
 
 ## Core Steering
 

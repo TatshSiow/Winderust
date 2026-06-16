@@ -59,7 +59,8 @@ use crate::{
     io_priority::{self, IoPrioritySnapshot},
     performance_mode::{self, PerformanceModeSnapshot},
     power::{
-        PowerPlan, PowerPlanManager, ProcessorPowerAcDcValues, ProcessorPowerPreset,
+        PowerPlan, PowerPlanManager, ProcessorBoostMode, ProcessorPowerAcDcValues,
+        ProcessorPowerPreset,
         ProcessorPowerValues,
     },
     power_source,
@@ -249,9 +250,11 @@ pub struct PowerLeafApp {
     processor_power_ac_core_parking_min: u64,
     processor_power_ac_performance_min: u64,
     processor_power_ac_performance_max: u64,
+    processor_power_ac_boost_mode: ProcessorBoostMode,
     processor_power_dc_core_parking_min: u64,
     processor_power_dc_performance_min: u64,
     processor_power_dc_performance_max: u64,
+    processor_power_dc_boost_mode: ProcessorBoostMode,
     processor_power_target_plan_guid: Option<String>,
     processor_power_loaded_plan_guid: Option<String>,
     processor_power_link_ac_dc: bool,
@@ -354,20 +357,24 @@ impl PowerPlanActionBackend for UiPowerPlanBackend<'_> {
         ac_core_parking_min_percent: u8,
         ac_performance_min_percent: u8,
         ac_performance_max_percent: u8,
+        ac_boost_mode: u32,
         dc_core_parking_min_percent: u8,
         dc_performance_min_percent: u8,
         dc_performance_max_percent: u8,
+        dc_boost_mode: u32,
     ) -> Result<(), String> {
         let values = ProcessorPowerAcDcValues {
-            ac: ProcessorPowerValues::new(
+            ac: ProcessorPowerValues::new_with_boost_mode(
                 u32::from(ac_core_parking_min_percent),
                 u32::from(ac_performance_min_percent),
                 u32::from(ac_performance_max_percent),
+                ProcessorBoostMode::from_power_value(ac_boost_mode),
             ),
-            dc: ProcessorPowerValues::new(
+            dc: ProcessorPowerValues::new_with_boost_mode(
                 u32::from(dc_core_parking_min_percent),
                 u32::from(dc_performance_min_percent),
                 u32::from(dc_performance_max_percent),
+                ProcessorBoostMode::from_power_value(dc_boost_mode),
             ),
         };
         self.power.apply_processor_power_values(plan_guid, values)
@@ -381,9 +388,11 @@ fn processor_power_action(plan_guid: &str, values: ProcessorPowerAcDcValues) -> 
         ac_core_parking_min_percent: values.ac.core_parking_min as u8,
         ac_performance_min_percent: values.ac.performance_min as u8,
         ac_performance_max_percent: values.ac.performance_max as u8,
+        ac_boost_mode: values.ac.boost_mode.power_value(),
         dc_core_parking_min_percent: values.dc.core_parking_min as u8,
         dc_performance_min_percent: values.dc.performance_min as u8,
         dc_performance_max_percent: values.dc.performance_max as u8,
+        dc_boost_mode: values.dc.boost_mode.power_value(),
     }
 }
 
@@ -772,12 +781,14 @@ impl PowerLeafApp {
                 as u64,
             processor_power_ac_performance_max: initial_processor_power.values.ac.performance_max
                 as u64,
+            processor_power_ac_boost_mode: initial_processor_power.values.ac.boost_mode,
             processor_power_dc_core_parking_min: initial_processor_power.values.dc.core_parking_min
                 as u64,
             processor_power_dc_performance_min: initial_processor_power.values.dc.performance_min
                 as u64,
             processor_power_dc_performance_max: initial_processor_power.values.dc.performance_max
                 as u64,
+            processor_power_dc_boost_mode: initial_processor_power.values.dc.boost_mode,
             processor_power_target_plan_guid: initial_processor_power.target_plan_guid,
             processor_power_loaded_plan_guid: initial_processor_power.loaded_plan_guid,
             processor_power_link_ac_dc: initial_processor_power.values.ac
@@ -954,15 +965,17 @@ impl PowerLeafApp {
 
     fn processor_power_values(&self) -> ProcessorPowerAcDcValues {
         ProcessorPowerAcDcValues::new(
-            ProcessorPowerValues::new(
+            ProcessorPowerValues::new_with_boost_mode(
                 self.processor_power_ac_core_parking_min as u32,
                 self.processor_power_ac_performance_min as u32,
                 self.processor_power_ac_performance_max as u32,
+                self.processor_power_ac_boost_mode,
             ),
-            ProcessorPowerValues::new(
+            ProcessorPowerValues::new_with_boost_mode(
                 self.processor_power_dc_core_parking_min as u32,
                 self.processor_power_dc_performance_min as u32,
                 self.processor_power_dc_performance_max as u32,
+                self.processor_power_dc_boost_mode,
             ),
         )
         .normalized()
@@ -973,9 +986,35 @@ impl PowerLeafApp {
         self.processor_power_ac_core_parking_min = values.ac.core_parking_min as u64;
         self.processor_power_ac_performance_min = values.ac.performance_min as u64;
         self.processor_power_ac_performance_max = values.ac.performance_max as u64;
+        self.processor_power_ac_boost_mode = values.ac.boost_mode;
         self.processor_power_dc_core_parking_min = values.dc.core_parking_min as u64;
         self.processor_power_dc_performance_min = values.dc.performance_min as u64;
         self.processor_power_dc_performance_max = values.dc.performance_max as u64;
+        self.processor_power_dc_boost_mode = values.dc.boost_mode;
+    }
+
+    fn set_processor_power_boost_mode(
+        &mut self,
+        source: ProcessorPowerSource,
+        boost_mode: ProcessorBoostMode,
+    ) {
+        self.assign_processor_power_boost_mode(source, boost_mode);
+        if self.processor_power_link_ac_dc {
+            self.assign_processor_power_boost_mode(source.paired(), boost_mode);
+        }
+        self.active_power_plan_picker = None;
+        self.processor_power_dirty = true;
+    }
+
+    fn assign_processor_power_boost_mode(
+        &mut self,
+        source: ProcessorPowerSource,
+        boost_mode: ProcessorBoostMode,
+    ) {
+        match source {
+            ProcessorPowerSource::Ac => self.processor_power_ac_boost_mode = boost_mode,
+            ProcessorPowerSource::Dc => self.processor_power_dc_boost_mode = boost_mode,
+        }
     }
 
     fn set_processor_power_slider_value(&mut self, slider: ProcessorPowerSlider, value: u64) {
@@ -8593,6 +8632,15 @@ impl PowerLeafApp {
                                     );
                                     cx.notify();
                                 }),
+                            ))
+                            .child(processor_power_setting_row(
+                                "processor-power-ac-boost-mode",
+                                t!("processor_power.boost_mode").to_string(),
+                                self.render_processor_boost_mode_picker(
+                                    ProcessorPowerSource::Ac,
+                                    window,
+                                    cx,
+                                ),
                             )),
                     )
                     .child(
@@ -8683,6 +8731,15 @@ impl PowerLeafApp {
                                     );
                                     cx.notify();
                                 }),
+                            ))
+                            .child(processor_power_setting_row(
+                                "processor-power-dc-boost-mode",
+                                t!("processor_power.boost_mode").to_string(),
+                                self.render_processor_boost_mode_picker(
+                                    ProcessorPowerSource::Dc,
+                                    window,
+                                    cx,
+                                ),
                             )),
                     ),
             )
@@ -8713,6 +8770,99 @@ impl PowerLeafApp {
                         })),
                     ),
             )
+            .into_any_element()
+    }
+
+    fn render_processor_boost_mode_picker(
+        &self,
+        source: ProcessorPowerSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let picker_id = processor_boost_mode_picker_id(source);
+        let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id);
+        let placement = self.dropdown_placement(
+            picker_id,
+            dropdown_list_height(ProcessorBoostMode::ALL.len()),
+            window,
+        );
+        let selected = match source {
+            ProcessorPowerSource::Ac => self.processor_power_ac_boost_mode,
+            ProcessorPowerSource::Dc => self.processor_power_dc_boost_mode,
+        };
+        let mut options = dropdown_surface(cx, placement.max_height);
+        for boost_mode in ProcessorBoostMode::ALL {
+            options = options.child(
+                dropdown_option_row(
+                    SharedString::from(format!(
+                        "processor-boost-mode-{source:?}-option-{boost_mode:?}"
+                    )),
+                    processor_boost_mode_label(boost_mode),
+                    selected == boost_mode,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.set_processor_power_boost_mode(source, boost_mode);
+                    cx.notify();
+                })),
+            );
+        }
+
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .relative()
+            .min_h(px(32.0))
+            .child(
+                h_flex()
+                    .id(SharedString::from(format!("{picker_id}-control")))
+                    .h(px(32.0))
+                    .w_full()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .px_3()
+                    .rounded_sm()
+                    .bg(rgb(dropdown_control_color()))
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .text_color(cx.theme().foreground)
+                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(processor_boost_mode_label(selected)),
+                    )
+                    .child(dropdown_chevron(cx))
+                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                            != Some(picker_id))
+                        .then_some(picker_id.to_owned());
+                        cx.notify();
+                    })),
+            )
+            .child(dropdown_anchor_sensor(
+                picker_id,
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
+            .child(if is_open {
+                deferred(
+                    dropdown_popup_layer(placement)
+                        .occlude()
+                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
+                        .child(options),
+                )
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+            } else {
+                Empty.into_any_element()
+            })
             .into_any_element()
     }
 
@@ -9603,6 +9753,21 @@ impl ProcessorPowerSlider {
             Self::DcCoreParkingMin => Self::AcCoreParkingMin,
             Self::DcPerformanceMin => Self::AcPerformanceMin,
             Self::DcPerformanceMax => Self::AcPerformanceMax,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ProcessorPowerSource {
+    Ac,
+    Dc,
+}
+
+impl ProcessorPowerSource {
+    const fn paired(self) -> Self {
+        match self {
+            Self::Ac => Self::Dc,
+            Self::Dc => Self::Ac,
         }
     }
 }
@@ -12722,6 +12887,41 @@ fn processor_power_slider(
     )
 }
 
+fn processor_power_setting_row(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    value_element: AnyElement,
+) -> AnyElement {
+    h_flex()
+        .id(id)
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .py_3()
+        .px_4()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .child(
+            div()
+                .w(px(180.0))
+                .min_w(px(120.0))
+                .flex_shrink_0()
+                .truncate()
+                .child(label.into()),
+        )
+        .child(h_flex().flex_1().min_w(px(0.0)).justify_end().child(value_element))
+        .into_any_element()
+}
+
 fn win32_priority_row(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -14377,6 +14577,33 @@ fn processor_power_preset_help(preset: ProcessorPowerPreset) -> String {
     }
 }
 
+fn processor_boost_mode_label(boost_mode: ProcessorBoostMode) -> String {
+    match boost_mode {
+        ProcessorBoostMode::Disabled => t!("processor_power.boost_disabled").to_string(),
+        ProcessorBoostMode::Enabled => t!("processor_power.boost_enabled").to_string(),
+        ProcessorBoostMode::Aggressive => t!("processor_power.boost_aggressive").to_string(),
+        ProcessorBoostMode::EfficientEnabled => {
+            t!("processor_power.boost_efficient_enabled").to_string()
+        }
+        ProcessorBoostMode::EfficientAggressive => {
+            t!("processor_power.boost_efficient_aggressive").to_string()
+        }
+        ProcessorBoostMode::AggressiveAtGuaranteed => {
+            t!("processor_power.boost_aggressive_at_guaranteed").to_string()
+        }
+        ProcessorBoostMode::EfficientAggressiveAtGuaranteed => {
+            t!("processor_power.boost_efficient_aggressive_at_guaranteed").to_string()
+        }
+    }
+}
+
+const fn processor_boost_mode_picker_id(source: ProcessorPowerSource) -> &'static str {
+    match source {
+        ProcessorPowerSource::Ac => "processor-power-ac-boost-mode-picker",
+        ProcessorPowerSource::Dc => "processor-power-dc-boost-mode-picker",
+    }
+}
+
 fn network_threshold_step(unit: NetworkThresholdUnit) -> f64 {
     match unit {
         NetworkThresholdUnit::Bytes => 64.0,
@@ -14669,8 +14896,18 @@ mod tests {
         let action = processor_power_action(
             "plan-guid",
             ProcessorPowerAcDcValues {
-                ac: ProcessorPowerValues::new(10, 20, 90),
-                dc: ProcessorPowerValues::new(5, 15, 70),
+                ac: ProcessorPowerValues::new_with_boost_mode(
+                    10,
+                    20,
+                    90,
+                    ProcessorBoostMode::Aggressive,
+                ),
+                dc: ProcessorPowerValues::new_with_boost_mode(
+                    5,
+                    15,
+                    70,
+                    ProcessorBoostMode::EfficientEnabled,
+                ),
             },
         );
 
@@ -14681,9 +14918,11 @@ mod tests {
                 ac_core_parking_min_percent: 10,
                 ac_performance_min_percent: 20,
                 ac_performance_max_percent: 90,
+                ac_boost_mode: 2,
                 dc_core_parking_min_percent: 5,
                 dc_performance_min_percent: 15,
                 dc_performance_max_percent: 70,
+                dc_boost_mode: 3,
             } if plan_guid == "plan-guid"
         ));
     }

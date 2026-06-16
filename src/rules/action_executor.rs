@@ -17,9 +17,11 @@ pub trait PowerPlanActionBackend {
         ac_core_parking_min_percent: u8,
         ac_performance_min_percent: u8,
         ac_performance_max_percent: u8,
+        ac_boost_mode: u32,
         dc_core_parking_min_percent: u8,
         dc_performance_min_percent: u8,
         dc_performance_max_percent: u8,
+        dc_boost_mode: u32,
     ) -> Result<(), String>;
 }
 
@@ -164,17 +166,21 @@ impl ActionExecutor {
                 ac_core_parking_min_percent,
                 ac_performance_min_percent,
                 ac_performance_max_percent,
+                ac_boost_mode,
                 dc_core_parking_min_percent,
                 dc_performance_min_percent,
                 dc_performance_max_percent,
+                dc_boost_mode,
             } => match backend.set_processor_power_values(
                 plan_guid,
                 *ac_core_parking_min_percent,
                 *ac_performance_min_percent,
                 *ac_performance_max_percent,
+                *ac_boost_mode,
                 *dc_core_parking_min_percent,
                 *dc_performance_min_percent,
                 *dc_performance_max_percent,
+                *dc_boost_mode,
             ) {
                 Ok(()) => ActionExecution::Applied,
                 Err(err) => ActionExecution::Failed(err),
@@ -426,18 +432,22 @@ mod tests {
             ac_core_parking_min_percent: u8,
             ac_performance_min_percent: u8,
             ac_performance_max_percent: u8,
+            ac_boost_mode: u32,
             dc_core_parking_min_percent: u8,
             dc_performance_min_percent: u8,
             dc_performance_max_percent: u8,
+            dc_boost_mode: u32,
         ) -> Result<(), String> {
             self.power.set_processor_power_values(
                 plan_guid,
                 ac_core_parking_min_percent,
                 ac_performance_min_percent,
                 ac_performance_max_percent,
+                ac_boost_mode,
                 dc_core_parking_min_percent,
                 dc_performance_min_percent,
                 dc_performance_max_percent,
+                dc_boost_mode,
             )
         }
     }
@@ -654,15 +664,17 @@ mod tests {
             ac_core_parking_min_percent: u8,
             ac_performance_min_percent: u8,
             ac_performance_max_percent: u8,
+            ac_boost_mode: u32,
             dc_core_parking_min_percent: u8,
             dc_performance_min_percent: u8,
             dc_performance_max_percent: u8,
+            dc_boost_mode: u32,
         ) -> Result<(), String> {
             if let Some(err) = self.set_error.clone() {
                 Err(err)
             } else {
                 self.set_calls.push(format!(
-                    "processor-power:{plan_guid}:{ac_core_parking_min_percent}:{ac_performance_min_percent}:{ac_performance_max_percent}:{dc_core_parking_min_percent}:{dc_performance_min_percent}:{dc_performance_max_percent}"
+                    "processor-power:{plan_guid}:{ac_core_parking_min_percent}:{ac_performance_min_percent}:{ac_performance_max_percent}:{ac_boost_mode}:{dc_core_parking_min_percent}:{dc_performance_min_percent}:{dc_performance_max_percent}:{dc_boost_mode}"
                 ));
                 Ok(())
             }
@@ -758,9 +770,11 @@ mod tests {
             ac_core_parking_min_percent: 10,
             ac_performance_min_percent: 20,
             ac_performance_max_percent: 90,
+            ac_boost_mode: 2,
             dc_core_parking_min_percent: 5,
             dc_performance_min_percent: 15,
             dc_performance_max_percent: 70,
+            dc_boost_mode: 3,
         };
 
         assert_eq!(
@@ -769,7 +783,7 @@ mod tests {
         );
         assert_eq!(
             backend.set_calls,
-            vec!["processor-power:plan-guid:10:20:90:5:15:70"]
+            vec!["processor-power:plan-guid:10:20:90:2:5:15:70:3"]
         );
     }
 

@@ -281,9 +281,11 @@ pub enum Action {
         ac_core_parking_min_percent: u8,
         ac_performance_min_percent: u8,
         ac_performance_max_percent: u8,
+        ac_boost_mode: u32,
         dc_core_parking_min_percent: u8,
         dc_performance_min_percent: u8,
         dc_performance_max_percent: u8,
+        dc_boost_mode: u32,
     },
     SetSystemCpuLimit {
         logical_processor_percent: u8,

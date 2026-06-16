@@ -12,7 +12,7 @@ use windows_sys::{
     },
 };
 
-use super::{PowerPlan, ProcessorPowerAcDcValues, ProcessorPowerValues};
+use super::{PowerPlan, ProcessorBoostMode, ProcessorPowerAcDcValues, ProcessorPowerValues};
 
 #[derive(Debug, Default)]
 pub struct PowerPlanManager;
@@ -113,6 +113,18 @@ impl PowerPlanManager {
             &GUID_PROCESSOR_PERFORMANCE_MAX,
             values.dc.performance_max,
         )?;
+        write_ac_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+            values.ac.boost_mode.power_value(),
+        )?;
+        write_dc_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+            values.dc.boost_mode.power_value(),
+        )?;
 
         if active_scheme_guid()
             .ok()
@@ -130,7 +142,7 @@ impl PowerPlanManager {
     ) -> Result<ProcessorPowerAcDcValues, String> {
         let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
         Ok(ProcessorPowerAcDcValues::new(
-            ProcessorPowerValues::new(
+            ProcessorPowerValues::new_with_boost_mode(
                 read_ac_value(
                     &scheme,
                     &GUID_PROCESSOR_SETTINGS_SUBGROUP,
@@ -146,9 +158,14 @@ impl PowerPlanManager {
                     &GUID_PROCESSOR_SETTINGS_SUBGROUP,
                     &GUID_PROCESSOR_PERFORMANCE_MAX,
                 )?,
+                ProcessorBoostMode::from_power_value(read_ac_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+                )?),
             )
             .normalized(),
-            ProcessorPowerValues::new(
+            ProcessorPowerValues::new_with_boost_mode(
                 read_dc_value(
                     &scheme,
                     &GUID_PROCESSOR_SETTINGS_SUBGROUP,
@@ -164,6 +181,11 @@ impl PowerPlanManager {
                     &GUID_PROCESSOR_SETTINGS_SUBGROUP,
                     &GUID_PROCESSOR_PERFORMANCE_MAX,
                 )?,
+                ProcessorBoostMode::from_power_value(read_dc_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+                )?),
             )
             .normalized(),
         ))
@@ -196,6 +218,13 @@ const GUID_PROCESSOR_PERFORMANCE_MAX: GUID = GUID {
     data2: 0x23e0,
     data3: 0x4960,
     data4: [0x96, 0xda, 0x33, 0xab, 0xaf, 0x59, 0x35, 0xec],
+};
+
+const GUID_PROCESSOR_PERFORMANCE_BOOST_MODE: GUID = GUID {
+    data1: 0xbe337238,
+    data2: 0x0d82,
+    data3: 0x4146,
+    data4: [0xa9, 0x60, 0x4f, 0x37, 0x49, 0xd4, 0x70, 0xc7],
 };
 
 fn write_ac_value(
@@ -425,11 +454,13 @@ mod tests {
         assert_eq!(performance.core_parking_min, 100);
         assert_eq!(performance.performance_min, 100);
         assert_eq!(performance.performance_max, 100);
+        assert_eq!(performance.boost_mode, ProcessorBoostMode::Aggressive);
 
         let saver = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver);
         assert_eq!(saver.core_parking_min, 0);
         assert_eq!(saver.performance_min, 5);
         assert_eq!(saver.performance_max, 80);
+        assert_eq!(saver.boost_mode, ProcessorBoostMode::EfficientEnabled);
     }
 
     #[test]
@@ -439,6 +470,7 @@ mod tests {
         assert_eq!(values.core_parking_min, 100);
         assert_eq!(values.performance_min, 75);
         assert_eq!(values.performance_max, 75);
+        assert_eq!(values.boost_mode, ProcessorBoostMode::Enabled);
     }
 
     #[test]

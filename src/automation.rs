@@ -1757,20 +1757,24 @@ impl PowerPlanActionBackend for CachedPowerPlanBackend<'_> {
         ac_core_parking_min_percent: u8,
         ac_performance_min_percent: u8,
         ac_performance_max_percent: u8,
+        ac_boost_mode: u32,
         dc_core_parking_min_percent: u8,
         dc_performance_min_percent: u8,
         dc_performance_max_percent: u8,
+        dc_boost_mode: u32,
     ) -> Result<(), String> {
         let values = crate::power::ProcessorPowerAcDcValues {
-            ac: crate::power::ProcessorPowerValues::new(
+            ac: crate::power::ProcessorPowerValues::new_with_boost_mode(
                 u32::from(ac_core_parking_min_percent),
                 u32::from(ac_performance_min_percent),
                 u32::from(ac_performance_max_percent),
+                crate::power::ProcessorBoostMode::from_power_value(ac_boost_mode),
             ),
-            dc: crate::power::ProcessorPowerValues::new(
+            dc: crate::power::ProcessorPowerValues::new_with_boost_mode(
                 u32::from(dc_core_parking_min_percent),
                 u32::from(dc_performance_min_percent),
                 u32::from(dc_performance_max_percent),
+                crate::power::ProcessorBoostMode::from_power_value(dc_boost_mode),
             ),
         };
         self.power.apply_processor_power_values(plan_guid, values)
