@@ -16,11 +16,29 @@ pub struct ProcessInfo {
 }
 
 pub fn list_process_names() -> Result<Vec<String>, String> {
-    let processes = list_processes()?;
-    let names = processes
-        .into_iter()
-        .map(|process| process.name)
-        .collect::<BTreeSet<_>>();
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err("Failed to read running process list.".to_owned());
+    }
+
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut names = BTreeSet::new();
+
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) != 0 };
+    while has_entry {
+        if let Some(name) = process_name_from_entry(&entry) {
+            names.insert(name);
+        }
+
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry) != 0 };
+    }
+
+    unsafe {
+        CloseHandle(snapshot);
+    }
 
     Ok(names.into_iter().collect())
 }

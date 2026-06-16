@@ -316,15 +316,15 @@ impl EcoQosManager {
                     }
                 }
                 ActionExecution::Failed(_)
-                    if matches!(
-                        last_error.as_ref(),
-                        Some(EcoQosError::AccessDenied | EcoQosError::ProcessExited)
-                    ) =>
+                    if matches!(last_error.as_ref(), Some(EcoQosError::ProcessExited)) =>
                 {
                     skipped_processes += 1;
-                    if !matches!(last_error.as_ref(), Some(EcoQosError::ProcessExited)) {
-                        self.record_process_failure(&name);
-                    }
+                }
+                ActionExecution::Failed(_)
+                    if matches!(last_error.as_ref(), Some(EcoQosError::AccessDenied)) =>
+                {
+                    skipped_processes += 1;
+                    self.record_process_failure(&name);
                     action_log.record(
                         ActionLogFeature::EcoQos,
                         Some(process_id),
@@ -350,6 +350,10 @@ impl EcoQosManager {
                     );
                 }
                 ActionExecution::Failed(err) => {
+                    if is_process_exited_message(&err) {
+                        skipped_processes += 1;
+                        continue;
+                    }
                     failures.record_message("Apply", process_id, &name, err, action_log);
                     self.record_process_failure(&name);
                 }
@@ -590,7 +594,7 @@ impl EcoQosFailures {
     ) {
         let message = match error {
             EcoQosError::AccessDenied => "Access denied.".to_owned(),
-            EcoQosError::ProcessExited => "Process exited.".to_owned(),
+            EcoQosError::ProcessExited => return,
             EcoQosError::Unsupported => "Operation unsupported.".to_owned(),
             EcoQosError::Failed(message) => message,
         };
@@ -605,6 +609,9 @@ impl EcoQosFailures {
         message: String,
         action_log: &mut ActionLog,
     ) {
+        if is_process_exited_message(&message) {
+            return;
+        }
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(process_failure_message(
@@ -758,6 +765,13 @@ fn eco_qos_error_message(error: &EcoQosError) -> String {
         EcoQosError::Unsupported => "Operation unsupported.".to_owned(),
         EcoQosError::Failed(message) => message.clone(),
     }
+}
+
+fn is_process_exited_message(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("Process exited")
 }
 
 fn process_failure_message(

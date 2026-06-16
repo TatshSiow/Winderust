@@ -557,6 +557,9 @@ impl AppSuspensionManager {
                     );
                     self.tracked.remove(&process_id);
                 }
+                Err(SuspensionError::ProcessExited) => {
+                    skipped_processes += 1;
+                }
                 Err(SuspensionError::AccessDenied | SuspensionError::NotSupported) => {
                     skipped_processes += 1;
                     action_log.record(
@@ -584,6 +587,10 @@ impl AppSuspensionManager {
                     break;
                 }
                 Err(SuspensionError::Failed(err)) => {
+                    if is_process_exited_message(&err) {
+                        skipped_processes += 1;
+                        continue;
+                    }
                     failed_actions += 1;
                     self.record_process_failure(&process_name);
                     action_log.record(
@@ -1506,6 +1513,7 @@ impl AppResourceActionBackend for AppSuspensionActionBackend<'_> {
             Err(error) => {
                 let message = suspension_error_message(match &error {
                     SuspensionError::AccessDenied => SuspensionError::AccessDenied,
+                    SuspensionError::ProcessExited => SuspensionError::ProcessExited,
                     SuspensionError::NotSupported => SuspensionError::NotSupported,
                     SuspensionError::Unsupported => SuspensionError::Unsupported,
                     SuspensionError::Failed(message) => SuspensionError::Failed(message.clone()),
@@ -2126,6 +2134,7 @@ fn process_session_id(process_id: u32) -> Option<u32> {
 #[derive(Debug, PartialEq, Eq)]
 enum SuspensionError {
     AccessDenied,
+    ProcessExited,
     NotSupported,
     Unsupported,
     Failed(String),
@@ -2134,10 +2143,18 @@ enum SuspensionError {
 fn suspension_error_message(error: SuspensionError) -> String {
     match error {
         SuspensionError::AccessDenied => "Access denied.".to_owned(),
+        SuspensionError::ProcessExited => "Process exited.".to_owned(),
         SuspensionError::NotSupported => "Operation not supported for this process.".to_owned(),
         SuspensionError::Unsupported => "Windows Job Object freeze is unsupported.".to_owned(),
         SuspensionError::Failed(message) => message,
     }
+}
+
+fn is_process_exited_message(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("Process exited")
 }
 
 const JOB_OBJECT_FREEZE_INFORMATION_CLASS: i32 = 18;
@@ -2285,6 +2302,7 @@ fn open_process_for_job_assignment(process_id: u32) -> Result<(HANDLE, bool), Su
 fn open_process_error(process_id: u32, error: u32) -> SuspensionError {
     match error {
         ERROR_ACCESS_DENIED => SuspensionError::AccessDenied,
+        ERROR_INVALID_PARAMETER => SuspensionError::ProcessExited,
         ERROR_NOT_SUPPORTED => SuspensionError::NotSupported,
         _ => SuspensionError::Failed(format!(
             "OpenProcess({process_id}) failed with error {error}."
@@ -2579,6 +2597,14 @@ mod tests {
         assert_eq!(
             assign_process_to_job_error(3252, ERROR_NOT_SUPPORTED),
             SuspensionError::NotSupported
+        );
+    }
+
+    #[test]
+    fn open_process_invalid_parameter_means_process_exited() {
+        assert_eq!(
+            open_process_error(42, ERROR_INVALID_PARAMETER),
+            SuspensionError::ProcessExited
         );
     }
 

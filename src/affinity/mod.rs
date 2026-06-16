@@ -7,7 +7,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE},
+    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
     System::{
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::{
@@ -302,11 +302,11 @@ impl CpuAffinityManager {
                 action_log_feature: self.action_log_feature,
                 action_log,
                 adjusted: None,
-                access_denied: false,
+                open_error: None,
             };
             let execution = ActionExecutor.apply_app_resource_action(&action, &mut backend);
             let adjusted = backend.adjusted.take();
-            let access_denied = backend.access_denied;
+            let open_error = backend.open_error;
             drop(backend);
 
             match execution {
@@ -318,7 +318,14 @@ impl CpuAffinityManager {
                         skipped_processes += 1;
                     }
                 }
-                ActionExecution::Failed(_) if access_denied => {
+                ActionExecution::Failed(_)
+                    if matches!(open_error, Some(OpenProcessFailure::ProcessExited)) =>
+                {
+                    skipped_processes += 1;
+                }
+                ActionExecution::Failed(_)
+                    if matches!(open_error, Some(OpenProcessFailure::AccessDenied)) =>
+                {
                     skipped_processes += 1;
                     self.record_process_failure(&failure_process_name);
                     action_log.record(
@@ -331,6 +338,10 @@ impl CpuAffinityManager {
                     );
                 }
                 ActionExecution::Failed(err) => {
+                    if is_process_exited_message(&err) {
+                        skipped_processes += 1;
+                        continue;
+                    }
                     failed_processes += 1;
                     if last_error.is_none() {
                         last_error = Some(err.clone());
@@ -597,7 +608,13 @@ struct CpuAffinityActionBackend<'a, 'log> {
     action_log_feature: ActionLogFeature,
     action_log: &'log mut ActionLog,
     adjusted: Option<AdjustedProcess>,
-    access_denied: bool,
+    open_error: Option<OpenProcessFailure>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OpenProcessFailure {
+    AccessDenied,
+    ProcessExited,
 }
 
 impl AppResourceActionBackend for CpuAffinityActionBackend<'_, '_> {
@@ -630,8 +647,12 @@ impl AppResourceActionBackend for CpuAffinityActionBackend<'_, '_> {
                 Ok(())
             }
             Err(AffinityError::AccessDenied) => {
-                self.access_denied = true;
+                self.open_error = Some(OpenProcessFailure::AccessDenied);
                 Err("Access denied.".to_owned())
+            }
+            Err(AffinityError::ProcessExited) => {
+                self.open_error = Some(OpenProcessFailure::ProcessExited);
+                Err("Process exited.".to_owned())
             }
             Err(error) => Err(affinity_error_message(error)),
         }
@@ -886,6 +907,7 @@ fn process_session_id(process_id: u32) -> Option<u32> {
 
 enum AffinityError {
     AccessDenied,
+    ProcessExited,
     Failed(String),
 }
 
@@ -1151,8 +1173,16 @@ fn adjustment_label(adjustment: &AffinityAdjustment) -> &'static str {
 fn affinity_error_message(error: AffinityError) -> String {
     match error {
         AffinityError::AccessDenied => "Access denied.".to_owned(),
+        AffinityError::ProcessExited => "Process exited.".to_owned(),
         AffinityError::Failed(message) => message,
     }
+}
+
+fn is_process_exited_message(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("Process exited")
 }
 
 fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
@@ -1276,13 +1306,7 @@ impl ProcessHandle {
             last_open_error = last_error();
         }
 
-        if last_open_error == ERROR_ACCESS_DENIED {
-            Err(AffinityError::AccessDenied)
-        } else {
-            Err(AffinityError::Failed(format!(
-                "OpenProcess({process_id}) failed with error {last_open_error}."
-            )))
-        }
+        Err(open_process_error(process_id, last_open_error))
     }
 
     fn affinity_mask(&self) -> Result<(usize, usize), AffinityError> {
@@ -1413,6 +1437,16 @@ fn last_error() -> u32 {
     unsafe { GetLastError() }
 }
 
+fn open_process_error(process_id: u32, error: u32) -> AffinityError {
+    match error {
+        ERROR_ACCESS_DENIED => AffinityError::AccessDenied,
+        ERROR_INVALID_PARAMETER => AffinityError::ProcessExited,
+        _ => AffinityError::Failed(format!(
+            "OpenProcess({process_id}) failed with error {error}."
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1470,6 +1504,14 @@ mod tests {
         }
 
         assert!(!is_builtin_excluded("chat.exe"));
+    }
+
+    #[test]
+    fn open_process_invalid_parameter_means_process_exited() {
+        assert!(matches!(
+            open_process_error(42, ERROR_INVALID_PARAMETER),
+            AffinityError::ProcessExited
+        ));
     }
 
     #[test]

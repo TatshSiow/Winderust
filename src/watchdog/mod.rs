@@ -237,18 +237,19 @@ impl WatchdogManager {
                             ActionExecution::Failed(_err)
                                 if matches!(
                                     terminate_error.as_ref(),
-                                    Some(
-                                        WatchdogError::AccessDenied | WatchdogError::ProcessExited
-                                    )
+                                    Some(WatchdogError::ProcessExited)
                                 ) =>
                             {
                                 skipped_processes += 1;
-                                if !matches!(
+                            }
+                            ActionExecution::Failed(_err)
+                                if matches!(
                                     terminate_error.as_ref(),
-                                    Some(WatchdogError::ProcessExited)
-                                ) {
-                                    self.record_rule_failure(&key);
-                                }
+                                    Some(WatchdogError::AccessDenied)
+                                ) =>
+                            {
+                                skipped_processes += 1;
+                                self.record_rule_failure(&key);
                                 action_log.record(
                                     ActionLogFeature::Watchdog,
                                     Some(process.id),
@@ -259,6 +260,10 @@ impl WatchdogManager {
                                 );
                             }
                             ActionExecution::Failed(err) => {
+                                if is_process_exited_message(&err) {
+                                    skipped_processes += 1;
+                                    continue;
+                                }
                                 self.record_rule_failure(&key);
                                 failures.record(
                                     "Terminate",
@@ -317,6 +322,10 @@ impl WatchdogManager {
                             );
                         }
                         ActionExecution::Failed(err) => {
+                            if is_process_exited_message(&err) {
+                                skipped_processes += 1;
+                                continue;
+                            }
                             self.record_rule_failure(&key);
                             if let Some(state) = self.restart_state.get_mut(&key) {
                                 state.missing_since = Some(now);
@@ -409,6 +418,9 @@ impl WatchdogFailures {
         message: String,
         action_log: &mut ActionLog,
     ) {
+        if is_process_exited_message(&message) {
+            return;
+        }
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(match process_id {
@@ -704,6 +716,13 @@ fn watchdog_error_message(error: &WatchdogError) -> String {
         WatchdogError::ProcessExited => "Process exited.".to_owned(),
         WatchdogError::Failed(message) => message.clone(),
     }
+}
+
+fn is_process_exited_message(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("Process exited")
 }
 
 fn last_error() -> u32 {

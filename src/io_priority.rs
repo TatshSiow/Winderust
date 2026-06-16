@@ -18,6 +18,7 @@ use crate::{
 };
 
 const PROCESS_IO_PRIORITY: u32 = 33;
+const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "audiodg.exe",
@@ -187,7 +188,10 @@ impl IoPriorityManager {
         for (process_id, (process_name, priority)) in target_processes {
             match self.apply_process(process_id, process_name.clone(), priority, action_log) {
                 Ok(ApplyOutcome::Applied) | Ok(ApplyOutcome::AlreadyApplied) => {}
-                Err(IoPriorityError::AccessDenied | IoPriorityError::ProcessExited) => {
+                Err(IoPriorityError::ProcessExited) => {
+                    skipped_processes += 1;
+                }
+                Err(IoPriorityError::AccessDenied) => {
                     skipped_processes += 1;
                     action_log.record(
                         ActionLogFeature::IoPriority,
@@ -344,6 +348,9 @@ impl IoPriorityFailures {
         action_log: &mut ActionLog,
     ) {
         let message = io_priority_error_message(error);
+        if is_process_exited_message(&message) {
+            return;
+        }
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -421,6 +428,8 @@ fn restore_process(process_id: u32, process_state: AdjustedProcess) -> Result<()
 fn ntstatus_result(status: i32) -> Result<(), IoPriorityError> {
     if status >= 0 {
         Ok(())
+    } else if status as u32 == STATUS_PROCESS_IS_TERMINATING {
+        Err(IoPriorityError::ProcessExited)
     } else {
         Err(IoPriorityError::Failed(format!(
             "NTSTATUS 0x{:08X}.",
@@ -469,6 +478,13 @@ fn io_priority_error_message(error: IoPriorityError) -> String {
         IoPriorityError::ProcessExited => "Process exited.".to_owned(),
         IoPriorityError::Failed(message) => message,
     }
+}
+
+fn is_process_exited_message(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("Process exited")
 }
 
 fn process_session_id(process_id: u32) -> Option<u32> {
@@ -525,4 +541,25 @@ unsafe extern "system" {
         ProcessInformation: *mut std::ffi::c_void,
         ProcessInformationLength: u32,
     ) -> i32;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminating_process_ntstatus_is_treated_as_process_exited() {
+        assert!(matches!(
+            ntstatus_result(STATUS_PROCESS_IS_TERMINATING as i32),
+            Err(IoPriorityError::ProcessExited)
+        ));
+    }
+
+    #[test]
+    fn unrelated_ntstatus_remains_failure() {
+        assert!(matches!(
+            ntstatus_result(0xC0000001_u32 as i32),
+            Err(IoPriorityError::Failed(message)) if message == "NTSTATUS 0xC0000001."
+        ));
+    }
 }

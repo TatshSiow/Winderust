@@ -1560,67 +1560,54 @@ impl PowerLeafApp {
             return TickOutcome::Stop;
         }
 
-        let eco_qos_status = self.background_automation.eco_qos_status();
-        if self.eco_qos_status != eco_qos_status {
-            self.eco_qos_status = eco_qos_status;
+        let background_status = self.background_automation.status_snapshot();
+        if self.eco_qos_status != background_status.eco_qos {
+            self.eco_qos_status = background_status.eco_qos;
             changed = true;
         }
 
-        let app_suspension_status = self.background_automation.app_suspension_status();
-        if self.app_suspension_status != app_suspension_status {
-            self.app_suspension_status = app_suspension_status;
+        if self.app_suspension_status != background_status.app_suspension {
+            self.app_suspension_status = background_status.app_suspension;
             changed = true;
         }
 
-        let cpu_limiter_status = self.background_automation.cpu_limiter_status();
-        if self.cpu_limiter_status != cpu_limiter_status {
-            self.cpu_limiter_status = cpu_limiter_status;
+        if self.cpu_limiter_status != background_status.cpu_limiter {
+            self.cpu_limiter_status = background_status.cpu_limiter;
             changed = true;
         }
 
-        let cpu_affinity_status = self.background_automation.cpu_affinity_status();
-        if self.cpu_affinity_status != cpu_affinity_status {
-            self.cpu_affinity_status = cpu_affinity_status;
+        if self.cpu_affinity_status != background_status.cpu_affinity {
+            self.cpu_affinity_status = background_status.cpu_affinity;
             changed = true;
         }
 
-        let background_cpu_restriction_status = self
-            .background_automation
-            .background_cpu_restriction_status();
-        if self.background_cpu_restriction_status != background_cpu_restriction_status {
-            self.background_cpu_restriction_status = background_cpu_restriction_status;
+        if self.background_cpu_restriction_status != background_status.background_cpu_restriction {
+            self.background_cpu_restriction_status = background_status.background_cpu_restriction;
             changed = true;
         }
 
-        let performance_mode_status = self.background_automation.performance_mode_status();
-        if self.performance_mode_status != performance_mode_status {
-            self.performance_mode_status = performance_mode_status;
+        if self.performance_mode_status != background_status.performance_mode {
+            self.performance_mode_status = background_status.performance_mode;
             changed = true;
         }
 
-        let watchdog_status = self.background_automation.watchdog_status();
-        if self.watchdog_status != watchdog_status {
-            self.watchdog_status = watchdog_status;
+        if self.watchdog_status != background_status.watchdog {
+            self.watchdog_status = background_status.watchdog;
             changed = true;
         }
 
-        let foreground_responsiveness_status = self
-            .background_automation
-            .foreground_responsiveness_status();
-        if self.foreground_responsiveness_status != foreground_responsiveness_status {
-            self.foreground_responsiveness_status = foreground_responsiveness_status;
+        if self.foreground_responsiveness_status != background_status.foreground_responsiveness {
+            self.foreground_responsiveness_status = background_status.foreground_responsiveness;
             changed = true;
         }
 
-        let io_priority_status = self.background_automation.io_priority_status();
-        if self.io_priority_status != io_priority_status {
-            self.io_priority_status = io_priority_status;
+        if self.io_priority_status != background_status.io_priority {
+            self.io_priority_status = background_status.io_priority;
             changed = true;
         }
 
-        let action_log_entries = self.background_automation.action_log_entries();
-        if self.action_log_entries != action_log_entries {
-            self.action_log_entries = action_log_entries;
+        if self.action_log_entries != background_status.action_log_entries {
+            self.action_log_entries = background_status.action_log_entries;
             changed = true;
         }
 
@@ -8518,11 +8505,18 @@ impl PowerLeafApp {
             t!("action_log.intro_1").to_string(),
             t!("action_log.intro_2").to_string(),
         ]);
-        let filtered_entries = self
+        let mut visible_entries = Vec::new();
+        for entry in self
             .action_log_entries
             .iter()
+            .rev()
             .filter(|entry| self.action_log_filter.matches(entry.result))
-            .collect::<Vec<_>>();
+        {
+            visible_entries.push(entry);
+            if visible_entries.len() == 100 {
+                break;
+            }
+        }
 
         let mut list = rule_list();
         if self.action_log_entries.is_empty() {
@@ -8531,7 +8525,7 @@ impl PowerLeafApp {
                     .outline()
                     .child(text_muted(t!("action_log.empty").to_string())),
             );
-        } else if filtered_entries.is_empty() {
+        } else if visible_entries.is_empty() {
             list = list.child(
                 GroupBox::new()
                     .outline()
@@ -8539,7 +8533,7 @@ impl PowerLeafApp {
             );
         } else {
             list = list.child(action_log_header_row());
-            for entry in filtered_entries.into_iter().rev().take(100) {
+            for entry in visible_entries {
                 list = list.child(action_log_entry_row(entry, cx));
             }
         }
@@ -11067,7 +11061,7 @@ fn action_log_result_tag(result: ActionLogResult) -> Tag {
     }
 }
 
-fn action_log_feature_label(feature: ActionLogFeature) -> String {
+fn action_log_feature_label(feature: ActionLogFeature) -> &'static str {
     match feature {
         ActionLogFeature::AppSuspension => "App Suspension",
         ActionLogFeature::BackgroundCpuRestriction => "Background CPU Restriction",
@@ -11079,17 +11073,19 @@ fn action_log_feature_label(feature: ActionLogFeature) -> String {
         ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
         ActionLogFeature::IoPriority => "I/O Priority",
     }
-    .to_owned()
 }
 
 fn action_log_result_label(result: ActionLogResult) -> SharedString {
+    action_log_result_text(result).into()
+}
+
+fn action_log_result_text(result: ActionLogResult) -> &'static str {
     match result {
         ActionLogResult::Applied => "Applied",
         ActionLogResult::Restored => "Restored",
         ActionLogResult::Skipped => "Skipped",
         ActionLogResult::Failed => "Failed",
     }
-    .into()
 }
 
 fn action_log_filter_label(filter: ActionLogResultFilter) -> String {
@@ -11120,28 +11116,32 @@ fn action_log_action_label(action: ActionLogAction) -> &'static str {
 }
 
 fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
-    let mut csv =
-        String::from("sequence,timestamp,feature,process_id,process_name,action,result,reason\r\n");
+    let header = "sequence,timestamp,feature,process_id,process_name,action,result,reason\r\n";
+    let mut csv = String::with_capacity(header.len() + entries.len() * 128);
+    csv.push_str(header);
     for entry in entries {
+        let sequence = entry.sequence.to_string();
+        let timestamp = action_log_export_time_label(entry.timestamp_epoch_ms);
         let process_id = entry
             .process_id
             .map(|id| id.to_string())
             .unwrap_or_default();
-        let row = [
-            entry.sequence.to_string(),
-            action_log_export_time_label(entry.timestamp_epoch_ms),
-            action_log_feature_label(entry.feature),
-            process_id,
-            entry.process_name.clone(),
-            action_log_action_label(entry.action).to_owned(),
-            action_log_result_label(entry.result).to_string(),
-            entry.reason.clone(),
-        ]
-        .into_iter()
-        .map(|value| csv_escape(&value))
-        .collect::<Vec<_>>()
-        .join(",");
-        csv.push_str(&row);
+
+        push_csv_field(&mut csv, &sequence);
+        csv.push(',');
+        push_csv_field(&mut csv, &timestamp);
+        csv.push(',');
+        push_csv_field(&mut csv, action_log_feature_label(entry.feature));
+        csv.push(',');
+        push_csv_field(&mut csv, &process_id);
+        csv.push(',');
+        push_csv_field(&mut csv, &entry.process_name);
+        csv.push(',');
+        push_csv_field(&mut csv, action_log_action_label(entry.action));
+        csv.push(',');
+        push_csv_field(&mut csv, action_log_result_text(entry.result));
+        csv.push(',');
+        push_csv_field(&mut csv, &entry.reason);
         csv.push_str("\r\n");
     }
     csv
@@ -11156,11 +11156,27 @@ fn action_log_export_time_label(timestamp_epoch_ms: u128) -> String {
         .unwrap_or_else(|| timestamp_epoch_ms.to_string())
 }
 
+#[cfg(test)]
 fn csv_escape(value: &str) -> String {
     if value.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
         value.to_owned()
+    }
+}
+
+fn push_csv_field(csv: &mut String, value: &str) {
+    if value.contains([',', '"', '\n', '\r']) {
+        csv.push('"');
+        for character in value.chars() {
+            if character == '"' {
+                csv.push('"');
+            }
+            csv.push(character);
+        }
+        csv.push('"');
+    } else {
+        csv.push_str(value);
     }
 }
 
@@ -11213,11 +11229,23 @@ fn app_list_label(apps: &[String], count: usize) -> String {
         return count.to_string();
     }
 
-    let mut names = apps.iter().take(3).cloned().collect::<Vec<_>>();
-    if apps.len() > names.len() {
-        names.push(format!("+{}", apps.len() - names.len()));
+    let visible_count = apps.len().min(3);
+    let mut label = format!("{count}: ");
+    for (index, name) in apps.iter().take(visible_count).enumerate() {
+        if index > 0 {
+            label.push_str(", ");
+        }
+        label.push_str(name);
     }
-    format!("{count}: {}", names.join(", "))
+    if apps.len() > visible_count {
+        use std::fmt::Write as _;
+
+        if visible_count > 0 {
+            label.push_str(", ");
+        }
+        let _ = write!(label, "+{}", apps.len() - visible_count);
+    }
+    label
 }
 
 #[allow(dead_code)]

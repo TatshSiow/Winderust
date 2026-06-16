@@ -60,6 +60,20 @@ pub struct BackgroundAutomation {
     event_watcher: Mutex<Option<WindowsEventWatcher>>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AutomationStatusSnapshot {
+    pub eco_qos: EcoQosSnapshot,
+    pub app_suspension: AppSuspensionSnapshot,
+    pub cpu_affinity: CpuAffinitySnapshot,
+    pub background_cpu_restriction: CpuAffinitySnapshot,
+    pub cpu_limiter: CpuLimiterSnapshot,
+    pub performance_mode: PerformanceModeSnapshot,
+    pub watchdog: WatchdogSnapshot,
+    pub foreground_responsiveness: ForegroundResponsivenessSnapshot,
+    pub io_priority: IoPrioritySnapshot,
+    pub action_log_entries: Vec<ActionLogEntry>,
+}
+
 struct SharedAutomationState {
     state: Mutex<AutomationWorkerState>,
     changed: Condvar,
@@ -169,83 +183,22 @@ impl BackgroundAutomation {
         }
     }
 
-    pub fn eco_qos_status(&self) -> EcoQosSnapshot {
+    pub fn status_snapshot(&self) -> AutomationStatusSnapshot {
         self.shared
             .state
             .lock()
-            .map(|state| state.eco_qos_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn app_suspension_status(&self) -> AppSuspensionSnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.app_suspension_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn cpu_limiter_status(&self) -> CpuLimiterSnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.cpu_limiter_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn cpu_affinity_status(&self) -> CpuAffinitySnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.cpu_affinity_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn background_cpu_restriction_status(&self) -> CpuAffinitySnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.background_cpu_restriction_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn foreground_responsiveness_status(&self) -> ForegroundResponsivenessSnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.foreground_responsiveness_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn io_priority_status(&self) -> IoPrioritySnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.io_priority_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn performance_mode_status(&self) -> PerformanceModeSnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.performance_mode_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn watchdog_status(&self) -> WatchdogSnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.watchdog_status.clone())
-            .unwrap_or_default()
-    }
-
-    pub fn action_log_entries(&self) -> Vec<ActionLogEntry> {
-        self.shared
-            .state
-            .lock()
-            .map(|state| state.action_log_entries.clone())
+            .map(|state| AutomationStatusSnapshot {
+                eco_qos: state.eco_qos_status.clone(),
+                app_suspension: state.app_suspension_status.clone(),
+                cpu_affinity: state.cpu_affinity_status.clone(),
+                background_cpu_restriction: state.background_cpu_restriction_status.clone(),
+                cpu_limiter: state.cpu_limiter_status.clone(),
+                performance_mode: state.performance_mode_status.clone(),
+                watchdog: state.watchdog_status.clone(),
+                foreground_responsiveness: state.foreground_responsiveness_status.clone(),
+                io_priority: state.io_priority_status.clone(),
+                action_log_entries: state.action_log_entries.clone(),
+            })
             .unwrap_or_default()
     }
 

@@ -249,11 +249,12 @@ impl CpuLimiterManager {
                 Ok(()) => {
                     self.clear_process_failure(&failure_process_name);
                 }
-                Err(err @ (CpuLimiterError::AccessDenied | CpuLimiterError::ProcessExited)) => {
+                Err(CpuLimiterError::ProcessExited) => {
                     skipped_processes += 1;
-                    if !matches!(err, CpuLimiterError::ProcessExited) {
-                        self.record_process_failure(&failure_process_name);
-                    }
+                }
+                Err(CpuLimiterError::AccessDenied) => {
+                    skipped_processes += 1;
+                    self.record_process_failure(&failure_process_name);
                     action_log.record(
                         ActionLogFeature::CpuLimiter,
                         Some(process_id),
@@ -264,6 +265,10 @@ impl CpuLimiterManager {
                     );
                 }
                 Err(CpuLimiterError::Failed(err)) => {
+                    if is_process_exited_message(&err) {
+                        skipped_processes += 1;
+                        continue;
+                    }
                     self.record_process_failure(&failure_process_name);
                     failures.record_message(
                         "Limit",
@@ -756,7 +761,7 @@ impl CpuLimiterFailures {
     ) {
         let message = match error {
             CpuLimiterError::AccessDenied => "Access denied.".to_owned(),
-            CpuLimiterError::ProcessExited => "Process exited.".to_owned(),
+            CpuLimiterError::ProcessExited => return,
             CpuLimiterError::Failed(message) => message,
         };
         self.record_message(action, process_id, process_name, message, action_log);
@@ -770,6 +775,9 @@ impl CpuLimiterFailures {
         message: String,
         action_log: &mut ActionLog,
     ) {
+        if is_process_exited_message(&message) {
+            return;
+        }
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(process_failure_message(
@@ -804,6 +812,13 @@ fn process_failure_message(
     message: &str,
 ) -> String {
     format!("{action} {process_name} ({process_id}): {message}")
+}
+
+fn is_process_exited_message(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("Process exited")
 }
 
 fn cpu_limiter_error_message(error: &CpuLimiterError) -> String {

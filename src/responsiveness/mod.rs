@@ -489,15 +489,15 @@ impl ForegroundResponsivenessManager {
                     }
                 }
                 ActionExecution::Failed(_)
-                    if matches!(
-                        last_error.as_ref(),
-                        Some(PriorityError::AccessDenied | PriorityError::ProcessExited)
-                    ) =>
+                    if matches!(last_error.as_ref(), Some(PriorityError::ProcessExited)) =>
                 {
                     skipped_processes += 1;
-                    if !matches!(last_error.as_ref(), Some(PriorityError::ProcessExited)) {
-                        self.record_process_failure(&failure_process_name);
-                    }
+                }
+                ActionExecution::Failed(_)
+                    if matches!(last_error.as_ref(), Some(PriorityError::AccessDenied)) =>
+                {
+                    skipped_processes += 1;
+                    self.record_process_failure(&failure_process_name);
                     action_log.record(
                         ActionLogFeature::ForegroundResponsiveness,
                         Some(process_id),
@@ -508,6 +508,10 @@ impl ForegroundResponsivenessManager {
                     );
                 }
                 ActionExecution::Failed(err) => {
+                    if is_process_exited_message(&err) {
+                        skipped_processes += 1;
+                        continue;
+                    }
                     self.record_process_failure(&failure_process_name);
                     failures.record_message(
                         "Apply",
@@ -934,11 +938,12 @@ impl ForegroundResponsivenessManager {
             }
             match self.apply_boost_process(*process_id, process_name, priority_class, action_log) {
                 Ok(()) => self.clear_process_failure(process_name),
-                Err(err @ (PriorityError::AccessDenied | PriorityError::ProcessExited)) => {
+                Err(PriorityError::ProcessExited) => {
                     result.skipped += 1;
-                    if !matches!(err, PriorityError::ProcessExited) {
-                        self.record_process_failure(process_name);
-                    }
+                }
+                Err(PriorityError::AccessDenied) => {
+                    result.skipped += 1;
+                    self.record_process_failure(process_name);
                     action_log.record(
                         ActionLogFeature::ForegroundResponsiveness,
                         Some(*process_id),
@@ -949,6 +954,10 @@ impl ForegroundResponsivenessManager {
                     );
                 }
                 Err(PriorityError::Failed(err)) => {
+                    if is_process_exited_message(&err) {
+                        result.skipped += 1;
+                        continue;
+                    }
                     self.record_process_failure(process_name);
                     result.failures.record_message(
                         "Boost",
@@ -2134,7 +2143,7 @@ impl PriorityFailures {
     ) {
         let message = match error {
             PriorityError::AccessDenied => "Access denied.".to_owned(),
-            PriorityError::ProcessExited => "Process exited.".to_owned(),
+            PriorityError::ProcessExited => return,
             PriorityError::Failed(message) => message,
         };
         self.record_message(action, process_id, process_name, message, action_log);
@@ -2148,6 +2157,9 @@ impl PriorityFailures {
         message: String,
         action_log: &mut ActionLog,
     ) {
+        if is_process_exited_message(&message) {
+            return;
+        }
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(process_failure_message(
@@ -2180,6 +2192,13 @@ fn process_failure_message(
         process_name
     };
     format!("{action} {name} ({process_id}): {message}")
+}
+
+fn is_process_exited_message(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("Process exited")
 }
 
 fn process_failure_key(process_name: &str) -> String {
