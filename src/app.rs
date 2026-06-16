@@ -49,8 +49,8 @@ use crate::{
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
         ForegroundRules, IoPriorityRule, IoPrioritySettings, NetworkThresholdUnit,
         PerformanceModeRule, PerformanceModeSettings, PriorityRule, ProcessExclusionRule,
-        ProcessIoPriority, ProcessPriority, ScheduleRule, Settings, WatchdogAction, WatchdogRule,
-        WatchdogSettings, WeekdaySetting,
+        ProcessIoPriority, ProcessPriority, ScheduleRule, Settings, SmartTrimSettings,
+        WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -70,6 +70,7 @@ use crate::{
         MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
+    smart_trim::{self, SmartTrimSnapshot},
     startup,
     suspension::{self, AppSuspensionSnapshot},
     tray::{self, TrayIcon},
@@ -220,6 +221,7 @@ pub struct PowerLeafApp {
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     io_priority_status: IoPrioritySnapshot,
+    smart_trim_status: SmartTrimSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
     action_log_filter: ActionLogResultFilter,
     foreground_app: Option<String>,
@@ -289,6 +291,7 @@ struct UiInputs {
     foreground_process: Entity<InputState>,
     eco_qos_exclusion: Entity<InputState>,
     background_cpu_exclusion: Entity<InputState>,
+    smart_trim_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
     cpu_limiter_process: Entity<InputState>,
     watchdog_process: Entity<InputState>,
@@ -472,6 +475,7 @@ impl UiInputs {
             foreground_process: make_input(window, cx, "", "Search running apps..."),
             eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
             background_cpu_exclusion: make_input(window, cx, "", "Search running apps..."),
+            smart_trim_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             cpu_limiter_process: make_input(window, cx, "", "Search running apps..."),
             watchdog_process: make_input(window, cx, "", "Search running apps..."),
@@ -733,6 +737,7 @@ impl PowerLeafApp {
             watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
             io_priority_status: IoPrioritySnapshot::default(),
+            smart_trim_status: SmartTrimSnapshot::default(),
             action_log_entries: Vec::new(),
             action_log_filter: ActionLogResultFilter::All,
             foreground_app: None,
@@ -1606,6 +1611,11 @@ impl PowerLeafApp {
             changed = true;
         }
 
+        if self.smart_trim_status != background_status.smart_trim {
+            self.smart_trim_status = background_status.smart_trim;
+            changed = true;
+        }
+
         if self.action_log_entries != background_status.action_log_entries {
             self.action_log_entries = background_status.action_log_entries;
             changed = true;
@@ -2027,6 +2037,43 @@ impl PowerLeafApp {
                     self.settings.background_cpu_restriction.percent = value as u8;
                 }
             }
+            NumericField::SmartTrimCheckIntervalMinutes => {
+                if let Some(value) = parse_u64_input(&value, 1, 1440) {
+                    self.settings.smart_trim.check_interval_minutes = value;
+                }
+            }
+            NumericField::SmartTrimMemoryLoadThreshold => {
+                if let Some(value) = parse_u64_input(&value, 1, 100) {
+                    self.settings
+                        .smart_trim
+                        .system_memory_load_threshold_percent = value as u8;
+                }
+            }
+            NumericField::SmartTrimWorkingSetThreshold => {
+                if let Some(value) = parse_u64_input(&value, 1, 1_048_576) {
+                    self.settings.smart_trim.process_working_set_threshold_mb = value;
+                }
+            }
+            NumericField::SmartTrimCpuIdleThreshold => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.settings.smart_trim.process_cpu_idle_threshold_percent = value as u8;
+                }
+            }
+            NumericField::SmartTrimIdleSeconds => {
+                if let Some(value) = parse_u64_input(&value, 1, 86_400) {
+                    self.settings.smart_trim.process_idle_seconds = value;
+                }
+            }
+            NumericField::SmartTrimCooldownSeconds => {
+                if let Some(value) = parse_u64_input(&value, 1, 86_400) {
+                    self.settings.smart_trim.trim_cooldown_seconds = value;
+                }
+            }
+            NumericField::SmartTrimPurgeFreeRamThreshold => {
+                if let Some(value) = parse_u64_input(&value, 0, 1_048_576) {
+                    self.settings.smart_trim.purge_free_ram_threshold_mb = value;
+                }
+            }
             NumericField::SuspensionBackgroundDelay => {
                 if let Some(value) = parse_u64_input(&value, 1, 86_400) {
                     self.settings.app_suspension.background_delay_seconds = value;
@@ -2377,6 +2424,7 @@ impl PowerLeafApp {
         settings.cpu_limiter = self.saved_settings.cpu_limiter.clone();
         settings.watchdog = self.saved_settings.watchdog.clone();
         settings.foreground_responsiveness = self.saved_settings.foreground_responsiveness.clone();
+        settings.smart_trim = self.saved_settings.smart_trim.clone();
         settings
     }
 
@@ -2446,6 +2494,11 @@ impl PowerLeafApp {
                 settings.io_priority.enabled,
                 self.io_priority_status.failed_processes,
                 self.io_priority_status.last_error.is_some(),
+            )),
+            Page::SmartTrim => Some(process_nav_status(
+                settings.smart_trim.enabled,
+                self.smart_trim_status.failed_processes,
+                self.smart_trim_status.last_error.is_some(),
             )),
             Page::ForegroundRules => Some(rule_based_nav_status(
                 settings.foreground_rules.enabled,
@@ -2710,6 +2763,7 @@ impl PowerLeafApp {
                 self.render_foreground_responsiveness_page(window, cx)
             }
             Page::IoPriority => self.render_io_priority_page(window, cx),
+            Page::SmartTrim => self.render_smart_trim_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::ActionLog => self.render_action_log_page(cx),
             Page::Settings => self.render_settings_page(window, cx),
@@ -2950,6 +3004,14 @@ impl PowerLeafApp {
                     "{}; {} adjusted",
                     enabled_label(self.background_cpu_restriction_status.enabled),
                     self.background_cpu_restriction_status.adjusted_processes
+                ),
+            ),
+            (
+                t!("nav.smart_trim").to_string(),
+                format!(
+                    "{}; {} trimmed",
+                    enabled_label(self.smart_trim_status.enabled),
+                    self.smart_trim_status.trimmed_processes
                 ),
             ),
             (
@@ -6637,6 +6699,318 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
+    fn render_smart_trim_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self
+            .inputs
+            .smart_trim_exclusion
+            .read(cx)
+            .value()
+            .to_string();
+        let settings = &self.settings.smart_trim;
+        let enabled = settings.enabled;
+
+        let body = feature_body(enabled)
+            .child(setting_group_action_row(
+                "smart-trim-check-interval",
+                t!("smart_trim.check_interval").to_string(),
+                self.render_numeric_value(
+                    NumericField::SmartTrimCheckIntervalMinutes,
+                    format!("{} mins", settings.check_interval_minutes),
+                    settings.check_interval_minutes.to_string(),
+                    cx,
+                ),
+                false,
+            ))
+            .child(feature_toggle_switch_with_help(
+                "smart-trim-foreground",
+                t!("smart_trim.focus_detection").to_string(),
+                t!("smart_trim.focus_detection_help").to_string(),
+                settings.exclude_foreground_app,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.smart_trim.exclude_foreground_app = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(feature_toggle_switch_with_help(
+                "smart-trim-working-sets",
+                t!("smart_trim.trim_working_sets").to_string(),
+                t!("smart_trim.trim_working_sets_help").to_string(),
+                settings.trim_working_sets,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.smart_trim.trim_working_sets = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(setting_group_action_row(
+                "smart-trim-memory-threshold",
+                t!("smart_trim.memory_threshold").to_string(),
+                self.render_numeric_value(
+                    NumericField::SmartTrimMemoryLoadThreshold,
+                    format!("{}%", settings.system_memory_load_threshold_percent),
+                    settings.system_memory_load_threshold_percent.to_string(),
+                    cx,
+                ),
+                false,
+            ))
+            .child(setting_group_action_row(
+                "smart-trim-working-set-threshold",
+                t!("smart_trim.working_set_threshold").to_string(),
+                self.render_numeric_value(
+                    NumericField::SmartTrimWorkingSetThreshold,
+                    format!("{} MB", settings.process_working_set_threshold_mb),
+                    settings.process_working_set_threshold_mb.to_string(),
+                    cx,
+                ),
+                true,
+            ))
+            .child(setting_group_action_row(
+                "smart-trim-cpu-idle-threshold",
+                t!("smart_trim.cpu_idle_threshold").to_string(),
+                self.render_numeric_value(
+                    NumericField::SmartTrimCpuIdleThreshold,
+                    format!("{}%", settings.process_cpu_idle_threshold_percent),
+                    settings.process_cpu_idle_threshold_percent.to_string(),
+                    cx,
+                ),
+                true,
+            ))
+            .child(setting_group_action_row(
+                "smart-trim-idle-time",
+                t!("smart_trim.idle_time").to_string(),
+                self.render_numeric_value(
+                    NumericField::SmartTrimIdleSeconds,
+                    ui::duration_label(settings.process_idle_seconds),
+                    settings.process_idle_seconds.to_string(),
+                    cx,
+                ),
+                true,
+            ))
+            .child(setting_group_action_row(
+                "smart-trim-cooldown",
+                t!("smart_trim.cooldown").to_string(),
+                self.render_numeric_value(
+                    NumericField::SmartTrimCooldownSeconds,
+                    ui::duration_label(settings.trim_cooldown_seconds),
+                    settings.trim_cooldown_seconds.to_string(),
+                    cx,
+                ),
+                true,
+            ))
+            .child(feature_toggle_switch_with_help(
+                "smart-trim-purge-standby-list",
+                t!("smart_trim.purge_standby_list").to_string(),
+                t!("smart_trim.purge_standby_list_help").to_string(),
+                settings.purge_standby_list,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.smart_trim.purge_standby_list = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(feature_toggle_switch_with_help(
+                "smart-trim-purge-system-file-cache",
+                t!("smart_trim.purge_system_file_cache").to_string(),
+                t!("smart_trim.purge_system_file_cache_help").to_string(),
+                settings.purge_system_file_cache,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.smart_trim.purge_system_file_cache = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(feature_toggle_switch_with_help(
+                "smart-trim-purge-performance-mode",
+                t!("smart_trim.only_purge_performance_mode").to_string(),
+                t!("smart_trim.only_purge_performance_mode_help").to_string(),
+                settings.purge_only_in_performance_mode,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.smart_trim.purge_only_in_performance_mode = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(setting_group_action_row(
+                "smart-trim-purge-free-ram-threshold",
+                t!("smart_trim.purge_free_ram_threshold").to_string(),
+                self.render_numeric_value(
+                    NumericField::SmartTrimPurgeFreeRamThreshold,
+                    format!("{} MB", settings.purge_free_ram_threshold_mb),
+                    settings.purge_free_ram_threshold_mb.to_string(),
+                    cx,
+                ),
+                true,
+            ))
+            .child(
+                h_flex().w_full().items_center().justify_end().child(
+                    primary_control_button(Button::new("smart-trim-now"), cx)
+                        .label(t!("smart_trim.trim_now").to_string())
+                        .disabled(!enabled)
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.background_automation.request_smart_trim_now();
+                            app.status_message = t!("smart_trim.trim_now_requested").to_string();
+                            cx.notify();
+                        })),
+                ),
+            )
+            .child(stat_grid(vec![
+                (
+                    t!("smart_trim.status").to_string(),
+                    self.smart_trim_status.message.clone(),
+                ),
+                (
+                    t!("smart_trim.memory_load").to_string(),
+                    self.smart_trim_status
+                        .memory_load_percent
+                        .map(|percent| format!("{percent}%"))
+                        .unwrap_or_else(|| t!("common.unknown").to_string()),
+                ),
+                (
+                    t!("smart_trim.free_ram_excluding_cache").to_string(),
+                    self.smart_trim_status
+                        .free_ram_excluding_cache_mb
+                        .map(|mb| format!("{mb} MB"))
+                        .unwrap_or_else(|| t!("common.unknown").to_string()),
+                ),
+                (
+                    t!("smart_trim.trimmed_processes").to_string(),
+                    self.smart_trim_status.trimmed_processes.to_string(),
+                ),
+                (
+                    t!("smart_trim.purged_standby_list").to_string(),
+                    yes_no_label(self.smart_trim_status.purged_standby_list),
+                ),
+                (
+                    t!("smart_trim.purged_system_file_cache").to_string(),
+                    yes_no_label(self.smart_trim_status.purged_system_file_cache),
+                ),
+                (
+                    t!("smart_trim.candidate_processes").to_string(),
+                    self.smart_trim_status.candidate_processes.to_string(),
+                ),
+                (
+                    t!("smart_trim.scanned_processes").to_string(),
+                    self.smart_trim_status.scanned_processes.to_string(),
+                ),
+                (
+                    t!("smart_trim.skipped_processes").to_string(),
+                    self.smart_trim_status.skipped_processes.to_string(),
+                ),
+                (
+                    t!("smart_trim.failed_actions").to_string(),
+                    self.smart_trim_status.failed_processes.to_string(),
+                ),
+                (
+                    t!("common.last_failure").to_string(),
+                    self.smart_trim_status
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| t!("common.none").to_string()),
+                ),
+            ]))
+            .child(section_header(
+                &t!("smart_trim.exclusions"),
+                t!("smart_trim.exclusions_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "smart-trim-exclusion",
+                        &self.inputs.smart_trim_exclusion,
+                        SuggestionTarget::SmartTrim,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-smart-trim-exclusion"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_smart_trim_exclusion(
+                                        &self.settings.smart_trim,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.smart_trim_exclusion.read(cx).value().to_string();
+                                if can_add_smart_trim_exclusion(&app.settings.smart_trim, &process)
+                                {
+                                    app.settings
+                                        .smart_trim
+                                        .exclusions
+                                        .push(new_process_exclusion_rule(&process));
+                                    clear_input(&app.inputs.smart_trim_exclusion, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_smart_trim_exclusions(cx));
+
+        page_shell(Page::SmartTrim)
+            .child(feature_toggle_switch_with_help(
+                "smart-trim-enabled",
+                t!("smart_trim.enable").to_string(),
+                tooltip_lines(vec![
+                    t!("smart_trim.intro_1").to_string(),
+                    t!("smart_trim.intro_2").to_string(),
+                    t!("smart_trim.intro_3").to_string(),
+                ]),
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.smart_trim.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
+    }
+
+    fn render_smart_trim_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = v_flex().gap_2();
+        for (index, rule) in self.settings.smart_trim.exclusions.iter().enumerate() {
+            let process = rule.process_name.clone();
+            list = list.child(
+                compact_rule_row(cx)
+                    .child(rule_enable_checkbox(
+                        format!("smart-trim-exclusion-enabled-{index}"),
+                        rule.enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) = app.settings.smart_trim.exclusions.get_mut(index) {
+                                rule.enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(160.0))
+                            .text_size(px(RULE_TITLE_TEXT_SIZE))
+                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                            .truncate()
+                            .child(process),
+                    )
+                    .child(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-smart-trim-exclusion-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if index < app.settings.smart_trim.exclusions.len() {
+                                app.settings.smart_trim.exclusions.remove(index);
+                            }
+                            cx.notify();
+                        })),
+                    ),
+            );
+        }
+        if self.settings.smart_trim.exclusions.is_empty() {
+            list = list.child(text_muted(t!("smart_trim.no_exclusions").to_string()));
+        }
+        list.into_any_element()
+    }
+
     fn render_affinity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let input_value = self.inputs.affinity_process.read(cx).value().to_string();
         let enabled = self.settings.cpu_affinity.enabled;
@@ -8885,6 +9259,9 @@ impl PowerLeafApp {
             SuggestionTarget::BackgroundCpu => {
                 clear_input_to(&self.inputs.background_cpu_exclusion, process, window, cx);
             }
+            SuggestionTarget::SmartTrim => {
+                clear_input_to(&self.inputs.smart_trim_exclusion, process, window, cx);
+            }
             SuggestionTarget::Suspension => {
                 clear_input_to(&self.inputs.suspension_process, process, window, cx);
             }
@@ -9097,6 +9474,7 @@ enum SuggestionTarget {
     Foreground,
     EcoQos,
     BackgroundCpu,
+    SmartTrim,
     Suspension,
     CpuLimiter,
     Watchdog,
@@ -9170,6 +9548,13 @@ enum NumericField {
     ExecutionFailureSuppressionThreshold,
     EcoQosRestrictionPercent,
     BackgroundCpuRestrictionPercent,
+    SmartTrimCheckIntervalMinutes,
+    SmartTrimMemoryLoadThreshold,
+    SmartTrimWorkingSetThreshold,
+    SmartTrimCpuIdleThreshold,
+    SmartTrimIdleSeconds,
+    SmartTrimCooldownSeconds,
+    SmartTrimPurgeFreeRamThreshold,
     SuspensionBackgroundDelay,
     SuspensionThawInterval,
     SuspensionThawDuration,
@@ -11072,6 +11457,7 @@ fn action_log_feature_label(feature: ActionLogFeature) -> &'static str {
         ActionLogFeature::Watchdog => "Watchdog Rules",
         ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
         ActionLogFeature::IoPriority => "I/O Priority",
+        ActionLogFeature::SmartTrim => "SmartTrim",
     }
 }
 
@@ -11207,6 +11593,10 @@ fn enabled_label(enabled: bool) -> String {
     } else {
         t!("common.disabled").to_string()
     }
+}
+
+fn yes_no_label(value: bool) -> String {
+    if value { "Yes" } else { "No" }.to_owned()
 }
 
 fn active_rule_label(active: bool, detail: String) -> String {
@@ -11930,6 +12320,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::PerformanceMode => NavIcon::Zap,
         Page::ForegroundResponsiveness => NavIcon::Zap,
         Page::IoPriority => NavIcon::Chip,
+        Page::SmartTrim => NavIcon::Chip,
         Page::CpuAffinity => NavIcon::Chip,
         Page::ForegroundRules => NavIcon::Frame,
         Page::Schedule => NavIcon::Calendar,
@@ -12260,8 +12651,15 @@ fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorDcPerformanceMax
         | NumericField::EcoQosRestrictionPercent
         | NumericField::BackgroundCpuRestrictionPercent
+        | NumericField::SmartTrimMemoryLoadThreshold
+        | NumericField::SmartTrimCpuIdleThreshold
         | NumericField::CpuLimiterThreshold(_)
         | NumericField::CpuLimiterMaxProcessors(_) => 76.0,
+        NumericField::SmartTrimCheckIntervalMinutes
+        | NumericField::SmartTrimPurgeFreeRamThreshold => 104.0,
+        NumericField::SmartTrimWorkingSetThreshold
+        | NumericField::SmartTrimIdleSeconds
+        | NumericField::SmartTrimCooldownSeconds => 112.0,
         _ => 96.0,
     }
 }
@@ -13007,6 +13405,7 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::BackgroundCpu => {
             can_add_background_cpu_exclusion(&settings.background_cpu_restriction, process)
         }
+        SuggestionTarget::SmartTrim => can_add_smart_trim_exclusion(&settings.smart_trim, process),
         SuggestionTarget::Suspension => {
             can_add_suspension_process(&settings.app_suspension, process)
         }
@@ -13057,6 +13456,17 @@ fn can_add_background_cpu_exclusion(
     !process.is_empty()
         && !affinity::is_builtin_excluded(process)
         && !settings.contains_exclusion(process)
+}
+
+fn can_add_smart_trim_exclusion(settings: &SmartTrimSettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !smart_trim::is_builtin_excluded(process)
+        && !settings.exclusion_enabled_for(process)
+        && !settings
+            .exclusions
+            .iter()
+            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
 }
 
 fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {

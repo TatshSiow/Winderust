@@ -24,6 +24,7 @@ mod responsiveness;
 mod rules;
 mod scheduler;
 mod self_power;
+mod smart_trim;
 mod startup;
 mod suspension;
 mod tray;

@@ -2,12 +2,25 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, LUID},
     Security::{
         AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME,
-        SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+        SE_INCREASE_QUOTA_NAME, SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME,
+        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
 pub fn enable_debug_privilege() -> bool {
+    enable_privilege(SE_DEBUG_NAME)
+}
+
+pub fn enable_increase_quota_privilege() -> bool {
+    enable_privilege(SE_INCREASE_QUOTA_NAME)
+}
+
+pub fn enable_profile_single_process_privilege() -> bool {
+    enable_privilege(SE_PROF_SINGLE_PROCESS_NAME)
+}
+
+fn enable_privilege(name: windows_sys::core::PCWSTR) -> bool {
     let mut token = std::ptr::null_mut();
     let opened = unsafe {
         OpenProcessToken(
@@ -20,16 +33,19 @@ pub fn enable_debug_privilege() -> bool {
         return false;
     }
 
-    let enabled = enable_debug_privilege_for_token(token);
+    let enabled = enable_privilege_for_token(token, name);
     unsafe {
         CloseHandle(token);
     }
     enabled
 }
 
-fn enable_debug_privilege_for_token(token: windows_sys::Win32::Foundation::HANDLE) -> bool {
+fn enable_privilege_for_token(
+    token: windows_sys::Win32::Foundation::HANDLE,
+    name: windows_sys::core::PCWSTR,
+) -> bool {
     let mut luid = LUID::default();
-    let found = unsafe { LookupPrivilegeValueW(std::ptr::null(), SE_DEBUG_NAME, &mut luid) };
+    let found = unsafe { LookupPrivilegeValueW(std::ptr::null(), name, &mut luid) };
     if found == 0 {
         return false;
     }

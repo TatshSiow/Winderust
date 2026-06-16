@@ -35,6 +35,8 @@ pub struct Settings {
     pub foreground_responsiveness: ForegroundResponsivenessSettings,
     #[serde(default)]
     pub io_priority: IoPrioritySettings,
+    #[serde(default)]
+    pub smart_trim: SmartTrimSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -584,6 +586,40 @@ pub struct IoPrioritySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmartTrimSettings {
+    pub enabled: bool,
+    #[serde(default = "default_smart_trim_check_interval_minutes")]
+    pub check_interval_minutes: u64,
+    #[serde(
+        default = "default_exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub exclude_foreground_app: bool,
+    #[serde(default = "default_smart_trim_trim_working_sets")]
+    pub trim_working_sets: bool,
+    #[serde(default = "default_smart_trim_system_memory_load_threshold_percent")]
+    pub system_memory_load_threshold_percent: u8,
+    #[serde(default = "default_smart_trim_process_working_set_threshold_mb")]
+    pub process_working_set_threshold_mb: u64,
+    #[serde(default = "default_smart_trim_process_cpu_idle_threshold_percent")]
+    pub process_cpu_idle_threshold_percent: u8,
+    #[serde(default = "default_smart_trim_process_idle_seconds")]
+    pub process_idle_seconds: u64,
+    #[serde(default = "default_smart_trim_cooldown_seconds")]
+    pub trim_cooldown_seconds: u64,
+    #[serde(default)]
+    pub purge_standby_list: bool,
+    #[serde(default)]
+    pub purge_system_file_cache: bool,
+    #[serde(default = "default_smart_trim_purge_only_in_performance_mode")]
+    pub purge_only_in_performance_mode: bool,
+    #[serde(default = "default_smart_trim_purge_free_ram_threshold_mb")]
+    pub purge_free_ram_threshold_mb: u64,
+    #[serde(default, deserialize_with = "deserialize_process_exclusion_rules")]
+    pub exclusions: Vec<ProcessExclusionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IoPriorityRule {
     #[serde(default = "default_rule_enabled")]
     pub enabled: bool,
@@ -781,6 +817,7 @@ impl Default for Settings {
             watchdog: WatchdogSettings::default(),
             foreground_responsiveness: ForegroundResponsivenessSettings::default(),
             io_priority: IoPrioritySettings::default(),
+            smart_trim: SmartTrimSettings::default(),
         }
     }
 }
@@ -937,6 +974,42 @@ const fn default_cpu_limiter_cooldown_seconds() -> u64 {
 
 const fn default_cpu_limiter_max_logical_processors() -> u8 {
     1
+}
+
+const fn default_smart_trim_system_memory_load_threshold_percent() -> u8 {
+    65
+}
+
+const fn default_smart_trim_process_working_set_threshold_mb() -> u64 {
+    196
+}
+
+const fn default_smart_trim_process_cpu_idle_threshold_percent() -> u8 {
+    1
+}
+
+const fn default_smart_trim_process_idle_seconds() -> u64 {
+    300
+}
+
+const fn default_smart_trim_cooldown_seconds() -> u64 {
+    900
+}
+
+const fn default_smart_trim_check_interval_minutes() -> u64 {
+    15
+}
+
+const fn default_smart_trim_trim_working_sets() -> bool {
+    true
+}
+
+const fn default_smart_trim_purge_only_in_performance_mode() -> bool {
+    true
+}
+
+const fn default_smart_trim_purge_free_ram_threshold_mb() -> u64 {
+    1024
 }
 
 const fn default_eco_qos_cpu_restriction_percent() -> u8 {
@@ -1165,6 +1238,29 @@ impl Default for IoPrioritySettings {
     }
 }
 
+impl Default for SmartTrimSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            check_interval_minutes: default_smart_trim_check_interval_minutes(),
+            exclude_foreground_app: default_exclude_foreground_app(),
+            trim_working_sets: default_smart_trim_trim_working_sets(),
+            system_memory_load_threshold_percent:
+                default_smart_trim_system_memory_load_threshold_percent(),
+            process_working_set_threshold_mb: default_smart_trim_process_working_set_threshold_mb(),
+            process_cpu_idle_threshold_percent:
+                default_smart_trim_process_cpu_idle_threshold_percent(),
+            process_idle_seconds: default_smart_trim_process_idle_seconds(),
+            trim_cooldown_seconds: default_smart_trim_cooldown_seconds(),
+            purge_standby_list: false,
+            purge_system_file_cache: false,
+            purge_only_in_performance_mode: default_smart_trim_purge_only_in_performance_mode(),
+            purge_free_ram_threshold_mb: default_smart_trim_purge_free_ram_threshold_mb(),
+            exclusions: Vec::new(),
+        }
+    }
+}
+
 impl IoPrioritySettings {
     pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessIoPriority> {
         self.rules
@@ -1178,6 +1274,14 @@ impl IoPrioritySettings {
                     )
             })
             .map(|rule| rule.priority)
+    }
+}
+
+impl SmartTrimSettings {
+    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+        })
     }
 }
 

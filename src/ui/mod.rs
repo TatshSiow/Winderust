@@ -14,6 +14,7 @@ pub enum Page {
     PerformanceMode,
     ForegroundResponsiveness,
     IoPriority,
+    SmartTrim,
     CpuAffinity,
     ForegroundRules,
     Schedule,
@@ -42,10 +43,11 @@ const CPU_CONTROL_PAGES: [Page; 4] = [
     Page::BackgroundCpuRestriction,
     Page::CpuAffinity,
 ];
-const PROCESS_POLICY_PAGES: [Page; 5] = [
+const PROCESS_POLICY_PAGES: [Page; 6] = [
     Page::EfficiencyMode,
     Page::ForegroundResponsiveness,
     Page::IoPriority,
+    Page::SmartTrim,
     Page::AppSuspension,
     Page::Watchdog,
 ];
@@ -93,6 +95,7 @@ impl Page {
             Self::PerformanceMode => t!("nav.performance_mode"),
             Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
             Self::IoPriority => t!("nav.io_priority"),
+            Self::SmartTrim => t!("nav.smart_trim"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
             Self::Schedule => t!("nav.schedule"),
@@ -121,6 +124,7 @@ impl Page {
             Self::EfficiencyMode
             | Self::ForegroundResponsiveness
             | Self::IoPriority
+            | Self::SmartTrim
             | Self::AppSuspension
             | Self::Watchdog => t!("nav.process_policies"),
             Self::ActionLog | Self::Settings | Self::About => t!("nav.app"),

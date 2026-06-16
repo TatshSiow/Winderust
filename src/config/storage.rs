@@ -124,8 +124,8 @@ mod tests {
         InputDetectionSettings, IoPriorityRule, IoPrioritySettings, ManualOverride,
         NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
         PriorityRule, ProcessExclusionRule, ProcessIoPriority, ProcessPriority,
-        ScheduleModeSettings, ScheduleRule, WatchdogAction, WatchdogRule, WatchdogSettings,
-        WeekdaySetting,
+        ScheduleModeSettings, ScheduleRule, SmartTrimSettings, WatchdogAction, WatchdogRule,
+        WatchdogSettings, WeekdaySetting,
     };
 
     #[test]
@@ -383,6 +383,25 @@ mod tests {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
                     priority: ProcessIoPriority::Low,
+                }],
+            },
+            smart_trim: SmartTrimSettings {
+                enabled: true,
+                check_interval_minutes: 15,
+                exclude_foreground_app: true,
+                trim_working_sets: true,
+                system_memory_load_threshold_percent: 85,
+                process_working_set_threshold_mb: 768,
+                process_cpu_idle_threshold_percent: 2,
+                process_idle_seconds: 120,
+                trim_cooldown_seconds: 600,
+                purge_standby_list: true,
+                purge_system_file_cache: true,
+                purge_only_in_performance_mode: true,
+                purge_free_ram_threshold_mb: 1024,
+                exclusions: vec![ProcessExclusionRule {
+                    enabled: true,
+                    process_name: "game*.exe".to_owned(),
                 }],
             },
         };

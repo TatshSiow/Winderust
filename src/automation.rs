@@ -28,6 +28,7 @@ use crate::{
         RuntimeProcessInfo, RuntimeState,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
+    smart_trim::{SmartTrimManager, SmartTrimSnapshot},
     suspension::{AppSuspensionManager, AppSuspensionSnapshot},
     tray,
     watchdog::{WatchdogManager, WatchdogSnapshot},
@@ -71,6 +72,7 @@ pub struct AutomationStatusSnapshot {
     pub watchdog: WatchdogSnapshot,
     pub foreground_responsiveness: ForegroundResponsivenessSnapshot,
     pub io_priority: IoPrioritySnapshot,
+    pub smart_trim: SmartTrimSnapshot,
     pub action_log_entries: Vec<ActionLogEntry>,
 }
 
@@ -91,9 +93,11 @@ struct AutomationWorkerState {
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     io_priority_status: IoPrioritySnapshot,
+    smart_trim_status: SmartTrimSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
     pending_auto_exclusions: PendingAutoExclusions,
     app_suspension_freeze_requests: Vec<String>,
+    smart_trim_now_requested: bool,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
     windows_event_watcher_active: bool,
@@ -144,9 +148,11 @@ impl BackgroundAutomation {
                 watchdog_status: WatchdogSnapshot::default(),
                 foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
                 io_priority_status: IoPrioritySnapshot::default(),
+                smart_trim_status: SmartTrimSnapshot::default(),
                 action_log_entries: Vec::new(),
                 pending_auto_exclusions: PendingAutoExclusions::default(),
                 app_suspension_freeze_requests: Vec::new(),
+                smart_trim_now_requested: false,
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
                 windows_event_watcher_active: false,
@@ -197,6 +203,7 @@ impl BackgroundAutomation {
                 watchdog: state.watchdog_status.clone(),
                 foreground_responsiveness: state.foreground_responsiveness_status.clone(),
                 io_priority: state.io_priority_status.clone(),
+                smart_trim: state.smart_trim_status.clone(),
                 action_log_entries: state.action_log_entries.clone(),
             })
             .unwrap_or_default()
@@ -229,6 +236,20 @@ impl BackgroundAutomation {
         if let Ok(mut state) = self.shared.state.lock() {
             state.app_suspension_freeze_requests.push(process_name);
             state.pending_events.settings_changed = true;
+            state.change_generation = state.change_generation.wrapping_add(1);
+            settings_to_sync = Some(state.settings.clone());
+            self.shared.changed.notify_one();
+        }
+
+        if let Some(settings) = settings_to_sync {
+            self.sync_worker(&settings);
+        }
+    }
+
+    pub fn request_smart_trim_now(&self) {
+        let mut settings_to_sync = None;
+        if let Ok(mut state) = self.shared.state.lock() {
+            state.smart_trim_now_requested = true;
             state.change_generation = state.change_generation.wrapping_add(1);
             settings_to_sync = Some(state.settings.clone());
             self.shared.changed.notify_one();
@@ -315,6 +336,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_watchdog_refresh = Instant::now();
     let mut next_foreground_responsiveness_refresh = Instant::now();
     let mut next_io_priority_refresh = Instant::now();
+    let mut next_smart_trim_refresh = Instant::now();
     let mut next_process_appearance_scan = Instant::now();
     let mut foreground_responsiveness_fast_until: Option<Instant> = None;
 
@@ -326,6 +348,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let settings = snapshot.settings;
         let change_generation = snapshot.change_generation;
         let app_suspension_freeze_requests = snapshot.app_suspension_freeze_requests;
+        let smart_trim_now_requested = snapshot.smart_trim_now_requested;
         if snapshot.action_log_clear_requested {
             runner.action_log.clear();
             update_action_log_entries(&shared, runner.action_log.entries());
@@ -353,6 +376,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL);
         let io_priority_refresh_interval =
             automation_refresh_interval(hidden_to_tray, IO_PRIORITY_REFRESH_INTERVAL);
+        let smart_trim_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, smart_trim_refresh_interval(&settings));
         let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
         if settings_changed {
             next_check = Instant::now();
@@ -366,6 +391,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_watchdog_refresh = Instant::now();
             next_foreground_responsiveness_refresh = Instant::now();
             next_io_priority_refresh = Instant::now();
+            next_smart_trim_refresh = Instant::now();
             next_process_appearance_scan = Instant::now();
             foreground_responsiveness_fast_until = None;
         }
@@ -377,6 +403,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_cpu_limiter_refresh = Instant::now();
             next_foreground_responsiveness_refresh = Instant::now();
             next_io_priority_refresh = Instant::now();
+            next_smart_trim_refresh = Instant::now();
             next_app_suspension_foreground_release = Instant::now();
             foreground_responsiveness_fast_until =
                 foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
@@ -430,6 +457,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || feature_refresh_required(&settings, settings.foreground_responsiveness.enabled);
         let io_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, io_priority_required(&settings));
+        let smart_trim_refresh_required = settings_changed
+            || smart_trim_now_requested
+            || feature_refresh_required(&settings, settings.smart_trim.enabled);
         let app_resource_shadow_required = eco_qos_refresh_required
             || app_suspension_refresh_required
             || cpu_affinity_refresh_required
@@ -441,6 +471,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
 
         if !app_suspension_freeze_requests.is_empty() {
             next_app_suspension_refresh = Instant::now();
+        }
+        if smart_trim_now_requested {
+            next_smart_trim_refresh = Instant::now();
         }
 
         if foreground_responsiveness_fast_refresh_active(
@@ -466,6 +499,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_watchdog_refresh = Instant::now();
                 next_foreground_responsiveness_refresh = Instant::now();
                 next_io_priority_refresh = Instant::now();
+                next_smart_trim_refresh = Instant::now();
                 foreground_responsiveness_fast_until =
                     foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
             }
@@ -558,6 +592,16 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             update_watchdog_status(&shared, watchdog_status);
             update_action_log_entries(&shared, runner.action_log.entries());
             next_watchdog_refresh = Instant::now() + watchdog_refresh_interval;
+        }
+        if smart_trim_refresh_required && Instant::now() >= next_smart_trim_refresh {
+            let smart_trim_status = if smart_trim_now_requested {
+                runner.run_smart_trim_now(&settings)
+            } else {
+                runner.run_smart_trim_update(&settings)
+            };
+            update_smart_trim_status(&shared, smart_trim_status);
+            update_action_log_entries(&shared, runner.action_log.entries());
+            next_smart_trim_refresh = Instant::now() + smart_trim_refresh_interval;
         }
 
         let mut wait_for = if hidden_to_tray {
@@ -661,6 +705,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                     .min(io_priority_refresh_interval),
             ));
         }
+        if smart_trim_refresh_required {
+            wait_for = Some(min_worker_wait(
+                wait_for,
+                next_smart_trim_refresh
+                    .saturating_duration_since(Instant::now())
+                    .min(smart_trim_refresh_interval),
+            ));
+        }
         if scan_process_appearance {
             wait_for = Some(min_worker_wait(
                 wait_for,
@@ -698,6 +750,7 @@ struct AutomationSnapshot {
     settings: Settings,
     change_generation: u64,
     app_suspension_freeze_requests: Vec<String>,
+    smart_trim_now_requested: bool,
     action_log_clear_requested: bool,
     wake_events: AutomationWakeEvents,
     windows_event_watcher_active: bool,
@@ -711,6 +764,7 @@ fn automation_snapshot(shared: &SharedAutomationState) -> Option<AutomationSnaps
             app_suspension_freeze_requests: std::mem::take(
                 &mut state.app_suspension_freeze_requests,
             ),
+            smart_trim_now_requested: std::mem::take(&mut state.smart_trim_now_requested),
             action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
             wake_events: std::mem::take(&mut state.pending_events),
             windows_event_watcher_active: state.windows_event_watcher_active,
@@ -843,6 +897,12 @@ fn update_io_priority_status(shared: &SharedAutomationState, status: IoPriorityS
     }
 }
 
+fn update_smart_trim_status(shared: &SharedAutomationState, status: SmartTrimSnapshot) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.smart_trim_status = status;
+    }
+}
+
 fn update_action_log_entries(shared: &SharedAutomationState, entries: Vec<ActionLogEntry>) {
     if let Ok(mut state) = shared.state.lock() {
         state.action_log_entries = entries;
@@ -855,6 +915,16 @@ fn automation_refresh_interval(hidden_to_tray: bool, hidden_interval: Duration) 
     } else {
         VISIBLE_AUTOMATION_REFRESH_INTERVAL
     }
+}
+
+fn smart_trim_refresh_interval(settings: &Settings) -> Duration {
+    Duration::from_secs(
+        settings
+            .smart_trim
+            .check_interval_minutes
+            .max(1)
+            .saturating_mul(60),
+    )
 }
 
 fn foreground_responsiveness_fast_refresh_deadline(
@@ -915,7 +985,8 @@ fn process_appearance_scan_required(settings: &Settings) -> bool {
             || settings.performance_mode.enabled
             || settings.watchdog.enabled
             || settings.foreground_responsiveness.enabled
-            || io_priority_required(settings))
+            || io_priority_required(settings)
+            || settings.smart_trim.enabled)
 }
 
 fn power_plan_checks_required(settings: &Settings) -> bool {
@@ -938,7 +1009,8 @@ fn automation_worker_required(settings: &Settings) -> bool {
             || settings.performance_mode.enabled
             || settings.watchdog.enabled
             || settings.foreground_responsiveness.enabled
-            || io_priority_required(settings))
+            || io_priority_required(settings)
+            || settings.smart_trim.enabled)
 }
 
 fn windows_event_watcher_required(settings: &Settings) -> bool {
@@ -1166,6 +1238,7 @@ struct HiddenAutomationRunner {
     action_log: ActionLog,
     foreground_responsiveness_manager: ForegroundResponsivenessManager,
     io_priority_manager: IoPriorityManager,
+    smart_trim_manager: SmartTrimManager,
     known_process_ids: BTreeSet<u32>,
     applied_action_store: AppliedActionStore,
     runtime_state: RuntimeState,
@@ -1373,6 +1446,26 @@ impl HiddenAutomationRunner {
             &io_priority_settings,
             settings.general.enabled,
             self.foreground_detector.process_id(),
+            &mut self.action_log,
+        )
+    }
+
+    fn run_smart_trim_update(&mut self, settings: &Settings) -> SmartTrimSnapshot {
+        self.smart_trim_manager.update(
+            &settings.smart_trim,
+            settings.general.enabled,
+            self.foreground_detector.process_id(),
+            self.performance_mode_manager.is_active(),
+            &mut self.action_log,
+        )
+    }
+
+    fn run_smart_trim_now(&mut self, settings: &Settings) -> SmartTrimSnapshot {
+        self.smart_trim_manager.trim_now(
+            &settings.smart_trim,
+            settings.general.enabled,
+            self.foreground_detector.process_id(),
+            self.performance_mode_manager.is_active(),
             &mut self.action_log,
         )
     }
@@ -1779,6 +1872,14 @@ mod tests {
     fn automation_worker_runs_for_enabled_process_feature() {
         let mut settings = Settings::default();
         settings.eco_qos.enabled = true;
+
+        assert!(automation_worker_required(&settings));
+    }
+
+    #[test]
+    fn automation_worker_runs_for_enabled_smart_trim() {
+        let mut settings = Settings::default();
+        settings.smart_trim.enabled = true;
 
         assert!(automation_worker_required(&settings));
     }
