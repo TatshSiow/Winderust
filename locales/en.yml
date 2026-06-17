@@ -5,7 +5,7 @@ app:
   description: "Make your Windows more eco-friendly"
 
 nav:
-  overview: "Overview"
+  overview: "Home"
   power_automation: "Power Plan Automation"
   processor_controls: "Processor Controls"
   process_policies: "Process Policies"
@@ -71,6 +71,8 @@ accent:
   windows: "System"
   custom: "Custom"
   palette: "Palette"
+  recent_colors: "Recent colors"
+  color_palette: "Color Palette"
   edit_color: "Edit color"
   remove_color: "Remove"
 
@@ -107,6 +109,7 @@ unsaved:
   message: "Save these changes before leaving them in draft state."
 
 dashboard:
+  overview: "Overview"
   intro_1: "Dashboard summarizes the current automation decision, detected state, and active power plan."
   intro_2: "Use it to verify what PowerLeaf is doing before changing page settings."
   current_power_plan: "Current power plan"

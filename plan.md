@@ -24,7 +24,7 @@ Use the existing navigation model as the product-level section map:
 
 | Section | Pages | Current Source |
 | --- | --- | --- |
-| Overview | Dashboard landing page | `src/ui/mod.rs:32`, `src/app.rs:2813` |
+| Home | Dashboard landing page | `src/ui/mod.rs:32`, `src/app.rs:2813` |
 | Power Plan Automation | Foreground Rules, Performance Mode, CPU Usage, Activity, Schedule | `src/ui/mod.rs:34`, `src/app.rs:3153`, `src/app.rs:3300`, `src/app.rs:3501`, `src/app.rs:3687`, `src/app.rs:5625` |
 | Processor Controls | Core Parking, CPU Limiter, Background CPU Restriction, CPU Affinity | `src/ui/mod.rs:41`, `src/app.rs:4878`, `src/app.rs:5224`, `src/app.rs:7052`, `src/app.rs:8485` |
 | Process Policies | Efficiency Mode, Foreground Responsiveness, I/O Priority, SmartTrim, App Suspension, Watchdog | `src/ui/mod.rs:47`, `src/app.rs:3975`, `src/app.rs:4481`, `src/app.rs:5412`, `src/app.rs:5757`, `src/app.rs:6546`, `src/app.rs:6740` |
@@ -50,18 +50,23 @@ Clicking one card navigates to the existing detailed page.
 
 Navigation behavior:
 
-- The left nav renders section pages only: Overview, Power Plan Automation, Processor Controls, Process Policies, Log, Settings, and Advanced.
-- Overview acts as the dashboard landing page: CPU Usage on the left with a fixed 30-sample graph, Enabled Rules as a right-side list, and all dashboard cards using the same two-column width. Cards should stay max two columns when there is room, then expand to full available width when wrapping to one column. CPU Usage and Enabled Rules should share the same fixed outer card height, with titles and content contained inside that height so the Main sections heading cannot overlap either card. CPU Usage should use one card shell only; the graph itself should not be framed as a nested card. A centered, window-size-responsive top window-bar search should open a temporary blank Search Results page while focused or while it has a query; empty search leaves that page blank, while a query shows matching child function cards in navbar order. Search should index page titles, section names, localized intro/help text, and feature keywords rather than titles only. Escape or clicking outside the search should release focus without clearing the query.
+- The left nav renders section pages only: Home, Power Plan Automation, Processor Controls, Process Policies, Log, Settings, and Advanced.
+- Home acts as the dashboard landing page. Its Overview section is for checking CPU Usage on the left and Enabled Rules as a right-side list. All dashboard cards use the same two-column width. Cards should stay max two columns when there is room, then expand to full available width when wrapping to one column. CPU Usage and Enabled Rules should share the same fixed outer card height, with titles and content contained inside that height so the Main sections heading cannot overlap either card. CPU Usage should use one card shell only; the graph itself should not be framed as a nested card. A centered, window-size-responsive top window-bar search should open a temporary blank Search Results page while focused or while it has a query; empty search leaves that page blank, while a query shows matching child function cards in navbar order. Search should index page titles, section names, localized intro/help text, and feature keywords rather than titles only. Escape or clicking outside the search should release focus without clearing the query.
 - Child pages keep their current render functions and behavior.
 - When a child page is active, the left nav highlights its parent section.
-- Child pages should show a compact breadcrumb/header such as `Power Plan Automation / CPU Usage`.
-- Child breadcrumbs should be clickable: clicking the parent section returns to that section landing page.
+- Child pages should show a compact breadcrumb/header such as `Home > Power Plan Automation > By Time`.
+- Breadcrumb navigation is required: clicking `Home` returns to Home, and clicking the parent section returns to that section landing page.
 - App navigation should maintain local back/forward history for left-nav clicks, landing cards, and breadcrumb clicks.
 - Mouse side buttons should support Back/Forward through app history.
 - Section landing cards should be operational and dense: icon, title, current status or rule count, optional warning/error state, and a chevron.
-- Overview main section cards should follow the same visual order as the left navbar: drawer sections first, then footer sections.
+- Home main section cards should follow the same visual order as the left navbar: drawer sections first, then footer sections.
 - Avoid marketing-style cards. These cards are navigation and status surfaces for a utility app.
 - The Settings landing page should not contain a redundant `Settings` card. It should expose Settings categories directly: PowerLeaf Behaviour, Language and Appearance, and About.
+- PowerLeaf Behaviour should avoid card-in-card layouts: use section labels for groups such as Advanced and Settings files, then render the actual setting rows/cards directly.
+- Language and Appearance should keep Accent color as a single expandable setting card; its inline content is a Recent colors and Color Palette picker without another bordered card shell. Choosing Custom in the dropdown opens the card, and selecting any palette color switches the source to Custom.
+- Dropdown selects should share one closed-control style, popup surface, option row, selected state, hover state, disabled state, open/accent border, and explicit fixed-width variants. The popup must be anchored to the same select container so it matches the visible trigger width instead of expanding to the row or option text. One-of-N "select button" strips should be rendered as setting/rule cards with a dropdown; keep button chips only for true multi-select controls such as weekdays and manual CPU core tiles.
+- Running-app picker rows, Power Plan Automation application rule rows, and exe-backed rule card headers should show cached executable icons when an image path is available, with a stable generic app fallback for protected, inaccessible, or not-currently-running processes.
+- Checkbox rows should only toggle from the checkbox control or its visible label text, including Settings > PowerLeaf Behaviour. Empty row/card space must remain passive.
 
 Implementation direction:
 
@@ -71,7 +76,7 @@ Implementation direction:
 - Add a helper such as `Page::parent_section_page()` so child pages can highlight the correct section and render breadcrumbs.
 - Add a reusable section-card component in `src/app/widgets.rs`.
 - Render landing pages from the existing section page arrays instead of hard-coding duplicate lists.
-- Render Overview main cards from `Page::sections()` so Power Plan Automation, Processor Controls, Process Policies, Log, Settings, and Advanced stay in sync with the left navigation.
+- Render Home main cards from `Page::sections()` so Power Plan Automation, Processor Controls, Process Policies, Log, Settings, and Advanced stay in sync with the left navigation.
 
 ## 4. Proposed Source Layout
 
@@ -156,7 +161,7 @@ Move these into `src/app/render.rs`:
 
 Acceptance check: changing `Page` selection still routes to the same page output.
 
-### 5.2 Overview Page
+### 5.2 Home Page
 
 Move these into `src/app/dashboard.rs`:
 
@@ -271,9 +276,9 @@ The backend is already partially organized. Use these rules before creating new 
 - Every page listed in `src/ui/mod.rs:4` has a matching source file under `src/app/`.
 - The left navigation shows section landing pages instead of every detailed page.
 - Clicking a section landing page shows cards for its child pages.
-- Overview shows CPU Usage, Enabled Rules, and two-column cards for every main section below the summary; the centered top window-bar search temporarily replaces the content area with a blank Search Results page and fills it with matching function cards when a query is active.
+- Home shows an Overview section with CPU Usage, Enabled Rules, and two-column cards for every main section below the summary; the centered top window-bar search temporarily replaces the content area with a blank Search Results page and fills it with matching function cards when a query is active.
 - Clicking a section card navigates to the existing detailed page.
-- Clicking a child-page breadcrumb parent navigates back to the section landing page.
+- Clicking a child-page breadcrumb Home or parent section navigates to that page.
 - Mouse side Back/Forward buttons move backward and forward through PowerLeaf page history.
 - A child page highlights its parent section in the left navigation.
 - A child page shows enough context to tell which section it belongs to, such as a breadcrumb or compact parent label.

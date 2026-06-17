@@ -8,7 +8,10 @@ use std::{
     path::{Path, PathBuf},
     ptr::null_mut,
     rc::Rc,
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -16,8 +19,8 @@ use rust_i18n::t;
 
 use chrono::{Local, TimeZone};
 use gpui::{
-    canvas, deferred, div, prelude::*, px, relative, rgb, AnyElement, App, Bounds, Context,
-    DragMoveEvent, Empty, Entity, EntityId, Focusable, Hsla, IntoElement, MouseButton,
+    canvas, deferred, div, img, prelude::*, px, relative, rgb, AnyElement, App, Bounds, Context,
+    DragMoveEvent, Empty, Entity, EntityId, Focusable, Hsla, Image, IntoElement, MouseButton,
     NavigationDirection, Pixels, Point, Render, SharedString, Subscription, Task, Timer, Window,
     WindowControlArea,
 };
@@ -55,7 +58,7 @@ use crate::{
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
     ecoqos::{self, EcoQosSnapshot},
-    foreground::{list_process_names, ForegroundDetector},
+    foreground::{list_process_candidates, ForegroundDetector, ProcessCandidateInfo},
     io_priority::{self, IoPrioritySnapshot},
     performance_mode::{self, PerformanceModeSnapshot},
     power::{
@@ -63,6 +66,7 @@ use crate::{
         ProcessorPowerPreset, ProcessorPowerValues,
     },
     power_source,
+    process_icon::load_process_icon,
     responsiveness::{self, AutoBalanceProcessState, ForegroundResponsivenessSnapshot},
     rules::{
         Action, ActionExecution, ActionExecutor, DecisionEngine, DecisionInput, DecisionOutcome,
@@ -103,6 +107,10 @@ const FLUENT_RADIUS_CONTROL: f32 = 4.0;
 const FLUENT_RADIUS_OVERLAY: f32 = 8.0;
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const DROPDOWN_OPTION_ROW_HEIGHT: f32 = 40.0;
+const DROPDOWN_CONTROL_HEIGHT: f32 = 32.0;
+const DROPDOWN_SELECT_COMPACT_WIDTH: f32 = 96.0;
+const DROPDOWN_SELECT_STANDARD_WIDTH: f32 = 240.0;
+const DROPDOWN_SELECT_WIDE_WIDTH: f32 = 280.0;
 const DROPDOWN_SURFACE_VERTICAL_PADDING: f32 = 16.0;
 const DROPDOWN_OPTION_GAP: f32 = 4.0;
 const DROPDOWN_MENU_OFFSET: f32 = 34.0;
@@ -192,15 +200,34 @@ impl ActionLogResultFilter {
     }
 }
 
-const ACCENT_PALETTE: [u32; 12] = [
-    0x4cc2ff, 0x0078d4, 0x744da9, 0xc239b3, 0xe74856, 0xff8c00, 0xf7630c, 0xffb900, 0x13a10e,
-    0x00b7c3, 0x038387, 0x7a7574,
+const ACCENT_PALETTE: [u32; 48] = [
+    0xffb900, 0xff8c00, 0xf7630c, 0xca5010, 0xda3b01, 0xef6950, 0xd13438, 0xff4343, 0xe74856,
+    0xe81123, 0xea005e, 0xc30052, 0xe3008c, 0xbf0077, 0xc239b3, 0x9a0089, 0x0078d4, 0x0063b1,
+    0x8e8cd8, 0x6b69d6, 0x8764b8, 0x744da9, 0xb146c2, 0x881798, 0x0099bc, 0x2d7d9a, 0x00b7c3,
+    0x038387, 0x00b294, 0x018574, 0x00cc6a, 0x10893e, 0x107c10, 0x797775, 0x5d5a58, 0x68768a,
+    0x567c73, 0x486860, 0x498205, 0x0b6a0b, 0x7a7574, 0x4c4a48, 0x69797e, 0x4a5459, 0x647c64,
+    0x525e54, 0x5d5a4f, 0x847545,
 ];
 
 static UI_ACCENT_COLOR: AtomicU32 = AtomicU32::new(COLOR_ACCENT);
 static UI_DARK_MODE: AtomicBool = AtomicBool::new(true);
 
 const NAV_HISTORY_LIMIT: usize = 64;
+
+#[derive(Clone)]
+struct ProcessCandidate {
+    name: String,
+    image_path: Option<PathBuf>,
+    icon: Option<Arc<Image>>,
+}
+
+impl PartialEq for ProcessCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.image_path == other.image_path
+    }
+}
+
+impl Eq for ProcessCandidate {}
 
 pub struct PowerLeafApp {
     settings: Settings,
@@ -245,7 +272,8 @@ pub struct PowerLeafApp {
     hwnd: Option<HWND>,
     tray_icon: Option<TrayIcon>,
     status_message: String,
-    process_candidates: Vec<String>,
+    process_candidates: Vec<ProcessCandidate>,
+    process_icon_cache: HashMap<PathBuf, Option<Arc<Image>>>,
     active_power_plan_picker: Option<String>,
     processor_power_ac_core_parking_min: u64,
     processor_power_ac_performance_min: u64,
@@ -756,6 +784,7 @@ impl PowerLeafApp {
             tray_icon: None,
             status_message: initial_processor_power.status_message,
             process_candidates: Vec::new(),
+            process_icon_cache: HashMap::new(),
             active_power_plan_picker: None,
             processor_power_ac_core_parking_min: initial_processor_power.values.ac.core_parking_min
                 as u64,
@@ -1515,10 +1544,40 @@ impl PowerLeafApp {
         }
     }
 
+    fn process_candidates_from_info(
+        &mut self,
+        processes: Vec<ProcessCandidateInfo>,
+    ) -> Vec<ProcessCandidate> {
+        processes
+            .into_iter()
+            .map(|process| {
+                let icon = process
+                    .image_path
+                    .as_deref()
+                    .and_then(|path| self.cached_process_icon(path));
+                ProcessCandidate {
+                    name: process.name,
+                    image_path: process.image_path,
+                    icon,
+                }
+            })
+            .collect()
+    }
+
+    fn cached_process_icon(&mut self, path: &Path) -> Option<Arc<Image>> {
+        if !self.process_icon_cache.contains_key(path) {
+            let icon = load_process_icon(path);
+            self.process_icon_cache.insert(path.to_path_buf(), icon);
+        }
+
+        self.process_icon_cache.get(path).and_then(Clone::clone)
+    }
+
     fn refresh_process_candidates(&mut self, report_status: bool) -> bool {
         self.next_process_refresh = Instant::now() + PROCESS_REFRESH_INTERVAL;
-        match list_process_names() {
+        match list_process_candidates() {
             Ok(processes) => {
+                let processes = self.process_candidates_from_info(processes);
                 let changed = self.process_candidates != processes;
                 self.process_candidates = processes;
                 if report_status {
@@ -2425,6 +2484,47 @@ impl PowerLeafApp {
         }
     }
 
+    fn render_dropdown_select(
+        &self,
+        id: impl Into<String>,
+        selected_label: impl Into<SharedString>,
+        enabled: bool,
+        width: DropdownSelectWidth,
+        option_count: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        build_options: impl FnOnce(Pixels, &mut Context<Self>) -> Scrollable<gpui::Div>,
+    ) -> AnyElement {
+        let id = id.into();
+        let is_open = enabled && self.active_power_plan_picker.as_deref() == Some(id.as_str());
+        let placement = self.dropdown_placement(&id, dropdown_list_height(option_count), window);
+        let options = build_options(placement.max_height, cx);
+        let control_id = SharedString::from(format!("{id}-control"));
+        let toggle_id = id.clone();
+
+        dropdown_select_container(width)
+            .child(
+                dropdown_select_control(control_id, selected_label, enabled, is_open, cx).when(
+                    enabled,
+                    |control| {
+                        control.on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                            app.active_power_plan_picker =
+                                (app.active_power_plan_picker.as_deref()
+                                    != Some(toggle_id.as_str()))
+                                .then_some(toggle_id.clone());
+                            cx.notify();
+                        }))
+                    },
+                ),
+            )
+            .child(dropdown_anchor_sensor(
+                id.clone(),
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
+            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
+            .into_any_element()
+    }
+
     fn sync_input_values(&mut self, cx: &mut Context<Self>) {
         for (rule, input) in self
             .settings
@@ -2924,9 +3024,9 @@ impl PowerLeafApp {
             Page::IoPriority => self.render_io_priority_page(window, cx),
             Page::SmartTrim => self.render_smart_trim_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
-            Page::ActionLog => self.render_action_log_page(cx),
+            Page::ActionLog => self.render_action_log_page(window, cx),
             Page::Settings => self.render_powerleaf_behaviour_page(window, cx),
-            Page::SettingsAppearance => self.render_settings_appearance_page(cx),
+            Page::SettingsAppearance => self.render_settings_appearance_page(window, cx),
             Page::Win32PrioritySeparation => self.render_win32_priority_separation_page(window, cx),
             Page::About => self.render_about_page(cx),
         }
@@ -3058,6 +3158,7 @@ impl PowerLeafApp {
             ));
 
         page_shell(Page::Dashboard, cx)
+            .child(section_title_text(t!("dashboard.overview").to_string()))
             .child(summary)
             .child(section_title_text(
                 t!("dashboard.main_sections").to_string(),
@@ -3476,15 +3577,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(160.0))
-                    .text_size(px(RULE_TITLE_TEXT_SIZE))
-                    .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                    .truncate()
-                    .child(rule.process_name.clone()),
-            )
+            .child(self.process_rule_title(&rule.process_name, cx))
             .child(self.render_inline_power_plan_picker(
                 format!("foreground-rule-plan-{index}"),
                 rule.power_plan_guid.clone(),
@@ -3849,29 +3942,47 @@ impl PowerLeafApp {
         else {
             return syncing_rule_card(index);
         };
-        let mut comparisons = h_flex().gap_1().flex_wrap();
-        for comparison in [
+        let comparison_options = [
             CpuUsageComparison::AtOrBelow,
             CpuUsageComparison::AtOrAbove,
             CpuUsageComparison::Between,
-        ] {
-            comparisons = comparisons.child(
-                toggle_button(
-                    format!("cpu-comparison-{index}-{:?}", comparison),
-                    comparison.label(),
-                    rule.comparison == comparison,
-                )
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
-                        rule.comparison = comparison;
-                        if comparison == CpuUsageComparison::Between {
-                            rule.upper_threshold_percent.get_or_insert(100);
-                        }
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        ];
+        let selected_comparison = rule.comparison;
+        let comparison_dropdown = self.render_dropdown_select(
+            format!("cpu-comparison-{index}"),
+            selected_comparison.label(),
+            true,
+            DropdownSelectWidth::Wide,
+            comparison_options.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for comparison in comparison_options {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "cpu-comparison-{index}-option-{comparison:?}"
+                            )),
+                            comparison.label().to_owned(),
+                            selected_comparison == comparison,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
+                                rule.comparison = comparison;
+                                if comparison == CpuUsageComparison::Between {
+                                    rule.upper_threshold_percent.get_or_insert(100);
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
 
         let upper = rule.upper_threshold_percent.unwrap_or(100);
         let title_target = RuleTitleTarget::Cpu(index);
@@ -3899,7 +4010,7 @@ impl PowerLeafApp {
                     rule_action_row(
                         format!("cpu-rule-comparison-{index}"),
                         t!("cpu_rules.when_cpu_load").to_string(),
-                        comparisons.into_any_element(),
+                        comparison_dropdown,
                     )
                     .into_any_element(),
                     threshold_level_slider(
@@ -4074,7 +4185,7 @@ impl PowerLeafApp {
                 }),
             ))
             .child(self.render_efficiency_aggressiveness_selector(window, cx))
-            .child(self.render_efficiency_cpu_set_preference(cx))
+            .child(self.render_efficiency_cpu_set_preference(window, cx))
             .child(section_header(
                 &t!("efficiency.whitelist"),
                 t!("efficiency.whitelist_help").to_string(),
@@ -4176,12 +4287,7 @@ impl PowerLeafApp {
                         t!("efficiency.aggressiveness_help").to_string(),
                     )),
             )
-            .child(
-                div()
-                    .w(px(190.0))
-                    .max_w_full()
-                    .child(self.render_efficiency_aggressiveness_picker(selected, window, cx)),
-            )
+            .child(self.render_efficiency_aggressiveness_picker(selected, window, cx))
             .into_any_element()
     }
 
@@ -4215,65 +4321,35 @@ impl PowerLeafApp {
             );
         }
 
-        v_flex()
-            .w_full()
-            .min_w(px(0.0))
-            .relative()
-            .min_h(px(32.0))
+        dropdown_select_container(DropdownSelectWidth::Standard)
             .child(
-                h_flex()
-                    .id("eco-qos-aggressiveness-control")
-                    .h(px(32.0))
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .rounded_sm()
-                    .bg(rgb(dropdown_control_color()))
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(efficiency_aggressiveness_label(selected)),
-                    )
-                    .child(dropdown_chevron(cx))
-                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                            != Some(picker_id))
-                        .then_some(picker_id.to_owned());
-                        cx.notify();
-                    })),
+                dropdown_select_control(
+                    "eco-qos-aggressiveness-control",
+                    efficiency_aggressiveness_label(selected),
+                    true,
+                    is_open,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                        != Some(picker_id))
+                    .then_some(picker_id.to_owned());
+                    cx.notify();
+                })),
             )
             .child(dropdown_anchor_sensor(
                 picker_id,
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(if is_open {
-                deferred(
-                    dropdown_popup_layer(placement)
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        }))
-                        .child(options),
-                )
-                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-                .into_any_element()
-            } else {
-                Empty.into_any_element()
-            })
+            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
             .into_any_element()
     }
 
-    fn render_efficiency_cpu_set_preference(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_efficiency_cpu_set_preference(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let processors = affinity::logical_processors();
         let has_efficiency_cores =
             affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency) != 0;
@@ -4282,62 +4358,98 @@ impl PowerLeafApp {
         let restriction_enabled = selected != EcoQosCpuRestrictionStrategy::Off;
         let collapsed =
             self.is_setting_group_collapsed(SettingGroupTarget::EfficiencyCpuRestriction);
-        let mut mode_options = h_flex().gap_1().flex_wrap().justify_end();
-        for mode in EcoQosCpuRestrictionMode::ALL {
-            mode_options = mode_options.child(
-                toggle_button(
-                    format!("eco-qos-cpu-restriction-mode-{mode:?}"),
-                    efficiency_cpu_restriction_mode_label(mode),
-                    self.settings.eco_qos.cpu_restriction_mode == mode,
-                )
-                .tooltip(efficiency_cpu_restriction_mode_help(mode))
-                .disabled(!restriction_enabled)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings.eco_qos.cpu_restriction_mode = mode;
-                    cx.notify();
-                })),
-            );
-        }
+        let selected_mode = self.settings.eco_qos.cpu_restriction_mode;
+        let mode_dropdown = self.render_dropdown_select(
+            "eco-qos-cpu-restriction-mode",
+            efficiency_cpu_restriction_mode_label(selected_mode),
+            restriction_enabled,
+            DropdownSelectWidth::Standard,
+            EcoQosCpuRestrictionMode::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in EcoQosCpuRestrictionMode::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "eco-qos-cpu-restriction-mode-option-{mode:?}"
+                            )),
+                            efficiency_cpu_restriction_mode_label(mode),
+                            selected_mode == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.eco_qos.cpu_restriction_mode = mode;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
 
-        let mut strategy_options = h_flex().gap_1().flex_wrap().justify_end();
-        for strategy in [
+        let strategy_options = [
             EcoQosCpuRestrictionStrategy::Auto,
             EcoQosCpuRestrictionStrategy::PreferEfficiencyCores,
             EcoQosCpuRestrictionStrategy::LimitLogicalCpus,
-        ] {
-            let enabled = match strategy {
-                EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
-                EcoQosCpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
-                EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::Off => true,
-            };
-            strategy_options = strategy_options.child(
-                toggle_button(
-                    format!("eco-qos-cpu-restriction-strategy-{strategy:?}"),
-                    efficiency_cpu_restriction_strategy_label(strategy),
-                    selected == strategy,
-                )
-                .disabled(!restriction_enabled || !enabled)
-                .tooltip(efficiency_cpu_restriction_strategy_help(strategy))
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    let (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) =
-                        strategy.legacy_flags();
-                    app.settings.eco_qos.cpu_restriction_strategy = strategy;
-                    app.settings.eco_qos.prefer_efficiency_cores = prefer_efficiency_cores;
-                    app.settings.eco_qos.limit_cpu_sets_on_non_hybrid =
-                        limit_cpu_sets_on_non_hybrid;
-                    if app.settings.eco_qos.cpu_restriction_control_style
-                        == EcoQosCpuRestrictionControlStyle::CoreToggle
-                    {
-                        let processors = affinity::logical_processors();
-                        let mask = eco_qos_strategy_core_mask(&processors, strategy);
-                        if mask != 0 {
-                            app.settings.eco_qos.cpu_restriction_core_mask = mask;
+        ];
+        let strategy_dropdown = self.render_dropdown_select(
+            "eco-qos-cpu-restriction-strategy",
+            efficiency_cpu_restriction_strategy_label(selected),
+            restriction_enabled,
+            DropdownSelectWidth::Wide,
+            strategy_options.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for strategy in strategy_options {
+                    let option_enabled = match strategy {
+                        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
+                        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
+                        EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::Off => {
+                            true
                         }
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+                    };
+                    let row = dropdown_option_row(
+                        SharedString::from(format!(
+                            "eco-qos-cpu-restriction-strategy-option-{strategy:?}"
+                        )),
+                        efficiency_cpu_restriction_strategy_label(strategy),
+                        selected == strategy,
+                        cx,
+                    )
+                    .when(!option_enabled, |row| row.opacity(0.48).cursor_default());
+                    let row = if option_enabled {
+                        row.on_click(cx.listener(move |app, _, _, cx| {
+                            let (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) =
+                                strategy.legacy_flags();
+                            app.settings.eco_qos.cpu_restriction_strategy = strategy;
+                            app.settings.eco_qos.prefer_efficiency_cores = prefer_efficiency_cores;
+                            app.settings.eco_qos.limit_cpu_sets_on_non_hybrid =
+                                limit_cpu_sets_on_non_hybrid;
+                            if app.settings.eco_qos.cpu_restriction_control_style
+                                == EcoQosCpuRestrictionControlStyle::CoreToggle
+                            {
+                                let processors = affinity::logical_processors();
+                                let mask = eco_qos_strategy_core_mask(&processors, strategy);
+                                if mask != 0 {
+                                    app.settings.eco_qos.cpu_restriction_core_mask = mask;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
+                    } else {
+                        row
+                    };
+                    options = options.child(row);
+                }
+                options
+            },
+        );
 
         let percent = self.settings.eco_qos.cpu_restriction_percent.clamp(1, 100);
         let percentage_control = h_flex()
@@ -4352,36 +4464,51 @@ impl PowerLeafApp {
                 cx,
             ));
 
-        let mut style_options = h_flex().gap_1().flex_wrap().justify_end();
-        for style in EcoQosCpuRestrictionControlStyle::ALL {
-            style_options = style_options.child(
-                toggle_button(
-                    format!("eco-qos-cpu-restriction-style-{style:?}"),
-                    efficiency_cpu_restriction_control_style_label(style),
-                    self.settings.eco_qos.cpu_restriction_control_style == style,
-                )
-                .tooltip(efficiency_cpu_restriction_control_style_help(style))
-                .disabled(!restriction_enabled)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings.eco_qos.cpu_restriction_control_style = style;
-                    if style == EcoQosCpuRestrictionControlStyle::CoreToggle
-                        && app.settings.eco_qos.cpu_restriction_core_mask == 0
-                    {
-                        let strategy = app.effective_eco_qos_cpu_restriction_strategy();
-                        let processors = affinity::logical_processors();
-                        app.settings.eco_qos.cpu_restriction_core_mask =
-                            eco_qos_strategy_core_mask(&processors, strategy);
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        let selected_style = self.settings.eco_qos.cpu_restriction_control_style;
+        let style_dropdown = self.render_dropdown_select(
+            "eco-qos-cpu-restriction-style",
+            efficiency_cpu_restriction_control_style_label(selected_style),
+            restriction_enabled,
+            DropdownSelectWidth::Standard,
+            EcoQosCpuRestrictionControlStyle::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for style in EcoQosCpuRestrictionControlStyle::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "eco-qos-cpu-restriction-style-option-{style:?}"
+                            )),
+                            efficiency_cpu_restriction_control_style_label(style),
+                            selected_style == style,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.eco_qos.cpu_restriction_control_style = style;
+                            if style == EcoQosCpuRestrictionControlStyle::CoreToggle
+                                && app.settings.eco_qos.cpu_restriction_core_mask == 0
+                            {
+                                let strategy = app.effective_eco_qos_cpu_restriction_strategy();
+                                let processors = affinity::logical_processors();
+                                app.settings.eco_qos.cpu_restriction_core_mask =
+                                    eco_qos_strategy_core_mask(&processors, strategy);
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
 
         let mut rows = vec![
             setting_group_action_row(
                 "eco-qos-core-affinity-control",
                 t!("efficiency.core_affinity_control").to_string(),
-                mode_options.into_any_element(),
+                mode_dropdown,
                 true,
             )
             .when(!restriction_enabled, |row| {
@@ -4391,14 +4518,14 @@ impl PowerLeafApp {
             setting_group_action_row(
                 "eco-qos-core-suppression-rule",
                 t!("efficiency.core_suppression_rule").to_string(),
-                strategy_options.into_any_element(),
+                strategy_dropdown,
                 true,
             )
             .into_any_element(),
             setting_group_action_row(
                 "eco-qos-control-style",
                 t!("efficiency.control_style").to_string(),
-                style_options.into_any_element(),
+                style_dropdown,
                 true,
             )
             .when(!restriction_enabled, |row| {
@@ -4860,7 +4987,7 @@ impl PowerLeafApp {
                 .min_w(px(0.0))
                 .gap_2()
                 .items_center()
-                .child(static_rule_title(&process))
+                .child(self.process_rule_title(&process, cx))
                 .child(status_pill(indicator.label, indicator.bg, indicator.fg))
                 .into_any_element();
             let mut card = rule_card_with_header_action(
@@ -4983,82 +5110,127 @@ impl PowerLeafApp {
         let restriction_enabled = selected != EcoQosCpuRestrictionStrategy::Off;
         let available_mask = affinity_processors_mask(&processors);
 
-        let mut mode_options = h_flex().gap_1().flex_wrap().justify_end();
-        for mode in EcoQosCpuRestrictionMode::ALL {
-            mode_options = mode_options.child(
-                toggle_button(
-                    format!("background-cpu-mode-{mode:?}"),
-                    efficiency_cpu_restriction_mode_label(mode),
-                    settings.mode == mode,
-                )
-                .tooltip(efficiency_cpu_restriction_mode_help(mode))
-                .disabled(!restriction_enabled)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings.background_cpu_restriction.mode = mode;
-                    cx.notify();
-                })),
-            );
-        }
+        let selected_mode = settings.mode;
+        let mode_dropdown = self.render_dropdown_select(
+            "background-cpu-mode",
+            efficiency_cpu_restriction_mode_label(selected_mode),
+            restriction_enabled,
+            DropdownSelectWidth::Standard,
+            EcoQosCpuRestrictionMode::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in EcoQosCpuRestrictionMode::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("background-cpu-mode-option-{mode:?}")),
+                            efficiency_cpu_restriction_mode_label(mode),
+                            selected_mode == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.background_cpu_restriction.mode = mode;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
 
-        let mut strategy_options = h_flex().gap_1().flex_wrap().justify_end();
-        for strategy in [
+        let strategy_options = [
             EcoQosCpuRestrictionStrategy::Auto,
             EcoQosCpuRestrictionStrategy::PreferEfficiencyCores,
             EcoQosCpuRestrictionStrategy::LimitLogicalCpus,
-        ] {
-            let option_enabled = match strategy {
-                EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
-                EcoQosCpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
-                EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::Off => true,
-            };
-            strategy_options = strategy_options.child(
-                toggle_button(
-                    format!("background-cpu-strategy-{strategy:?}"),
-                    efficiency_cpu_restriction_strategy_label(strategy),
-                    selected == strategy,
-                )
-                .tooltip(efficiency_cpu_restriction_strategy_help(strategy))
-                .disabled(!restriction_enabled || !option_enabled)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings.background_cpu_restriction.strategy = strategy;
-                    if app.settings.background_cpu_restriction.control_style
-                        == EcoQosCpuRestrictionControlStyle::CoreToggle
-                    {
-                        let processors = affinity::logical_processors();
-                        let mask = eco_qos_strategy_core_mask(&processors, strategy);
-                        if mask != 0 {
-                            app.settings.background_cpu_restriction.core_mask = mask;
+        ];
+        let strategy_dropdown = self.render_dropdown_select(
+            "background-cpu-strategy",
+            efficiency_cpu_restriction_strategy_label(selected),
+            restriction_enabled,
+            DropdownSelectWidth::Wide,
+            strategy_options.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for strategy in strategy_options {
+                    let option_enabled = match strategy {
+                        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
+                        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
+                        EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::Off => {
+                            true
                         }
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+                    };
+                    let row = dropdown_option_row(
+                        SharedString::from(format!("background-cpu-strategy-option-{strategy:?}")),
+                        efficiency_cpu_restriction_strategy_label(strategy),
+                        selected == strategy,
+                        cx,
+                    )
+                    .when(!option_enabled, |row| row.opacity(0.48).cursor_default());
+                    let row = if option_enabled {
+                        row.on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.background_cpu_restriction.strategy = strategy;
+                            if app.settings.background_cpu_restriction.control_style
+                                == EcoQosCpuRestrictionControlStyle::CoreToggle
+                            {
+                                let processors = affinity::logical_processors();
+                                let mask = eco_qos_strategy_core_mask(&processors, strategy);
+                                if mask != 0 {
+                                    app.settings.background_cpu_restriction.core_mask = mask;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        }))
+                    } else {
+                        row
+                    };
+                    options = options.child(row);
+                }
+                options
+            },
+        );
 
-        let mut style_options = h_flex().gap_1().flex_wrap().justify_end();
-        for style in EcoQosCpuRestrictionControlStyle::ALL {
-            style_options = style_options.child(
-                toggle_button(
-                    format!("background-cpu-style-{style:?}"),
-                    efficiency_cpu_restriction_control_style_label(style),
-                    settings.control_style == style,
-                )
-                .tooltip(efficiency_cpu_restriction_control_style_help(style))
-                .disabled(!restriction_enabled)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings.background_cpu_restriction.control_style = style;
-                    if style == EcoQosCpuRestrictionControlStyle::CoreToggle
-                        && app.settings.background_cpu_restriction.core_mask == 0
-                    {
-                        let processors = affinity::logical_processors();
-                        let strategy = app.effective_background_cpu_restriction_strategy();
-                        app.settings.background_cpu_restriction.core_mask =
-                            eco_qos_strategy_core_mask(&processors, strategy);
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        let selected_style = settings.control_style;
+        let style_dropdown = self.render_dropdown_select(
+            "background-cpu-style",
+            efficiency_cpu_restriction_control_style_label(selected_style),
+            restriction_enabled,
+            DropdownSelectWidth::Standard,
+            EcoQosCpuRestrictionControlStyle::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for style in EcoQosCpuRestrictionControlStyle::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("background-cpu-style-option-{style:?}")),
+                            efficiency_cpu_restriction_control_style_label(style),
+                            selected_style == style,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.background_cpu_restriction.control_style = style;
+                            if style == EcoQosCpuRestrictionControlStyle::CoreToggle
+                                && app.settings.background_cpu_restriction.core_mask == 0
+                            {
+                                let processors = affinity::logical_processors();
+                                let strategy = app.effective_background_cpu_restriction_strategy();
+                                app.settings.background_cpu_restriction.core_mask =
+                                    eco_qos_strategy_core_mask(&processors, strategy);
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
 
         let percent = settings.percent.clamp(1, 100);
         let percentage_control = self.render_numeric_value(
@@ -5072,21 +5244,21 @@ impl PowerLeafApp {
             setting_group_action_row(
                 "background-cpu-affinity-control",
                 t!("background_cpu.core_affinity_control").to_string(),
-                mode_options.into_any_element(),
+                mode_dropdown,
                 true,
             )
             .into_any_element(),
             setting_group_action_row(
                 "background-cpu-suppression-rule",
                 t!("background_cpu.core_suppression_rule").to_string(),
-                strategy_options.into_any_element(),
+                strategy_dropdown,
                 true,
             )
             .into_any_element(),
             setting_group_action_row(
                 "background-cpu-control-style",
                 t!("background_cpu.control_style").to_string(),
-                style_options.into_any_element(),
+                style_dropdown,
                 true,
             )
             .into_any_element(),
@@ -5394,7 +5566,7 @@ impl PowerLeafApp {
             let card_target = RuleCardTarget::CpuLimiter(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
-                static_rule_title(&process),
+                self.process_rule_title(&process, cx),
                 rule_enable_checkbox(
                     format!("cpu-limiter-rule-enabled-{index}"),
                     rule.enabled,
@@ -5583,7 +5755,7 @@ impl PowerLeafApp {
             let card_target = RuleCardTarget::Watchdog(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
-                static_rule_title(&process),
+                self.process_rule_title(&process, cx),
                 rule_enable_checkbox(
                     format!("watchdog-rule-enabled-{index}"),
                     rule.enabled,
@@ -5606,9 +5778,13 @@ impl PowerLeafApp {
                         status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
                     )
                     .into_any_element()]))
-                    .child(rule_card_body_row(vec![
-                        self.render_watchdog_action_selector(index, rule.action, cx)
-                    ]));
+                    .child(rule_card_body_row(vec![self
+                        .render_watchdog_action_selector(
+                            index,
+                            rule.action,
+                            window,
+                            cx,
+                        )]));
 
                 if rule.action == WatchdogAction::RestartIfExited {
                     if let Some(input) = self.inputs.watchdog_launch_paths.get(index) {
@@ -5680,31 +5856,49 @@ impl PowerLeafApp {
         &self,
         index: usize,
         selected_action: WatchdogAction,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = h_flex().gap_1().flex_wrap();
-        for action in [
+        let action_options = [
             WatchdogAction::TerminateOnLaunch,
             WatchdogAction::RestartIfExited,
-        ] {
-            row = row.child(
-                toggle_button(
-                    format!("watchdog-action-{index}-{action:?}"),
-                    watchdog_action_label(action),
-                    selected_action == action,
-                )
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if let Some(rule) = app.settings.watchdog.rules.get_mut(index) {
-                        rule.action = action;
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        ];
+        let dropdown = self.render_dropdown_select(
+            format!("watchdog-action-{index}"),
+            watchdog_action_label(selected_action),
+            true,
+            DropdownSelectWidth::Standard,
+            action_options.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for action in action_options {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "watchdog-action-{index}-option-{action:?}"
+                            )),
+                            watchdog_action_label(action),
+                            selected_action == action,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.watchdog.rules.get_mut(index) {
+                                rule.action = action;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
         rule_action_row(
             format!("watchdog-action-row-{index}"),
             t!("watchdog.action").to_string(),
-            row.into_any_element(),
+            dropdown,
         )
         .into_any_element()
     }
@@ -5804,15 +5998,7 @@ impl PowerLeafApp {
                             cx.notify();
                         }),
                     ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(160.0))
-                            .text_size(px(RULE_TITLE_TEXT_SIZE))
-                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                            .truncate()
-                            .child(process),
-                    )
+                    .child(self.process_rule_title(&process, cx))
                     .child(status_pill(indicator.0, indicator.1, indicator.2))
                     .child(self.render_inline_power_plan_picker(
                         format!("performance-mode-plan-{index}"),
@@ -5855,9 +6041,9 @@ impl PowerLeafApp {
         let enabled = self.settings.foreground_responsiveness.enabled;
         let body = feature_body(enabled)
             .child(self.render_lower_background_efficiency_card(cx))
-            .child(self.render_lower_background_io_priority_card(cx))
-            .child(self.render_foreground_boost_selector(cx))
-            .child(self.render_auto_balance_preset_selector(cx))
+            .child(self.render_lower_background_io_priority_card(window, cx))
+            .child(self.render_foreground_boost_selector(window, cx))
+            .child(self.render_auto_balance_preset_selector(window, cx))
             .child(self.render_auto_balance_insight())
             .child(self.render_auto_balance_advanced_group(window, cx, &input_value, enabled));
 
@@ -5915,7 +6101,11 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
-    fn render_lower_background_io_priority_card(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_lower_background_io_priority_card(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = self
             .settings
             .foreground_responsiveness
@@ -5924,6 +6114,41 @@ impl PowerLeafApp {
             .settings
             .foreground_responsiveness
             .lower_background_io_priority;
+        let priority_dropdown = self.render_dropdown_select(
+            "responsiveness-background-io-priority",
+            process_io_priority_label(priority),
+            selected,
+            DropdownSelectWidth::Standard,
+            ProcessIoPriority::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for option in ProcessIoPriority::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "responsiveness-background-io-priority-option-{option:?}"
+                            )),
+                            process_io_priority_label(option),
+                            priority == option,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .lower_background_io_priority_enabled = true;
+                            app.settings
+                                .foreground_responsiveness
+                                .lower_background_io_priority = option;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
         let mut row = h_flex()
             .gap_2()
             .items_center()
@@ -5939,26 +6164,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ));
-        for option in ProcessIoPriority::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("responsiveness-background-io-priority-{option:?}"),
-                    process_io_priority_label(option),
-                    selected && priority == option,
-                )
-                .tooltip(process_io_priority_help(option))
-                .disabled(!selected)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .lower_background_io_priority_enabled = true;
-                    app.settings
-                        .foreground_responsiveness
-                        .lower_background_io_priority = option;
-                    cx.notify();
-                })),
-            );
-        }
+        row = row.child(priority_dropdown);
 
         setting_action_card_with_help(
             "responsiveness-lower-background-io-priority",
@@ -5969,32 +6175,57 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
-    fn render_auto_balance_preset_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_auto_balance_preset_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let settings = &self.settings.foreground_responsiveness;
-        let mut row = h_flex().gap_1().flex_wrap();
-        for behavior in AutoBalanceBehavior::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("auto-balance-behavior-{behavior:?}"),
-                    auto_balance_behavior_label(behavior),
-                    auto_balance_matches_behavior(settings, behavior),
-                )
-                .tooltip(auto_balance_behavior_help(behavior))
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    apply_auto_balance_behavior(
-                        &mut app.settings.foreground_responsiveness,
-                        behavior,
+        let selected_behavior = AutoBalanceBehavior::ALL
+            .iter()
+            .copied()
+            .find(|behavior| auto_balance_matches_behavior(settings, *behavior));
+        let dropdown = self.render_dropdown_select(
+            "auto-balance-behavior",
+            selected_behavior
+                .map(auto_balance_behavior_label)
+                .unwrap_or_else(|| "Custom".to_owned()),
+            true,
+            DropdownSelectWidth::Standard,
+            AutoBalanceBehavior::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for behavior in AutoBalanceBehavior::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "auto-balance-behavior-option-{behavior:?}"
+                            )),
+                            auto_balance_behavior_label(behavior),
+                            selected_behavior == Some(behavior),
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            apply_auto_balance_behavior(
+                                &mut app.settings.foreground_responsiveness,
+                                behavior,
+                            );
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
                     );
-                    cx.notify();
-                })),
-            );
-        }
+                }
+                options
+            },
+        );
 
         setting_action_card_with_help(
             "auto-balance-preset",
             t!("responsiveness.auto_balance_preset").to_string(),
             t!("responsiveness.auto_balance_preset_help").to_string(),
-            row.into_any_element(),
+            dropdown,
         )
         .into_any_element()
     }
@@ -6158,7 +6389,7 @@ impl PowerLeafApp {
             setting_group_action_row(
                 "responsiveness-auto-affinity-mode",
                 t!("responsiveness.auto_balance_affinity_mode").to_string(),
-                self.render_auto_balance_affinity_mode_selector(cx),
+                self.render_auto_balance_affinity_mode_selector(window, cx),
                 true,
             )
             .into_any_element(),
@@ -6364,71 +6595,127 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
-    fn render_foreground_boost_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_foreground_boost_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = self.settings.foreground_responsiveness.foreground_boost;
-        let mut row = h_flex().gap_1().flex_wrap();
-        row = row.child(
-            toggle_button(
-                "foreground-boost-none",
-                t!("common.none").to_string(),
-                !self.settings.foreground_responsiveness.boost_foreground_app,
-            )
-            .on_click(cx.listener(|app, _, _, cx| {
-                app.settings.foreground_responsiveness.boost_foreground_app = false;
-                cx.notify();
-            })),
+        let boost_enabled = self.settings.foreground_responsiveness.boost_foreground_app;
+        let boost_options: [Option<ForegroundBoostPriority>; 4] = [
+            None,
+            Some(ForegroundBoostPriority::ALL[0]),
+            Some(ForegroundBoostPriority::ALL[1]),
+            Some(ForegroundBoostPriority::ALL[2]),
+        ];
+        let dropdown = self.render_dropdown_select(
+            "foreground-boost-priority-select",
+            if boost_enabled {
+                foreground_boost_priority_label(selected)
+            } else {
+                t!("common.none").to_string()
+            },
+            true,
+            DropdownSelectWidth::Standard,
+            boost_options.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for option in boost_options {
+                    let selected_option = match option {
+                        Some(priority) => boost_enabled && selected == priority,
+                        None => !boost_enabled,
+                    };
+                    let label = option
+                        .map(foreground_boost_priority_label)
+                        .unwrap_or_else(|| t!("common.none").to_string());
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("foreground-boost-option-{option:?}")),
+                            label,
+                            selected_option,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match option {
+                                Some(priority) => {
+                                    app.settings.foreground_responsiveness.boost_foreground_app =
+                                        true;
+                                    app.settings.foreground_responsiveness.foreground_boost =
+                                        priority;
+                                }
+                                None => {
+                                    app.settings.foreground_responsiveness.boost_foreground_app =
+                                        false;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
         );
-        for priority in ForegroundBoostPriority::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("foreground-boost-{priority:?}"),
-                    foreground_boost_priority_label(priority),
-                    self.settings.foreground_responsiveness.boost_foreground_app
-                        && selected == priority,
-                )
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings.foreground_responsiveness.boost_foreground_app = true;
-                    app.settings.foreground_responsiveness.foreground_boost = priority;
-                    cx.notify();
-                })),
-            );
-        }
         setting_action_card_with_help(
             "foreground-boost-priority",
             t!("responsiveness.foreground_boost").to_string(),
             t!("responsiveness.foreground_boost_help").to_string(),
-            row.into_any_element(),
+            dropdown,
         )
         .into_any_element()
     }
 
-    fn render_auto_balance_affinity_mode_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_auto_balance_affinity_mode_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = self
             .settings
             .foreground_responsiveness
             .auto_balance_affinity_mode;
-        let mut row = h_flex().gap_1().flex_wrap();
-        for mode in EcoQosCpuRestrictionMode::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("responsiveness-auto-affinity-mode-{mode:?}"),
-                    efficiency_cpu_restriction_mode_label(mode),
-                    selected == mode,
-                )
-                .tooltip(efficiency_cpu_restriction_mode_help(mode))
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_affinity_mode = mode;
-                    cx.notify();
-                })),
-            );
-        }
-        row.into_any_element()
+        self.render_dropdown_select(
+            "responsiveness-auto-affinity-mode",
+            efficiency_cpu_restriction_mode_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            EcoQosCpuRestrictionMode::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in EcoQosCpuRestrictionMode::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "responsiveness-auto-affinity-mode-option-{mode:?}"
+                            )),
+                            efficiency_cpu_restriction_mode_label(mode),
+                            selected == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_affinity_mode = mode;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
     }
 
     #[allow(dead_code)]
-    fn render_responsiveness_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_responsiveness_rules(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut list = rule_list();
         for (index, rule) in self
             .settings
@@ -6470,7 +6757,7 @@ impl PowerLeafApp {
             let card_target = RuleCardTarget::Responsiveness(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
-                static_rule_title(&process),
+                self.process_rule_title(&process, cx),
                 rule_enable_checkbox(
                     format!("responsiveness-rule-enabled-{index}"),
                     rule.enabled,
@@ -6498,6 +6785,7 @@ impl PowerLeafApp {
                     .child(rule_card_body_row(vec![self.render_priority_selector(
                         index,
                         rule.priority,
+                        window,
                         cx,
                     )]))
                     .child(rule_card_body_action(
@@ -6603,29 +6891,47 @@ impl PowerLeafApp {
         &self,
         index: usize,
         selected_priority: ProcessPriority,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = h_flex().gap_1().flex_wrap();
-        for priority in ProcessPriority::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("responsiveness-priority-{index}-{priority:?}"),
-                    process_priority_label(priority),
-                    selected_priority == priority,
-                )
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if let Some(rule) = app.settings.foreground_responsiveness.rules.get_mut(index)
-                    {
-                        rule.priority = priority;
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        let dropdown = self.render_dropdown_select(
+            format!("responsiveness-priority-{index}"),
+            process_priority_label(selected_priority),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessPriority::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessPriority::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "responsiveness-priority-{index}-option-{priority:?}"
+                            )),
+                            process_priority_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) =
+                                app.settings.foreground_responsiveness.rules.get_mut(index)
+                            {
+                                rule.priority = priority;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
         rule_action_row(
             format!("responsiveness-priority-row-{index}"),
             t!("responsiveness.background_priority").to_string(),
-            row.into_any_element(),
+            dropdown,
         )
         .into_any_element()
     }
@@ -6688,7 +6994,7 @@ impl PowerLeafApp {
                             })),
                     ),
             )
-            .child(self.render_io_priority_rules(cx));
+            .child(self.render_io_priority_rules(window, cx));
 
         page_shell(Page::IoPriority, cx)
             .child(feature_toggle_switch_with_help(
@@ -6705,7 +7011,7 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_io_priority_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_io_priority_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list();
         for (index, rule) in self.settings.io_priority.rules.iter().enumerate() {
             let process = rule.process_name.clone();
@@ -6739,7 +7045,7 @@ impl PowerLeafApp {
             let card_target = RuleCardTarget::IoPriority(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
-                static_rule_title(&process),
+                self.process_rule_title(&process, cx),
                 rule_enable_checkbox(
                     format!("io-priority-rule-enabled-{index}"),
                     rule.enabled,
@@ -6765,6 +7071,7 @@ impl PowerLeafApp {
                     .child(rule_card_body_row(vec![self.render_io_priority_selector(
                         index,
                         rule.priority,
+                        window,
                         cx,
                     )]))
                     .child(rule_card_body_action(
@@ -6797,29 +7104,43 @@ impl PowerLeafApp {
         &self,
         index: usize,
         selected_priority: ProcessIoPriority,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = h_flex().gap_1().flex_wrap();
-        for priority in ProcessIoPriority::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("io-priority-{index}-{priority:?}"),
-                    process_io_priority_label(priority),
-                    selected_priority == priority,
-                )
-                .tooltip(process_io_priority_help(priority))
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if let Some(rule) = app.settings.io_priority.rules.get_mut(index) {
-                        rule.priority = priority;
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        let dropdown = self.render_dropdown_select(
+            format!("io-priority-{index}"),
+            process_io_priority_label(selected_priority),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessIoPriority::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessIoPriority::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("io-priority-{index}-option-{priority:?}")),
+                            process_io_priority_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.io_priority.rules.get_mut(index) {
+                                rule.priority = priority;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
         rule_action_row(
             format!("io-priority-row-{index}"),
             t!("io_priority.priority").to_string(),
-            row.into_any_element(),
+            dropdown,
         )
         .into_any_element()
     }
@@ -7190,7 +7511,7 @@ impl PowerLeafApp {
                             })),
                     ),
             )
-            .child(self.render_affinity_rules(cx));
+            .child(self.render_affinity_rules(window, cx));
 
         let help = tooltip_lines(vec![
             t!("affinity.intro_1").to_string(),
@@ -7213,7 +7534,7 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_affinity_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_affinity_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list();
         for (index, rule) in self.settings.cpu_affinity.rules.iter().enumerate() {
             let process = rule.process_name.clone();
@@ -7221,7 +7542,7 @@ impl PowerLeafApp {
             let card_target = RuleCardTarget::Affinity(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
-                static_rule_title(&process),
+                self.process_rule_title(&process, cx),
                 rule_enable_checkbox(
                     format!("affinity-rule-enabled-{index}"),
                     rule.enabled,
@@ -7237,8 +7558,8 @@ impl PowerLeafApp {
                 cx,
             );
             if !collapsed {
-                card = card
-                    .child(rule_card_body_row(vec![rule_action_row(
+                card =
+                    card.child(rule_card_body_row(vec![rule_action_row(
                         format!("affinity-rule-status-{index}"),
                         t!("common.status").to_string(),
                         h_flex()
@@ -7252,31 +7573,30 @@ impl PowerLeafApp {
                             .into_any_element(),
                     )
                     .into_any_element()]))
-                    .child(rule_card_body_row(vec![
-                        self.render_affinity_mode_selector(index, rule.mode, cx)
-                    ]))
-                    .when(rule.mode != CpuAffinityMode::EfficiencyOff, |card| {
-                        card.child(rule_card_body_row(vec![
-                            self.render_affinity_core_selector(index, rule.core_mask, cx)
+                        .child(rule_card_body_row(vec![
+                            self.render_affinity_mode_selector(index, rule.mode, window, cx)
                         ]))
-                    })
-                    .child(rule_card_body_action(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-affinity-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener({
-                            let card_target = card_target.clone();
-                            move |app, _, _, cx| {
-                                if index < app.settings.cpu_affinity.rules.len() {
-                                    app.settings.cpu_affinity.rules.remove(index);
+                        .when(rule.mode != CpuAffinityMode::EfficiencyOff, |card| {
+                            card.child(rule_card_body_row(vec![self
+                                .render_affinity_core_selector(index, rule.core_mask, window, cx)]))
+                        })
+                        .child(rule_card_body_action(
+                            danger_control_button(Button::new(SharedString::from(format!(
+                                "remove-affinity-{index}"
+                            ))))
+                            .label(t!("common.remove").to_string())
+                            .on_click(cx.listener({
+                                let card_target = card_target.clone();
+                                move |app, _, _, cx| {
+                                    if index < app.settings.cpu_affinity.rules.len() {
+                                        app.settings.cpu_affinity.rules.remove(index);
+                                    }
+                                    app.expanded_rule_cards.remove(&card_target);
+                                    cx.notify();
                                 }
-                                app.expanded_rule_cards.remove(&card_target);
-                                cx.notify();
-                            }
-                        }))
-                        .into_any_element(),
-                    ));
+                            }))
+                            .into_any_element(),
+                        ));
             }
             list = list.child(card);
         }
@@ -7290,43 +7610,43 @@ impl PowerLeafApp {
         &self,
         index: usize,
         selected_mode: CpuAffinityMode,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = h_flex().gap_1().flex_wrap();
-        for mode in CpuAffinityMode::ALL {
-            let (label, tooltip) = match mode {
-                CpuAffinityMode::Hard => (
-                    t!("affinity.mode_hard").to_string(),
-                    t!("affinity.mode_hard_help").to_string(),
-                ),
-                CpuAffinityMode::Soft => (
-                    t!("affinity.mode_soft").to_string(),
-                    t!("affinity.mode_soft_help").to_string(),
-                ),
-                CpuAffinityMode::EfficiencyOff => (
-                    t!("affinity.mode_efficiency_off").to_string(),
-                    t!("affinity.mode_efficiency_off_help").to_string(),
-                ),
-            };
-            row = row.child(
-                toggle_button(
-                    format!("affinity-mode-{index}-{mode:?}"),
-                    label,
-                    selected_mode == mode,
-                )
-                .tooltip(tooltip)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
-                        rule.mode = mode;
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        let dropdown = self.render_dropdown_select(
+            format!("affinity-mode-{index}"),
+            cpu_affinity_mode_label(selected_mode),
+            true,
+            DropdownSelectWidth::Standard,
+            CpuAffinityMode::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in CpuAffinityMode::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("affinity-mode-{index}-option-{mode:?}")),
+                            cpu_affinity_mode_label(mode),
+                            selected_mode == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                                rule.mode = mode;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
         rule_action_row(
             format!("affinity-mode-row-{index}"),
             t!("affinity.mode").to_string(),
-            row.into_any_element(),
+            dropdown,
         )
         .into_any_element()
     }
@@ -7335,6 +7655,7 @@ impl PowerLeafApp {
         &self,
         index: usize,
         core_mask: u64,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let processors = affinity::logical_processors();
@@ -7345,51 +7666,69 @@ impl PowerLeafApp {
             affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency);
         let no_smt_mask = affinity_processors_no_smt_mask(&processors);
 
-        let mut presets = h_flex().gap_1().flex_wrap();
-        for (label, mask, tooltip, enabled) in [
-            (
-                t!("affinity.all").to_string(),
-                all_mask,
-                t!("affinity.all_help").to_string(),
-                all_mask != 0,
-            ),
+        let preset_options = vec![
+            (t!("affinity.all").to_string(), all_mask, all_mask != 0),
             (
                 t!("affinity.p_cores").to_string(),
                 performance_mask,
-                t!("affinity.p_cores_help").to_string(),
                 performance_mask != 0,
             ),
             (
                 t!("affinity.e_cores").to_string(),
                 efficiency_mask,
-                t!("affinity.e_cores_help").to_string(),
                 efficiency_mask != 0,
             ),
             (
                 t!("affinity.no_smt").to_string(),
                 no_smt_mask,
-                t!("affinity.no_smt_help").to_string(),
                 no_smt_mask != 0 && no_smt_mask != all_mask,
             ),
-        ] {
-            presets = presets.child(
-                toggle_button(
-                    format!("affinity-core-preset-{index}-{label}"),
-                    label,
-                    enabled && core_mask == mask,
-                )
-                .tooltip(tooltip)
-                .disabled(!enabled)
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if mask != 0 {
-                        if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
-                            rule.core_mask = mask;
-                        }
-                        cx.notify();
-                    }
-                })),
-            );
-        }
+        ];
+        let selected_preset_label = preset_options
+            .iter()
+            .find(|(_, mask, enabled)| *enabled && core_mask == *mask)
+            .map(|(label, _, _)| label.clone())
+            .unwrap_or_else(|| "Custom".to_owned());
+        let preset_count = preset_options.len();
+        let presets_dropdown = self.render_dropdown_select(
+            format!("affinity-core-preset-{index}"),
+            selected_preset_label,
+            true,
+            DropdownSelectWidth::Standard,
+            preset_count,
+            window,
+            cx,
+            move |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for (option_index, (label, mask, enabled)) in preset_options.into_iter().enumerate()
+                {
+                    let row = dropdown_option_row(
+                        SharedString::from(format!(
+                            "affinity-core-preset-{index}-option-{option_index}"
+                        )),
+                        label,
+                        enabled && core_mask == mask,
+                        cx,
+                    )
+                    .when(!enabled, |row| row.opacity(0.48).cursor_default());
+                    let row = if enabled {
+                        row.on_click(cx.listener(move |app, _, _, cx| {
+                            if mask != 0 {
+                                if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                                    rule.core_mask = mask;
+                                }
+                                app.active_power_plan_picker = None;
+                                cx.notify();
+                            }
+                        }))
+                    } else {
+                        row
+                    };
+                    options = options.child(row);
+                }
+                options
+            },
+        );
 
         let core_grid = self.render_core_tile_grid(
             &processors,
@@ -7407,7 +7746,7 @@ impl PowerLeafApp {
                 rule_action_row(
                     format!("affinity-core-presets-row-{index}"),
                     t!("affinity.core_presets").to_string(),
-                    presets.into_any_element(),
+                    presets_dropdown,
                 )
                 .into_any_element(),
             )
@@ -7745,146 +8084,167 @@ impl PowerLeafApp {
         let control_id = SharedString::from(format!("{picker_id}-control"));
         let toggle_picker_id = picker_id.clone();
 
-        v_flex()
-            .w(px(76.0))
-            .min_w(px(0.0))
-            .relative()
-            .min_h(px(32.0))
+        dropdown_select_container(DropdownSelectWidth::Compact)
             .child(
-                h_flex()
-                    .id(control_id)
-                    .h(px(32.0))
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .rounded_sm()
-                    .bg(rgb(dropdown_control_color()))
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                    .when(enabled, |style| style.cursor_pointer())
-                    .when(!enabled, |style| style.cursor_default().opacity(0.48))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(selected.label().to_string()),
-                    )
-                    .child(dropdown_chevron(cx))
-                    .when(enabled, |control| {
-                        control.on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                            app.active_power_plan_picker =
-                                (app.active_power_plan_picker.as_deref()
-                                    != Some(toggle_picker_id.as_str()))
-                                .then_some(toggle_picker_id.clone());
-                            cx.notify();
-                        }))
-                    }),
+                dropdown_select_control(
+                    control_id,
+                    selected.label().to_string(),
+                    enabled,
+                    is_open,
+                    cx,
+                )
+                .when(enabled, |control| {
+                    control.on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                            != Some(toggle_picker_id.as_str()))
+                        .then_some(toggle_picker_id.clone());
+                        cx.notify();
+                    }))
+                }),
             )
             .child(dropdown_anchor_sensor(
                 picker_id.clone(),
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(if is_open {
-                deferred(
-                    dropdown_popup_layer(placement)
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        }))
-                        .child(options),
-                )
-                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-                .into_any_element()
-            } else {
-                div().into_any_element()
-            })
+            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
             .into_any_element()
     }
 
-    fn render_theme_selector(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = h_flex().gap_1().flex_wrap();
-        for mode in AppThemeMode::ALL {
-            let label = match mode {
-                AppThemeMode::System => t!("theme.system"),
-                AppThemeMode::Light => t!("theme.light"),
-                AppThemeMode::Dark => t!("theme.dark"),
-            };
-            row = row.child(
-                toggle_button(
-                    format!("theme-mode-{:?}", mode),
-                    label.to_string(),
-                    self.settings.general.theme_mode == mode,
-                )
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    app.settings.general.theme_mode = mode;
-                    apply_appearance_settings(&app.settings.general, window, cx);
-                    cx.notify();
-                })),
-            );
-        }
-        labeled_element(&t!("common.theme"), row.into_any_element()).into_any_element()
+    fn render_theme_selector(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.settings.general.theme_mode;
+        let selected_label = theme_mode_label(selected);
+        let dropdown = self.render_dropdown_select(
+            "theme-mode",
+            selected_label,
+            true,
+            DropdownSelectWidth::Standard,
+            AppThemeMode::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in AppThemeMode::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("theme-mode-option-{mode:?}")),
+                            theme_mode_label(mode),
+                            selected == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(
+                            move |app, _, window, cx| {
+                                app.settings.general.theme_mode = mode;
+                                app.active_power_plan_picker = None;
+                                apply_appearance_settings(&app.settings.general, window, cx);
+                                cx.notify();
+                            },
+                        )),
+                    );
+                }
+                options
+            },
+        );
+
+        setting_action_card("theme-mode-card", t!("common.theme").to_string(), dropdown)
+            .into_any_element()
     }
 
-    fn render_language_selector(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = h_flex().gap_1().flex_wrap();
-        for language in AppLanguage::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("language-{:?}", language),
-                    language.native_label().to_string(),
-                    self.settings.general.language == language,
-                )
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings.general.language = language;
-                    apply_language(language);
-                    cx.notify();
-                })),
-            );
-        }
-        labeled_element(&t!("common.language"), row.into_any_element()).into_any_element()
+    fn render_language_selector(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.settings.general.language;
+        let dropdown = self.render_dropdown_select(
+            "language",
+            selected.native_label().to_string(),
+            true,
+            DropdownSelectWidth::Standard,
+            AppLanguage::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for language in AppLanguage::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("language-option-{language:?}")),
+                            language.native_label().to_string(),
+                            selected == language,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.general.language = language;
+                            app.active_power_plan_picker = None;
+                            apply_language(language);
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
+
+        setting_action_card("language-card", t!("common.language").to_string(), dropdown)
+            .into_any_element()
     }
 
-    fn render_accent_selector(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut source_row = h_flex().gap_1().flex_wrap();
-        for source in AccentColorSource::ALL {
-            let label = match source {
-                AccentColorSource::Windows => t!("theme.system"),
-                AccentColorSource::Custom => t!("accent.custom"),
-            };
-            source_row = source_row.child(
-                toggle_button(
-                    format!("accent-source-{:?}", source),
-                    label.to_string(),
-                    self.settings.general.accent.source == source,
-                )
-                .on_click(cx.listener(move |app, _, window, cx| {
-                    app.settings.general.accent.source = source;
-                    apply_appearance_settings(&app.settings.general, window, cx);
-                    cx.notify();
-                })),
-            );
-        }
-
-        let mut palette = h_flex().gap_2().flex_wrap();
+    fn render_accent_selector(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let selected_source = self.settings.general.accent.source;
+        let accent_target = SettingGroupTarget::AccentColor;
+        let collapsed = self.is_setting_group_collapsed(accent_target);
+        let source_dropdown = self.render_dropdown_select(
+            "accent-source",
+            accent_source_label(selected_source),
+            true,
+            DropdownSelectWidth::Standard,
+            AccentColorSource::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for source in AccentColorSource::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("accent-source-option-{source:?}")),
+                            accent_source_label(source),
+                            selected_source == source,
+                            cx,
+                        )
+                        .on_click(cx.listener(
+                            move |app, _, window, cx| {
+                                app.settings.general.accent.source = source;
+                                if source == AccentColorSource::Custom {
+                                    app.expanded_setting_groups
+                                        .insert(SettingGroupTarget::AccentColor);
+                                } else {
+                                    app.expanded_setting_groups
+                                        .remove(&SettingGroupTarget::AccentColor);
+                                }
+                                app.active_power_plan_picker = None;
+                                apply_appearance_settings(&app.settings.general, window, cx);
+                                cx.notify();
+                            },
+                        )),
+                    );
+                }
+                options
+            },
+        );
+        let mut color_palette = h_flex().gap_2().flex_wrap();
         for color in ACCENT_PALETTE {
             let selected = self.settings.general.accent.source == AccentColorSource::Custom
                 && self.settings.general.accent.custom_color == color;
-            palette = palette.child(accent_swatch(color, selected).on_click(cx.listener(
-                move |app, _, window, cx| {
+            color_palette = color_palette.child(accent_swatch(color, selected).on_click(
+                cx.listener(move |app, _, window, cx| {
                     app.settings.general.accent.source = AccentColorSource::Custom;
                     app.settings.general.accent.custom_color = color;
+                    app.expanded_setting_groups
+                        .insert(SettingGroupTarget::AccentColor);
                     apply_appearance_settings(&app.settings.general, window, cx);
                     cx.notify();
-                },
-            )));
+                }),
+            ));
         }
 
+        let mut recent_colors = h_flex().gap_2().flex_wrap();
+        let mut has_recent_colors = false;
         for color in self
             .settings
             .general
@@ -7894,36 +8254,125 @@ impl PowerLeafApp {
             .copied()
             .filter(|color| !ACCENT_PALETTE.contains(color))
         {
+            has_recent_colors = true;
             let selected = self.settings.general.accent.source == AccentColorSource::Custom
                 && self.settings.general.accent.custom_color == color;
-            palette = palette.child(accent_swatch(color, selected).on_click(cx.listener(
-                move |app, _, window, cx| {
+            recent_colors = recent_colors.child(accent_swatch(color, selected).on_click(
+                cx.listener(move |app, _, window, cx| {
                     app.settings.general.accent.source = AccentColorSource::Custom;
                     app.settings.general.accent.custom_color = color;
+                    app.expanded_setting_groups
+                        .insert(SettingGroupTarget::AccentColor);
                     apply_appearance_settings(&app.settings.general, window, cx);
                     cx.notify();
-                },
-            )));
+                }),
+            ));
         }
 
-        v_flex()
+        let mut palette_content = v_flex().w_full().min_w(px(0.0)).gap_4();
+        if has_recent_colors {
+            palette_content = palette_content.child(accent_color_group(
+                t!("accent.recent_colors").to_string(),
+                recent_colors.into_any_element(),
+            ));
+        }
+        palette_content = palette_content.child(accent_color_group(
+            t!("accent.color_palette").to_string(),
+            color_palette.into_any_element(),
+        ));
+        let title_toggle_target = accent_target;
+        let chevron_toggle_target = accent_target;
+        let chevron_icon = if collapsed {
+            NavIcon::ChevronRight
+        } else {
+            NavIcon::ChevronDown
+        };
+
+        let mut accent_card = v_flex()
+            .id("accent-color-card")
             .w_full()
             .min_w(px(0.0))
-            .gap_2()
-            .child(labeled_element(
-                &t!("accent.source"),
-                source_row.into_any_element(),
-            ))
-            .child(labeled_element(
-                &t!("accent.palette"),
-                palette.into_any_element(),
-            ))
-            .into_any_element()
+            .overflow_hidden()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(border_color()))
+            .bg(rgb(settings_card_color()))
+            .text_color(rgb(primary_text_color()))
+            .text_size(px(TEXT_BODY_SIZE))
+            .line_height(px(TEXT_BODY_LINE_HEIGHT))
+            .child(
+                h_flex()
+                    .id("accent-source-card")
+                    .w_full()
+                    .min_w(px(0.0))
+                    .min_h(px(58.0))
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .py_3()
+                    .px_4()
+                    .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                    .child(
+                        div()
+                            .id("accent-color-title")
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.toggle_setting_group(title_toggle_target, cx);
+                            }))
+                            .truncate()
+                            .child(t!("accent.source").to_string()),
+                    )
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .child(source_dropdown)
+                            .child(
+                                div()
+                                    .id("accent-color-chevron")
+                                    .w(px(28.0))
+                                    .h(px(24.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .flex_shrink_0()
+                                    .rounded_sm()
+                                    .cursor_pointer()
+                                    .text_color(rgb(dim_text_color()))
+                                    .opacity(0.72)
+                                    .hover(|style| style.opacity(1.0))
+                                    .on_click(cx.listener(move |app, _, _, cx| {
+                                        app.toggle_setting_group(chevron_toggle_target, cx);
+                                    }))
+                                    .child(Icon::new(chevron_icon).with_size(px(16.0))),
+                            ),
+                    ),
+            );
+
+        if !collapsed {
+            accent_card = accent_card.child(
+                div()
+                    .id("accent-palette-subcard")
+                    .w_full()
+                    .min_w(px(0.0))
+                    .border_t_1()
+                    .border_color(rgb(border_color()))
+                    .py_3()
+                    .px_4()
+                    .child(palette_content),
+            );
+        }
+
+        accent_card.into_any_element()
     }
 
     fn render_powerleaf_behaviour_page(
         &self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         page_shell(Page::Settings, cx)
@@ -7976,67 +8425,92 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
+            .child(section_title_text(t!("settings.advanced").to_string()))
+            .child(self.render_failure_suppression_threshold_setting(cx))
+            .child(self.render_action_log_mode_selector(window, cx))
+            .child(section_title_text(
+                t!("settings.settings_files").to_string(),
+            ))
             .child(
-                section_card(&t!("settings.advanced"))
-                    .child(self.render_failure_suppression_threshold_setting(cx))
-                    .child(self.render_action_log_mode_selector(cx)),
-            )
-            .child(
-                section_card(&t!("settings.settings_files")).child(
-                    h_flex()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(
-                            Button::new("export-settings")
-                                .small()
-                                .label(t!("settings.export_settings").to_string())
-                                .on_click(cx.listener(|app, _, _, cx| {
-                                    app.export_settings_toml();
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("import-settings")
-                                .small()
-                                .label(t!("settings.import_settings").to_string())
-                                .on_click(cx.listener(|app, _, window, cx| {
-                                    app.import_settings_toml(window, cx);
-                                    cx.notify();
-                                })),
-                        ),
-                ),
+                h_flex()
+                    .gap_2()
+                    .flex_wrap()
+                    .child(
+                        Button::new("export-settings")
+                            .small()
+                            .label(t!("settings.export_settings").to_string())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.export_settings_toml();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("import-settings")
+                            .small()
+                            .label(t!("settings.import_settings").to_string())
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.import_settings_toml(window, cx);
+                                cx.notify();
+                            })),
+                    ),
             )
             .into_any_element()
     }
 
-    fn render_settings_appearance_page(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_settings_appearance_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         page_shell(Page::SettingsAppearance, cx)
-            .child(self.render_theme_selector(cx))
-            .child(self.render_accent_selector(cx))
-            .child(self.render_language_selector(cx))
+            .child(self.render_theme_selector(window, cx))
+            .child(self.render_accent_selector(window, cx))
+            .child(self.render_language_selector(window, cx))
             .into_any_element()
     }
 
-    fn render_action_log_mode_selector(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_action_log_mode_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let selected = self.settings.advanced.action_log_mode;
-        let mut options = h_flex().w_full().min_w(px(0.0)).gap_2().flex_wrap();
-        for mode in ActionLogMode::ALL {
-            options = options.child(
-                action_log_mode_option(
-                    format!("action-log-mode-{mode:?}"),
-                    action_log_mode_label(mode),
-                    action_log_mode_help(mode),
-                    selected == mode,
-                )
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.settings.advanced.action_log_mode = mode;
-                    cx.notify();
-                })),
-            );
-        }
+        let dropdown = self.render_dropdown_select(
+            "action-log-mode",
+            action_log_mode_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            ActionLogMode::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in ActionLogMode::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("action-log-mode-option-{mode:?}")),
+                            action_log_mode_label(mode),
+                            selected == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.advanced.action_log_mode = mode;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
 
-        labeled_element(&t!("settings.action_log_mode"), options.into_any_element())
-            .into_any_element()
+        setting_action_card_with_help(
+            "action-log-mode-card",
+            t!("settings.action_log_mode").to_string(),
+            action_log_mode_help(selected),
+            dropdown,
+        )
+        .into_any_element()
     }
 
     fn render_failure_suppression_threshold_setting(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -8274,61 +8748,27 @@ impl PowerLeafApp {
 
         let current_label =
             win32_priority_separation_field_label(field, self.win32_priority_separation_edit_value);
-        v_flex()
-            .w_full()
-            .min_w(px(0.0))
-            .relative()
-            .min_h(px(32.0))
+        dropdown_select_container(DropdownSelectWidth::Standard)
             .child(
-                h_flex()
-                    .id(SharedString::from(format!("{picker_id}-control")))
-                    .h(px(32.0))
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .rounded_sm()
-                    .bg(rgb(dropdown_control_color()))
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(current_label),
-                    )
-                    .child(dropdown_chevron(cx))
-                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                            != Some(picker_id))
-                        .then_some(picker_id.to_owned());
-                        cx.notify();
-                    })),
+                dropdown_select_control(
+                    SharedString::from(format!("{picker_id}-control")),
+                    current_label,
+                    true,
+                    is_open,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                        != Some(picker_id))
+                    .then_some(picker_id.to_owned());
+                    cx.notify();
+                })),
             )
             .child(dropdown_anchor_sensor(
                 picker_id,
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(if is_open {
-                deferred(
-                    dropdown_popup_layer(placement)
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        }))
-                        .child(options),
-                )
-                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-                .into_any_element()
-            } else {
-                Empty.into_any_element()
-            })
+            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
             .into_any_element()
     }
     fn refresh_win32_priority_separation(&mut self) {
@@ -8473,26 +8913,45 @@ impl PowerLeafApp {
     ) -> AnyElement {
         self.sync_processor_power_slider_states(window, cx);
         let has_current_plan = self.current_plan.is_some();
-        let mut preset_row = h_flex().gap_1().flex_wrap();
-        for preset in [
+        let processor_power_presets = [
             ProcessorPowerPreset::Performance,
             ProcessorPowerPreset::Balanced,
             ProcessorPowerPreset::Saver,
-        ] {
-            let selected = self.processor_power_matches_preset(preset);
-            preset_row = preset_row.child(
-                toggle_button(
-                    SharedString::from(format!("processor-power-preset-{preset:?}")),
-                    processor_power_preset_label(preset),
-                    selected,
-                )
-                .tooltip(processor_power_preset_help(preset))
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.fill_processor_power_preset(preset);
-                    cx.notify();
-                })),
-            );
-        }
+        ];
+        let selected_preset = processor_power_presets
+            .iter()
+            .copied()
+            .find(|preset| self.processor_power_matches_preset(*preset));
+        let preset_dropdown = self.render_dropdown_select(
+            "processor-power-preset",
+            selected_preset
+                .map(processor_power_preset_label)
+                .unwrap_or_else(|| "Custom".to_owned()),
+            true,
+            DropdownSelectWidth::Standard,
+            processor_power_presets.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for preset in processor_power_presets {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("processor-power-preset-option-{preset:?}")),
+                            processor_power_preset_label(preset),
+                            selected_preset == Some(preset),
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.fill_processor_power_preset(preset);
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
 
         v_flex()
             .w_full()
@@ -8513,9 +8972,10 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(labeled_element(
-                &t!("processor_power.presets"),
-                preset_row.into_any_element(),
+            .child(setting_action_card(
+                "processor-power-presets-card",
+                t!("processor_power.presets").to_string(),
+                preset_dropdown,
             ))
             .child(
                 v_flex()
@@ -8780,66 +9240,33 @@ impl PowerLeafApp {
                 )
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                     app.set_processor_power_boost_mode(source, boost_mode);
+                    app.active_power_plan_picker = None;
                     cx.notify();
                 })),
             );
         }
 
-        v_flex()
-            .w_full()
-            .min_w(px(0.0))
-            .relative()
-            .min_h(px(32.0))
+        dropdown_select_container(DropdownSelectWidth::Wide)
             .child(
-                h_flex()
-                    .id(SharedString::from(format!("{picker_id}-control")))
-                    .h(px(32.0))
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .rounded_sm()
-                    .bg(rgb(dropdown_control_color()))
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(processor_boost_mode_label(selected)),
-                    )
-                    .child(dropdown_chevron(cx))
-                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                            != Some(picker_id))
-                        .then_some(picker_id.to_owned());
-                        cx.notify();
-                    })),
+                dropdown_select_control(
+                    SharedString::from(format!("{picker_id}-control")),
+                    processor_boost_mode_label(selected),
+                    true,
+                    is_open,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                        != Some(picker_id))
+                    .then_some(picker_id.to_owned());
+                    cx.notify();
+                })),
             )
             .child(dropdown_anchor_sensor(
                 picker_id,
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(if is_open {
-                deferred(
-                    dropdown_popup_layer(placement)
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        }))
-                        .child(options),
-                )
-                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-                .into_any_element()
-            } else {
-                Empty.into_any_element()
-            })
+            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
             .into_any_element()
     }
 
@@ -8887,100 +9314,66 @@ impl PowerLeafApp {
             }
         }
 
-        let picker = v_flex()
-            .w_full()
-            .min_w(px(0.0))
-            .relative()
+        let target_plan_select = dropdown_select_container(DropdownSelectWidth::Wide)
             .child(
-                h_flex()
-                    .id("processor-power-target-plan-card")
-                    .min_h(px(58.0))
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .py_3()
-                    .px_4()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(rgb(border_color()))
-                    .bg(rgb(settings_card_color()))
-                    .text_color(rgb(primary_text_color()))
-                    .text_size(px(TEXT_BODY_SIZE))
-                    .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                    .hover(|style| style.bg(rgb(settings_card_hover_color())))
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .child(t!("processor_power.target_plan").to_string()),
-                            )
-                            .child(title_info_button(
-                                "processor-power-target-plan-info",
-                                t!("processor_power.help").to_string(),
-                            )),
-                    )
-                    .child(
-                        h_flex()
-                            .id("processor-power-target-plan-control")
-                            .h(px(32.0))
-                            .w(px(280.0))
-                            .max_w(px(360.0))
-                            .min_w(px(180.0))
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .px_3()
-                            .rounded_sm()
-                            .bg(rgb(dropdown_control_color()))
-                            .text_size(px(TEXT_CONTROL_SIZE))
-                            .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                            .text_color(cx.theme().foreground)
-                            .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                            .cursor_pointer()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .truncate()
-                                    .child(selected_text),
-                            )
-                            .child(dropdown_chevron(cx))
-                            .on_click(cx.listener(|app, _: &gpui::ClickEvent, _, cx| {
-                                app.refresh_power_plans();
-                                app.active_power_plan_picker =
-                                    (app.active_power_plan_picker.as_deref()
-                                        != Some("processor-power-target-plan"))
-                                    .then_some("processor-power-target-plan".to_owned());
-                                cx.notify();
-                            })),
-                    ),
+                dropdown_select_control(
+                    "processor-power-target-plan-control",
+                    selected_text,
+                    true,
+                    is_open,
+                    cx,
+                )
+                .on_click(cx.listener(|app, _: &gpui::ClickEvent, _, cx| {
+                    app.refresh_power_plans();
+                    app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                        != Some("processor-power-target-plan"))
+                    .then_some("processor-power-target-plan".to_owned());
+                    cx.notify();
+                })),
             )
             .child(dropdown_anchor_sensor(
                 id,
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(if is_open {
-                deferred(
-                    dropdown_popup_layer(placement)
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        }))
-                        .child(options),
+            .child(dropdown_popup_or_empty(is_open, placement, options, cx));
+
+        let picker = v_flex().w_full().min_w(px(0.0)).relative().child(
+            h_flex()
+                .id("processor-power-target-plan-card")
+                .min_h(px(58.0))
+                .w_full()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .py_3()
+                .px_4()
+                .rounded_sm()
+                .border_1()
+                .border_color(rgb(border_color()))
+                .bg(rgb(settings_card_color()))
+                .text_color(rgb(primary_text_color()))
+                .text_size(px(TEXT_BODY_SIZE))
+                .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                .child(
+                    h_flex()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            div()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .child(t!("processor_power.target_plan").to_string()),
+                        )
+                        .child(title_info_button(
+                            "processor-power-target-plan-info",
+                            t!("processor_power.help").to_string(),
+                        )),
                 )
-                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-                .into_any_element()
-            } else {
-                div().into_any_element()
-            });
+                .child(target_plan_select),
+        );
 
         picker
     }
@@ -9001,7 +9394,7 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_action_log_page(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_action_log_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let help = tooltip_lines(vec![
             t!("action_log.intro_1").to_string(),
             t!("action_log.intro_2").to_string(),
@@ -9047,7 +9440,7 @@ impl PowerLeafApp {
                     .justify_between()
                     .gap_2()
                     .flex_wrap()
-                    .child(self.render_action_log_filter(cx))
+                    .child(self.render_action_log_filter(window, cx))
                     .child(
                         h_flex()
                             .gap_2()
@@ -9084,23 +9477,43 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_action_log_filter(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut row = h_flex().gap_1().flex_wrap();
-        for filter in ActionLogResultFilter::ALL {
-            row = row.child(
-                toggle_button(
-                    format!("action-log-filter-{filter:?}"),
-                    action_log_filter_label(filter),
-                    self.action_log_filter == filter,
-                )
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    app.action_log_filter = filter;
-                    cx.notify();
-                })),
-            );
-        }
+    fn render_action_log_filter(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.action_log_filter;
+        let dropdown = self.render_dropdown_select(
+            "action-log-filter",
+            action_log_filter_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            ActionLogResultFilter::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for filter in ActionLogResultFilter::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("action-log-filter-option-{filter:?}")),
+                            action_log_filter_label(filter),
+                            selected == filter,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.action_log_filter = filter;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
 
-        labeled_element(&t!("action_log.filter"), row.into_any_element()).into_any_element()
+        setting_action_card(
+            "action-log-filter-card",
+            t!("action_log.filter").to_string(),
+            dropdown,
+        )
+        .into_any_element()
     }
 
     fn render_inline_power_plan_picker(
@@ -9149,62 +9562,28 @@ impl PowerLeafApp {
         }
 
         let control_id = id.clone();
-        v_flex()
-            .w(px(240.0))
-            .min_w(px(180.0))
-            .relative()
-            .min_h(px(32.0))
+        dropdown_select_container(DropdownSelectWidth::Standard)
             .child(
-                h_flex()
-                    .id(SharedString::from(format!("{id}-select-control")))
-                    .h(px(32.0))
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .px_3()
-                    .rounded_sm()
-                    .bg(rgb(dropdown_control_color()))
-                    .text_size(px(TEXT_CONTROL_SIZE))
-                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                    .text_color(cx.theme().foreground)
-                    .hover(|style| style.bg(rgb(dropdown_control_hover_color())))
-                    .cursor_pointer()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(selected_text),
-                    )
-                    .child(dropdown_chevron(cx))
-                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                        app.refresh_power_plans();
-                        app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                            != Some(control_id.as_str()))
-                        .then_some(control_id.clone());
-                        cx.notify();
-                    })),
+                dropdown_select_control(
+                    SharedString::from(format!("{id}-select-control")),
+                    selected_text,
+                    true,
+                    is_open,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.refresh_power_plans();
+                    app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                        != Some(control_id.as_str()))
+                    .then_some(control_id.clone());
+                    cx.notify();
+                })),
             )
             .child(dropdown_anchor_sensor(
                 id.clone(),
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(if is_open {
-                deferred(
-                    dropdown_popup_layer(placement)
-                        .occlude()
-                        .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        }))
-                        .child(options),
-                )
-                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-                .into_any_element()
-            } else {
-                div().into_any_element()
-            })
+            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
             .into_any_element()
     }
 
@@ -9261,12 +9640,12 @@ impl PowerLeafApp {
             .process_candidates
             .iter()
             .filter(|process| {
-                query.is_empty() || process.to_ascii_lowercase().contains(query.as_str())
+                query.is_empty() || process.name.to_ascii_lowercase().contains(query.as_str())
             })
-            .filter(|process| process_target_can_accept(target, &self.settings, process))
+            .filter(|process| process_target_can_accept(target, &self.settings, &process.name))
             .cloned()
             .collect::<Vec<_>>();
-        matches.sort();
+        matches.sort_by(|left, right| left.name.cmp(&right.name));
 
         let mut suggestions = dropdown_surface(cx, max_height);
         if matches.is_empty() {
@@ -9280,24 +9659,56 @@ impl PowerLeafApp {
             ));
         }
         for (count, process) in matches.into_iter().enumerate() {
+            let process_name = process.name.clone();
             suggestions = suggestions.child(
-                dropdown_option_row(
+                dropdown_process_option_row(
                     SharedString::from(format!("{id}-{count}")),
-                    process.clone(),
+                    &process,
                     count == 0,
                     cx,
                 )
-                .on_click(cx.listener(
-                    move |app, _: &gpui::ClickEvent, window, cx| {
-                        app.apply_process_suggestion(target, &process, window, cx);
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        app.apply_process_suggestion(target, &process_name, window, cx);
                         window.blur();
                         cx.notify();
-                    },
-                )),
+                    }),
+                ),
             );
         }
 
         suggestions.into_any_element()
+    }
+
+    fn process_icon_for_name(&self, process: &str) -> Option<&Arc<Image>> {
+        let process = process.trim();
+        self.process_candidates
+            .iter()
+            .find(|candidate| candidate.name.eq_ignore_ascii_case(process))
+            .and_then(|candidate| candidate.icon.as_ref())
+    }
+
+    fn process_rule_title(&self, process: &str, cx: &mut Context<Self>) -> AnyElement {
+        h_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .items_center()
+            .gap_2()
+            .child(process_icon_cell(self.process_icon_for_name(process), cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(TEXT_HEADER_SIZE))
+                    .line_height(px(TEXT_HEADER_LINE_HEIGHT))
+                    .child(process.to_owned()),
+            )
+            .into_any_element()
     }
 
     fn render_process_picker(
@@ -9323,10 +9734,11 @@ impl PowerLeafApp {
             .filter(|process| {
                 normalized_query.is_empty()
                     || process
+                        .name
                         .to_ascii_lowercase()
                         .contains(normalized_query.as_str())
             })
-            .filter(|process| process_target_can_accept(target, &self.settings, process))
+            .filter(|process| process_target_can_accept(target, &self.settings, &process.name))
             .count()
             .max(1);
         let placement =
@@ -9471,6 +9883,29 @@ fn dropdown_anchor_sensor(
     .into_any_element()
 }
 
+#[derive(Clone, Copy)]
+enum DropdownSelectWidth {
+    Compact,
+    Standard,
+    Wide,
+}
+
+fn dropdown_select_container(width: DropdownSelectWidth) -> gpui::Div {
+    let width = match width {
+        DropdownSelectWidth::Compact => DROPDOWN_SELECT_COMPACT_WIDTH,
+        DropdownSelectWidth::Standard => DROPDOWN_SELECT_STANDARD_WIDTH,
+        DropdownSelectWidth::Wide => DROPDOWN_SELECT_WIDE_WIDTH,
+    };
+
+    v_flex()
+        .w(px(width))
+        .min_w(px(width))
+        .max_w(px(width))
+        .flex_shrink_0()
+        .relative()
+        .min_h(px(DROPDOWN_CONTROL_HEIGHT))
+}
+
 fn dropdown_popup_layer(placement: DropdownPlacement) -> gpui::Div {
     let layer = div().absolute().left(px(0.0)).right(px(0.0)).occlude();
 
@@ -9479,6 +9914,79 @@ fn dropdown_popup_layer(placement: DropdownPlacement) -> gpui::Div {
     } else {
         layer.top(px(DROPDOWN_MENU_OFFSET))
     }
+}
+
+fn dropdown_popup_or_empty(
+    is_open: bool,
+    placement: DropdownPlacement,
+    options: Scrollable<gpui::Div>,
+    cx: &mut Context<PowerLeafApp>,
+) -> AnyElement {
+    if is_open {
+        deferred(
+            dropdown_popup_layer(placement)
+                .occlude()
+                .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                    app.active_power_plan_picker = None;
+                    cx.notify();
+                }))
+                .child(options),
+        )
+        .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+        .into_any_element()
+    } else {
+        Empty.into_any_element()
+    }
+}
+
+fn dropdown_select_control(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    open: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let label: SharedString = label.into();
+    let border_color: Hsla = if enabled && open {
+        cx.theme().accent
+    } else {
+        rgb(dropdown_control_border_color()).into()
+    };
+    let hover_border_color: Hsla = if enabled && open {
+        cx.theme().accent
+    } else {
+        rgb(dropdown_control_hover_border_color()).into()
+    };
+
+    h_flex()
+        .id(id.into())
+        .h(px(DROPDOWN_CONTROL_HEIGHT))
+        .w_full()
+        .min_w(px(0.0))
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .px_3()
+        .rounded_sm()
+        .border_1()
+        .border_color(border_color)
+        .bg(rgb(dropdown_control_color()))
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+        .text_color(cx.theme().foreground)
+        .hover(move |style| {
+            if enabled {
+                style
+                    .bg(rgb(dropdown_control_hover_color()))
+                    .border_color(hover_border_color)
+            } else {
+                style
+            }
+        })
+        .when(enabled, |style| style.cursor_pointer())
+        .when(!enabled, |style| style.cursor_default().opacity(0.48))
+        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
+        .child(dropdown_chevron(cx))
 }
 
 fn dropdown_surface(cx: &mut Context<PowerLeafApp>, max_height: Pixels) -> Scrollable<gpui::Div> {
@@ -9528,6 +10036,65 @@ fn dropdown_option_row(
         .child(label)
 }
 
+fn dropdown_process_option_row(
+    id: SharedString,
+    process: &ProcessCandidate,
+    selected: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(SharedString::from(id))
+        .relative()
+        .min_h(px(40.0))
+        .items_center()
+        .gap_2()
+        .pl_3()
+        .pr_3()
+        .rounded_sm()
+        .text_size(px(TEXT_CONTROL_SIZE))
+        .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+        .text_color(cx.theme().popover_foreground)
+        .when(selected, |row| {
+            row.bg(rgb(dropdown_selected_color())).child(
+                div()
+                    .absolute()
+                    .left(px(0.0))
+                    .top(px(11.0))
+                    .bottom(px(11.0))
+                    .w(px(3.0))
+                    .rounded_sm()
+                    .bg(cx.theme().accent),
+            )
+        })
+        .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
+        .cursor_pointer()
+        .child(process_icon_cell(process.icon.as_ref(), cx))
+        .child(div().min_w(px(0.0)).truncate().child(process.name.clone()))
+}
+
+fn process_icon_cell(icon: Option<&Arc<Image>>, cx: &mut Context<PowerLeafApp>) -> AnyElement {
+    div()
+        .size(px(20.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .child(match icon {
+            Some(icon) => img(Arc::clone(icon)).size(px(18.0)).into_any_element(),
+            None => div()
+                .size(px(18.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .border_1()
+                .border_color(cx.theme().border)
+                .child(Icon::new(NavIcon::Frame).with_size(px(13.0)))
+                .into_any_element(),
+        })
+        .into_any_element()
+}
+
 fn dropdown_empty_row(message: String, cx: &mut Context<PowerLeafApp>) -> gpui::Div {
     div()
         .min_h(px(40.0))
@@ -9564,11 +10131,27 @@ fn dropdown_control_color() -> u32 {
     }
 }
 
+fn dropdown_control_border_color() -> u32 {
+    if ui_is_dark() {
+        COLOR_BORDER
+    } else {
+        0xdedede
+    }
+}
+
 fn dropdown_control_hover_color() -> u32 {
     if ui_is_dark() {
         0x333333
     } else {
         0xf5f5f5
+    }
+}
+
+fn dropdown_control_hover_border_color() -> u32 {
+    if ui_is_dark() {
+        0x6a6a6a
+    } else {
+        0x9a9a9a
     }
 }
 
@@ -9632,6 +10215,7 @@ enum RuleCardTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingGroupTarget {
+    AccentColor,
     EfficiencyCpuRestriction,
     BackgroundCpuRestriction,
     ResponsivenessAutoBalance,
@@ -10549,16 +11133,16 @@ fn apply_language(language: AppLanguage) {
     rust_i18n::set_locale(language.locale());
 }
 
-fn breadcrumb_section_button(
-    page: Page,
+fn breadcrumb_button(
+    id: SharedString,
+    target: Page,
+    label: String,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
-    let target = page.section_landing_page();
-    let label = page.section_label();
     let hover_bg: Hsla = rgb(settings_card_hover_color()).into();
 
     h_flex()
-        .id(SharedString::from(format!("breadcrumb-section-{page:?}")))
+        .id(id)
         .min_w(px(0.0))
         .max_w(px(360.0))
         .items_center()
@@ -10575,6 +11159,16 @@ fn breadcrumb_section_button(
         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
             app.navigate_to(target, cx);
         }))
+}
+
+fn breadcrumb_separator() -> gpui::Div {
+    div()
+        .text_size(px(TEXT_PAGE_CRUMB_SIZE))
+        .line_height(px(TEXT_PAGE_CRUMB_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgb(dim_text_color()))
+        .opacity(0.48)
+        .child(Icon::new(NavIcon::ChevronRight).with_size(px(16.0)))
 }
 
 fn dashboard_sections_in_nav_order() -> Vec<&'static ui::PageSection> {
@@ -10849,7 +11443,7 @@ fn page_shell_with_help(
         .gap_2()
         .overflow_hidden();
 
-    if page.is_section_landing() {
+    if page == Page::Dashboard {
         header = header.child(
             div()
                 .min_w(px(0.0))
@@ -10860,26 +11454,36 @@ fn page_shell_with_help(
                 .child(page.label()),
         );
     } else {
+        let section_page = page.section_landing_page();
         header = header
-            .child(breadcrumb_section_button(page, cx))
-            .child(
-                div()
-                    .text_size(px(TEXT_PAGE_CRUMB_SIZE))
-                    .line_height(px(TEXT_PAGE_CRUMB_LINE_HEIGHT))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(dim_text_color()))
-                    .opacity(0.48)
-                    .child(Icon::new(NavIcon::ChevronRight).with_size(px(16.0))),
-            )
-            .child(
-                div()
-                    .min_w(px(0.0))
-                    .text_size(px(TEXT_PAGE_TITLE_SIZE))
-                    .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .truncate()
-                    .child(page.label()),
-            );
+            .child(breadcrumb_button(
+                SharedString::from(format!("breadcrumb-home-{page:?}")),
+                Page::Dashboard,
+                Page::Dashboard.label(),
+                cx,
+            ))
+            .child(breadcrumb_separator());
+
+        if page != section_page {
+            header = header
+                .child(breadcrumb_button(
+                    SharedString::from(format!("breadcrumb-section-{page:?}")),
+                    section_page,
+                    page.section_label(),
+                    cx,
+                ))
+                .child(breadcrumb_separator());
+        }
+
+        header = header.child(
+            div()
+                .min_w(px(0.0))
+                .text_size(px(TEXT_PAGE_TITLE_SIZE))
+                .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .truncate()
+                .child(page.label()),
+        );
     }
 
     if let Some(help) = help {
@@ -11532,23 +12136,58 @@ fn rule_checkbox_row(
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id: SharedString = id.into();
+    let title: SharedString = title.into();
     let handler: Rc<dyn Fn(&bool, &mut Window, &mut App)> = Rc::new(handler);
     let checkbox_handler = Rc::clone(&handler);
-    let row_handler = Rc::clone(&handler);
+    let label_handler = Rc::clone(&handler);
 
-    rule_action_row(
-        id.clone(),
-        title,
-        rule_enable_checkbox(format!("{id}-check"), checked, move |next, window, cx| {
-            checkbox_handler(next, window, cx);
-        }),
-    )
-    .cursor_pointer()
-    .on_click(move |_, window, cx| {
-        let next = !checked;
-        row_handler(&next, window, cx);
-    })
-    .into_any_element()
+    h_flex()
+        .id(id.clone())
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .border_t_1()
+        .border_color(rgb(border_color()))
+        .py_3()
+        .px_4()
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .child(
+            div().flex_1().min_w(px(0.0)).child(
+                div()
+                    .id(SharedString::from(format!("{id}-label")))
+                    .min_w(px(0.0))
+                    .truncate()
+                    .cursor_pointer()
+                    .hover(|style| style.opacity(0.86))
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        let next = !checked;
+                        label_handler(&next, window, cx);
+                    })
+                    .child(title),
+            ),
+        )
+        .child(
+            h_flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .min_w(px(0.0))
+                .flex_shrink_0()
+                .child(rule_enable_checkbox(
+                    format!("{id}-check"),
+                    checked,
+                    move |next, window, cx| {
+                        checkbox_handler(next, window, cx);
+                    },
+                )),
+        )
+        .into_any_element()
 }
 
 fn rule_toggle_switch(
@@ -11977,6 +12616,21 @@ fn action_log_filter_label(filter: ActionLogResultFilter) -> String {
     }
 }
 
+fn theme_mode_label(mode: AppThemeMode) -> String {
+    match mode {
+        AppThemeMode::System => t!("theme.system").to_string(),
+        AppThemeMode::Light => t!("theme.light").to_string(),
+        AppThemeMode::Dark => t!("theme.dark").to_string(),
+    }
+}
+
+fn accent_source_label(source: AccentColorSource) -> String {
+    match source {
+        AccentColorSource::Windows => t!("theme.system").to_string(),
+        AccentColorSource::Custom => t!("accent.custom").to_string(),
+    }
+}
+
 fn action_log_action_label(action: ActionLogAction) -> &'static str {
     match action {
         ActionLogAction::Apply => "Apply",
@@ -12165,15 +12819,6 @@ fn auto_balance_state_tag(state: AutoBalanceProcessState) -> Tag {
     }
 }
 
-fn labeled_element(label: &str, element: AnyElement) -> gpui::Div {
-    v_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .gap_1()
-        .child(section_title_label(label.to_owned()))
-        .child(element)
-}
-
 fn app_input(
     input: &Entity<InputState>,
     focused: bool,
@@ -12275,18 +12920,6 @@ fn rule_card_title(name: &str) -> String {
     }
 }
 
-fn static_rule_title(title: &str) -> AnyElement {
-    div()
-        .flex_1()
-        .min_w(px(0.0))
-        .overflow_hidden()
-        .whitespace_nowrap()
-        .text_size(px(TEXT_HEADER_SIZE))
-        .line_height(px(TEXT_HEADER_LINE_HEIGHT))
-        .child(title.to_owned())
-        .into_any_element()
-}
-
 fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
     let label: SharedString = label.into();
 
@@ -12372,47 +13005,68 @@ fn checkbox(
         muted_text_color()
     };
     let check_color = accent_glyph_color(accent);
+    let handler = Rc::new(handler);
+    let box_handler = handler.clone();
+    let label_handler = handler;
 
     h_flex()
-        .id(id)
+        .w_full()
         .min_w(px(0.0))
-        .items_center()
-        .gap_2()
-        .py_1()
-        .px_1()
-        .rounded_sm()
-        .text_color(rgb(text_color))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.opacity(0.86))
-        .cursor_pointer()
         .child(
-            div()
-                .size(px(16.0))
-                .flex()
+            h_flex()
+                .id(id.clone())
+                .flex_none()
                 .items_center()
-                .justify_center()
-                .flex_shrink_0()
+                .gap_2()
+                .py_1()
+                .px_1()
                 .rounded_sm()
-                .border_1()
-                .border_color(rgb(border_color))
-                .when(checked, |this| this.bg(rgb(accent)))
-                .when(checked, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(TEXT_LABEL_SIZE))
-                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(check_color))
-                            .child("✓"),
-                    )
-                }),
+                .text_color(rgb(text_color))
+                .text_size(px(TEXT_BODY_SIZE))
+                .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-box")))
+                        .size(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_shrink_0()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(rgb(border_color))
+                        .when(checked, |this| this.bg(rgb(accent)))
+                        .when(checked, |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(TEXT_LABEL_SIZE))
+                                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(rgb(check_color))
+                                    .child("\u{2713}"),
+                            )
+                        })
+                        .hover(|style| style.opacity(0.86))
+                        .cursor_pointer()
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            let next = !checked;
+                            box_handler(&next, window, cx);
+                        }),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-label")))
+                        .hover(|style| style.opacity(0.86))
+                        .cursor_pointer()
+                        .child(label)
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            let next = !checked;
+                            label_handler(&next, window, cx);
+                        }),
+                ),
         )
-        .child(div().child(label))
-        .on_click(move |_, window, cx| {
-            let next = !checked;
-            handler(&next, window, cx);
-        })
         .into_any_element()
 }
 
@@ -12435,53 +13089,75 @@ fn checkbox_with_help(
         muted_text_color()
     };
     let check_color = accent_glyph_color(accent);
+    let handler = Rc::new(handler);
+    let box_handler = handler.clone();
+    let label_handler = handler;
 
     h_flex()
-        .id(id.clone())
+        .w_full()
         .min_w(px(0.0))
-        .items_center()
-        .gap_2()
-        .py_1()
-        .px_1()
-        .rounded_sm()
-        .text_color(rgb(text_color))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.opacity(0.86))
-        .cursor_pointer()
-        .child(
-            div()
-                .size(px(16.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .flex_shrink_0()
-                .rounded_sm()
-                .border_1()
-                .border_color(rgb(border_color))
-                .when(checked, |this| this.bg(rgb(accent)))
-                .when(checked, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(TEXT_LABEL_SIZE))
-                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(check_color))
-                            .child("✓"),
-                    )
-                }),
-        )
         .child(
             h_flex()
-                .min_w(px(0.0))
-                .gap_1()
-                .child(div().truncate().child(label))
-                .child(title_info_button(format!("{id}-info"), help)),
+                .id(id.clone())
+                .flex_none()
+                .items_center()
+                .gap_2()
+                .py_1()
+                .px_1()
+                .rounded_sm()
+                .text_color(rgb(text_color))
+                .text_size(px(TEXT_BODY_SIZE))
+                .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                .child(
+                    div()
+                        .id(SharedString::from(format!("{id}-box")))
+                        .size(px(16.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .flex_shrink_0()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(rgb(border_color))
+                        .when(checked, |this| this.bg(rgb(accent)))
+                        .when(checked, |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(TEXT_LABEL_SIZE))
+                                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .text_color(rgb(check_color))
+                                    .child("\u{2713}"),
+                            )
+                        })
+                        .hover(|style| style.opacity(0.86))
+                        .cursor_pointer()
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            let next = !checked;
+                            box_handler(&next, window, cx);
+                        }),
+                )
+                .child(
+                    h_flex()
+                        .min_w(px(0.0))
+                        .gap_1()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{id}-label")))
+                                .truncate()
+                                .hover(|style| style.opacity(0.86))
+                                .cursor_pointer()
+                                .child(label)
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    let next = !checked;
+                                    label_handler(&next, window, cx);
+                                }),
+                        )
+                        .child(title_info_button(format!("{id}-info"), help)),
+                ),
         )
-        .on_click(move |_, window, cx| {
-            let next = !checked;
-            handler(&next, window, cx);
-        })
         .into_any_element()
 }
 
@@ -12879,73 +13555,6 @@ fn toggle_button(
         .when(selected, |button| button.primary())
 }
 
-fn action_log_mode_option(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    help: impl Into<SharedString>,
-    selected: bool,
-) -> gpui::Stateful<gpui::Div> {
-    let id: SharedString = id.into();
-    let label: SharedString = label.into();
-    let help: SharedString = help.into();
-    let accent = accent_color();
-    let border = if selected { accent } else { border_color() };
-    let title_color = if selected {
-        accent
-    } else {
-        primary_text_color()
-    };
-    let help_color = if selected {
-        primary_text_color()
-    } else {
-        muted_text_color()
-    };
-
-    div()
-        .id(id)
-        .min_w(px(150.0))
-        .flex_1()
-        .min_h(px(82.0))
-        .p_3()
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(border))
-        .bg(rgb(settings_card_color()))
-        .hover(|style| {
-            style
-                .bg(rgb(settings_card_hover_color()))
-                .border_color(rgb(accent_color()))
-        })
-        .cursor_pointer()
-        .when(selected, |style| {
-            style.bg(rgb(settings_card_hover_color())).border_2()
-        })
-        .child(
-            v_flex()
-                .w_full()
-                .gap_1()
-                .min_w(px(0.0))
-                .child(
-                    div()
-                        .w_full()
-                        .min_w(px(0.0))
-                        .text_size(px(TEXT_BODY_SIZE))
-                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(rgb(title_color))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .text_size(px(TEXT_LABEL_SIZE))
-                        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                        .text_color(rgb(help_color))
-                        .child(help),
-                ),
-        )
-}
-
 fn control_button(button: Button) -> Button {
     button
         .small()
@@ -12971,7 +13580,7 @@ fn accent_swatch(color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
 
     div()
         .id(SharedString::from(format!("accent-swatch-{color:06x}")))
-        .size(px(30.0))
+        .size(px(42.0))
         .flex_shrink_0()
         .rounded_sm()
         .border_1()
@@ -12980,6 +13589,15 @@ fn accent_swatch(color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
         .hover(|style| style.border_color(rgb(primary_text_color())))
         .cursor_pointer()
         .when(selected, |style| style.border_2())
+}
+
+fn accent_color_group(title: impl Into<SharedString>, swatches: AnyElement) -> gpui::Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .gap_2()
+        .child(section_title_label(title))
+        .child(swatches)
 }
 
 fn feature_toggle_switch(
@@ -14380,11 +14998,11 @@ fn process_io_priority_label(priority: ProcessIoPriority) -> String {
     }
 }
 
-fn process_io_priority_help(priority: ProcessIoPriority) -> String {
-    match priority {
-        ProcessIoPriority::Normal => t!("io_priority.priority_normal_help").to_string(),
-        ProcessIoPriority::Low => t!("io_priority.priority_low_help").to_string(),
-        ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low_help").to_string(),
+fn cpu_affinity_mode_label(mode: CpuAffinityMode) -> String {
+    match mode {
+        CpuAffinityMode::Hard => t!("affinity.mode_hard").to_string(),
+        CpuAffinityMode::Soft => t!("affinity.mode_soft").to_string(),
+        CpuAffinityMode::EfficiencyOff => t!("affinity.mode_efficiency_off").to_string(),
     }
 }
 
@@ -14402,25 +15020,10 @@ fn auto_balance_preset_label(preset: AutoBalancePreset) -> String {
     }
 }
 
-fn auto_balance_preset_help(preset: AutoBalancePreset) -> String {
-    match preset {
-        AutoBalancePreset::Gentle => t!("responsiveness.preset_gentle_help").to_string(),
-        AutoBalancePreset::Balanced => t!("responsiveness.preset_balanced_help").to_string(),
-        AutoBalancePreset::Responsive => t!("responsiveness.preset_responsive_help").to_string(),
-    }
-}
-
 fn auto_balance_behavior_label(behavior: AutoBalanceBehavior) -> String {
     match behavior {
         AutoBalanceBehavior::None => t!("common.none").to_string(),
         AutoBalanceBehavior::Preset(preset) => auto_balance_preset_label(preset),
-    }
-}
-
-fn auto_balance_behavior_help(behavior: AutoBalanceBehavior) -> String {
-    match behavior {
-        AutoBalanceBehavior::None => t!("responsiveness.auto_balance_none_help").to_string(),
-        AutoBalanceBehavior::Preset(preset) => auto_balance_preset_help(preset),
     }
 }
 
@@ -14720,17 +15323,6 @@ fn efficiency_cpu_restriction_mode_label(mode: EcoQosCpuRestrictionMode) -> Stri
     }
 }
 
-fn efficiency_cpu_restriction_mode_help(mode: EcoQosCpuRestrictionMode) -> String {
-    match mode {
-        EcoQosCpuRestrictionMode::SoftCpuSets => {
-            t!("efficiency.cpu_restriction_soft_help").to_string()
-        }
-        EcoQosCpuRestrictionMode::HardAffinity => {
-            t!("efficiency.cpu_restriction_hard_help").to_string()
-        }
-    }
-}
-
 fn efficiency_cpu_restriction_strategy_label(strategy: EcoQosCpuRestrictionStrategy) -> String {
     match strategy {
         EcoQosCpuRestrictionStrategy::Off => t!("efficiency.cpu_set_off").to_string(),
@@ -14744,19 +15336,6 @@ fn efficiency_cpu_restriction_strategy_label(strategy: EcoQosCpuRestrictionStrat
     }
 }
 
-fn efficiency_cpu_restriction_strategy_help(strategy: EcoQosCpuRestrictionStrategy) -> String {
-    match strategy {
-        EcoQosCpuRestrictionStrategy::Off => t!("efficiency.cpu_set_off_help").to_string(),
-        EcoQosCpuRestrictionStrategy::Auto => t!("efficiency.cpu_set_auto_help").to_string(),
-        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => {
-            t!("efficiency.cpu_set_prefer_e_cores_help").to_string()
-        }
-        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => {
-            t!("efficiency.cpu_set_limit_logical_help").to_string()
-        }
-    }
-}
-
 fn efficiency_cpu_restriction_control_style_label(
     style: EcoQosCpuRestrictionControlStyle,
 ) -> String {
@@ -14766,19 +15345,6 @@ fn efficiency_cpu_restriction_control_style_label(
         }
         EcoQosCpuRestrictionControlStyle::CoreToggle => {
             t!("efficiency.control_style_core_toggle").to_string()
-        }
-    }
-}
-
-fn efficiency_cpu_restriction_control_style_help(
-    style: EcoQosCpuRestrictionControlStyle,
-) -> String {
-    match style {
-        EcoQosCpuRestrictionControlStyle::Percentage => {
-            t!("efficiency.control_style_percentage_help").to_string()
-        }
-        EcoQosCpuRestrictionControlStyle::CoreToggle => {
-            t!("efficiency.control_style_core_toggle_help").to_string()
         }
     }
 }
@@ -14905,14 +15471,6 @@ fn processor_power_preset_label(preset: ProcessorPowerPreset) -> String {
         ProcessorPowerPreset::Performance => t!("processor_power.performance").to_string(),
         ProcessorPowerPreset::Balanced => t!("processor_power.balanced").to_string(),
         ProcessorPowerPreset::Saver => t!("processor_power.saver").to_string(),
-    }
-}
-
-fn processor_power_preset_help(preset: ProcessorPowerPreset) -> String {
-    match preset {
-        ProcessorPowerPreset::Performance => t!("processor_power.performance_help").to_string(),
-        ProcessorPowerPreset::Balanced => t!("processor_power.balanced_help").to_string(),
-        ProcessorPowerPreset::Saver => t!("processor_power.saver_help").to_string(),
     }
 }
 

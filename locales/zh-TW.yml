@@ -5,7 +5,7 @@ app:
   description: "讓你的 Windows 更省電、更環保"
 
 nav:
-  overview: "總覽"
+  overview: "首頁"
   power_automation: "電源自動化"
   processor_controls: "處理器控制"
   process_policies: "程序政策"
@@ -63,6 +63,8 @@ theme:
   dark: "深色"
 
 accent:
+  recent_colors: "Recent colors"
+  color_palette: "Color Palette"
   source: "色彩來源"
   windows: "系統"
   custom: "自訂"
@@ -100,6 +102,7 @@ unsaved:
   message: "請先儲存這些變更，避免設定停留在草稿狀態。"
 
 dashboard:
+  overview: "總覽"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 PowerLeaf 正在執行的動作。"
   current_power_plan: "目前電源計畫"

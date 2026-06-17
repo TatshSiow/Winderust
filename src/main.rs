@@ -20,6 +20,7 @@ mod performance_mode;
 mod power;
 mod power_source;
 mod privilege;
+mod process_icon;
 mod responsiveness;
 mod rules;
 mod scheduler;

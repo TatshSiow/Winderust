@@ -185,19 +185,6 @@ impl Page {
         }
     }
 
-    pub const fn is_section_landing(self) -> bool {
-        matches!(
-            self,
-            Self::Dashboard
-                | Self::PowerPlanAutomation
-                | Self::ProcessorControls
-                | Self::ProcessPolicies
-                | Self::ActionLog
-                | Self::AppHome
-                | Self::AdvancedHome
-        )
-    }
-
     pub const fn child_pages(self) -> Option<&'static [Page]> {
         match self {
             Self::Dashboard => Some(&OVERVIEW_PAGES),

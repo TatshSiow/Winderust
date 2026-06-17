@@ -1,10 +1,14 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeMap, ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
     System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
+    },
+    System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     },
 };
 
@@ -15,7 +19,14 @@ pub struct ProcessInfo {
     pub name: String,
 }
 
-pub fn list_process_names() -> Result<Vec<String>, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessCandidateInfo {
+    pub id: u32,
+    pub name: String,
+    pub image_path: Option<PathBuf>,
+}
+
+pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Err("Failed to read running process list.".to_owned());
@@ -25,12 +36,12 @@ pub fn list_process_names() -> Result<Vec<String>, String> {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut names = BTreeSet::new();
+    let mut candidates = BTreeMap::new();
 
     let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) != 0 };
     while has_entry {
         if let Some(name) = process_name_from_entry(&entry) {
-            names.insert(name);
+            candidates.entry(name).or_insert(entry.th32ProcessID);
         }
 
         has_entry = unsafe { Process32NextW(snapshot, &mut entry) != 0 };
@@ -40,7 +51,14 @@ pub fn list_process_names() -> Result<Vec<String>, String> {
         CloseHandle(snapshot);
     }
 
-    Ok(names.into_iter().collect())
+    Ok(candidates
+        .into_iter()
+        .map(|(name, id)| ProcessCandidateInfo {
+            id,
+            name,
+            image_path: process_image_path(id),
+        })
+        .collect())
 }
 
 pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
@@ -91,6 +109,33 @@ fn process_name_from_entry(entry: &PROCESSENTRY32W) -> Option<String> {
 
 fn is_system_process_name(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("[system process]")
+}
+
+fn process_image_path(process_id: u32) -> Option<PathBuf> {
+    if process_id == 0 {
+        return None;
+    }
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if process.is_null() {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; 32_768];
+    let mut len = buffer.len() as u32;
+    let ok = unsafe {
+        QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut len)
+    };
+
+    unsafe {
+        CloseHandle(process);
+    }
+
+    if ok == 0 || len == 0 {
+        return None;
+    }
+
+    Some(PathBuf::from(OsString::from_wide(&buffer[..len as usize])))
 }
 
 #[cfg(test)]
