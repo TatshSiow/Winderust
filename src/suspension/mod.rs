@@ -680,32 +680,45 @@ impl AppSuspensionManager {
                 .get(process_id)
                 .map(|process| process.process_name.clone());
             if let Some(process_name) = suspended_name {
-                if let Err(err) = self.thaw_process(*process_id) {
-                    failed += 1;
-                    action_log.record(
-                        ActionLogFeature::AppSuspension,
-                        Some(*process_id),
-                        process_name,
-                        ActionLogAction::Fail,
-                        ActionLogResult::Failed,
-                        suspension_error_message(err),
-                    );
-                } else {
-                    self.suspended.remove(process_id);
-                    action_log.record(
-                        ActionLogFeature::AppSuspension,
-                        Some(*process_id),
-                        process_name,
-                        ActionLogAction::Restore,
-                        ActionLogResult::Restored,
-                        reason.to_owned(),
-                    );
+                match self.thaw_process(*process_id) {
+                    Ok(()) => {
+                        self.suspended.remove(process_id);
+                        action_log.record(
+                            ActionLogFeature::AppSuspension,
+                            Some(*process_id),
+                            process_name,
+                            ActionLogAction::Restore,
+                            ActionLogResult::Restored,
+                            reason.to_owned(),
+                        );
+                    }
+                    Err(SuspensionError::ProcessExited) => {
+                        self.suspended.remove(process_id);
+                    }
+                    Err(err) => {
+                        failed += 1;
+                        action_log.record(
+                            ActionLogFeature::AppSuspension,
+                            Some(*process_id),
+                            process_name,
+                            ActionLogAction::Fail,
+                            ActionLogResult::Failed,
+                            suspension_error_message(err),
+                        );
+                    }
                 }
             }
             self.temporary_thawed.remove(process_id);
             self.freezers.remove(process_id);
         }
         failed
+    }
+
+    fn forget_process_state(&mut self, process_id: u32) {
+        self.tracked.remove(&process_id);
+        self.suspended.remove(&process_id);
+        self.temporary_thawed.remove(&process_id);
+        self.freezers.remove(&process_id);
     }
 
     fn release_foreground_processes(
@@ -719,26 +732,34 @@ impl AppSuspensionManager {
             let process_name = self.controlled_process_name(*process_id).map(str::to_owned);
             if let Some(process_name) = process_name.clone() {
                 if self.suspended.contains_key(process_id) {
-                    if let Err(err) = self.thaw_process(*process_id) {
-                        failed += 1;
-                        action_log.record(
-                            ActionLogFeature::AppSuspension,
-                            Some(*process_id),
-                            process_name,
-                            ActionLogAction::Fail,
-                            ActionLogResult::Failed,
-                            suspension_error_message(err),
-                        );
-                        continue;
+                    match self.thaw_process(*process_id) {
+                        Ok(()) => {
+                            action_log.record(
+                                ActionLogFeature::AppSuspension,
+                                Some(*process_id),
+                                process_name,
+                                ActionLogAction::Restore,
+                                ActionLogResult::Restored,
+                                reason.to_owned(),
+                            );
+                        }
+                        Err(SuspensionError::ProcessExited) => {
+                            self.forget_process_state(*process_id);
+                            continue;
+                        }
+                        Err(err) => {
+                            failed += 1;
+                            action_log.record(
+                                ActionLogFeature::AppSuspension,
+                                Some(*process_id),
+                                process_name,
+                                ActionLogAction::Fail,
+                                ActionLogResult::Failed,
+                                suspension_error_message(err),
+                            );
+                            continue;
+                        }
                     }
-                    action_log.record(
-                        ActionLogFeature::AppSuspension,
-                        Some(*process_id),
-                        process_name,
-                        ActionLogAction::Restore,
-                        ActionLogResult::Restored,
-                        reason.to_owned(),
-                    );
                 }
             }
 
@@ -787,26 +808,34 @@ impl AppSuspensionManager {
             let process_name = self.controlled_process_name(*process_id).map(str::to_owned);
             if let Some(process_name) = process_name.clone() {
                 if self.suspended.contains_key(process_id) {
-                    if let Err(err) = self.thaw_process(*process_id) {
-                        failed += 1;
-                        action_log.record(
-                            ActionLogFeature::AppSuspension,
-                            Some(*process_id),
-                            process_name,
-                            ActionLogAction::Fail,
-                            ActionLogResult::Failed,
-                            suspension_error_message(err),
-                        );
-                        continue;
+                    match self.thaw_process(*process_id) {
+                        Ok(()) => {
+                            action_log.record(
+                                ActionLogFeature::AppSuspension,
+                                Some(*process_id),
+                                process_name.clone(),
+                                ActionLogAction::Restore,
+                                ActionLogResult::Restored,
+                                "Thawed because the user interacted with the window.",
+                            );
+                        }
+                        Err(SuspensionError::ProcessExited) => {
+                            self.forget_process_state(*process_id);
+                            continue;
+                        }
+                        Err(err) => {
+                            failed += 1;
+                            action_log.record(
+                                ActionLogFeature::AppSuspension,
+                                Some(*process_id),
+                                process_name,
+                                ActionLogAction::Fail,
+                                ActionLogResult::Failed,
+                                suspension_error_message(err),
+                            );
+                            continue;
+                        }
                     }
-                    action_log.record(
-                        ActionLogFeature::AppSuspension,
-                        Some(*process_id),
-                        process_name.clone(),
-                        ActionLogAction::Restore,
-                        ActionLogResult::Restored,
-                        "Thawed because the user interacted with the window.",
-                    );
                 }
             }
 
@@ -948,26 +977,32 @@ impl AppSuspensionManager {
         for process_id in process_ids {
             if let Some(process) = self.suspended.get(&process_id) {
                 let process_name = process.process_name.clone();
-                if self.thaw_process(process_id).is_err() {
-                    failed += 1;
-                } else {
-                    self.suspended.remove(&process_id);
-                    action_log.record(
-                        ActionLogFeature::AppSuspension,
-                        Some(process_id),
-                        process_name.clone(),
-                        ActionLogAction::Restore,
-                        ActionLogResult::Restored,
-                        "Temporary thaw interval elapsed.",
-                    );
-                    self.temporary_thawed.insert(
-                        process_id,
-                        TemporaryThaw {
-                            process_name,
-                            thaw_until: now + duration,
-                            reason: TemporaryThawReason::Fallback,
-                        },
-                    );
+                match self.thaw_process(process_id) {
+                    Ok(()) => {
+                        self.suspended.remove(&process_id);
+                        action_log.record(
+                            ActionLogFeature::AppSuspension,
+                            Some(process_id),
+                            process_name.clone(),
+                            ActionLogAction::Restore,
+                            ActionLogResult::Restored,
+                            "Temporary thaw interval elapsed.",
+                        );
+                        self.temporary_thawed.insert(
+                            process_id,
+                            TemporaryThaw {
+                                process_name,
+                                thaw_until: now + duration,
+                                reason: TemporaryThawReason::Fallback,
+                            },
+                        );
+                    }
+                    Err(SuspensionError::ProcessExited) => {
+                        self.forget_process_state(process_id);
+                    }
+                    Err(_) => {
+                        failed += 1;
+                    }
                 }
             }
         }
@@ -998,17 +1033,24 @@ impl AppSuspensionManager {
 
             let was_suspended = self.suspended.contains_key(&process_id);
             if was_suspended {
-                if let Err(err) = self.thaw_process(process_id) {
-                    failed += 1;
-                    action_log.record(
-                        ActionLogFeature::AppSuspension,
-                        Some(process_id),
-                        process_name,
-                        ActionLogAction::Fail,
-                        ActionLogResult::Failed,
-                        suspension_error_message(err),
-                    );
-                    continue;
+                match self.thaw_process(process_id) {
+                    Ok(()) => {}
+                    Err(SuspensionError::ProcessExited) => {
+                        self.forget_process_state(process_id);
+                        continue;
+                    }
+                    Err(err) => {
+                        failed += 1;
+                        action_log.record(
+                            ActionLogFeature::AppSuspension,
+                            Some(process_id),
+                            process_name,
+                            ActionLogAction::Fail,
+                            ActionLogResult::Failed,
+                            suspension_error_message(err),
+                        );
+                        continue;
+                    }
                 }
             }
             self.suspended.remove(&process_id);
@@ -1058,17 +1100,24 @@ impl AppSuspensionManager {
 
             let was_suspended = self.suspended.contains_key(&process_id);
             if was_suspended {
-                if let Err(err) = self.thaw_process(process_id) {
-                    failed += 1;
-                    action_log.record(
-                        ActionLogFeature::AppSuspension,
-                        Some(process_id),
-                        process_name,
-                        ActionLogAction::Fail,
-                        ActionLogResult::Failed,
-                        suspension_error_message(err),
-                    );
-                    continue;
+                match self.thaw_process(process_id) {
+                    Ok(()) => {}
+                    Err(SuspensionError::ProcessExited) => {
+                        self.forget_process_state(process_id);
+                        continue;
+                    }
+                    Err(err) => {
+                        failed += 1;
+                        action_log.record(
+                            ActionLogFeature::AppSuspension,
+                            Some(process_id),
+                            process_name,
+                            ActionLogAction::Fail,
+                            ActionLogResult::Failed,
+                            suspension_error_message(err),
+                        );
+                        continue;
+                    }
                 }
             }
             self.suspended.remove(&process_id);

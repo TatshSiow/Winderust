@@ -438,6 +438,9 @@ impl CpuAffinityManager {
                 });
                 if still_same_process {
                     if let Err(err) = restore_affinity(*process_id, process) {
+                        if matches!(&err, AffinityError::ProcessExited) {
+                            continue;
+                        }
                         failed += 1;
                         action_log.record(
                             self.action_log_feature,
