@@ -2800,6 +2800,19 @@ impl Render for PowerLeafApp {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .font_family("Segoe UI Variable")
+            .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
+                match event.button {
+                    MouseButton::Navigate(NavigationDirection::Back) => {
+                        app.navigate_back(cx);
+                        cx.stop_propagation();
+                    }
+                    MouseButton::Navigate(NavigationDirection::Forward) => {
+                        app.navigate_forward(cx);
+                        cx.stop_propagation();
+                    }
+                    _ => {}
+                }
+            }))
             .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
                 clear_input(&app.inputs.dashboard_search, window, cx);
                 window.blur();
@@ -3598,7 +3611,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -3672,7 +3685,7 @@ impl PowerLeafApp {
             rules = rules.child(self.render_foreground_rule(index, rule, window, cx));
         }
         body = body.child(rules);
-        content = content.child(disabled_feature_body(body, enabled));
+        content = content.child(disabled_feature_body(body, enabled, cx));
 
         content.into_any_element()
     }
@@ -3844,7 +3857,7 @@ impl PowerLeafApp {
             rules = rules.child(self.render_schedule_rule(index, rule, window, cx));
         }
         body = body.child(rules);
-        content = content.child(disabled_feature_body(body, enabled));
+        content = content.child(disabled_feature_body(body, enabled, cx));
 
         content.into_any_element()
     }
@@ -4037,7 +4050,7 @@ impl PowerLeafApp {
             rules = rules.child(self.render_cpu_rule(index, rule, enabled, window, cx));
         }
         body = body.child(rules);
-        content = content.child(disabled_feature_body(body, enabled));
+        content = content.child(disabled_feature_body(body, enabled, cx));
 
         content.into_any_element()
     }
@@ -4363,7 +4376,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -5062,7 +5075,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -5530,7 +5543,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -5672,7 +5685,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -5861,7 +5874,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -6091,7 +6104,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -6193,7 +6206,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -7181,7 +7194,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -7405,7 +7418,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -7507,243 +7520,388 @@ impl PowerLeafApp {
         let enabled = settings.enabled;
 
         let body = feature_body(enabled)
-            .child(setting_group_action_row(
-                "smart-trim-check-interval",
-                t!("smart_trim.check_interval").to_string(),
-                self.render_numeric_value(
-                    NumericField::SmartTrimCheckIntervalMinutes,
-                    format!("{} mins", settings.check_interval_minutes),
-                    settings.check_interval_minutes.to_string(),
-                    cx,
-                ),
-                false,
-            ))
-            .child(feature_toggle_switch_with_help(
-                "smart-trim-foreground",
-                t!("smart_trim.focus_detection").to_string(),
-                t!("smart_trim.focus_detection_help").to_string(),
-                settings.exclude_foreground_app,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.smart_trim.exclude_foreground_app = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(feature_toggle_switch_with_help(
-                "smart-trim-working-sets",
-                t!("smart_trim.trim_working_sets").to_string(),
-                t!("smart_trim.trim_working_sets_help").to_string(),
-                settings.trim_working_sets,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.smart_trim.trim_working_sets = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(setting_group_action_row(
-                "smart-trim-memory-threshold",
-                t!("smart_trim.memory_threshold").to_string(),
-                self.render_numeric_value(
-                    NumericField::SmartTrimMemoryLoadThreshold,
-                    format!("{}%", settings.system_memory_load_threshold_percent),
-                    settings.system_memory_load_threshold_percent.to_string(),
-                    cx,
-                ),
-                false,
-            ))
-            .child(setting_group_action_row(
-                "smart-trim-working-set-threshold",
-                t!("smart_trim.working_set_threshold").to_string(),
-                self.render_numeric_value(
-                    NumericField::SmartTrimWorkingSetThreshold,
-                    format!("{} MB", settings.process_working_set_threshold_mb),
-                    settings.process_working_set_threshold_mb.to_string(),
-                    cx,
-                ),
-                true,
-            ))
-            .child(setting_group_action_row(
-                "smart-trim-cpu-idle-threshold",
-                t!("smart_trim.cpu_idle_threshold").to_string(),
-                self.render_numeric_value(
-                    NumericField::SmartTrimCpuIdleThreshold,
-                    format!("{}%", settings.process_cpu_idle_threshold_percent),
-                    settings.process_cpu_idle_threshold_percent.to_string(),
-                    cx,
-                ),
-                true,
-            ))
-            .child(setting_group_action_row(
-                "smart-trim-idle-time",
-                t!("smart_trim.idle_time").to_string(),
-                self.render_numeric_value(
-                    NumericField::SmartTrimIdleSeconds,
-                    ui::duration_label(settings.process_idle_seconds),
-                    settings.process_idle_seconds.to_string(),
-                    cx,
-                ),
-                true,
-            ))
-            .child(setting_group_action_row(
-                "smart-trim-cooldown",
-                t!("smart_trim.cooldown").to_string(),
-                self.render_numeric_value(
-                    NumericField::SmartTrimCooldownSeconds,
-                    ui::duration_label(settings.trim_cooldown_seconds),
-                    settings.trim_cooldown_seconds.to_string(),
-                    cx,
-                ),
-                true,
-            ))
-            .child(feature_toggle_switch_with_help(
-                "smart-trim-purge-standby-list",
-                t!("smart_trim.purge_standby_list").to_string(),
-                t!("smart_trim.purge_standby_list_help").to_string(),
-                settings.purge_standby_list,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.smart_trim.purge_standby_list = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(feature_toggle_switch_with_help(
-                "smart-trim-purge-system-file-cache",
-                t!("smart_trim.purge_system_file_cache").to_string(),
-                t!("smart_trim.purge_system_file_cache_help").to_string(),
-                settings.purge_system_file_cache,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.smart_trim.purge_system_file_cache = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(feature_toggle_switch_with_help(
-                "smart-trim-purge-performance-mode",
-                t!("smart_trim.only_purge_performance_mode").to_string(),
-                t!("smart_trim.only_purge_performance_mode_help").to_string(),
-                settings.purge_only_in_performance_mode,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.smart_trim.purge_only_in_performance_mode = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(setting_group_action_row(
-                "smart-trim-purge-free-ram-threshold",
-                t!("smart_trim.purge_free_ram_threshold").to_string(),
-                self.render_numeric_value(
-                    NumericField::SmartTrimPurgeFreeRamThreshold,
-                    format!("{} MB", settings.purge_free_ram_threshold_mb),
-                    settings.purge_free_ram_threshold_mb.to_string(),
-                    cx,
-                ),
-                true,
-            ))
-            .child(
-                h_flex().w_full().items_center().justify_end().child(
-                    primary_control_button(Button::new("smart-trim-now"), cx)
-                        .label(t!("smart_trim.trim_now").to_string())
-                        .disabled(!enabled)
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.background_automation.request_smart_trim_now();
-                            app.status_message = t!("smart_trim.trim_now_requested").to_string();
-                            cx.notify();
-                        })),
-                ),
-            )
-            .child(stat_grid(vec![
-                (
-                    t!("smart_trim.status").to_string(),
-                    self.smart_trim_status.message.clone(),
-                ),
-                (
-                    t!("smart_trim.memory_load").to_string(),
-                    self.smart_trim_status
-                        .memory_load_percent
-                        .map(|percent| format!("{percent}%"))
-                        .unwrap_or_else(|| t!("common.unknown").to_string()),
-                ),
-                (
-                    t!("smart_trim.free_ram_excluding_cache").to_string(),
-                    self.smart_trim_status
-                        .free_ram_excluding_cache_mb
-                        .map(|mb| format!("{mb} MB"))
-                        .unwrap_or_else(|| t!("common.unknown").to_string()),
-                ),
-                (
-                    t!("smart_trim.trimmed_processes").to_string(),
-                    self.smart_trim_status.trimmed_processes.to_string(),
-                ),
-                (
-                    t!("smart_trim.purged_standby_list").to_string(),
-                    yes_no_label(self.smart_trim_status.purged_standby_list),
-                ),
-                (
-                    t!("smart_trim.purged_system_file_cache").to_string(),
-                    yes_no_label(self.smart_trim_status.purged_system_file_cache),
-                ),
-                (
-                    t!("smart_trim.candidate_processes").to_string(),
-                    self.smart_trim_status.candidate_processes.to_string(),
-                ),
-                (
-                    t!("smart_trim.scanned_processes").to_string(),
-                    self.smart_trim_status.scanned_processes.to_string(),
-                ),
-                (
-                    t!("smart_trim.skipped_processes").to_string(),
-                    self.smart_trim_status.skipped_processes.to_string(),
-                ),
-                (
-                    t!("smart_trim.failed_actions").to_string(),
-                    self.smart_trim_status.failed_processes.to_string(),
-                ),
-                (
-                    t!("common.last_failure").to_string(),
-                    self.smart_trim_status
-                        .last_error
-                        .clone()
-                        .unwrap_or_else(|| t!("common.none").to_string()),
-                ),
-            ]))
-            .child(section_header(
-                &t!("smart_trim.exclusions"),
-                t!("smart_trim.exclusions_help").to_string(),
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_start()
-                    .flex_wrap()
-                    .child(self.render_process_picker(
-                        "smart-trim-exclusion",
-                        &self.inputs.smart_trim_exclusion,
-                        SuggestionTarget::SmartTrim,
-                        window,
-                        cx,
-                    ))
-                    .child(
-                        primary_control_button(Button::new("add-smart-trim-exclusion"), cx)
-                            .label(t!("common.add").to_string())
-                            .disabled(
-                                !enabled
-                                    || !can_add_smart_trim_exclusion(
-                                        &self.settings.smart_trim,
-                                        &input_value,
-                                    ),
-                            )
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.smart_trim_exclusion.read(cx).value().to_string();
-                                if can_add_smart_trim_exclusion(&app.settings.smart_trim, &process)
-                                {
-                                    app.settings
-                                        .smart_trim
-                                        .exclusions
-                                        .push(new_process_exclusion_rule(&process));
-                                    clear_input(&app.inputs.smart_trim_exclusion, window, cx);
-                                }
+            .child(setting_group_with_help(
+                SettingGroupTarget::SmartTrimBehaviour,
+                t!("smart_trim.category_trim_behavior").to_string(),
+                t!("smart_trim.category_trim_behavior_help").to_string(),
+                div().into_any_element(),
+                self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimBehaviour),
+                vec![
+                    setting_group_action_row(
+                        "smart-trim-working-sets",
+                        t!("smart_trim.trim_working_sets").to_string(),
+                        setting_group_switch_action(
+                            "smart-trim-working-sets-switch",
+                            settings.trim_working_sets,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.smart_trim.trim_working_sets = *checked;
                                 cx.notify();
-                            })),
+                            }),
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row_element(
+                        "smart-trim-purge-standby-list",
+                        h_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .child(t!("smart_trim.purge_standby_list").to_string()),
+                            )
+                            .child(title_info_button(
+                                "smart-trim-purge-standby-list-info",
+                                t!("smart_trim.purge_standby_list_help").to_string(),
+                            ))
+                            .into_any_element(),
+                        setting_group_switch_action(
+                            "smart-trim-purge-standby-list-switch",
+                            settings.purge_standby_list,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.smart_trim.purge_standby_list = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row_element(
+                        "smart-trim-purge-system-file-cache",
+                        h_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .child(t!("smart_trim.purge_system_file_cache").to_string()),
+                            )
+                            .child(title_info_button(
+                                "smart-trim-purge-system-file-cache-info",
+                                t!("smart_trim.purge_system_file_cache_help").to_string(),
+                            ))
+                            .into_any_element(),
+                        setting_group_switch_action(
+                            "smart-trim-purge-system-file-cache-switch",
+                            settings.purge_system_file_cache,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.smart_trim.purge_system_file_cache = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                ],
+                cx,
+            ))
+            .child(setting_group_with_help(
+                SettingGroupTarget::SmartTrimThresholds,
+                t!("smart_trim.category_thresholds").to_string(),
+                t!("smart_trim.category_thresholds_help").to_string(),
+                div().into_any_element(),
+                self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimThresholds),
+                vec![
+                    setting_group_action_row(
+                        "smart-trim-memory-threshold",
+                        t!("smart_trim.memory_threshold").to_string(),
+                        self.render_numeric_value(
+                            NumericField::SmartTrimMemoryLoadThreshold,
+                            format!("{}%", settings.system_memory_load_threshold_percent),
+                            settings.system_memory_load_threshold_percent.to_string(),
+                            cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "smart-trim-working-set-threshold",
+                        t!("smart_trim.working_set_threshold").to_string(),
+                        self.render_numeric_value(
+                            NumericField::SmartTrimWorkingSetThreshold,
+                            format!("{} MB", settings.process_working_set_threshold_mb),
+                            settings.process_working_set_threshold_mb.to_string(),
+                            cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "smart-trim-cpu-idle-threshold",
+                        t!("smart_trim.cpu_idle_threshold").to_string(),
+                        self.render_numeric_value(
+                            NumericField::SmartTrimCpuIdleThreshold,
+                            format!("{}%", settings.process_cpu_idle_threshold_percent),
+                            settings.process_cpu_idle_threshold_percent.to_string(),
+                            cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "smart-trim-purge-free-ram-threshold",
+                        t!("smart_trim.purge_free_ram_threshold").to_string(),
+                        self.render_numeric_value(
+                            NumericField::SmartTrimPurgeFreeRamThreshold,
+                            format!("{} MB", settings.purge_free_ram_threshold_mb),
+                            settings.purge_free_ram_threshold_mb.to_string(),
+                            cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                ],
+                cx,
+            ))
+            .child(setting_group_with_help(
+                SettingGroupTarget::SmartTrimWhen,
+                t!("smart_trim.category_when_to_trim").to_string(),
+                t!("smart_trim.category_when_to_trim_help").to_string(),
+                div().into_any_element(),
+                self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimWhen),
+                vec![
+                    setting_group_action_row(
+                        "smart-trim-check-interval",
+                        t!("smart_trim.check_interval").to_string(),
+                        self.render_numeric_value(
+                            NumericField::SmartTrimCheckIntervalMinutes,
+                            format!("{} mins", settings.check_interval_minutes),
+                            settings.check_interval_minutes.to_string(),
+                            cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "smart-trim-idle-time",
+                        t!("smart_trim.idle_time").to_string(),
+                        self.render_numeric_value(
+                            NumericField::SmartTrimIdleSeconds,
+                            ui::duration_label(settings.process_idle_seconds),
+                            settings.process_idle_seconds.to_string(),
+                            cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "smart-trim-cooldown",
+                        t!("smart_trim.cooldown").to_string(),
+                        self.render_numeric_value(
+                            NumericField::SmartTrimCooldownSeconds,
+                            ui::duration_label(settings.trim_cooldown_seconds),
+                            settings.trim_cooldown_seconds.to_string(),
+                            cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row_element(
+                        "smart-trim-purge-performance-mode",
+                        h_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                div().truncate().child(
+                                    t!("smart_trim.only_purge_performance_mode").to_string(),
+                                ),
+                            )
+                            .child(title_info_button(
+                                "smart-trim-purge-performance-mode-info",
+                                t!("smart_trim.only_purge_performance_mode_help").to_string(),
+                            ))
+                            .into_any_element(),
+                        setting_group_switch_action(
+                            "smart-trim-purge-performance-mode-switch",
+                            settings.purge_only_in_performance_mode,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.smart_trim.purge_only_in_performance_mode = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                ],
+                cx,
+            ))
+            .child(setting_group_with_help(
+                SettingGroupTarget::SmartTrimSafety,
+                t!("smart_trim.category_safety").to_string(),
+                t!("smart_trim.category_safety_help").to_string(),
+                div().into_any_element(),
+                self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimSafety),
+                vec![
+                    setting_group_action_row_element(
+                        "smart-trim-foreground",
+                        h_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap_1()
+                            .items_center()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .child(t!("smart_trim.focus_detection").to_string()),
+                            )
+                            .child(title_info_button(
+                                "smart-trim-foreground-info",
+                                t!("smart_trim.focus_detection_help").to_string(),
+                            ))
+                            .into_any_element(),
+                        setting_group_switch_action(
+                            "smart-trim-foreground-switch",
+                            settings.exclude_foreground_app,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.smart_trim.exclude_foreground_app = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    v_flex()
+                        .gap_2()
+                        .py_3()
+                        .px_4()
+                        .border_t_1()
+                        .border_color(rgb(border_color()))
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_start()
+                                .flex_wrap()
+                                .child(self.render_process_picker(
+                                    "smart-trim-exclusion",
+                                    &self.inputs.smart_trim_exclusion,
+                                    SuggestionTarget::SmartTrim,
+                                    window,
+                                    cx,
+                                ))
+                                .child(
+                                    primary_control_button(
+                                        Button::new("add-smart-trim-exclusion"),
+                                        cx,
+                                    )
+                                    .label(t!("common.add").to_string())
+                                    .disabled(
+                                        !enabled
+                                            || !can_add_smart_trim_exclusion(
+                                                &self.settings.smart_trim,
+                                                &input_value,
+                                            ),
+                                    )
+                                    .on_click(cx.listener(
+                                        |app, _, window, cx| {
+                                            let process = app
+                                                .inputs
+                                                .smart_trim_exclusion
+                                                .read(cx)
+                                                .value()
+                                                .to_string();
+                                            if can_add_smart_trim_exclusion(
+                                                &app.settings.smart_trim,
+                                                &process,
+                                            ) {
+                                                app.settings
+                                                    .smart_trim
+                                                    .exclusions
+                                                    .push(new_process_exclusion_rule(&process));
+                                                clear_input(
+                                                    &app.inputs.smart_trim_exclusion,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                            cx.notify();
+                                        },
+                                    )),
+                                ),
+                        )
+                        .into_any_element(),
+                    self.render_smart_trim_exclusions(cx),
+                ],
+                cx,
+            ))
+            .child(setting_group_with_help(
+                SettingGroupTarget::SmartTrimMonitoring,
+                t!("smart_trim.category_monitoring").to_string(),
+                t!("smart_trim.category_monitoring_help").to_string(),
+                primary_control_button(Button::new("smart-trim-now"), cx)
+                    .label(t!("smart_trim.trim_now").to_string())
+                    .disabled(!enabled)
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.background_automation.request_smart_trim_now();
+                        app.status_message = t!("smart_trim.trim_now_requested").to_string();
+                        cx.notify();
+                    }))
+                    .into_any_element(),
+                self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimMonitoring),
+                vec![stat_grid(vec![
+                    (
+                        t!("smart_trim.status").to_string(),
+                        self.smart_trim_status.message.clone(),
                     ),
-            )
-            .child(self.render_smart_trim_exclusions(cx));
-
+                    (
+                        t!("smart_trim.memory_load").to_string(),
+                        self.smart_trim_status
+                            .memory_load_percent
+                            .map(|percent| format!("{percent}%"))
+                            .unwrap_or_else(|| t!("common.unknown").to_string()),
+                    ),
+                    (
+                        t!("smart_trim.free_ram_excluding_cache").to_string(),
+                        self.smart_trim_status
+                            .free_ram_excluding_cache_mb
+                            .map(|mb| format!("{mb} MB"))
+                            .unwrap_or_else(|| t!("common.unknown").to_string()),
+                    ),
+                    (
+                        t!("smart_trim.trimmed_processes").to_string(),
+                        self.smart_trim_status.trimmed_processes.to_string(),
+                    ),
+                    (
+                        t!("smart_trim.purged_standby_list").to_string(),
+                        yes_no_label(self.smart_trim_status.purged_standby_list),
+                    ),
+                    (
+                        t!("smart_trim.purged_system_file_cache").to_string(),
+                        yes_no_label(self.smart_trim_status.purged_system_file_cache),
+                    ),
+                    (
+                        t!("smart_trim.candidate_processes").to_string(),
+                        self.smart_trim_status.candidate_processes.to_string(),
+                    ),
+                    (
+                        t!("smart_trim.scanned_processes").to_string(),
+                        self.smart_trim_status.scanned_processes.to_string(),
+                    ),
+                    (
+                        t!("smart_trim.skipped_processes").to_string(),
+                        self.smart_trim_status.skipped_processes.to_string(),
+                    ),
+                    (
+                        t!("smart_trim.failed_actions").to_string(),
+                        self.smart_trim_status.failed_processes.to_string(),
+                    ),
+                    (
+                        t!("common.last_failure").to_string(),
+                        self.smart_trim_status
+                            .last_error
+                            .clone()
+                            .unwrap_or_else(|| t!("common.none").to_string()),
+                    ),
+                ])
+                .into_any_element()],
+                cx,
+            ));
         page_shell(Page::SmartTrim, cx)
             .child(feature_toggle_switch_with_help(
                 "smart-trim-enabled",
@@ -7759,7 +7917,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -7881,7 +8039,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled))
+            .child(disabled_feature_body(body, enabled, cx))
             .into_any_element()
     }
 
@@ -10280,7 +10438,17 @@ fn dropdown_popup_or_empty(
         deferred(
             dropdown_popup_layer(placement)
                 .occlude()
-                .on_mouse_down_out(cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
+                .on_mouse_down_out(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
+                    let click_is_on_trigger = app
+                        .active_power_plan_picker
+                        .as_deref()
+                        .and_then(|id| app.dropdown_anchor_bounds.borrow().get(id).copied())
+                        .is_some_and(|bounds| bounds.contains(&event.position));
+
+                    if click_is_on_trigger {
+                        return;
+                    }
+
                     app.active_power_plan_picker = None;
                     cx.notify();
                 }))
@@ -10582,6 +10750,11 @@ enum SettingGroupTarget {
     AutoBalanceMemoryPriority,
     EfficiencyCpuRestriction,
     BackgroundCpuRestriction,
+    SmartTrimBehaviour,
+    SmartTrimMonitoring,
+    SmartTrimSafety,
+    SmartTrimThresholds,
+    SmartTrimWhen,
     SuspensionThaw,
     SuspensionAudio,
     SuspensionNetwork,
@@ -10601,8 +10774,8 @@ enum AutoBalanceBehavior {
 
 impl AutoBalanceBehavior {
     const ALL: [Self; 3] = [
-        Self::Preset(AutoBalancePreset::Gentle),
         Self::Preset(AutoBalancePreset::Balanced),
+        Self::Preset(AutoBalancePreset::Gentle),
         Self::Preset(AutoBalancePreset::Responsive),
     ];
 }
@@ -12062,17 +12235,37 @@ fn feature_body(enabled: bool) -> gpui::Div {
         .when(!enabled, |body| body.opacity(0.42).cursor_default())
 }
 
-fn disabled_feature_body(body: gpui::Div, enabled: bool) -> gpui::Div {
-    body.when(!enabled, |body| body.child(disabled_interaction_shield()))
+fn disabled_feature_body(
+    body: gpui::Div,
+    enabled: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Div {
+    body.when(!enabled, |body| body.child(disabled_interaction_shield(cx)))
 }
 
-fn disabled_interaction_shield() -> AnyElement {
+fn disabled_interaction_shield(cx: &mut Context<PowerLeafApp>) -> AnyElement {
     div()
         .absolute()
         .inset_0()
         .cursor_default()
-        .capture_any_mouse_down(|_, _, cx| cx.stop_propagation())
-        .capture_any_mouse_up(|_, _, cx| cx.stop_propagation())
+        .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
+            match event.button {
+                MouseButton::Navigate(NavigationDirection::Back) => {
+                    app.navigate_back(cx);
+                    cx.stop_propagation();
+                }
+                MouseButton::Navigate(NavigationDirection::Forward) => {
+                    app.navigate_forward(cx);
+                    cx.stop_propagation();
+                }
+                _ => cx.stop_propagation(),
+            }
+        }))
+        .capture_any_mouse_up(|event, _, cx| {
+            if !matches!(event.button, MouseButton::Navigate(_)) {
+                cx.stop_propagation();
+            }
+        })
         .into_any_element()
 }
 
@@ -12313,6 +12506,25 @@ fn setting_group_action_row(
     action: AnyElement,
     divided: bool,
 ) -> gpui::Stateful<gpui::Div> {
+    setting_group_action_row_element(
+        id,
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .child(title.into())
+            .into_any_element(),
+        action,
+        divided,
+    )
+}
+
+fn setting_group_action_row_element(
+    id: impl Into<SharedString>,
+    title: AnyElement,
+    action: AnyElement,
+    divided: bool,
+) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(id.into())
         .w_full()
@@ -12329,7 +12541,7 @@ fn setting_group_action_row(
         .when(divided, |row| {
             row.border_t_1().border_color(rgb(border_color()))
         })
-        .child(div().flex_1().min_w(px(0.0)).truncate().child(title.into()))
+        .child(title)
         .child(
             h_flex()
                 .items_center()
@@ -15477,9 +15689,9 @@ fn apply_auto_balance_preset(
         values.auto_balance_affinity_escalation_enabled;
     settings.boost_foreground_app = values.boost_foreground_app;
     if values.boost_foreground_app {
-        settings.foreground_boost = ForegroundBoostPriority::Auto;
+        settings.foreground_boost = values.foreground_boost;
     }
-    settings.lower_background_auto_cpu_percent = true;
+    settings.lower_background_auto_cpu_percent = values.lower_background_auto_cpu_percent;
     settings.auto_balance_cpu_percent = values.manual_cpu_percent;
     settings.auto_balance_total_threshold_percent = values.total_threshold;
     settings.auto_balance_threshold_percent = values.process_threshold;
@@ -15504,9 +15716,9 @@ fn auto_balance_matches_preset(
         && settings.auto_balance_affinity_escalation_enabled
             == values.auto_balance_affinity_escalation_enabled
         && settings.boost_foreground_app == values.boost_foreground_app
-        && (!values.boost_foreground_app
-            || settings.foreground_boost == ForegroundBoostPriority::Auto)
-        && settings.lower_background_auto_cpu_percent
+        && (!values.boost_foreground_app || settings.foreground_boost == values.foreground_boost)
+        && settings.lower_background_auto_cpu_percent == values.lower_background_auto_cpu_percent
+        && settings.auto_balance_cpu_percent == values.manual_cpu_percent
         && settings.auto_balance_total_threshold_percent == values.total_threshold
         && settings.auto_balance_threshold_percent == values.process_threshold
         && settings.auto_balance_restore_threshold_percent == values.restore_threshold
@@ -15524,6 +15736,8 @@ struct AutoBalancePresetValues {
     auto_balance_memory_priority: ProcessMemoryPriority,
     auto_balance_affinity_escalation_enabled: bool,
     boost_foreground_app: bool,
+    foreground_boost: ForegroundBoostPriority,
+    lower_background_auto_cpu_percent: bool,
     manual_cpu_percent: u8,
     total_threshold: u8,
     process_threshold: u8,
@@ -15543,6 +15757,8 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             auto_balance_memory_priority: ProcessMemoryPriority::Low,
             auto_balance_affinity_escalation_enabled: false,
             boost_foreground_app: false,
+            foreground_boost: ForegroundBoostPriority::Auto,
+            lower_background_auto_cpu_percent: true,
             manual_cpu_percent: 90,
             total_threshold: 80,
             process_threshold: 35,
@@ -15559,6 +15775,8 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             auto_balance_memory_priority: ProcessMemoryPriority::Low,
             auto_balance_affinity_escalation_enabled: false,
             boost_foreground_app: true,
+            foreground_boost: ForegroundBoostPriority::Auto,
+            lower_background_auto_cpu_percent: true,
             manual_cpu_percent: 75,
             total_threshold: 70,
             process_threshold: 22,
@@ -15570,12 +15788,14 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
         AutoBalancePreset::Responsive => AutoBalancePresetValues {
             lower_background_apps: true,
             lower_background_io_priority_enabled: true,
-            lower_background_io_priority: ProcessIoPriority::Low,
+            lower_background_io_priority: ProcessIoPriority::VeryLow,
             auto_balance_memory_priority_enabled: true,
             auto_balance_memory_priority: ProcessMemoryPriority::VeryLow,
             auto_balance_affinity_escalation_enabled: true,
             boost_foreground_app: true,
-            manual_cpu_percent: 60,
+            foreground_boost: ForegroundBoostPriority::AboveNormal,
+            lower_background_auto_cpu_percent: false,
+            manual_cpu_percent: 50,
             total_threshold: 55,
             process_threshold: 10,
             restore_threshold: 5,
