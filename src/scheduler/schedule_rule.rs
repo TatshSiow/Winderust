@@ -30,10 +30,10 @@ impl Scheduler {
 
     pub fn next_switch_label(&self, settings: &ScheduleModeSettings) -> String {
         if !settings.enabled || settings.rules.is_empty() {
-            return "No active Time Scheduler rules".to_owned();
+            return "No active By Time rules".to_owned();
         }
 
-        "Configured Time Scheduler rules active".to_owned()
+        "Configured By Time rules active".to_owned()
     }
 }
 

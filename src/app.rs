@@ -60,8 +60,7 @@ use crate::{
     performance_mode::{self, PerformanceModeSnapshot},
     power::{
         PowerPlan, PowerPlanManager, ProcessorBoostMode, ProcessorPowerAcDcValues,
-        ProcessorPowerPreset,
-        ProcessorPowerValues,
+        ProcessorPowerPreset, ProcessorPowerValues,
     },
     power_source,
     responsiveness::{self, AutoBalanceProcessState, ForegroundResponsivenessSnapshot},
@@ -11618,7 +11617,7 @@ fn action_log_feature_label(feature: ActionLogFeature) -> &'static str {
         ActionLogFeature::CoreSteering => "Core Steering",
         ActionLogFeature::EcoQos => "Efficiency Mode",
         ActionLogFeature::CpuLimiter => "Core Limiter",
-        ActionLogFeature::PerformanceMode => "Running App Detection",
+        ActionLogFeature::PerformanceMode => "By Running App",
         ActionLogFeature::Watchdog => "Watchdog Rules",
         ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
         ActionLogFeature::IoPriority => "I/O Priority",
@@ -12918,7 +12917,13 @@ fn processor_power_setting_row(
                 .truncate()
                 .child(label.into()),
         )
-        .child(h_flex().flex_1().min_w(px(0.0)).justify_end().child(value_element))
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .justify_end()
+                .child(value_element),
+        )
         .into_any_element()
 }
 

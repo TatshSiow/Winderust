@@ -116,7 +116,7 @@ impl DecisionEngine {
                 Some(performance_mode.power_plan_guid),
                 DecisionState::PerformanceMode,
                 format!(
-                    "{} is running and matched Running App Detection rule '{}'.",
+                    "{} is running and matched By Running App rule '{}'.",
                     performance_mode.process_name, performance_mode.rule_name
                 ),
             );
@@ -171,7 +171,7 @@ impl DecisionEngine {
             return DecisionOutcome::with_target(
                 schedule.power_plan_guid,
                 DecisionState::ScheduledRule,
-                format!("Time rule '{}' is active.", schedule.rule_name),
+                format!("By Time rule '{}' is active.", schedule.rule_name),
             );
         }
 
@@ -220,14 +220,14 @@ impl DecisionState {
             Self::Disabled => "Disabled",
             Self::ManualOverride => "Manual override",
             Self::PluggedInPause => "Plugged in",
-            Self::ForegroundRule => "Foreground rule",
-            Self::ForegroundForceActive => "Foreground force Active plan",
-            Self::ForegroundForcePowerSave => "Foreground force Idle plan",
-            Self::PerformanceMode => "Running App Detection",
-            Self::ScheduledRule => "Time rule",
-            Self::CpuLoadRule => "CPU Load Detection",
-            Self::IdlePowerSave => "Idle plan",
-            Self::ActivePerformance => "Active plan",
+            Self::ForegroundRule => "By Foreground",
+            Self::ForegroundForceActive => "By Foreground",
+            Self::ForegroundForcePowerSave => "By Foreground",
+            Self::PerformanceMode => "By Running App",
+            Self::ScheduledRule => "By Time",
+            Self::CpuLoadRule => "By CPU Load",
+            Self::IdlePowerSave => "By Activity",
+            Self::ActivePerformance => "By Activity",
             Self::NoTargetPlan => "Needs setup",
         }
     }

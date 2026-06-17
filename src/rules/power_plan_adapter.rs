@@ -87,7 +87,7 @@ pub fn active_power_plan_rules_for_context(
             if let Some(plan_guid) = idle_plan(&settings.foreground_rules.power_plans, settings) {
                 rules.push(power_plan_rule(
                     "power-plan.foreground-force-power-save",
-                    "Power plan foreground power saver",
+                    "Power plan By Foreground power saver",
                     PRIORITY_FOCUSED_APP,
                     Trigger::AppFocused {
                         app: AppMatcher::ProcessName(app.to_owned()),
@@ -101,7 +101,7 @@ pub fn active_power_plan_rules_for_context(
             if let Some(plan_guid) = active_plan(&settings.foreground_rules.power_plans, settings) {
                 rules.push(power_plan_rule(
                     "power-plan.foreground-force-active",
-                    "Power plan foreground active",
+                    "Power plan By Foreground active",
                     PRIORITY_FOCUSED_APP,
                     Trigger::AppFocused {
                         app: AppMatcher::ProcessName(app.to_owned()),
@@ -115,10 +115,7 @@ pub fn active_power_plan_rules_for_context(
     if let Some(performance_mode) = &input.performance_mode {
         rules.push(power_plan_rule(
             "power-plan.performance-mode",
-            format!(
-                "Power plan running app performance mode: {}",
-                performance_mode.rule_name
-            ),
+            format!("Power plan By Running App: {}", performance_mode.rule_name),
             PRIORITY_RUNNING_APP,
             Trigger::AppRunning {
                 app: AppMatcher::ProcessName(performance_mode.process_name.clone()),
@@ -131,7 +128,7 @@ pub fn active_power_plan_rules_for_context(
         if let Some(plan_guid) = cpu_usage.power_plan_guid.clone() {
             rules.push(power_plan_rule(
                 "power-plan.cpu-load",
-                format!("Power plan CPU load: {}", cpu_usage.rule_name),
+                format!("Power plan By CPU Load: {}", cpu_usage.rule_name),
                 PRIORITY_CPU_LOAD,
                 Trigger::CpuLoadAbove {
                     percent: cpu_usage.usage_percent.clamp(0.0, 100.0) as u8,
@@ -182,7 +179,7 @@ pub fn active_power_plan_rules_for_context(
         if let Some(plan_guid) = schedule.power_plan_guid.clone() {
             rules.push(power_plan_rule(
                 "power-plan.schedule",
-                format!("Power plan schedule: {}", schedule.rule_name),
+                format!("Power plan By Time: {}", schedule.rule_name),
                 PRIORITY_SCHEDULE,
                 Trigger::Schedule {
                     schedule_id: schedule.rule_name.clone(),
@@ -349,14 +346,14 @@ fn rule_name_for_state(state: DecisionState) -> &'static str {
         DecisionState::Disabled => "Power plan disabled",
         DecisionState::ManualOverride => "Power plan manual override",
         DecisionState::PluggedInPause => "Power plan plugged-in pause",
-        DecisionState::ForegroundRule => "Power plan foreground rule",
-        DecisionState::ForegroundForceActive => "Power plan foreground active",
-        DecisionState::ForegroundForcePowerSave => "Power plan foreground power saver",
-        DecisionState::PerformanceMode => "Power plan running app performance mode",
-        DecisionState::ScheduledRule => "Power plan schedule",
-        DecisionState::CpuLoadRule => "Power plan CPU load",
-        DecisionState::IdlePowerSave => "Power plan idle",
-        DecisionState::ActivePerformance => "Power plan active",
+        DecisionState::ForegroundRule => "Power plan By Foreground",
+        DecisionState::ForegroundForceActive => "Power plan By Foreground active",
+        DecisionState::ForegroundForcePowerSave => "Power plan By Foreground power saver",
+        DecisionState::PerformanceMode => "Power plan By Running App",
+        DecisionState::ScheduledRule => "Power plan By Time",
+        DecisionState::CpuLoadRule => "Power plan By CPU Load",
+        DecisionState::IdlePowerSave => "Power plan By Activity idle",
+        DecisionState::ActivePerformance => "Power plan By Activity active",
         DecisionState::NoTargetPlan => "Power plan no target",
     }
 }

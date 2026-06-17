@@ -92,10 +92,10 @@ impl PerformanceModeManager {
         }
 
         if !settings.enabled {
-            self.release(action_log, "Running App Detection disabled");
+            self.release(action_log, "By Running App disabled");
             return PerformanceModeSnapshot {
                 enabled: false,
-                message: "Running App Detection disabled.".to_owned(),
+                message: "By Running App disabled.".to_owned(),
                 ..Default::default()
             };
         }
@@ -136,12 +136,12 @@ impl PerformanceModeManager {
         let matched = matching_rule_process(settings, power_plans, &eligible_processes);
 
         let Some(matched) = matched else {
-            self.release(action_log, "no Running App Detection process is running");
+            self.release(action_log, "no By Running App process is running");
             return PerformanceModeSnapshot {
                 enabled: true,
                 scanned_processes,
                 matched_processes,
-                message: "Running App Detection waiting for a matching process.".to_owned(),
+                message: "By Running App waiting for a matching process.".to_owned(),
                 ..Default::default()
             };
         };
@@ -214,7 +214,7 @@ impl PerformanceModeManager {
             active.process_name,
             ActionLogAction::Restore,
             ActionLogResult::Restored,
-            format!("{reason}; released Running App Detection decision."),
+            format!("{reason}; released By Running App decision."),
         );
     }
 
@@ -231,9 +231,9 @@ impl PerformanceModeManager {
                 scanned_processes,
                 matched_processes,
                 message: if enabled {
-                    "Running App Detection waiting for a matching process.".to_owned()
+                    "By Running App waiting for a matching process.".to_owned()
                 } else {
-                    "Running App Detection disabled.".to_owned()
+                    "By Running App disabled.".to_owned()
                 },
                 last_error,
                 ..Default::default()
@@ -249,7 +249,7 @@ impl PerformanceModeManager {
             active_process: Some(active.process_name.clone()),
             target_guid: Some(active.target_guid.clone()),
             previous_guid: None,
-            message: "Running App Detection active.".to_owned(),
+            message: "By Running App active.".to_owned(),
             last_error,
         }
     }
@@ -258,7 +258,7 @@ impl PerformanceModeManager {
 impl Drop for PerformanceModeManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
-        self.release(&mut action_log, "Running App Detection manager dropped");
+        self.release(&mut action_log, "By Running App manager dropped");
     }
 }
 
@@ -273,7 +273,7 @@ impl Default for PerformanceModeSnapshot {
             active_process: None,
             target_guid: None,
             previous_guid: None,
-            message: "Running App Detection disabled.".to_owned(),
+            message: "By Running App disabled.".to_owned(),
             last_error: None,
         }
     }
