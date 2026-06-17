@@ -51,7 +51,7 @@ Clicking one card navigates to the existing detailed page.
 Navigation behavior:
 
 - The left nav renders section pages only: Overview, Power Plan Automation, Processor Controls, Process Policies, Log, Settings, and Advanced.
-- Overview acts as the dashboard landing page: CPU Usage on the left with a fixed 30-sample graph, Enabled Rules as a right-side list, and all dashboard cards using the same two-column width. Cards should stay max two columns when there is room, then expand to full available width when wrapping to one column. CPU Usage and Enabled Rules should share the same fixed outer card height, with titles and content contained inside that height so the Main sections heading cannot overlap either card. CPU Usage should use one card shell only; the graph itself should not be framed as a nested card.
+- Overview acts as the dashboard landing page: CPU Usage on the left with a fixed 30-sample graph, Enabled Rules as a right-side list, and all dashboard cards using the same two-column width. Cards should stay max two columns when there is room, then expand to full available width when wrapping to one column. CPU Usage and Enabled Rules should share the same fixed outer card height, with titles and content contained inside that height so the Main sections heading cannot overlap either card. CPU Usage should use one card shell only; the graph itself should not be framed as a nested card. A centered, window-size-responsive top window-bar search should open a temporary blank Search Results page while focused or while it has a query; empty search leaves that page blank, while a query shows matching child function cards in navbar order. Search should index page titles, section names, localized intro/help text, and feature keywords rather than titles only. Escape or clicking outside the search should release focus without clearing the query.
 - Child pages keep their current render functions and behavior.
 - When a child page is active, the left nav highlights its parent section.
 - Child pages should show a compact breadcrumb/header such as `Power Plan Automation / CPU Usage`.
@@ -271,7 +271,7 @@ The backend is already partially organized. Use these rules before creating new 
 - Every page listed in `src/ui/mod.rs:4` has a matching source file under `src/app/`.
 - The left navigation shows section landing pages instead of every detailed page.
 - Clicking a section landing page shows cards for its child pages.
-- Overview shows CPU Usage, Enabled Rules, and two-column cards for every main section below the summary.
+- Overview shows CPU Usage, Enabled Rules, and two-column cards for every main section below the summary; the centered top window-bar search temporarily replaces the content area with a blank Search Results page and fills it with matching function cards when a query is active.
 - Clicking a section card navigates to the existing detailed page.
 - Clicking a child-page breadcrumb parent navigates back to the section landing page.
 - Mouse side Back/Forward buttons move backward and forward through PowerLeaf page history.

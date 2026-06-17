@@ -271,6 +271,7 @@ pub struct PowerLeafApp {
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     _rule_title_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
+    _dashboard_search_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
@@ -280,6 +281,7 @@ pub struct PowerLeafApp {
 }
 
 struct UiInputs {
+    dashboard_search: Entity<InputState>,
     cpu_rule_names: Vec<Entity<InputState>>,
     cpu_rule_thresholds: Vec<Entity<SliderState>>,
     cpu_rule_upper_thresholds: Vec<Entity<SliderState>>,
@@ -428,6 +430,7 @@ impl UiInputs {
     ) -> Self {
         let processor_power_values = processor_power_values.normalized();
         Self {
+            dashboard_search: make_input(window, cx, "", &t!("dashboard.search_placeholder")),
             cpu_rule_names: settings
                 .cpu_usage_mode
                 .rules
@@ -785,6 +788,7 @@ impl PowerLeafApp {
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             _rule_title_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
+            _dashboard_search_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
@@ -795,6 +799,7 @@ impl PowerLeafApp {
 
         app.rebuild_rule_title_input_subscriptions(window, cx);
         app.subscribe_to_numeric_input(window, cx);
+        app.subscribe_to_dashboard_search_input(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
         app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         app.subscribe_to_activity_sliders(window, cx);
@@ -1770,6 +1775,7 @@ impl PowerLeafApp {
         self.expanded_rule_cards.clear();
         self.inputs = UiInputs::new(window, cx, &settings, processor_power_values);
         self.rebuild_rule_title_input_subscriptions(window, cx);
+        self.subscribe_to_dashboard_search_input(window, cx);
         self.subscribe_to_processor_power_sliders(window, cx);
         self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         self.subscribe_to_activity_sliders(window, cx);
@@ -1851,6 +1857,16 @@ impl PowerLeafApp {
             window,
             move |app, _, event: &InputEvent, _, cx| {
                 app.handle_numeric_input_event(event, cx);
+            },
+        ));
+    }
+
+    fn subscribe_to_dashboard_search_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self._dashboard_search_subscription = Some(cx.subscribe_in(
+            &self.inputs.dashboard_search,
+            window,
+            move |_, _, _: &InputEvent, _, cx| {
+                cx.notify();
             },
         ));
     }
@@ -2608,7 +2624,19 @@ impl Render for PowerLeafApp {
         self.ensure_cpu_threshold_slider_subscriptions(window, cx);
         self.sync_input_values(cx);
 
-        let page = self.render_page(window, cx);
+        let search_query = self.dashboard_search_query(cx);
+        let search_active = !search_query.is_empty()
+            || self
+                .inputs
+                .dashboard_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window);
+        let page = if search_active {
+            self.render_search_results_page(&search_query, cx)
+        } else {
+            self.render_page(window, cx)
+        };
         let unsaved = self.settings != self.saved_settings;
 
         div()
@@ -2619,6 +2647,10 @@ impl Render for PowerLeafApp {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .font_family("Segoe UI Variable")
+            .on_action(cx.listener(|_, _: &InputEscape, window, cx| {
+                window.blur();
+                cx.notify();
+            }))
             .on_mouse_down(
                 MouseButton::Navigate(NavigationDirection::Back),
                 cx.listener(|app, _: &gpui::MouseDownEvent, _, cx| {
@@ -2681,7 +2713,6 @@ impl PowerLeafApp {
             .w_full()
             .h(px(TITLE_BAR_HEIGHT))
             .items_center()
-            .justify_between()
             .border_b_1()
             .border_color(cx.theme().title_bar_border)
             .bg(cx.theme().title_bar)
@@ -2713,7 +2744,38 @@ impl PowerLeafApp {
                             .child(t!("app.description").to_string()),
                     ),
             )
-            .child(title_bar_controls(window, cx))
+            .child(self.render_title_bar_search(window, cx))
+            .child(
+                h_flex()
+                    .h_full()
+                    .flex_1()
+                    .min_w(px(138.0))
+                    .items_center()
+                    .justify_end()
+                    .child(title_bar_controls(window, cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_title_bar_search(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let search_focused = self
+            .inputs
+            .dashboard_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+
+        div()
+            .id("titlebar-search")
+            .occlude()
+            .flex_1()
+            .min_w(px(160.0))
+            .max_w(px(420.0))
+            .on_mouse_down_out(cx.listener(|_, _: &gpui::MouseDownEvent, window, cx| {
+                window.blur();
+                cx.notify();
+            }))
+            .child(app_input(&self.inputs.dashboard_search, search_focused, cx))
             .into_any_element()
     }
 
@@ -2894,6 +2956,76 @@ impl PowerLeafApp {
         page_shell(section_page, cx).child(cards).into_any_element()
     }
 
+    fn render_dashboard_page_card(&self, target: Page, cx: &mut Context<Self>) -> gpui::Div {
+        let status = target
+            .child_pages()
+            .and_then(|pages| self.section_nav_status(pages))
+            .or_else(|| self.nav_status(target));
+
+        dashboard_card_slot(
+            section_landing_card(target, status, cx)
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.navigate_to(target, cx);
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn render_search_result_page_card(&self, target: Page, cx: &mut Context<Self>) -> gpui::Div {
+        let status = target
+            .child_pages()
+            .and_then(|pages| self.section_nav_status(pages))
+            .or_else(|| self.nav_status(target));
+
+        dashboard_card_slot(
+            section_landing_card(target, status, cx)
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
+                    clear_input(&app.inputs.dashboard_search, window, cx);
+                    window.blur();
+                    app.navigate_to(target, cx);
+                    cx.notify();
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn dashboard_search_query(&self, cx: &mut Context<Self>) -> String {
+        self.inputs
+            .dashboard_search
+            .read(cx)
+            .value()
+            .trim()
+            .to_string()
+    }
+
+    fn render_search_results_page(&self, search_query: &str, cx: &mut Context<Self>) -> AnyElement {
+        let search_results = dashboard_search_pages(search_query);
+        let mut search_result_cards = h_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .items_start()
+            .gap_2()
+            .flex_wrap();
+
+        if search_query.is_empty() {
+            search_result_cards = search_result_cards.child(div().w_full().min_h(px(8.0)));
+        } else if search_results.is_empty() {
+            search_result_cards =
+                search_result_cards.child(div().w_full().min_w(px(0.0)).py_2().child(text_muted(
+                    t!("dashboard.no_matching_functions").to_string(),
+                )));
+        } else {
+            for target in search_results {
+                search_result_cards =
+                    search_result_cards.child(self.render_search_result_page_card(target, cx));
+            }
+        }
+
+        search_results_page_shell(cx)
+            .child(search_result_cards)
+            .into_any_element()
+    }
+
     fn render_dashboard(&self, cx: &mut Context<Self>) -> AnyElement {
         let settings = &self.saved_settings;
         let mut section_cards = h_flex()
@@ -2903,27 +3035,9 @@ impl PowerLeafApp {
             .gap_2()
             .flex_wrap();
 
-        for section in Page::sections()
-            .iter()
-            .filter(|section| {
-                section.landing_page != Page::Dashboard
-                    && !nav_section_in_footer(section.landing_page)
-            })
-            .chain(
-                Page::sections()
-                    .iter()
-                    .filter(|section| nav_section_in_footer(section.landing_page)),
-            )
-        {
-            let target = section.landing_page;
-            let status = self.section_nav_status(section.pages);
-            section_cards = section_cards.child(dashboard_card_slot(
-                section_landing_card(target, status, cx)
-                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                        app.navigate_to(target, cx);
-                    }))
-                    .into_any_element(),
-            ));
+        for section in dashboard_sections_in_nav_order() {
+            section_cards =
+                section_cards.child(self.render_dashboard_page_card(section.landing_page, cx));
         }
 
         let summary = h_flex()
@@ -10463,12 +10577,247 @@ fn breadcrumb_section_button(
         }))
 }
 
+fn dashboard_sections_in_nav_order() -> Vec<&'static ui::PageSection> {
+    Page::sections()
+        .iter()
+        .filter(|section| {
+            section.landing_page != Page::Dashboard && !nav_section_in_footer(section.landing_page)
+        })
+        .chain(
+            Page::sections()
+                .iter()
+                .filter(|section| nav_section_in_footer(section.landing_page)),
+        )
+        .collect()
+}
+
+fn dashboard_search_pages(query: &str) -> Vec<Page> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+
+    let mut pages = Vec::new();
+    let mut seen = HashSet::new();
+
+    for section in dashboard_sections_in_nav_order() {
+        let section_matches = dashboard_page_matches_query(section.landing_page, &query);
+
+        for page in section.pages.iter().copied() {
+            if page == Page::Dashboard || !seen.insert(page) {
+                continue;
+            }
+
+            if section_matches || dashboard_page_matches_query(page, &query) {
+                pages.push(page);
+            }
+        }
+    }
+
+    pages
+}
+
+fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
+    let text = dashboard_page_search_text(page).to_lowercase();
+    query.split_whitespace().all(|term| text.contains(term))
+}
+
+fn dashboard_page_search_text(page: Page) -> String {
+    let mut text = format!("{} {}", page.label(), page.section_label());
+
+    let extra = match page {
+        Page::Dashboard => vec![
+            t!("dashboard.intro_1").to_string(),
+            t!("dashboard.intro_2").to_string(),
+            "overview summary current automation decision power plan cpu enabled rules".to_string(),
+        ],
+        Page::PowerPlanAutomation => vec![
+            "power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc".to_string(),
+        ],
+        Page::ProcessorControls => vec![
+            "processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores".to_string(),
+        ],
+        Page::ProcessPolicies => vec![
+            "process policies efficiency mode suspension responsiveness priority io memory smarttrim watchdog trim terminate restart background foreground".to_string(),
+        ],
+        Page::ActionLog => vec![
+            t!("action_log.intro_1").to_string(),
+            t!("action_log.intro_2").to_string(),
+            "log action history details csv export skipped failed applied restored reason".to_string(),
+        ],
+        Page::AppHome => vec![
+            "settings powerleaf behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette about".to_string(),
+        ],
+        Page::AdvancedHome => vec![
+            "advanced windows scheduler win32 priority separation quantum foreground boost registry".to_string(),
+        ],
+        Page::Activity => vec![
+            t!("activity.intro_1").to_string(),
+            t!("activity.intro_2").to_string(),
+            t!("activity.enable").to_string(),
+            "idle active input keyboard mouse activity power plan battery plugged".to_string(),
+        ],
+        Page::ForegroundRules => vec![
+            t!("foreground.intro_1").to_string(),
+            t!("foreground.intro_2").to_string(),
+            t!("foreground.enable").to_string(),
+            "foreground focused app process window power plan priority rule".to_string(),
+        ],
+        Page::Schedule => vec![
+            t!("schedule.intro_1").to_string(),
+            t!("schedule.intro_2").to_string(),
+            t!("schedule.enable").to_string(),
+            "time schedule clock date weekday overnight power plan".to_string(),
+        ],
+        Page::CpuUsage => vec![
+            t!("cpu_rules.intro_1").to_string(),
+            t!("cpu_rules.intro_2").to_string(),
+            t!("cpu_rules.enable").to_string(),
+            "cpu load usage threshold sustained power plan percent samples".to_string(),
+        ],
+        Page::CoreParking => vec![
+            t!("processor_power.help").to_string(),
+            t!("processor_power.link_ac_dc_help").to_string(),
+            t!("processor_power.performance_help").to_string(),
+            t!("processor_power.balanced_help").to_string(),
+            t!("processor_power.saver_help").to_string(),
+            "core parking processor power boost min max ac dc battery plugged performance saver balanced".to_string(),
+        ],
+        Page::CpuLimiter => vec![
+            t!("cpu_limiter.intro_1").to_string(),
+            t!("cpu_limiter.intro_2").to_string(),
+            t!("cpu_limiter.intro_3").to_string(),
+            t!("cpu_limiter.focus_detection_help").to_string(),
+            t!("cpu_limiter.rules_help").to_string(),
+            "cpu limiter limit core affinity threshold sustain cooldown background process".to_string(),
+        ],
+        Page::BackgroundCpuRestriction => vec![
+            t!("background_cpu.intro_1").to_string(),
+            t!("background_cpu.intro_2").to_string(),
+            t!("background_cpu.focus_detection_help").to_string(),
+            t!("background_cpu.exclusions_help").to_string(),
+            "background cpu restriction cpu set affinity limit e cores foreground exclusion".to_string(),
+        ],
+        Page::EfficiencyMode => vec![
+            t!("efficiency.intro_1").to_string(),
+            t!("efficiency.intro_2").to_string(),
+            t!("efficiency.intro_3").to_string(),
+            t!("efficiency.focus_detection_help").to_string(),
+            t!("efficiency.whitelist_help").to_string(),
+            "efficiency mode ecoqos qos throttle background priority cpu set e cores exclusion whitelist".to_string(),
+        ],
+        Page::AppSuspension => vec![
+            t!("suspension.intro_1").to_string(),
+            t!("suspension.intro_2").to_string(),
+            t!("suspension.intro_3").to_string(),
+            t!("suspension.suspendable_help").to_string(),
+            "suspend freeze thaw resume background app process job object delay network audio".to_string(),
+        ],
+        Page::Watchdog => vec![
+            t!("watchdog.intro_1").to_string(),
+            t!("watchdog.intro_2").to_string(),
+            t!("watchdog.intro_3").to_string(),
+            t!("watchdog.rules_help").to_string(),
+            "watchdog terminate close kill launch restart relaunch process disappeared appeared".to_string(),
+        ],
+        Page::PerformanceMode => vec![
+            t!("performance_mode.intro_1").to_string(),
+            t!("performance_mode.intro_2").to_string(),
+            t!("performance_mode.intro_3").to_string(),
+            t!("performance_mode.rules_help").to_string(),
+            "running app performance mode power plan process game gaming active restore".to_string(),
+        ],
+        Page::ForegroundResponsiveness => vec![
+            t!("responsiveness.intro_1").to_string(),
+            t!("responsiveness.intro_2").to_string(),
+            t!("responsiveness.intro_3").to_string(),
+            t!("responsiveness.lower_background_efficiency_help").to_string(),
+            t!("responsiveness.auto_balance_preset_help").to_string(),
+            t!("responsiveness.foreground_boost_help").to_string(),
+            "responsiveness auto balance probalance foreground boost background priority cpu spike stutter".to_string(),
+        ],
+        Page::IoPriority => vec![
+            t!("io_priority.intro_1").to_string(),
+            t!("io_priority.intro_2").to_string(),
+            t!("io_priority.exclude_foreground_help").to_string(),
+            "io i/o disk storage priority low very low background process foreground exclusion".to_string(),
+        ],
+        Page::SmartTrim => vec![
+            t!("smart_trim.intro_1").to_string(),
+            t!("smart_trim.intro_2").to_string(),
+            t!("smart_trim.intro_3").to_string(),
+            t!("smart_trim.trim_working_sets_help").to_string(),
+            t!("smart_trim.purge_standby_list_help").to_string(),
+            t!("smart_trim.purge_system_file_cache_help").to_string(),
+            "memory ram trim working set standby list file cache purge background exclusion".to_string(),
+        ],
+        Page::CpuAffinity => vec![
+            t!("affinity.intro_1").to_string(),
+            t!("affinity.intro_2").to_string(),
+            t!("affinity.intro_3").to_string(),
+            t!("affinity.rules_help").to_string(),
+            t!("affinity.p_cores_help").to_string(),
+            t!("affinity.e_cores_help").to_string(),
+            t!("affinity.no_smt_help").to_string(),
+            "core steering affinity cpu sets p cores e cores smt logical processor background process".to_string(),
+        ],
+        Page::Settings => vec![
+            t!("settings.intro_1").to_string(),
+            t!("settings.intro_2").to_string(),
+            t!("settings.action_log_mode_full_help").to_string(),
+            t!("settings.failure_suppression_threshold_help").to_string(),
+            "powerleaf behaviour startup tray automation toggle action log detail fail failure suppression export import".to_string(),
+        ],
+        Page::SettingsAppearance => vec![
+            "language appearance theme dark light system accent color palette localization display ui".to_string(),
+        ],
+        Page::Win32PrioritySeparation => vec![
+            t!("settings.win32_priority_separation_quantum_duration_help").to_string(),
+            t!("settings.win32_priority_separation_quantum_behaviour_help").to_string(),
+            t!("settings.win32_priority_separation_foreground_boost_help").to_string(),
+            "win32 priority separation windows scheduler quantum foreground boost games gaming registry".to_string(),
+        ],
+        Page::About => vec![
+            t!("about.intro_1").to_string(),
+            t!("about.intro_2").to_string(),
+            "about version project powerleaf".to_string(),
+        ],
+    };
+
+    for value in extra {
+        text.push(' ');
+        text.push_str(&value);
+    }
+
+    text
+}
+
 fn nav_section_in_footer(page: Page) -> bool {
     matches!(page, Page::ActionLog | Page::AppHome)
 }
 
 fn page_shell(page: Page, cx: &mut Context<PowerLeafApp>) -> gpui::Div {
     page_shell_with_help(page, None, cx)
+}
+
+fn search_results_page_shell(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
+    let header = h_flex()
+        .w_full()
+        .min_h(px(PAGE_HEADER_HEIGHT))
+        .flex_shrink_0()
+        .items_center()
+        .overflow_hidden()
+        .child(
+            div()
+                .min_w(px(0.0))
+                .text_size(px(TEXT_PAGE_TITLE_SIZE))
+                .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .truncate()
+                .child(t!("dashboard.search_results").to_string()),
+        );
+
+    v_flex().w_full().min_w(px(0.0)).gap_2().child(header)
 }
 
 fn page_content_frame(page: AnyElement) -> gpui::Div {
