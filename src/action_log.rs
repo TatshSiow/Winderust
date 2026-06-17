@@ -30,6 +30,7 @@ pub enum ActionLogFeature {
     Watchdog,
     ForegroundResponsiveness,
     IoPriority,
+    MemoryPriority,
     SmartTrim,
 }
 

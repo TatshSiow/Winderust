@@ -36,6 +36,8 @@ pub struct Settings {
     #[serde(default)]
     pub io_priority: IoPrioritySettings,
     #[serde(default)]
+    pub memory_priority: MemoryPrioritySettings,
+    #[serde(default)]
     pub smart_trim: SmartTrimSettings,
 }
 
@@ -532,6 +534,10 @@ pub struct ForegroundResponsivenessSettings {
     #[serde(default)]
     pub lower_background_io_priority: ProcessIoPriority,
     #[serde(default)]
+    pub auto_balance_memory_priority_enabled: bool,
+    #[serde(default)]
+    pub auto_balance_memory_priority: ProcessMemoryPriority,
+    #[serde(default)]
     pub lower_background_affinity_mode: EcoQosCpuRestrictionMode,
     #[serde(default = "default_eco_qos_cpu_restriction_percent")]
     pub lower_background_cpu_percent: u8,
@@ -541,6 +547,8 @@ pub struct ForegroundResponsivenessSettings {
     pub lower_background_auto_cpu_percent: bool,
     #[serde(default)]
     pub auto_balance_enabled: bool,
+    #[serde(default)]
+    pub auto_balance_advanced_settings_enabled: bool,
     #[serde(default)]
     pub auto_balance_affinity_escalation_enabled: bool,
     #[serde(default)]
@@ -586,6 +594,18 @@ pub struct IoPrioritySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryPrioritySettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub exclude_foreground_app: bool,
+    #[serde(default)]
+    pub rules: Vec<MemoryPriorityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SmartTrimSettings {
     pub enabled: bool,
     #[serde(default = "default_smart_trim_check_interval_minutes")]
@@ -627,6 +647,14 @@ pub struct IoPriorityRule {
     pub priority: ProcessIoPriority,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryPriorityRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+    pub priority: ProcessMemoryPriority,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessIoPriority {
@@ -638,6 +666,27 @@ pub enum ProcessIoPriority {
 
 impl ProcessIoPriority {
     pub const ALL: [Self; 3] = [Self::Normal, Self::Low, Self::VeryLow];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessMemoryPriority {
+    VeryLow,
+    #[default]
+    Low,
+    Medium,
+    BelowNormal,
+    Normal,
+}
+
+impl ProcessMemoryPriority {
+    pub const ALL: [Self; 5] = [
+        Self::VeryLow,
+        Self::Low,
+        Self::Medium,
+        Self::BelowNormal,
+        Self::Normal,
+    ];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -817,6 +866,7 @@ impl Default for Settings {
             watchdog: WatchdogSettings::default(),
             foreground_responsiveness: ForegroundResponsivenessSettings::default(),
             io_priority: IoPrioritySettings::default(),
+            memory_priority: MemoryPrioritySettings::default(),
             smart_trim: SmartTrimSettings::default(),
         }
     }
@@ -1200,12 +1250,15 @@ impl Default for ForegroundResponsivenessSettings {
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
+            auto_balance_memory_priority_enabled: false,
+            auto_balance_memory_priority: ProcessMemoryPriority::Low,
             lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             lower_background_cpu_percent: default_eco_qos_cpu_restriction_percent(),
             lower_background_max_logical_processors:
                 default_eco_qos_cpu_restriction_max_logical_processors(),
             lower_background_auto_cpu_percent: default_auto_balance_auto_cpu_percent(),
             auto_balance_enabled: false,
+            auto_balance_advanced_settings_enabled: false,
             auto_balance_affinity_escalation_enabled: false,
             auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             auto_balance_cpu_percent: default_auto_balance_cpu_percent(),
@@ -1229,6 +1282,16 @@ impl Default for ForegroundResponsivenessSettings {
 }
 
 impl Default for IoPrioritySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exclude_foreground_app: default_exclude_foreground_app(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+impl Default for MemoryPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -1263,6 +1326,22 @@ impl Default for SmartTrimSettings {
 
 impl IoPrioritySettings {
     pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessIoPriority> {
+        self.rules
+            .iter()
+            .find(|rule| {
+                rule.enabled
+                    && !rule.process_name.trim().is_empty()
+                    && wildcard_match(
+                        &rule.process_name.trim().to_ascii_lowercase(),
+                        &process_name.trim().to_ascii_lowercase(),
+                    )
+            })
+            .map(|rule| rule.priority)
+    }
+}
+
+impl MemoryPrioritySettings {
+    pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessMemoryPriority> {
         self.rules
             .iter()
             .find(|rule| {

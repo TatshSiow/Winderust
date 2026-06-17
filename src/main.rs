@@ -17,6 +17,7 @@ mod dashboard_metrics;
 mod ecoqos;
 mod foreground;
 mod io_priority;
+mod memory_priority;
 mod performance_mode;
 mod power;
 mod power_source;

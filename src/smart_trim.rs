@@ -23,6 +23,7 @@ use crate::{
     config::SmartTrimSettings,
     foreground::list_processes,
     privilege::{enable_increase_quota_privilege, enable_profile_single_process_privilege},
+    rules::{execution_failure_suppression_threshold, ExecutionFailureState},
 };
 
 const MB: u64 = 1024 * 1024;
@@ -80,7 +81,11 @@ pub struct SmartTrimSnapshot {
 pub struct SmartTrimManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     last_trimmed: BTreeMap<u32, Instant>,
+    failure_suppression: BTreeMap<String, SmartTrimFailureSuppression>,
+    system_failure_suppression: BTreeMap<String, SmartTrimFailureSuppression>,
 }
+
+type SmartTrimFailureSuppression = ExecutionFailureState;
 
 #[derive(Clone)]
 struct TrackedProcess {
@@ -154,6 +159,7 @@ impl SmartTrimManager {
     ) -> SmartTrimSnapshot {
         if !automation_enabled {
             self.clear_tracking();
+            self.clear_failure_suppression();
             return SmartTrimSnapshot {
                 enabled: false,
                 message: "Automation disabled.".to_owned(),
@@ -163,6 +169,7 @@ impl SmartTrimManager {
 
         if !settings.enabled {
             self.clear_tracking();
+            self.clear_failure_suppression();
             return SmartTrimSnapshot {
                 enabled: false,
                 message: "SmartTrim disabled.".to_owned(),
@@ -265,6 +272,12 @@ impl SmartTrimManager {
             .retain(|process_id, _| target_ids.contains(process_id));
         self.last_trimmed
             .retain(|process_id, _| target_ids.contains(process_id));
+        let active_target_names = target_processes
+            .values()
+            .map(|name| process_failure_key(name))
+            .collect::<BTreeSet<_>>();
+        self.failure_suppression
+            .retain(|process_name, _| active_target_names.contains(process_name));
 
         let mut candidate_processes = 0;
         let mut trimmed_processes = 0;
@@ -274,15 +287,24 @@ impl SmartTrimManager {
         let now = Instant::now();
 
         for (process_id, process_name) in target_processes {
+            if self.is_process_suppressed(process_id, &process_name, action_log) {
+                skipped_processes += 1;
+                continue;
+            }
+
             match self.update_process(process_id, process_name.clone(), settings, mode, now) {
-                Ok(ProcessUpdate::Waiting) => {}
+                Ok(ProcessUpdate::Waiting) => {
+                    self.clear_process_failure(&process_name);
+                }
                 Ok(ProcessUpdate::Candidate) => {
                     candidate_processes += 1;
+                    self.clear_process_failure(&process_name);
                 }
                 Ok(ProcessUpdate::Trimmed { freed_bytes }) => {
                     candidate_processes += 1;
                     trimmed_processes += 1;
                     trimmed_apps.insert(process_name.clone());
+                    self.clear_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::SmartTrim,
                         Some(process_id),
@@ -299,6 +321,7 @@ impl SmartTrimManager {
                 }
                 Err(SmartTrimError::AccessDenied) => {
                     skipped_processes += 1;
+                    self.record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::SmartTrim,
                         Some(process_id),
@@ -308,7 +331,10 @@ impl SmartTrimManager {
                         "Skipped because the process could not be opened.",
                     );
                 }
-                Err(err) => failures.record(process_id, &process_name, err, action_log),
+                Err(err) => {
+                    self.record_process_failure(&process_name);
+                    failures.record(process_id, &process_name, err, action_log);
+                }
             }
         }
 
@@ -323,37 +349,61 @@ impl SmartTrimManager {
         );
 
         if settings.purge_standby_list && purge_allowed {
-            match purge_standby_list() {
-                Ok(()) => {
-                    purged_standby_list = true;
-                    action_log.record(
-                        ActionLogFeature::SmartTrim,
-                        None,
-                        "System".to_owned(),
-                        ActionLogAction::Apply,
-                        ActionLogResult::Applied,
-                        "Purged standby list.",
-                    );
+            if !self.is_system_action_suppressed(
+                "purge-standby-list",
+                "Purge standby list",
+                action_log,
+            ) {
+                match purge_standby_list() {
+                    Ok(()) => {
+                        purged_standby_list = true;
+                        self.clear_system_action_failure("purge-standby-list");
+                        action_log.record(
+                            ActionLogFeature::SmartTrim,
+                            None,
+                            "System".to_owned(),
+                            ActionLogAction::Apply,
+                            ActionLogResult::Applied,
+                            "Purged standby list.",
+                        );
+                    }
+                    Err(err) => {
+                        self.record_system_action_failure("purge-standby-list");
+                        failures.record_system("Purge standby list", err, action_log);
+                    }
                 }
-                Err(err) => failures.record_system("Purge standby list", err, action_log),
             }
+        } else {
+            self.clear_system_action_failure("purge-standby-list");
         }
 
         if settings.purge_system_file_cache && purge_allowed {
-            match purge_system_file_cache() {
-                Ok(()) => {
-                    purged_system_file_cache = true;
-                    action_log.record(
-                        ActionLogFeature::SmartTrim,
-                        None,
-                        "System".to_owned(),
-                        ActionLogAction::Apply,
-                        ActionLogResult::Applied,
-                        "Purged system file cache.",
-                    );
+            if !self.is_system_action_suppressed(
+                "purge-system-file-cache",
+                "Purge system file cache",
+                action_log,
+            ) {
+                match purge_system_file_cache() {
+                    Ok(()) => {
+                        purged_system_file_cache = true;
+                        self.clear_system_action_failure("purge-system-file-cache");
+                        action_log.record(
+                            ActionLogFeature::SmartTrim,
+                            None,
+                            "System".to_owned(),
+                            ActionLogAction::Apply,
+                            ActionLogResult::Applied,
+                            "Purged system file cache.",
+                        );
+                    }
+                    Err(err) => {
+                        self.record_system_action_failure("purge-system-file-cache");
+                        failures.record_system("Purge system file cache", err, action_log);
+                    }
                 }
-                Err(err) => failures.record_system("Purge system file cache", err, action_log),
             }
+        } else {
+            self.clear_system_action_failure("purge-system-file-cache");
         }
 
         SmartTrimSnapshot {
@@ -468,6 +518,99 @@ impl SmartTrimManager {
     fn clear_tracking(&mut self) {
         self.tracked.clear();
         self.last_trimmed.clear();
+    }
+
+    fn clear_failure_suppression(&mut self) {
+        self.failure_suppression.clear();
+        self.system_failure_suppression.clear();
+    }
+
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let Some(suppression) = self
+            .failure_suppression
+            .get_mut(&process_failure_key(process_name))
+        else {
+            return false;
+        };
+        if !suppression.is_suppressed() {
+            return false;
+        }
+
+        if suppression.mark_suppression_logged() {
+            action_log.record(
+                ActionLogFeature::SmartTrim,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying SmartTrim after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
+                ),
+            );
+        }
+
+        true
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        let suppression = self
+            .failure_suppression
+            .entry(process_failure_key(process_name))
+            .or_default();
+        suppression.record_failure();
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression
+            .remove(&process_failure_key(process_name));
+    }
+
+    fn is_system_action_suppressed(
+        &mut self,
+        key: &str,
+        label: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let Some(suppression) = self.system_failure_suppression.get_mut(key) else {
+            return false;
+        };
+        if !suppression.is_suppressed() {
+            return false;
+        }
+
+        if suppression.mark_suppression_logged() {
+            action_log.record(
+                ActionLogFeature::SmartTrim,
+                None,
+                "System".to_owned(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying SmartTrim {label} after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
+                ),
+            );
+        }
+
+        true
+    }
+
+    fn record_system_action_failure(&mut self, key: &str) {
+        let suppression = self
+            .system_failure_suppression
+            .entry(key.to_owned())
+            .or_default();
+        suppression.record_failure();
+    }
+
+    fn clear_system_action_failure(&mut self, key: &str) {
+        self.system_failure_suppression.remove(key);
     }
 }
 
@@ -791,6 +934,10 @@ fn is_process_exited_message(message: &str) -> bool {
         .eq_ignore_ascii_case("Process exited")
 }
 
+fn process_failure_key(process_name: &str) -> String {
+    process_name.trim().to_ascii_lowercase()
+}
+
 fn filetime_to_u64(value: FILETIME) -> u64 {
     (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
@@ -907,6 +1054,98 @@ impl Default for SmartTrimSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_process_failures_suppress_smart_trim_retries() {
+        let mut manager = SmartTrimManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("APP.exe");
+        manager.record_process_failure("app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].feature, ActionLogFeature::SmartTrim);
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
+        assert!(entries[0].reason.contains("Stopped retrying SmartTrim"));
+    }
+
+    #[test]
+    fn successful_process_clears_smart_trim_failure_suppression() {
+        let mut manager = SmartTrimManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+
+        manager.clear_process_failure("APP.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+    }
+
+    #[test]
+    fn repeated_system_failures_suppress_smart_trim_system_actions_once() {
+        let mut manager = SmartTrimManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_system_action_failure("purge-standby-list");
+        manager.record_system_action_failure("purge-standby-list");
+        assert!(!manager.is_system_action_suppressed(
+            "purge-standby-list",
+            "Purge standby list",
+            &mut log
+        ));
+
+        manager.record_system_action_failure("purge-standby-list");
+        assert!(manager.is_system_action_suppressed(
+            "purge-standby-list",
+            "Purge standby list",
+            &mut log
+        ));
+        assert!(manager.is_system_action_suppressed(
+            "purge-standby-list",
+            "Purge standby list",
+            &mut log
+        ));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].feature, ActionLogFeature::SmartTrim);
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
+        assert!(entries[0]
+            .reason
+            .contains("Stopped retrying SmartTrim Purge standby list"));
+    }
+
+    #[test]
+    fn successful_system_action_clears_smart_trim_failure_suppression() {
+        let mut manager = SmartTrimManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_system_action_failure("purge-standby-list");
+        manager.record_system_action_failure("purge-standby-list");
+        manager.record_system_action_failure("purge-standby-list");
+        assert!(manager.is_system_action_suppressed(
+            "purge-standby-list",
+            "Purge standby list",
+            &mut log
+        ));
+
+        manager.clear_system_action_failure("purge-standby-list");
+        assert!(!manager.is_system_action_suppressed(
+            "purge-standby-list",
+            "Purge standby list",
+            &mut log
+        ));
+    }
 
     #[test]
     fn builtin_exclusions_cover_sensitive_windows_processes() {

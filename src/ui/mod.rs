@@ -6,6 +6,7 @@ pub enum Page {
     PowerPlanAutomation,
     ProcessorControls,
     ProcessPolicies,
+    MemoryControl,
     AppHome,
     AdvancedHome,
     Activity,
@@ -19,6 +20,7 @@ pub enum Page {
     PerformanceMode,
     ForegroundResponsiveness,
     IoPriority,
+    MemoryPriority,
     SmartTrim,
     CpuAffinity,
     ForegroundRules,
@@ -49,33 +51,36 @@ const CPU_CONTROL_PAGES: [Page; 4] = [
     Page::BackgroundCpuRestriction,
     Page::CpuAffinity,
 ];
-const PROCESS_POLICY_PAGES: [Page; 6] = [
-    Page::EfficiencyMode,
-    Page::ForegroundResponsiveness,
-    Page::IoPriority,
-    Page::SmartTrim,
-    Page::AppSuspension,
-    Page::Watchdog,
-];
+const PROCESS_POLICY_PAGES: [Page; 3] = [Page::EfficiencyMode, Page::IoPriority, Page::Watchdog];
+const AUTO_BALANCE_PAGES: [Page; 1] = [Page::ForegroundResponsiveness];
+const MEMORY_CONTROL_PAGES: [Page; 2] = [Page::MemoryPriority, Page::SmartTrim];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const APP_PAGES: [Page; 3] = [Page::Settings, Page::SettingsAppearance, Page::About];
-const ADVANCED_PAGES: [Page; 1] = [Page::Win32PrioritySeparation];
-const PAGE_SECTIONS: [PageSection; 7] = [
+const ADVANCED_PAGES: [Page; 2] = [Page::AppSuspension, Page::Win32PrioritySeparation];
+const PAGE_SECTIONS: [PageSection; 9] = [
     PageSection {
         landing_page: Page::Dashboard,
         pages: &OVERVIEW_PAGES,
+    },
+    PageSection {
+        landing_page: Page::ForegroundResponsiveness,
+        pages: &AUTO_BALANCE_PAGES,
     },
     PageSection {
         landing_page: Page::PowerPlanAutomation,
         pages: &POWER_AUTOMATION_PAGES,
     },
     PageSection {
+        landing_page: Page::ProcessPolicies,
+        pages: &PROCESS_POLICY_PAGES,
+    },
+    PageSection {
         landing_page: Page::ProcessorControls,
         pages: &CPU_CONTROL_PAGES,
     },
     PageSection {
-        landing_page: Page::ProcessPolicies,
-        pages: &PROCESS_POLICY_PAGES,
+        landing_page: Page::MemoryControl,
+        pages: &MEMORY_CONTROL_PAGES,
     },
     PageSection {
         landing_page: Page::ActionLog,
@@ -98,6 +103,7 @@ impl Page {
             Self::PowerPlanAutomation => t!("nav.power_automation"),
             Self::ProcessorControls => t!("nav.processor_controls"),
             Self::ProcessPolicies => t!("nav.process_policies"),
+            Self::MemoryControl => t!("nav.memory_control"),
             Self::AppHome => t!("nav.settings"),
             Self::AdvancedHome => t!("nav.advanced"),
             Self::Activity => t!("nav.activity"),
@@ -111,6 +117,7 @@ impl Page {
             Self::PerformanceMode => t!("nav.performance_mode"),
             Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
             Self::IoPriority => t!("nav.io_priority"),
+            Self::MemoryPriority => t!("nav.memory_priority"),
             Self::SmartTrim => t!("nav.smart_trim"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
@@ -130,6 +137,7 @@ impl Page {
             Self::PowerPlanAutomation => t!("nav.power_automation"),
             Self::ProcessorControls => t!("nav.processor_controls"),
             Self::ProcessPolicies => t!("nav.process_policies"),
+            Self::MemoryControl => t!("nav.memory_control"),
             Self::AppHome => t!("nav.settings"),
             Self::AdvancedHome => t!("nav.advanced"),
             Self::Activity
@@ -143,15 +151,12 @@ impl Page {
             | Self::CpuAffinity => {
                 t!("nav.processor_controls")
             }
-            Self::EfficiencyMode
-            | Self::ForegroundResponsiveness
-            | Self::IoPriority
-            | Self::SmartTrim
-            | Self::AppSuspension
-            | Self::Watchdog => t!("nav.process_policies"),
+            Self::EfficiencyMode | Self::IoPriority | Self::Watchdog => t!("nav.process_policies"),
+            Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
+            Self::MemoryPriority | Self::SmartTrim => t!("nav.memory_control"),
             Self::ActionLog => t!("nav.action_log"),
             Self::Settings | Self::SettingsAppearance | Self::About => t!("nav.settings"),
-            Self::Win32PrioritySeparation => t!("nav.advanced"),
+            Self::AppSuspension | Self::Win32PrioritySeparation => t!("nav.advanced"),
         }
         .to_string()
     }
@@ -170,18 +175,18 @@ impl Page {
             | Self::CpuLimiter
             | Self::BackgroundCpuRestriction
             | Self::CpuAffinity => Self::ProcessorControls,
-            Self::ProcessPolicies
-            | Self::EfficiencyMode
-            | Self::ForegroundResponsiveness
-            | Self::IoPriority
-            | Self::SmartTrim
-            | Self::AppSuspension
-            | Self::Watchdog => Self::ProcessPolicies,
+            Self::ProcessPolicies | Self::EfficiencyMode | Self::IoPriority | Self::Watchdog => {
+                Self::ProcessPolicies
+            }
+            Self::ForegroundResponsiveness => Self::ForegroundResponsiveness,
+            Self::MemoryControl | Self::MemoryPriority | Self::SmartTrim => Self::MemoryControl,
             Self::ActionLog => Self::ActionLog,
             Self::AppHome | Self::Settings | Self::SettingsAppearance | Self::About => {
                 Self::AppHome
             }
-            Self::AdvancedHome | Self::Win32PrioritySeparation => Self::AdvancedHome,
+            Self::AdvancedHome | Self::AppSuspension | Self::Win32PrioritySeparation => {
+                Self::AdvancedHome
+            }
         }
     }
 
@@ -191,6 +196,8 @@ impl Page {
             Self::PowerPlanAutomation => Some(&POWER_AUTOMATION_PAGES),
             Self::ProcessorControls => Some(&CPU_CONTROL_PAGES),
             Self::ProcessPolicies => Some(&PROCESS_POLICY_PAGES),
+            Self::ForegroundResponsiveness => Some(&AUTO_BALANCE_PAGES),
+            Self::MemoryControl => Some(&MEMORY_CONTROL_PAGES),
             Self::AppHome => Some(&APP_PAGES),
             Self::AdvancedHome => Some(&ADVANCED_PAGES),
             _ => None,

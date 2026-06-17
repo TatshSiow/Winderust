@@ -122,10 +122,11 @@ mod tests {
         EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
         ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GeneralSettings,
         InputDetectionSettings, IoPriorityRule, IoPrioritySettings, ManualOverride,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
-        PriorityRule, ProcessExclusionRule, ProcessIoPriority, ProcessPriority,
-        ScheduleModeSettings, ScheduleRule, SmartTrimSettings, WatchdogAction, WatchdogRule,
-        WatchdogSettings, WeekdaySetting,
+        MemoryPriorityRule, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
+        PerformanceModeSettings, PowerPlanSettings, PriorityRule, ProcessExclusionRule,
+        ProcessIoPriority, ProcessMemoryPriority, ProcessPriority, ScheduleModeSettings,
+        ScheduleRule, SmartTrimSettings, WatchdogAction, WatchdogRule, WatchdogSettings,
+        WeekdaySetting,
     };
 
     #[test]
@@ -348,11 +349,14 @@ mod tests {
                 lower_background_affinity_enabled: true,
                 lower_background_io_priority_enabled: true,
                 lower_background_io_priority: ProcessIoPriority::VeryLow,
+                auto_balance_memory_priority_enabled: true,
+                auto_balance_memory_priority: ProcessMemoryPriority::Low,
                 lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
                 lower_background_cpu_percent: 50,
                 lower_background_max_logical_processors: 0,
                 lower_background_auto_cpu_percent: true,
                 auto_balance_enabled: true,
+                auto_balance_advanced_settings_enabled: true,
                 auto_balance_affinity_escalation_enabled: true,
                 auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
                 auto_balance_cpu_percent: 50,
@@ -383,6 +387,15 @@ mod tests {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
                     priority: ProcessIoPriority::Low,
+                }],
+            },
+            memory_priority: MemoryPrioritySettings {
+                enabled: true,
+                exclude_foreground_app: true,
+                rules: vec![MemoryPriorityRule {
+                    enabled: true,
+                    process_name: "backup.exe".to_owned(),
+                    priority: ProcessMemoryPriority::Low,
                 }],
             },
             smart_trim: SmartTrimSettings {

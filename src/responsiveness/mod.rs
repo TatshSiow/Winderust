@@ -31,6 +31,7 @@ use crate::{
     },
     cpu::PerProcessorUsageMonitor,
     foreground::{list_processes, ProcessInfo},
+    memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
     rules::{
         execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
         AppMatcher, AppPriorityActionBackend, ExecutionFailureState, RuleProcessPriority,
@@ -114,6 +115,7 @@ pub struct ForegroundResponsivenessManager {
     lower_background_affinity: CpuAffinityManager,
     auto_balance: BTreeMap<u32, AutoBalanceProcess>,
     auto_balance_affinity: CpuAffinityManager,
+    auto_balance_memory_priority: MemoryPriorityManager,
     auto_balance_core_selection: Option<AutoBalanceCoreSelection>,
     per_processor_usage: PerProcessorUsageMonitor,
     failure_suppression: BTreeMap<String, PriorityFailureSuppression>,
@@ -133,6 +135,7 @@ impl Default for ForegroundResponsivenessManager {
             auto_balance_affinity: CpuAffinityManager::with_action_log_feature(
                 ActionLogFeature::ForegroundResponsiveness,
             ),
+            auto_balance_memory_priority: MemoryPriorityManager::default(),
             auto_balance_core_selection: None,
             per_processor_usage: PerProcessorUsageMonitor::default(),
             failure_suppression: BTreeMap::new(),
@@ -358,6 +361,7 @@ impl ForegroundResponsivenessManager {
         }
 
         let mut auto_balance_rules = Vec::new();
+        let mut auto_balance_memory_targets = Vec::new();
         if auto_balance_running {
             let now = Instant::now();
             let auto_balance_core_mask =
@@ -397,6 +401,13 @@ impl ForegroundResponsivenessManager {
                             ),
                         );
                     }
+                    if settings.auto_balance_memory_priority_enabled {
+                        auto_balance_memory_targets.push(MemoryPriorityTarget {
+                            process_id: process.id,
+                            process_name: process.name.clone(),
+                            priority: settings.auto_balance_memory_priority,
+                        });
+                    }
                     if decision == AutoBalanceDecision::RestrictAffinity {
                         if let Some(core_mask) = auto_balance_core_mask {
                             auto_balance_rules.push(CpuAffinityRule {
@@ -432,6 +443,24 @@ impl ForegroundResponsivenessManager {
         if failures.last_error.is_none() {
             failures.last_error = auto_balance_affinity_snapshot.last_error.clone();
         }
+        let auto_balance_memory_snapshot = self.auto_balance_memory_priority.update(
+            if settings.enabled
+                && settings.auto_balance_enabled
+                && auto_balance_running
+                && settings.auto_balance_memory_priority_enabled
+            {
+                auto_balance_memory_targets
+            } else {
+                Vec::new()
+            },
+            automation_enabled,
+            ActionLogFeature::ForegroundResponsiveness,
+            action_log,
+        );
+        failures.count += auto_balance_memory_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = auto_balance_memory_snapshot.last_error.clone();
+        }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut active_target_names = target_processes
@@ -450,6 +479,7 @@ impl ForegroundResponsivenessManager {
             "process no longer matches a responsiveness rule",
         ));
         let mut skipped_processes = 0;
+        skipped_processes += auto_balance_memory_snapshot.skipped_processes;
 
         for (process_id, (process_name, priority, source)) in target_processes {
             let failure_process_name = process_name.clone();
@@ -672,6 +702,16 @@ impl ForegroundResponsivenessManager {
         failures.count += affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
             failures.last_error = affinity_snapshot.last_error;
+        }
+        let memory_snapshot = self.auto_balance_memory_priority.update(
+            Vec::new(),
+            true,
+            ActionLogFeature::ForegroundResponsiveness,
+            action_log,
+        );
+        failures.count += memory_snapshot.failed_processes;
+        if failures.last_error.is_none() {
+            failures.last_error = memory_snapshot.last_error;
         }
         failures
     }
@@ -2566,11 +2606,14 @@ mod tests {
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: crate::config::ProcessIoPriority::VeryLow,
+            auto_balance_memory_priority_enabled: false,
+            auto_balance_memory_priority: crate::config::ProcessMemoryPriority::Low,
             lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             lower_background_cpu_percent: 50,
             lower_background_max_logical_processors: 0,
             lower_background_auto_cpu_percent: false,
             auto_balance_enabled: false,
+            auto_balance_advanced_settings_enabled: false,
             auto_balance_affinity_escalation_enabled: false,
             auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             auto_balance_cpu_percent: 50,

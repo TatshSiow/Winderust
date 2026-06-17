@@ -50,10 +50,11 @@ use crate::{
         CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, IoPriorityRule, IoPrioritySettings, NetworkThresholdUnit,
-        PerformanceModeRule, PerformanceModeSettings, PriorityRule, ProcessExclusionRule,
-        ProcessIoPriority, ProcessPriority, ScheduleRule, Settings, SmartTrimSettings,
-        WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
+        ForegroundRules, IoPriorityRule, IoPrioritySettings, MemoryPriorityRule,
+        MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
+        PriorityRule, ProcessExclusionRule, ProcessIoPriority, ProcessMemoryPriority,
+        ProcessPriority, ScheduleRule, Settings, SmartTrimSettings, WatchdogAction, WatchdogRule,
+        WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -61,6 +62,7 @@ use crate::{
     ecoqos::{self, EcoQosSnapshot},
     foreground::{list_process_candidates, ForegroundDetector, ProcessCandidateInfo},
     io_priority::{self, IoPrioritySnapshot},
+    memory_priority::{self, MemoryPrioritySnapshot},
     performance_mode::{self, PerformanceModeSnapshot},
     power::{
         PowerPlan, PowerPlanManager, ProcessorBoostMode, ProcessorPowerAcDcValues,
@@ -254,6 +256,7 @@ pub struct PowerLeafApp {
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     io_priority_status: IoPrioritySnapshot,
+    memory_priority_status: MemoryPrioritySnapshot,
     smart_trim_status: SmartTrimSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
     action_log_filter: ActionLogResultFilter,
@@ -338,6 +341,7 @@ struct UiInputs {
     affinity_process: Entity<InputState>,
     responsiveness_process: Entity<InputState>,
     io_priority_process: Entity<InputState>,
+    memory_priority_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
     activity_idle_timeout: Entity<SliderState>,
     activity_check_interval: Entity<SliderState>,
@@ -539,6 +543,7 @@ impl UiInputs {
             affinity_process: make_input(window, cx, "", "Search running apps..."),
             responsiveness_process: make_input(window, cx, "", "Search running apps..."),
             io_priority_process: make_input(window, cx, "", "Search running apps..."),
+            memory_priority_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
             activity_idle_timeout: make_range_slider(
                 cx,
@@ -767,6 +772,7 @@ impl PowerLeafApp {
             watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
             io_priority_status: IoPrioritySnapshot::default(),
+            memory_priority_status: MemoryPrioritySnapshot::default(),
             smart_trim_status: SmartTrimSnapshot::default(),
             action_log_entries: Vec::new(),
             action_log_filter: ActionLogResultFilter::All,
@@ -1770,6 +1776,11 @@ impl PowerLeafApp {
             changed = true;
         }
 
+        if self.memory_priority_status != background_status.memory_priority {
+            self.memory_priority_status = background_status.memory_priority;
+            changed = true;
+        }
+
         if self.smart_trim_status != background_status.smart_trim {
             self.smart_trim_status = background_status.smart_trim;
             changed = true;
@@ -1853,6 +1864,7 @@ impl PowerLeafApp {
                 | Page::Watchdog
                 | Page::ForegroundResponsiveness
                 | Page::IoPriority
+                | Page::MemoryPriority
                 | Page::PerformanceMode
                 | Page::CpuAffinity
         )
@@ -2670,6 +2682,7 @@ impl PowerLeafApp {
             Page::PowerPlanAutomation
             | Page::ProcessorControls
             | Page::ProcessPolicies
+            | Page::MemoryControl
             | Page::AppHome
             | Page::AdvancedHome => page
                 .child_pages()
@@ -2735,6 +2748,11 @@ impl PowerLeafApp {
                 settings.io_priority.enabled,
                 self.io_priority_status.failed_processes,
                 self.io_priority_status.last_error.is_some(),
+            )),
+            Page::MemoryPriority => Some(process_nav_status(
+                settings.memory_priority.enabled,
+                self.memory_priority_status.failed_processes,
+                self.memory_priority_status.last_error.is_some(),
             )),
             Page::SmartTrim => Some(process_nav_status(
                 settings.smart_trim.enabled,
@@ -3039,6 +3057,7 @@ impl PowerLeafApp {
                 self.render_section_landing_page(Page::ProcessorControls, cx)
             }
             Page::ProcessPolicies => self.render_section_landing_page(Page::ProcessPolicies, cx),
+            Page::MemoryControl => self.render_section_landing_page(Page::MemoryControl, cx),
             Page::AppHome => self.render_section_landing_page(Page::AppHome, cx),
             Page::AdvancedHome => self.render_section_landing_page(Page::AdvancedHome, cx),
             Page::Activity => self.render_activity_page(window, cx),
@@ -3058,6 +3077,7 @@ impl PowerLeafApp {
                 self.render_foreground_responsiveness_page(window, cx)
             }
             Page::IoPriority => self.render_io_priority_page(window, cx),
+            Page::MemoryPriority => self.render_memory_priority_page(window, cx),
             Page::SmartTrim => self.render_smart_trim_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::ActionLog => self.render_action_log_page(window, cx),
@@ -3301,6 +3321,15 @@ impl PowerLeafApp {
             items.push((
                 t!("nav.io_priority").to_string(),
                 format!("{} adjusted", self.io_priority_status.adjusted_processes),
+            ));
+        }
+        if settings.memory_priority.enabled {
+            items.push((
+                t!("nav.memory_priority").to_string(),
+                format!(
+                    "{} adjusted",
+                    self.memory_priority_status.adjusted_processes
+                ),
             ));
         }
         if settings.smart_trim.enabled {
@@ -6074,7 +6103,6 @@ impl PowerLeafApp {
         let mut list = rule_list();
         for (index, rule) in self.settings.performance_mode.rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            let indicator = performance_mode_indicator(&self.performance_mode_status, &process);
             list = list.child(
                 compact_rule_row(cx)
                     .child(rule_enable_checkbox(
@@ -6088,7 +6116,6 @@ impl PowerLeafApp {
                         }),
                     ))
                     .child(self.process_rule_title(&process, cx))
-                    .child(status_pill(indicator.0, indicator.1, indicator.2))
                     .child(self.render_inline_power_plan_picker(
                         format!("performance-mode-plan-{index}"),
                         rule.power_plan_guid.clone(),
@@ -6129,12 +6156,25 @@ impl PowerLeafApp {
             .to_string();
         let enabled = self.settings.foreground_responsiveness.enabled;
         let body = feature_body(enabled)
-            .child(self.render_lower_background_efficiency_card(cx))
-            .child(self.render_lower_background_io_priority_card(window, cx))
-            .child(self.render_foreground_boost_selector(window, cx))
             .child(self.render_auto_balance_preset_selector(window, cx))
-            .child(self.render_auto_balance_insight())
-            .child(self.render_auto_balance_advanced_group(window, cx, &input_value, enabled));
+            .child(self.render_auto_balance_advanced_settings_toggle(cx))
+            .when(
+                self.settings
+                    .foreground_responsiveness
+                    .auto_balance_advanced_settings_enabled,
+                |body| {
+                    body.child(section_header(
+                        &t!("responsiveness.auto_balance_advanced"),
+                        t!("responsiveness.auto_balance_advanced_help").to_string(),
+                    ))
+                    .child(self.render_auto_balance_advanced_cards(
+                        window,
+                        cx,
+                        &input_value,
+                        enabled,
+                    ))
+                },
+            );
 
         let help = tooltip_lines(vec![
             t!("responsiveness.intro_1").to_string(),
@@ -6157,40 +6197,7 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_lower_background_efficiency_card(&self, cx: &mut Context<Self>) -> AnyElement {
-        let selected = self
-            .settings
-            .foreground_responsiveness
-            .lower_background_apps;
-        let background_efficiency_managed = self.settings.eco_qos.enabled;
-        let action = if background_efficiency_managed {
-            value_pill(t!("responsiveness.background_efficiency_handled").to_string())
-                .into_any_element()
-        } else {
-            switch_toggle_action(
-                "responsiveness-lower-background-toggle",
-                selected,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.foreground_responsiveness.lower_background_apps = *checked;
-                    cx.notify();
-                }),
-            )
-        };
-
-        setting_action_card_with_help(
-            "responsiveness-lower-background-efficiency",
-            t!("responsiveness.lower_background_efficiency").to_string(),
-            if background_efficiency_managed {
-                t!("responsiveness.lower_background_efficiency_managed_help").to_string()
-            } else {
-                t!("responsiveness.lower_background_efficiency_help").to_string()
-            },
-            action,
-        )
-        .into_any_element()
-    }
-
-    fn render_lower_background_io_priority_card(
+    fn render_auto_io_priority_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -6203,7 +6210,7 @@ impl PowerLeafApp {
             .settings
             .foreground_responsiveness
             .lower_background_io_priority;
-        let priority_dropdown = self.render_dropdown_select(
+        self.render_dropdown_select(
             "responsiveness-background-io-priority",
             process_io_priority_label(priority),
             selected,
@@ -6237,31 +6244,7 @@ impl PowerLeafApp {
                 }
                 options
             },
-        );
-        let mut row = h_flex()
-            .gap_2()
-            .items_center()
-            .justify_end()
-            .flex_wrap()
-            .child(switch_toggle_action(
-                "responsiveness-lower-background-io-toggle",
-                selected,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .lower_background_io_priority_enabled = *checked;
-                    cx.notify();
-                }),
-            ));
-        row = row.child(priority_dropdown);
-
-        setting_action_card_with_help(
-            "responsiveness-lower-background-io-priority",
-            t!("responsiveness.lower_background_io_priority").to_string(),
-            t!("responsiveness.lower_background_io_priority_help").to_string(),
-            row.into_any_element(),
         )
-        .into_any_element()
     }
 
     fn render_auto_balance_preset_selector(
@@ -6319,52 +6302,28 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
-    fn render_auto_balance_insight(&self) -> AnyElement {
-        let status = &self.foreground_responsiveness_status;
-        let total_cpu = status
-            .auto_balance_total_cpu_usage_tenths
-            .map(format_percent_tenths)
-            .unwrap_or_else(|| t!("common.unknown").to_string());
-
-        let mut rows = vec![
-            (
-                t!("responsiveness.auto_balance_status").to_string(),
-                status.auto_balance_message.clone(),
+    fn render_auto_balance_advanced_settings_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
+        setting_action_card_with_help(
+            "auto-balance-advanced-settings-enabled",
+            t!("responsiveness.auto_balance_advanced_settings").to_string(),
+            t!("responsiveness.auto_balance_advanced_settings_help").to_string(),
+            switch_toggle_action(
+                "auto-balance-advanced-settings-toggle",
+                self.settings
+                    .foreground_responsiveness
+                    .auto_balance_advanced_settings_enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_advanced_settings_enabled = *checked;
+                    cx.notify();
+                }),
             ),
-            (
-                t!("responsiveness.auto_balance_total_cpu").to_string(),
-                total_cpu,
-            ),
-            (
-                t!("responsiveness.auto_balance_restrained").to_string(),
-                status.auto_balanced_processes.to_string(),
-            ),
-        ];
-        if let Some(error) = &status.last_error {
-            rows.push((t!("common.last_failure").to_string(), error.clone()));
-        }
-
-        let mut content = v_flex().gap_2().child(titled_stat_grid(
-            &t!("responsiveness.auto_balance_insight"),
-            rows,
-        ));
-
-        let mut list = rule_list();
-        for detail in &status.auto_balance_details {
-            list = list.child(auto_balance_status_row(detail));
-        }
-
-        if status.auto_balance_details.is_empty() {
-            list = list.child(text_muted(
-                t!("responsiveness.no_auto_balance_activity").to_string(),
-            ));
-        }
-
-        content = content.child(list);
-        content.into_any_element()
+        )
+        .into_any_element()
     }
 
-    fn render_auto_balance_advanced_group(
+    fn render_auto_balance_advanced_cards(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -6372,96 +6331,72 @@ impl PowerLeafApp {
         enabled: bool,
     ) -> AnyElement {
         let settings = &self.settings.foreground_responsiveness;
-        let collapsed =
-            self.is_setting_group_collapsed(SettingGroupTarget::ResponsivenessAutoBalance);
+        let efficiency_action = if self.settings.eco_qos.enabled {
+            value_pill(t!("responsiveness.background_efficiency_handled").to_string())
+                .into_any_element()
+        } else {
+            setting_group_switch_action(
+                "responsiveness-lower-background-toggle",
+                settings.lower_background_apps,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.foreground_responsiveness.lower_background_apps = *checked;
+                    cx.notify();
+                }),
+            )
+        };
         let mut rows = vec![
-            setting_group_stepper_row_u64(
-                "responsiveness-auto-total-threshold",
-                t!("responsiveness.auto_balance_total_threshold").to_string(),
-                u64::from(settings.auto_balance_total_threshold_percent),
-                self.render_numeric_value(
-                    NumericField::AutoBalanceTotalThreshold,
-                    format!("{}%", settings.auto_balance_total_threshold_percent),
-                    settings.auto_balance_total_threshold_percent.to_string(),
-                    cx,
-                ),
-                true,
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    let current = u64::from(
+            setting_group_with_help(
+                SettingGroupTarget::AutoBalanceEfficiency,
+                t!("responsiveness.auto_efficiency_adjustment").to_string(),
+                t!("responsiveness.auto_efficiency_adjustment_help").to_string(),
+                efficiency_action,
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceEfficiency),
+                vec![
+                    setting_group_action_row(
+                        "responsiveness-auto-efficiency-level",
+                        t!("responsiveness.auto_efficiency_level").to_string(),
+                        self.render_efficiency_aggressiveness_picker(
+                            self.settings.eco_qos.aggressiveness,
+                            window,
+                            cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    self.render_foreground_boost_selector(window, cx),
+                ],
+                cx,
+            )
+            .into_any_element(),
+            setting_group_with_help(
+                SettingGroupTarget::AutoBalanceIoPriority,
+                t!("responsiveness.auto_io_priority").to_string(),
+                t!("responsiveness.auto_io_priority_help").to_string(),
+                setting_group_switch_action(
+                    "responsiveness-lower-background-io-toggle",
+                    settings.lower_background_io_priority_enabled,
+                    cx.listener(|app, checked, _, cx| {
                         app.settings
                             .foreground_responsiveness
-                            .auto_balance_total_threshold_percent,
-                    );
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_total_threshold_percent = apply_u64_step(
-                        current,
-                        change,
-                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
-                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
-                    ) as u8;
-                    cx.notify();
-                }),
-            ),
-            setting_group_stepper_row_u64(
-                "responsiveness-auto-threshold",
-                t!("responsiveness.auto_balance_threshold").to_string(),
-                u64::from(settings.auto_balance_threshold_percent),
-                self.render_numeric_value(
-                    NumericField::AutoBalanceThreshold,
-                    format!("{}%", settings.auto_balance_threshold_percent),
-                    settings.auto_balance_threshold_percent.to_string(),
-                    cx,
+                            .lower_background_io_priority_enabled = *checked;
+                        cx.notify();
+                    }),
                 ),
-                true,
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    let current = u64::from(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_threshold_percent,
-                    );
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_threshold_percent = apply_u64_step(
-                        current,
-                        change,
-                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
-                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
-                    ) as u8;
-                    cx.notify();
-                }),
-            ),
-            setting_group_stepper_row_u64(
-                "responsiveness-auto-restore-threshold",
-                t!("responsiveness.auto_balance_restore_threshold").to_string(),
-                u64::from(settings.auto_balance_restore_threshold_percent),
-                self.render_numeric_value(
-                    NumericField::AutoBalanceRestoreThreshold,
-                    format!("{}%", settings.auto_balance_restore_threshold_percent),
-                    settings.auto_balance_restore_threshold_percent.to_string(),
-                    cx,
-                ),
-                true,
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    let current = u64::from(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_restore_threshold_percent,
-                    );
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_restore_threshold_percent = apply_u64_step(
-                        current,
-                        change,
-                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
-                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
-                    ) as u8;
-                    cx.notify();
-                }),
-            ),
-            setting_group_action_row(
-                "responsiveness-auto-affinity-escalation",
-                t!("responsiveness.auto_balance_affinity_escalation").to_string(),
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceIoPriority),
+                vec![setting_group_action_row(
+                    "responsiveness-auto-io-priority-level",
+                    t!("responsiveness.auto_io_priority_level").to_string(),
+                    self.render_auto_io_priority_selector(window, cx),
+                    true,
+                )
+                .into_any_element()],
+                cx,
+            )
+            .into_any_element(),
+            setting_group_with_help(
+                SettingGroupTarget::AutoBalanceAffinity,
+                t!("responsiveness.auto_affinity_escalation").to_string(),
+                t!("responsiveness.auto_affinity_escalation_help").to_string(),
                 setting_group_switch_action(
                     "responsiveness-auto-affinity-escalation-switch",
                     settings.auto_balance_affinity_escalation_enabled,
@@ -6472,135 +6407,261 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 ),
-                true,
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceAffinity),
+                vec![
+                    setting_group_action_row(
+                        "responsiveness-auto-affinity-mode",
+                        t!("responsiveness.auto_balance_affinity_mode").to_string(),
+                        self.render_auto_balance_affinity_mode_selector(window, cx),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "responsiveness-auto-cpu-share-mode",
+                        t!("responsiveness.dynamic_cpu_share").to_string(),
+                        setting_group_switch_action(
+                            "responsiveness-auto-cpu-share-mode-switch",
+                            settings.lower_background_auto_cpu_percent,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings
+                                    .foreground_responsiveness
+                                    .lower_background_auto_cpu_percent = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_stepper_row_u64(
+                        "responsiveness-auto-cpu-percent",
+                        t!("responsiveness.minimum_cpu_share").to_string(),
+                        u64::from(settings.auto_balance_cpu_percent),
+                        self.render_numeric_value(
+                            NumericField::AutoBalanceCpuPercent,
+                            format!("{}%", settings.auto_balance_cpu_percent),
+                            settings.auto_balance_cpu_percent.to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            let current = u64::from(
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_cpu_percent,
+                            );
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_cpu_percent = apply_u64_step(
+                                current,
+                                change,
+                                AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                                AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                            ) as u8;
+                            cx.notify();
+                        }),
+                    ),
+                ],
+                cx,
             )
             .into_any_element(),
-            setting_group_action_row(
-                "responsiveness-auto-affinity-mode",
-                t!("responsiveness.auto_balance_affinity_mode").to_string(),
-                self.render_auto_balance_affinity_mode_selector(window, cx),
-                true,
-            )
-            .into_any_element(),
-            setting_group_action_row(
-                "responsiveness-auto-cpu-share-mode",
-                t!("responsiveness.auto_balance_auto_cpu_share").to_string(),
+            setting_group_with_help(
+                SettingGroupTarget::AutoBalanceMemoryPriority,
+                t!("responsiveness.auto_memory_priority").to_string(),
+                t!("responsiveness.auto_memory_priority_help").to_string(),
                 setting_group_switch_action(
-                    "responsiveness-auto-cpu-share-mode-switch",
-                    settings.lower_background_auto_cpu_percent,
+                    "responsiveness-auto-memory-priority-switch",
+                    settings.auto_balance_memory_priority_enabled,
                     cx.listener(|app, checked, _, cx| {
                         app.settings
                             .foreground_responsiveness
-                            .lower_background_auto_cpu_percent = *checked;
+                            .auto_balance_memory_priority_enabled = *checked;
                         cx.notify();
                     }),
                 ),
-                true,
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceMemoryPriority),
+                vec![setting_group_action_row(
+                    "responsiveness-auto-memory-priority-level",
+                    t!("responsiveness.auto_balance_memory_priority_level").to_string(),
+                    self.render_auto_balance_memory_priority_selector(window, cx),
+                    true,
+                )
+                .into_any_element()],
+                cx,
             )
             .into_any_element(),
-            setting_group_stepper_row_u64(
-                "responsiveness-auto-cpu-percent",
-                t!("responsiveness.auto_balance_cpu_percent").to_string(),
-                u64::from(settings.auto_balance_cpu_percent),
-                self.render_numeric_value(
-                    NumericField::AutoBalanceCpuPercent,
-                    format!("{}%", settings.auto_balance_cpu_percent),
-                    settings.auto_balance_cpu_percent.to_string(),
-                    cx,
-                ),
-                true,
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    let current = u64::from(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_cpu_percent,
-                    );
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_cpu_percent = apply_u64_step(
-                        current,
-                        change,
-                        AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
-                        AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
-                    ) as u8;
-                    cx.notify();
-                }),
-            ),
-            setting_group_stepper_row_u64(
-                "responsiveness-auto-sustain",
-                t!("responsiveness.auto_balance_sustain").to_string(),
-                settings.auto_balance_sustain_seconds,
-                self.render_numeric_value(
-                    NumericField::AutoBalanceSustain,
-                    format!("{} sec", settings.auto_balance_sustain_seconds),
-                    settings.auto_balance_sustain_seconds.to_string(),
-                    cx,
-                ),
-                true,
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_sustain_seconds = apply_u64_step(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_sustain_seconds,
-                        change,
-                        AUTO_BALANCE_SECONDS_MIN,
-                        AUTO_BALANCE_SECONDS_MAX,
-                    );
-                    cx.notify();
-                }),
-            ),
-            setting_group_stepper_row_u64(
-                "responsiveness-auto-minimum-restraint",
-                t!("responsiveness.auto_balance_minimum_restraint").to_string(),
-                settings.auto_balance_minimum_restraint_seconds,
-                self.render_numeric_value(
-                    NumericField::AutoBalanceMinimumRestraint,
-                    format!("{} sec", settings.auto_balance_minimum_restraint_seconds),
-                    settings.auto_balance_minimum_restraint_seconds.to_string(),
-                    cx,
-                ),
-                true,
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_minimum_restraint_seconds = apply_u64_step(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_minimum_restraint_seconds,
-                        change,
-                        AUTO_BALANCE_SECONDS_MIN,
-                        AUTO_BALANCE_SECONDS_MAX,
-                    );
-                    cx.notify();
-                }),
-            ),
-            setting_group_stepper_row_u64(
-                "responsiveness-auto-cooldown",
-                t!("responsiveness.auto_balance_cooldown").to_string(),
-                settings.auto_balance_cooldown_seconds,
-                self.render_numeric_value(
-                    NumericField::AutoBalanceCooldown,
-                    format!("{} sec", settings.auto_balance_cooldown_seconds),
-                    settings.auto_balance_cooldown_seconds.to_string(),
-                    cx,
-                ),
-                true,
-                cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                    app.settings
-                        .foreground_responsiveness
-                        .auto_balance_cooldown_seconds = apply_u64_step(
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_cooldown_seconds,
-                        change,
-                        AUTO_BALANCE_SECONDS_MIN,
-                        AUTO_BALANCE_SECONDS_MAX,
-                    );
-                    cx.notify();
-                }),
-            ),
+            setting_group_with_help(
+                SettingGroupTarget::AutoBalanceBehaviourTuning,
+                t!("responsiveness.auto_balance_behaviour_tuning").to_string(),
+                t!("responsiveness.auto_balance_behaviour_tuning_help").to_string(),
+                div().into_any_element(),
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceBehaviourTuning),
+                vec![
+                    setting_group_stepper_row_u64(
+                        "responsiveness-auto-total-threshold",
+                        t!("responsiveness.auto_balance_total_threshold").to_string(),
+                        u64::from(settings.auto_balance_total_threshold_percent),
+                        self.render_numeric_value(
+                            NumericField::AutoBalanceTotalThreshold,
+                            format!("{}%", settings.auto_balance_total_threshold_percent),
+                            settings.auto_balance_total_threshold_percent.to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            let current = u64::from(
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_total_threshold_percent,
+                            );
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_total_threshold_percent = apply_u64_step(
+                                current,
+                                change,
+                                AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                                AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                            )
+                                as u8;
+                            cx.notify();
+                        }),
+                    ),
+                    setting_group_stepper_row_u64(
+                        "responsiveness-auto-threshold",
+                        t!("responsiveness.auto_balance_threshold").to_string(),
+                        u64::from(settings.auto_balance_threshold_percent),
+                        self.render_numeric_value(
+                            NumericField::AutoBalanceThreshold,
+                            format!("{}%", settings.auto_balance_threshold_percent),
+                            settings.auto_balance_threshold_percent.to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            let current = u64::from(
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_threshold_percent,
+                            );
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_threshold_percent = apply_u64_step(
+                                current,
+                                change,
+                                AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                                AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                            )
+                                as u8;
+                            cx.notify();
+                        }),
+                    ),
+                    setting_group_stepper_row_u64(
+                        "responsiveness-auto-restore-threshold",
+                        t!("responsiveness.auto_balance_restore_threshold").to_string(),
+                        u64::from(settings.auto_balance_restore_threshold_percent),
+                        self.render_numeric_value(
+                            NumericField::AutoBalanceRestoreThreshold,
+                            format!("{}%", settings.auto_balance_restore_threshold_percent),
+                            settings.auto_balance_restore_threshold_percent.to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            let current = u64::from(
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_restore_threshold_percent,
+                            );
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_restore_threshold_percent = apply_u64_step(
+                                current,
+                                change,
+                                AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                                AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                            )
+                                as u8;
+                            cx.notify();
+                        }),
+                    ),
+                    setting_group_stepper_row_u64(
+                        "responsiveness-auto-sustain",
+                        t!("responsiveness.auto_balance_sustain").to_string(),
+                        settings.auto_balance_sustain_seconds,
+                        self.render_numeric_value(
+                            NumericField::AutoBalanceSustain,
+                            format!("{} sec", settings.auto_balance_sustain_seconds),
+                            settings.auto_balance_sustain_seconds.to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_sustain_seconds = apply_u64_step(
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_sustain_seconds,
+                                change,
+                                AUTO_BALANCE_SECONDS_MIN,
+                                AUTO_BALANCE_SECONDS_MAX,
+                            );
+                            cx.notify();
+                        }),
+                    ),
+                    setting_group_stepper_row_u64(
+                        "responsiveness-auto-minimum-restraint",
+                        t!("responsiveness.auto_balance_minimum_restraint").to_string(),
+                        settings.auto_balance_minimum_restraint_seconds,
+                        self.render_numeric_value(
+                            NumericField::AutoBalanceMinimumRestraint,
+                            format!("{} sec", settings.auto_balance_minimum_restraint_seconds),
+                            settings.auto_balance_minimum_restraint_seconds.to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_minimum_restraint_seconds = apply_u64_step(
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_minimum_restraint_seconds,
+                                change,
+                                AUTO_BALANCE_SECONDS_MIN,
+                                AUTO_BALANCE_SECONDS_MAX,
+                            );
+                            cx.notify();
+                        }),
+                    ),
+                    setting_group_stepper_row_u64(
+                        "responsiveness-auto-cooldown",
+                        t!("responsiveness.auto_balance_cooldown").to_string(),
+                        settings.auto_balance_cooldown_seconds,
+                        self.render_numeric_value(
+                            NumericField::AutoBalanceCooldown,
+                            format!("{} sec", settings.auto_balance_cooldown_seconds),
+                            settings.auto_balance_cooldown_seconds.to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_cooldown_seconds = apply_u64_step(
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_cooldown_seconds,
+                                change,
+                                AUTO_BALANCE_SECONDS_MIN,
+                                AUTO_BALANCE_SECONDS_MAX,
+                            );
+                            cx.notify();
+                        }),
+                    ),
+                ],
+                cx,
+            )
+            .into_any_element(),
         ];
 
         let exclusion_editor = v_flex()
@@ -6650,38 +6711,19 @@ impl PowerLeafApp {
             )
             .child(self.render_responsiveness_exclusions(cx));
         rows.push(
-            setting_group_stacked_action_row(
-                "responsiveness-auto-exclusions",
+            setting_group_with_help(
+                SettingGroupTarget::AutoBalanceExclusions,
                 t!("responsiveness.auto_balance_exclusions").to_string(),
-                exclusion_editor.into_any_element(),
-                true,
+                t!("responsiveness.auto_balance_exclusions_help").to_string(),
+                div().into_any_element(),
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceExclusions),
+                vec![exclusion_editor.into_any_element()],
+                cx,
             )
             .into_any_element(),
         );
 
-        setting_group_with_title_element(
-            SettingGroupTarget::ResponsivenessAutoBalance,
-            h_flex()
-                .flex_1()
-                .min_w(px(0.0))
-                .gap_1()
-                .items_center()
-                .child(
-                    div()
-                        .truncate()
-                        .child(t!("responsiveness.auto_balance_advanced").to_string()),
-                )
-                .child(title_info_button(
-                    "responsiveness-auto-balance-advanced-info",
-                    t!("responsiveness.auto_balance_advanced_help").to_string(),
-                ))
-                .into_any_element(),
-            div().into_any_element(),
-            collapsed,
-            rows,
-            cx,
-        )
-        .into_any_element()
+        v_flex().gap_2().children(rows).into_any_element()
     }
 
     fn render_foreground_boost_selector(
@@ -6789,6 +6831,49 @@ impl PowerLeafApp {
                             app.settings
                                 .foreground_responsiveness
                                 .auto_balance_affinity_mode = mode;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_auto_balance_memory_priority_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self
+            .settings
+            .foreground_responsiveness
+            .auto_balance_memory_priority;
+        self.render_dropdown_select(
+            "responsiveness-auto-memory-priority-level",
+            process_memory_priority_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessMemoryPriority::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessMemoryPriority::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "responsiveness-auto-memory-priority-option-{priority:?}"
+                            )),
+                            process_memory_priority_label(priority),
+                            selected == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_memory_priority = priority;
                             app.active_power_plan_picker = None;
                             cx.notify();
                         })),
@@ -7232,6 +7317,183 @@ impl PowerLeafApp {
             dropdown,
         )
         .into_any_element()
+    }
+
+    fn render_memory_priority_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .memory_priority_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.memory_priority.enabled;
+        let help = tooltip_lines(vec![
+            t!("memory_priority.intro_1").to_string(),
+            t!("memory_priority.intro_2").to_string(),
+        ]);
+        let body = feature_body(enabled)
+            .child(setting_action_card_with_help(
+                "memory-priority-exclude-foreground",
+                t!("memory_priority.exclude_foreground").to_string(),
+                t!("memory_priority.exclude_foreground_help").to_string(),
+                switch_toggle_action(
+                    "memory-priority-exclude-foreground-toggle",
+                    self.settings.memory_priority.exclude_foreground_app,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.memory_priority.exclude_foreground_app = *checked;
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "memory-priority-process-suggestion",
+                        &self.inputs.memory_priority_process,
+                        SuggestionTarget::MemoryPriority,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-memory-priority-rule"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_memory_priority_process(
+                                        &self.settings.memory_priority,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process = app
+                                    .inputs
+                                    .memory_priority_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_memory_priority_process(
+                                    &app.settings.memory_priority,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .memory_priority
+                                        .rules
+                                        .push(new_memory_priority_rule(&process));
+                                    clear_input(&app.inputs.memory_priority_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_memory_priority_rules(window, cx));
+
+        page_shell(Page::MemoryPriority, cx)
+            .child(feature_toggle_switch_with_help(
+                "memory-priority-enabled",
+                t!("memory_priority.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.memory_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(body, enabled))
+            .into_any_element()
+    }
+
+    fn render_memory_priority_rules(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.memory_priority.rules.iter().enumerate() {
+            let process = rule.process_name.clone();
+            list = list.child(
+                compact_rule_row(cx)
+                    .child(rule_enable_checkbox(
+                        format!("memory-priority-rule-enabled-{index}"),
+                        rule.enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) = app.settings.memory_priority.rules.get_mut(index) {
+                                rule.enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
+                    ))
+                    .child(self.process_rule_title(&process, cx))
+                    .child(self.render_memory_priority_selector(index, rule.priority, window, cx))
+                    .child(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-memory-priority-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if index < app.settings.memory_priority.rules.len() {
+                                app.settings.memory_priority.rules.remove(index);
+                            }
+                            app.editing_rule_title = None;
+                            app.expanded_rule_cards.clear();
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    ),
+            );
+        }
+        if self.settings.memory_priority.rules.is_empty() {
+            list = list.child(text_muted(t!("memory_priority.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_memory_priority_selector(
+        &self,
+        index: usize,
+        selected_priority: ProcessMemoryPriority,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let dropdown = self.render_dropdown_select(
+            format!("memory-priority-{index}"),
+            process_memory_priority_label(selected_priority),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessMemoryPriority::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessMemoryPriority::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "memory-priority-{index}-option-{priority:?}"
+                            )),
+                            process_memory_priority_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.memory_priority.rules.get_mut(index) {
+                                rule.priority = priority;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
+        dropdown
     }
 
     fn render_smart_trim_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -9908,6 +10170,9 @@ impl PowerLeafApp {
             SuggestionTarget::IoPriority => {
                 clear_input_to(&self.inputs.io_priority_process, process, window, cx);
             }
+            SuggestionTarget::MemoryPriority => {
+                clear_input_to(&self.inputs.memory_priority_process, process, window, cx);
+            }
             SuggestionTarget::Affinity => {
                 clear_input_to(&self.inputs.affinity_process, process, window, cx);
             }
@@ -10074,6 +10339,9 @@ fn dropdown_select_control(
         })
         .when(enabled, |style| style.cursor_pointer())
         .when(!enabled, |style| style.cursor_default().opacity(0.48))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation();
+        })
         .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
         .child(dropdown_chevron(cx))
 }
@@ -10280,6 +10548,7 @@ enum SuggestionTarget {
     PerformanceMode,
     Responsiveness,
     IoPriority,
+    MemoryPriority,
     Affinity,
 }
 
@@ -10305,9 +10574,14 @@ enum RuleCardTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingGroupTarget {
     AccentColor,
+    AutoBalanceAffinity,
+    AutoBalanceBehaviourTuning,
+    AutoBalanceEfficiency,
+    AutoBalanceExclusions,
+    AutoBalanceIoPriority,
+    AutoBalanceMemoryPriority,
     EfficiencyCpuRestriction,
     BackgroundCpuRestriction,
-    ResponsivenessAutoBalance,
     SuspensionThaw,
     SuspensionAudio,
     SuspensionNetwork,
@@ -10322,13 +10596,11 @@ enum AutoBalancePreset {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoBalanceBehavior {
-    None,
     Preset(AutoBalancePreset),
 }
 
 impl AutoBalanceBehavior {
-    const ALL: [Self; 4] = [
-        Self::None,
+    const ALL: [Self; 3] = [
         Self::Preset(AutoBalancePreset::Gentle),
         Self::Preset(AutoBalancePreset::Balanced),
         Self::Preset(AutoBalancePreset::Responsive),
@@ -11321,7 +11593,10 @@ fn dashboard_page_search_text(page: Page) -> String {
             "processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores".to_string(),
         ],
         Page::ProcessPolicies => vec![
-            "process policies efficiency mode suspension responsiveness priority io memory smarttrim watchdog trim terminate restart background foreground".to_string(),
+            "process policies efficiency mode io priority watchdog terminate restart background foreground".to_string(),
+        ],
+        Page::MemoryControl => vec![
+            "memory control memory priority smarttrim ram trim working set standby list file cache paging background process".to_string(),
         ],
         Page::ActionLog => vec![
             t!("action_log.intro_1").to_string(),
@@ -11332,7 +11607,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             "settings powerleaf behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette about".to_string(),
         ],
         Page::AdvancedHome => vec![
-            "advanced windows scheduler win32 priority separation quantum foreground boost registry".to_string(),
+            "advanced app suspension windows scheduler win32 priority separation quantum foreground boost registry".to_string(),
         ],
         Page::Activity => vec![
             t!("activity.intro_1").to_string(),
@@ -11424,6 +11699,12 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("io_priority.intro_2").to_string(),
             t!("io_priority.exclude_foreground_help").to_string(),
             "io i/o disk storage priority low very low background process foreground exclusion".to_string(),
+        ],
+        Page::MemoryPriority => vec![
+            t!("memory_priority.intro_1").to_string(),
+            t!("memory_priority.intro_2").to_string(),
+            t!("memory_priority.exclude_foreground_help").to_string(),
+            "memory priority page priority ram paging working set very low low medium background process foreground exclusion".to_string(),
         ],
         Page::SmartTrim => vec![
             t!("smart_trim.intro_1").to_string(),
@@ -11882,6 +12163,36 @@ fn setting_group(
             .min_w(px(0.0))
             .truncate()
             .child(title)
+            .into_any_element(),
+        action,
+        collapsed,
+        rows,
+        cx,
+    )
+}
+
+fn setting_group_with_help(
+    target: SettingGroupTarget,
+    title: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    action: AnyElement,
+    collapsed: bool,
+    rows: Vec<AnyElement>,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let title: SharedString = title.into();
+    setting_group_with_title_element(
+        target,
+        h_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .gap_1()
+            .items_center()
+            .child(div().truncate().child(title))
+            .child(title_info_button(
+                SharedString::from(format!("setting-group-info-{target:?}")),
+                help,
+            ))
             .into_any_element(),
         action,
         collapsed,
@@ -12473,20 +12784,6 @@ fn stat_grid(rows: Vec<(String, String)>) -> GroupBox {
     GroupBox::new().outline().child(list)
 }
 
-fn titled_stat_grid(title: &str, rows: Vec<(String, String)>) -> GroupBox {
-    let mut list = DescriptionList::vertical()
-        .columns(1)
-        .bordered(false)
-        .label_width(px(180.0));
-    for (label, value) in rows {
-        list = list.item(label, text_muted(value).into_any_element(), 1);
-    }
-    GroupBox::new()
-        .outline()
-        .title(section_title_label(title.to_owned()))
-        .child(list)
-}
-
 fn dashboard_card_slot(card: AnyElement) -> gpui::Div {
     div()
         .w(relative(0.49))
@@ -12670,6 +12967,7 @@ fn action_log_feature_label(feature: ActionLogFeature) -> &'static str {
         ActionLogFeature::Watchdog => "Watchdog Rules",
         ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
         ActionLogFeature::IoPriority => "I/O Priority",
+        ActionLogFeature::MemoryPriority => "Memory Priority",
         ActionLogFeature::SmartTrim => "SmartTrim",
     }
 }
@@ -13569,6 +13867,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::PowerPlanAutomation => NavIcon::Zap,
         Page::ProcessorControls => NavIcon::Chip,
         Page::ProcessPolicies => NavIcon::Frame,
+        Page::MemoryControl => NavIcon::Chip,
         Page::AppHome => NavIcon::Settings,
         Page::AdvancedHome => NavIcon::Chip,
         Page::Activity => NavIcon::Activity,
@@ -13582,6 +13881,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::PerformanceMode => NavIcon::Zap,
         Page::ForegroundResponsiveness => NavIcon::Zap,
         Page::IoPriority => NavIcon::Chip,
+        Page::MemoryPriority => NavIcon::Chip,
         Page::SmartTrim => NavIcon::Chip,
         Page::CpuAffinity => NavIcon::Chip,
         Page::ForegroundRules => NavIcon::Frame,
@@ -14692,6 +14992,9 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
             can_add_responsiveness_process(&settings.foreground_responsiveness, process)
         }
         SuggestionTarget::IoPriority => can_add_io_priority_process(&settings.io_priority, process),
+        SuggestionTarget::MemoryPriority => {
+            can_add_memory_priority_process(&settings.memory_priority, process)
+        }
         SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
     }
 }
@@ -14790,6 +15093,16 @@ fn can_add_io_priority_process(settings: &IoPrioritySettings, process: &str) -> 
             .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
 }
 
+fn can_add_memory_priority_process(settings: &MemoryPrioritySettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !memory_priority::is_builtin_excluded(process)
+        && !settings
+            .rules
+            .iter()
+            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+}
+
 fn can_add_responsiveness_exclusion(
     settings: &ForegroundResponsivenessSettings,
     process: &str,
@@ -14855,6 +15168,14 @@ fn new_io_priority_rule(process: &str) -> IoPriorityRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
         priority: ProcessIoPriority::VeryLow,
+    }
+}
+
+fn new_memory_priority_rule(process: &str) -> MemoryPriorityRule {
+    MemoryPriorityRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+        priority: ProcessMemoryPriority::Low,
     }
 }
 
@@ -15054,42 +15375,6 @@ fn new_performance_mode_rule(
     }
 }
 
-fn performance_mode_indicator(
-    status: &PerformanceModeSnapshot,
-    process: &str,
-) -> (String, u32, u32) {
-    if performance_mode::is_builtin_excluded(process) {
-        (
-            t!("affinity.indicator.protected").to_string(),
-            settings_card_hover_color(),
-            accent_color(),
-        )
-    } else if status.active
-        && status
-            .active_process
-            .as_deref()
-            .is_some_and(|name| name.eq_ignore_ascii_case(process.trim()))
-    {
-        (
-            t!("performance_mode.indicator_active").to_string(),
-            success_bg_color(),
-            success_text_color(),
-        )
-    } else if status.enabled {
-        (
-            t!("affinity.indicator.ready").to_string(),
-            panel_active_color(),
-            muted_text_color(),
-        )
-    } else {
-        (
-            t!("affinity.indicator.off").to_string(),
-            panel_active_color(),
-            dim_text_color(),
-        )
-    }
-}
-
 fn performance_mode_decision(status: &PerformanceModeSnapshot) -> Option<PerformanceModeDecision> {
     Some(PerformanceModeDecision {
         rule_name: status.active_rule.clone()?,
@@ -15112,6 +15397,18 @@ fn process_io_priority_label(priority: ProcessIoPriority) -> String {
         ProcessIoPriority::Normal => t!("io_priority.priority_normal").to_string(),
         ProcessIoPriority::Low => t!("io_priority.priority_low").to_string(),
         ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low").to_string(),
+    }
+}
+
+fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
+    match priority {
+        ProcessMemoryPriority::VeryLow => t!("responsiveness.memory_priority_very_low").to_string(),
+        ProcessMemoryPriority::Low => t!("responsiveness.memory_priority_low").to_string(),
+        ProcessMemoryPriority::Medium => t!("responsiveness.memory_priority_medium").to_string(),
+        ProcessMemoryPriority::BelowNormal => {
+            t!("responsiveness.memory_priority_below_normal").to_string()
+        }
+        ProcessMemoryPriority::Normal => t!("responsiveness.memory_priority_normal").to_string(),
     }
 }
 
@@ -15139,7 +15436,6 @@ fn auto_balance_preset_label(preset: AutoBalancePreset) -> String {
 
 fn auto_balance_behavior_label(behavior: AutoBalanceBehavior) -> String {
     match behavior {
-        AutoBalanceBehavior::None => t!("common.none").to_string(),
         AutoBalanceBehavior::Preset(preset) => auto_balance_preset_label(preset),
     }
 }
@@ -15149,9 +15445,6 @@ fn apply_auto_balance_behavior(
     behavior: AutoBalanceBehavior,
 ) {
     match behavior {
-        AutoBalanceBehavior::None => {
-            settings.auto_balance_enabled = false;
-        }
         AutoBalanceBehavior::Preset(preset) => {
             settings.auto_balance_enabled = true;
             apply_auto_balance_preset(settings, preset);
@@ -15164,7 +15457,6 @@ fn auto_balance_matches_behavior(
     behavior: AutoBalanceBehavior,
 ) -> bool {
     match behavior {
-        AutoBalanceBehavior::None => !settings.auto_balance_enabled,
         AutoBalanceBehavior::Preset(preset) => {
             settings.auto_balance_enabled && auto_balance_matches_preset(settings, preset)
         }
@@ -15179,6 +15471,8 @@ fn apply_auto_balance_preset(
     settings.lower_background_apps = values.lower_background_apps;
     settings.lower_background_io_priority_enabled = values.lower_background_io_priority_enabled;
     settings.lower_background_io_priority = values.lower_background_io_priority;
+    settings.auto_balance_memory_priority_enabled = values.auto_balance_memory_priority_enabled;
+    settings.auto_balance_memory_priority = values.auto_balance_memory_priority;
     settings.auto_balance_affinity_escalation_enabled =
         values.auto_balance_affinity_escalation_enabled;
     settings.boost_foreground_app = values.boost_foreground_app;
@@ -15204,6 +15498,9 @@ fn auto_balance_matches_preset(
         && settings.lower_background_io_priority_enabled
             == values.lower_background_io_priority_enabled
         && settings.lower_background_io_priority == values.lower_background_io_priority
+        && settings.auto_balance_memory_priority_enabled
+            == values.auto_balance_memory_priority_enabled
+        && settings.auto_balance_memory_priority == values.auto_balance_memory_priority
         && settings.auto_balance_affinity_escalation_enabled
             == values.auto_balance_affinity_escalation_enabled
         && settings.boost_foreground_app == values.boost_foreground_app
@@ -15223,6 +15520,8 @@ struct AutoBalancePresetValues {
     lower_background_apps: bool,
     lower_background_io_priority_enabled: bool,
     lower_background_io_priority: ProcessIoPriority,
+    auto_balance_memory_priority_enabled: bool,
+    auto_balance_memory_priority: ProcessMemoryPriority,
     auto_balance_affinity_escalation_enabled: bool,
     boost_foreground_app: bool,
     manual_cpu_percent: u8,
@@ -15240,6 +15539,8 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             lower_background_apps: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::Low,
+            auto_balance_memory_priority_enabled: false,
+            auto_balance_memory_priority: ProcessMemoryPriority::Low,
             auto_balance_affinity_escalation_enabled: false,
             boost_foreground_app: false,
             manual_cpu_percent: 90,
@@ -15254,6 +15555,8 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             lower_background_apps: true,
             lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::Low,
+            auto_balance_memory_priority_enabled: true,
+            auto_balance_memory_priority: ProcessMemoryPriority::Low,
             auto_balance_affinity_escalation_enabled: false,
             boost_foreground_app: true,
             manual_cpu_percent: 75,
@@ -15268,6 +15571,8 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             lower_background_apps: true,
             lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::Low,
+            auto_balance_memory_priority_enabled: true,
+            auto_balance_memory_priority: ProcessMemoryPriority::VeryLow,
             auto_balance_affinity_escalation_enabled: true,
             boost_foreground_app: true,
             manual_cpu_percent: 60,
