@@ -3,6 +3,11 @@ use rust_i18n::t;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
     Dashboard,
+    PowerPlanAutomation,
+    ProcessorControls,
+    ProcessPolicies,
+    AppHome,
+    AdvancedHome,
     Activity,
     CpuUsage,
     CoreParking,
@@ -20,12 +25,13 @@ pub enum Page {
     Schedule,
     ActionLog,
     Settings,
+    SettingsAppearance,
     Win32PrioritySeparation,
     About,
 }
 
 pub struct PageSection {
-    pub label: &'static str,
+    pub landing_page: Page,
     pub pages: &'static [Page],
 }
 
@@ -51,31 +57,36 @@ const PROCESS_POLICY_PAGES: [Page; 6] = [
     Page::AppSuspension,
     Page::Watchdog,
 ];
-const APP_PAGES: [Page; 3] = [Page::ActionLog, Page::Settings, Page::About];
+const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
+const APP_PAGES: [Page; 3] = [Page::Settings, Page::SettingsAppearance, Page::About];
 const ADVANCED_PAGES: [Page; 1] = [Page::Win32PrioritySeparation];
-const PAGE_SECTIONS: [PageSection; 6] = [
+const PAGE_SECTIONS: [PageSection; 7] = [
     PageSection {
-        label: "Overview",
+        landing_page: Page::Dashboard,
         pages: &OVERVIEW_PAGES,
     },
     PageSection {
-        label: "Power Plan Automation",
+        landing_page: Page::PowerPlanAutomation,
         pages: &POWER_AUTOMATION_PAGES,
     },
     PageSection {
-        label: "Processor Controls",
+        landing_page: Page::ProcessorControls,
         pages: &CPU_CONTROL_PAGES,
     },
     PageSection {
-        label: "Process Policies",
+        landing_page: Page::ProcessPolicies,
         pages: &PROCESS_POLICY_PAGES,
     },
     PageSection {
-        label: "App",
+        landing_page: Page::ActionLog,
+        pages: &ACTION_LOG_PAGES,
+    },
+    PageSection {
+        landing_page: Page::AppHome,
         pages: &APP_PAGES,
     },
     PageSection {
-        label: "Advanced",
+        landing_page: Page::AdvancedHome,
         pages: &ADVANCED_PAGES,
     },
 ];
@@ -83,7 +94,12 @@ const PAGE_SECTIONS: [PageSection; 6] = [
 impl Page {
     pub fn label(self) -> String {
         match self {
-            Self::Dashboard => t!("nav.dashboard"),
+            Self::Dashboard => t!("nav.overview"),
+            Self::PowerPlanAutomation => t!("nav.power_automation"),
+            Self::ProcessorControls => t!("nav.processor_controls"),
+            Self::ProcessPolicies => t!("nav.process_policies"),
+            Self::AppHome => t!("nav.settings"),
+            Self::AdvancedHome => t!("nav.advanced"),
             Self::Activity => t!("nav.activity"),
             Self::CpuUsage => t!("nav.cpu_usage"),
             Self::CoreParking => t!("nav.core_parking"),
@@ -100,7 +116,8 @@ impl Page {
             Self::ForegroundRules => t!("nav.foreground_rules"),
             Self::Schedule => t!("nav.schedule"),
             Self::ActionLog => t!("nav.action_log"),
-            Self::Settings => t!("nav.settings"),
+            Self::Settings => t!("settings.powerleaf_behaviour"),
+            Self::SettingsAppearance => t!("settings.language_and_appearance"),
             Self::Win32PrioritySeparation => t!("nav.win32_priority_separation"),
             Self::About => t!("nav.about"),
         }
@@ -110,6 +127,11 @@ impl Page {
     pub fn section_label(self) -> String {
         match self {
             Self::Dashboard => t!("nav.overview"),
+            Self::PowerPlanAutomation => t!("nav.power_automation"),
+            Self::ProcessorControls => t!("nav.processor_controls"),
+            Self::ProcessPolicies => t!("nav.process_policies"),
+            Self::AppHome => t!("nav.settings"),
+            Self::AdvancedHome => t!("nav.advanced"),
             Self::Activity
             | Self::Schedule
             | Self::ForegroundRules
@@ -127,28 +149,70 @@ impl Page {
             | Self::SmartTrim
             | Self::AppSuspension
             | Self::Watchdog => t!("nav.process_policies"),
-            Self::ActionLog | Self::Settings | Self::About => t!("nav.app"),
+            Self::ActionLog => t!("nav.action_log"),
+            Self::Settings | Self::SettingsAppearance | Self::About => t!("nav.settings"),
             Self::Win32PrioritySeparation => t!("nav.advanced"),
         }
         .to_string()
     }
 
+    pub const fn section_landing_page(self) -> Page {
+        match self {
+            Self::Dashboard => Self::Dashboard,
+            Self::PowerPlanAutomation
+            | Self::Activity
+            | Self::Schedule
+            | Self::ForegroundRules
+            | Self::PerformanceMode
+            | Self::CpuUsage => Self::PowerPlanAutomation,
+            Self::ProcessorControls
+            | Self::CoreParking
+            | Self::CpuLimiter
+            | Self::BackgroundCpuRestriction
+            | Self::CpuAffinity => Self::ProcessorControls,
+            Self::ProcessPolicies
+            | Self::EfficiencyMode
+            | Self::ForegroundResponsiveness
+            | Self::IoPriority
+            | Self::SmartTrim
+            | Self::AppSuspension
+            | Self::Watchdog => Self::ProcessPolicies,
+            Self::ActionLog => Self::ActionLog,
+            Self::AppHome | Self::Settings | Self::SettingsAppearance | Self::About => {
+                Self::AppHome
+            }
+            Self::AdvancedHome | Self::Win32PrioritySeparation => Self::AdvancedHome,
+        }
+    }
+
+    pub const fn is_section_landing(self) -> bool {
+        matches!(
+            self,
+            Self::Dashboard
+                | Self::PowerPlanAutomation
+                | Self::ProcessorControls
+                | Self::ProcessPolicies
+                | Self::ActionLog
+                | Self::AppHome
+                | Self::AdvancedHome
+        )
+    }
+
+    pub const fn child_pages(self) -> Option<&'static [Page]> {
+        match self {
+            Self::Dashboard => Some(&OVERVIEW_PAGES),
+            Self::PowerPlanAutomation => Some(&POWER_AUTOMATION_PAGES),
+            Self::ProcessorControls => Some(&CPU_CONTROL_PAGES),
+            Self::ProcessPolicies => Some(&PROCESS_POLICY_PAGES),
+            Self::AppHome => Some(&APP_PAGES),
+            Self::AdvancedHome => Some(&ADVANCED_PAGES),
+            _ => None,
+        }
+    }
+
     pub const fn sections() -> &'static [PageSection] {
         &PAGE_SECTIONS
     }
-}
-
-pub fn section_label(label: &str) -> String {
-    match label {
-        "Overview" => t!("nav.overview"),
-        "Power Plan Automation" => t!("nav.power_automation"),
-        "Processor Controls" => t!("nav.processor_controls"),
-        "Process Policies" => t!("nav.process_policies"),
-        "App" => t!("nav.app"),
-        "Advanced" => t!("nav.advanced"),
-        _ => label.into(),
-    }
-    .to_string()
 }
 
 pub fn duration_label(seconds: u64) -> String {

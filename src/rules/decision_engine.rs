@@ -214,25 +214,6 @@ impl DecisionOutcome {
     }
 }
 
-impl DecisionState {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Disabled => "Disabled",
-            Self::ManualOverride => "Manual override",
-            Self::PluggedInPause => "Plugged in",
-            Self::ForegroundRule => "By Foreground",
-            Self::ForegroundForceActive => "By Foreground",
-            Self::ForegroundForcePowerSave => "By Foreground",
-            Self::PerformanceMode => "By Running App",
-            Self::ScheduledRule => "By Time",
-            Self::CpuLoadRule => "By CPU Load",
-            Self::IdlePowerSave => "By Activity",
-            Self::ActivePerformance => "By Activity",
-            Self::NoTargetPlan => "Needs setup",
-        }
-    }
-}
-
 fn contains_process(list: &[String], app: &str) -> bool {
     list.iter()
         .any(|entry| entry.trim().eq_ignore_ascii_case(app.trim()))

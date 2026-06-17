@@ -1,387 +1,289 @@
-# Plan: ProBalance-Style Mode Scheduler
+# PowerLeaf Function Organization Plan
 
-## 1) Objective
-Build a Windows scheduler utility inspired by Bitsum-style ProBalance behavior:
-- Keep the machine responsive under high CPU load.
-- Temporarily down-prioritize background processes.
-- Preserve user control, reversibility, and safe defaults.
-- Include a TweakScheduler-style foreground/background time-slice mode.
+## 1. Purpose
 
-## 2) Scope
-### In scope
-- CPU contention detection and temporary priority restraint engine.
-- Configurable thresholds and exclusion rules.
-- Mode presets (Adaptive / Balanced / Gaming / Background).
-- Win32PrioritySeparation tuning with rollback.
-- Per-process logging and restore safety.
+PowerLeaf has grown enough that related functions are hard to find. The immediate goal is not to change behavior. The goal is to sectionize the app so every function has an obvious home, starting from the existing navigation groups in `src/ui/mod.rs`.
 
-### Out of scope (initial version)
-- Full UI redesign or advanced telemetry dashboards.
-- Cross-platform support.
-- Non-Windows scheduling internals.
+This plan should be used as the checklist for future refactors. Each migration should keep the app compiling after every step.
 
-## 3) Requirements
-### Functional
-1. Sample CPU and process activity periodically.
-2. Detect global contention and identify out-of-control processes.
-3. Apply temporary priority changes only when all constraints are met.
-4. Restore priorities when load normalizes.
-5. Respect exclusions by default and policy flags.
-6. Persist settings and support import/export.
-7. Toggle modes safely and deterministically.
-8. Optionally write/read foreground scheduling registry policy.
+## 2. Current Evidence
 
-### Non-functional
-1. Safe defaults and conservative behavior.
-2. Reversible operations with explicit audit logs.
-3. Minimal overhead.
-4. Clear diagnostics and reason codes for every action.
-5. Graceful fallback if permission/priority operations fail.
+- `src/main.rs:6` through `src/main.rs:33` declares many top-level domains, so the app already has useful feature modules.
+- `src/ui/mod.rs:4` defines `Page`, and `src/ui/mod.rs:56` defines the six visible navigation sections.
+- `src/app.rs:206` defines `PowerLeafApp`, but the same file also owns page rendering, settings mutation, shared widgets, labels, registry helpers, dialogs, and tests.
+- `src/app.rs:2784` dispatches page rendering, while individual pages are implemented from `src/app.rs:2813` through `src/app.rs:9026`.
+- `src/app.rs:9456` through `src/app.rs:15038` contains many shared helpers that are not specific to one page.
+- `src/automation.rs:136` defines `BackgroundAutomation`; `src/automation.rs:326` starts the worker loop; `src/automation.rs:1216` defines `HiddenAutomationRunner`.
+- `src/config/settings.rs:10` defines the full `Settings` tree, with feature-specific settings from `src/config/settings.rs:257` through `src/config/settings.rs:761`.
+- Feature backends already follow a manager/snapshot pattern, for example `src/ecoqos/mod.rs:107`, `src/suspension/mod.rs:89`, `src/cpu_limiter/mod.rs:59`, `src/smart_trim.rs:63`, and `src/watchdog/mod.rs:61`.
+- Generic rule infrastructure is already separated under `src/rules/mod.rs:1` through `src/rules/mod.rs:9`.
 
-## 4) Data model
-### Config schema (INI-like)
-- `[OutOfControlProcessRestraint]`
-  - `OocOn`
-  - `TotalProcessorUsageBeforeRestraint`
-  - `PerProcessUsageBeforeRestraint`
-  - `TimeOverQuotaBeforeRestraint`
-  - `PerProcessUsageForRestore`
-  - `MinimumTimeOfRestraint`
-  - `TameOnlyNormal`
-  - `LowerToIdleInsteadOfBelowNormal`
-  - `ExcludeServices`
-  - `ExcludeForegroundProcesses`
-  - `OocExclusions` (wildcards)
-- `[Performance]`
-  - `UpdateSpeed`
-  - `ForcedMode`
-  - `ManageOnlyCurrentUser`
-- `[ProcessDefaults]`
-  - default priority/affinity baselines (optional)
-- `[GUI]` (if UI mode present)
-  - visibility preferences
+## 3. Target Sections
 
-### Runtime state
-- Process snapshot:
-  - PID, executable, CPU%, thread count, priority class, foreground flag, service flag
-- Per-process restraint state:
-  - original priority
-  - restrained-at timestamp
-  - last-evaluated timestamp
-  - reason code
-  - pending restore flag
+Use the existing navigation model as the product-level section map:
 
-## 5) Core algorithm
-### Sampling loop
-- Run every `UpdateSpeed` ms.
-- Gather:
-  - total CPU usage
-  - foreground PID
-  - per-process CPU usage and priority
+| Section | Pages | Current Source |
+| --- | --- | --- |
+| Overview | Dashboard landing page | `src/ui/mod.rs:32`, `src/app.rs:2813` |
+| Power Plan Automation | Foreground Rules, Performance Mode, CPU Usage, Activity, Schedule | `src/ui/mod.rs:34`, `src/app.rs:3153`, `src/app.rs:3300`, `src/app.rs:3501`, `src/app.rs:3687`, `src/app.rs:5625` |
+| Processor Controls | Core Parking, CPU Limiter, Background CPU Restriction, CPU Affinity | `src/ui/mod.rs:41`, `src/app.rs:4878`, `src/app.rs:5224`, `src/app.rs:7052`, `src/app.rs:8485` |
+| Process Policies | Efficiency Mode, Foreground Responsiveness, I/O Priority, SmartTrim, App Suspension, Watchdog | `src/ui/mod.rs:47`, `src/app.rs:3975`, `src/app.rs:4481`, `src/app.rs:5412`, `src/app.rs:5757`, `src/app.rs:6546`, `src/app.rs:6740` |
+| Log | Log | `src/app.rs:9026` |
+| Settings | PowerLeaf Behaviour, Language and Appearance, About | `src/ui/mod.rs:54`, `src/app.rs:7952`, `src/app.rs:9010` |
+| Advanced | Win32 Priority Separation | `src/ui/mod.rs:55`, `src/app.rs:8083` |
 
-### Trigger logic
-- If `OocOn == false`, skip.
-- If total CPU < `TotalProcessorUsageBeforeRestraint`, skip.
-- For each candidate process:
-  - skip if excluded by rules.
-  - require sustained high usage for `TimeOverQuotaBeforeRestraint`.
-  - ensure per-process usage >= `PerProcessUsageBeforeRestraint`.
-  - select strongest candidate set (bounded by top consumers and safety caps).
+These sections should become source-code sections too. If a feature appears in the navigation, its UI, settings, rules adapter, runtime manager, and tests should be easy to locate from that section name.
 
-### Action logic
-- Restrain: set process priority to:
-  - below normal (default), or idle (if strict mode).
-- Record original priority and timestamp.
-- Log action with reason and context.
+### 3.1 Section Landing Page Navigation
 
-### Restore logic
-- Restore when process usage <= `PerProcessUsageForRestore`
-  and held long enough for minimum restraint dwell.
-- Restore only if no overlapping hard-constraint violation remains.
+The left navigation should show the major work areas, not every detailed page. Each section becomes a first-class page. Clicking a section opens a landing page with compact cards for the pages inside that section.
 
-## 6) Exclusion rules
-- Exclude foreground process (default ON).
-- Exclude non-normal priorities (default ON).
-- Exclude services if configured.
-- Exclude explicit wildcards list (`OocExclusions`).
-- Optional planned exclusions:
-  - child-process policy,
-  - game process whitelist rules,
-  - temporary “do-not-touch” UI override per PID.
+Example: clicking `Power Plan Automation` opens a section page with five cards:
 
-## 7) Mode presets
-- **Adaptive (default):**
-  - conservative thresholds
-  - foreground exclusion ON
-  - non-normal exclusion ON
-  - no idle demotion
-- **Balanced:**
-  - slightly tighter thresholds
-  - shorter restore/restraint windows
-- **Gaming:**
-  - restraint disabled by default
-  - can pair with aggressive foreground scheduling preset
-- **Background / Productivity:**
-  - higher restraint aggressiveness
-  - faster reaction to sustained hogging
+- Foreground Rules
+- Performance Mode
+- CPU Usage
+- Activity
+- Schedule
 
-## 8) TweakScheduler component
-### Registry target
-- `HKLM\SYSTEM\CurrentControlSet\Control\PriorityControl\Win32PrioritySeparation`
+Clicking one card navigates to the existing detailed page.
 
-### Presets
-- Let OS choose
-- Foreground-favor (Applications-like behavior)
-- Equal slice (Background-services-like behavior)
+Navigation behavior:
 
-### Safety
-- Read current value at startup.
-- Save previous value for rollback.
-- Restore on service stop or emergency disable.
+- The left nav renders section pages only: Overview, Power Plan Automation, Processor Controls, Process Policies, Log, Settings, and Advanced.
+- Overview acts as the dashboard landing page: CPU Usage on the left with a fixed 30-sample graph, Enabled Rules as a right-side list, and all dashboard cards using the same two-column width. Cards should stay max two columns when there is room, then expand to full available width when wrapping to one column. CPU Usage and Enabled Rules should share the same fixed outer card height, with titles and content contained inside that height so the Main sections heading cannot overlap either card. CPU Usage should use one card shell only; the graph itself should not be framed as a nested card.
+- Child pages keep their current render functions and behavior.
+- When a child page is active, the left nav highlights its parent section.
+- Child pages should show a compact breadcrumb/header such as `Power Plan Automation / CPU Usage`.
+- Child breadcrumbs should be clickable: clicking the parent section returns to that section landing page.
+- App navigation should maintain local back/forward history for left-nav clicks, landing cards, and breadcrumb clicks.
+- Mouse side buttons should support Back/Forward through app history.
+- Section landing cards should be operational and dense: icon, title, current status or rule count, optional warning/error state, and a chevron.
+- Overview main section cards should follow the same visual order as the left navbar: drawer sections first, then footer sections.
+- Avoid marketing-style cards. These cards are navigation and status surfaces for a utility app.
+- The Settings landing page should not contain a redundant `Settings` card. It should expose Settings categories directly: PowerLeaf Behaviour, Language and Appearance, and About.
 
-## 9) Logging and observability
-- Log entries:
-  - timestamp, PID, exe, original priority, new priority, mode, reason, action (restraint/restore).
-- Optional verbose mode:
-  - thresholds applied
-  - excluded matches
-  - scheduler mode transitions
+Implementation direction:
 
-## 10) Implementation plan
-### Milestone 1: Foundations (Week 1)
-- Project skeleton, process sampler, permission model.
-- INI parser and schema validation.
-- CLI/API for read/write config.
+- Add landing variants to `Page`, for example `PowerPlanAutomation`, `ProcessorControls`, `ProcessPolicies`, `AppHome`, and `AdvancedHome`.
+- Update `PageSection` so each section has a `landing_page: Page` plus `pages: &'static [Page]`.
+- Update navigation rendering so it iterates over `Page::sections()` and links to `landing_page`.
+- Add a helper such as `Page::parent_section_page()` so child pages can highlight the correct section and render breadcrumbs.
+- Add a reusable section-card component in `src/app/widgets.rs`.
+- Render landing pages from the existing section page arrays instead of hard-coding duplicate lists.
+- Render Overview main cards from `Page::sections()` so Power Plan Automation, Processor Controls, Process Policies, Log, Settings, and Advanced stay in sync with the left navigation.
 
-### Milestone 2: Engine (Weeks 2–3)
-- Implement core sampling and restraint state machine.
-- Implement restore logic, cooldown, and exclusion engine.
-- Add deterministic unit-style policy tests (logic-level).
+## 4. Proposed Source Layout
 
-### Milestone 3: Foreground scheduling (Week 3)
-- Add Win32PrioritySeparation writer/reader.
-- Add presets + rollback + permission checks.
+Keep `src/app.rs` as the public entry point during the first pass, then move code into submodules under `src/app/`.
 
-### Milestone 4: Interface + operational controls (Week 4)
-- Tray/CLI mode switcher.
-- Exclusion list editor.
-- Manual restore/all clear controls.
+```text
+src/
+  app.rs
+  app/
+    state.rs
+    render.rs
+    navigation.rs
+    dashboard.rs
+    power_automation/
+      mod.rs
+      home.rs
+      activity.rs
+      foreground_rules.rs
+      schedule.rs
+      cpu_usage.rs
+      performance_mode.rs
+    processor_controls/
+      mod.rs
+      home.rs
+      core_parking.rs
+      cpu_limiter.rs
+      background_cpu.rs
+      affinity.rs
+    process_policies/
+      mod.rs
+      home.rs
+      efficiency.rs
+      responsiveness.rs
+      io_priority.rs
+      smart_trim.rs
+      suspension.rs
+      watchdog.rs
+    action_log.rs
+    app_pages/
+      mod.rs
+      home.rs
+      settings.rs
+      about.rs
+    advanced/
+      mod.rs
+      home.rs
+      win32_priority_separation.rs
+    widgets.rs
+    inputs.rs
+    labels.rs
+    dialogs.rs
+    theme.rs
+```
 
-### Milestone 5: Hardening + release prep (Week 5)
-- Stability tests under load.
-- Race-condition and permission failure handling.
-- Installer/startup behavior and rollback strategy.
-- Documentation for tuning and safety.
+Suggested boundaries:
 
-## 11) Risks and mitigations
-- **Permission errors** when setting priorities/registry.
-  - Mitigation: elevation flow + clear error states + retry + fallback.
-- **Priority oscillation** (thrashing).
-  - Mitigation: hysteresis + minimum dwell + cooldown window.
-- **False positives** on CPU spikes.
-  - Mitigation: conservative defaults and strict restore thresholds.
-- **User confusion** from hidden side effects.
-  - Mitigation: explicit logs, visible mode status, one-click disable.
+- `src/app.rs`: `PowerLeafApp`, `UiInputs`, constructors, persistence entry points, and module declarations.
+- `src/app/render.rs`: top-level `Render` implementation, title bar, page dispatch, shell frame, and status bar.
+- `src/app/navigation.rs`: section-only navigation rows, parent-section highlighting, nav status, icons, and section labels.
+- `src/app/widgets.rs`: reusable section cards, rule rows, setting groups, toggles, sliders, dropdown controls, and status pills.
+- `src/app/inputs.rs`: input state creation, slider syncing, process picker input state, and rule title editing.
+- `src/app/labels.rs`: pure formatting and label functions.
+- `src/app/dialogs.rs`: settings import/export dialogs and action-log CSV export path selection.
+- `src/app/theme.rs`: accent color, palette, Windows theme reads, and GPUI appearance application.
+- Section page files: page-specific render functions and small page-local helpers only.
 
-## 12) Definition of done
-- Default mode does not destabilize system under CPU stress.
-- Temporary actions always restore correctly.
-- All mode changes are immediate and reversible.
-- Exclusion and presets behave as configured.
-- Installer/start/stop lifecycle restores modified scheduler state.
+## 5. Extraction Map From `src/app.rs`
 
-## 13) Next steps
-1. Finalize exact default numbers per threshold and windows behavior from validation.
-2. Confirm whether to start with CLI-only or CLI + lightweight UI.
-3. Start Milestone 1 implementation.
+Move in this order to reduce privacy churn and keep diffs reviewable.
 
-## 14) Current Process Lasso parity gaps
+### 5.1 Top-Level Rendering
 
-PowerLeaf now covers several Process Lasso-like capabilities beyond the original
-ProBalance-style plan:
-- CPU limiter / CPU cap rules.
-- Action log with CSV export.
-- Running-app power plan switching.
-- Watchdog terminate-on-launch and restart-if-exited rules.
-- Per-process CPU affinity / CPU placement.
-- Per-process I/O priority.
-- EcoQoS / Efficiency Mode.
-- Foreground responsiveness boosting and background lowering.
-- App suspension.
-- Win32PrioritySeparation tuning.
-- TOML settings import/export.
+Move these into `src/app/render.rs`:
 
-The remaining gaps versus Bitsum Process Lasso are mostly depth, process-manager
-coverage, and runtime architecture.
+- `render` at `src/app.rs:2556`
+- `render_title_bar` at `src/app.rs:2613`
+- `render_navigation` at `src/app.rs:2657`
+- `render_status_bar` at `src/app.rs:2714`
+- `render_unsaved_popup` at `src/app.rs:2731`
+- `render_page` at `src/app.rs:2784`
+- `page_shell`, `page_content_frame`, and `page_shell_with_help` at `src/app.rs:10586`
 
-### A. Full process-manager UI
-- Missing live all-processes and active-processes tables.
-- Missing tree view, selectable columns, sorting, filtering, and process detail panels.
-- Missing multi-select process actions.
-- Missing right-click-style process context commands.
-- Missing visible per-process rule/status columns comparable to Process Lasso.
-- Current PowerLeaf UI has process pickers and feature-specific pages, but not a
-  Task Manager-like control surface.
+Acceptance check: changing `Page` selection still routes to the same page output.
 
-### B. Split GUI/governor architecture
-- Process Lasso separates its GUI from an always-on Process Governor.
-- PowerLeaf currently appears to run automation inside the app/background automation
-  lifecycle rather than a separate service or headless governor.
-- Gap: service mode, GUI-independent operation, restart recovery, and explicit
-  governor status/control.
+### 5.2 Overview Page
 
-### C. Broader priority controls
-- CPU priority coverage is narrower than Process Lasso.
-- I/O priority supports Normal, Low, and VeryLow, but not the full Process Lasso
-  surface.
-- Missing GPU priority rules.
-- Missing memory priority rules.
-- Missing richer dynamic thread priority boost controls.
-- Missing persistent default priority model across the full Process Lasso range.
+Move these into `src/app/dashboard.rs`:
 
-### D. GPU telemetry and GPU policy
-- Missing GPU utilization display.
-- Missing per-process GPU metrics.
-- Missing GPU priority rule support.
+- `render_dashboard` at `src/app.rs:2813`
+- `render_cpu_usage_graph` at `src/app.rs:2865`
+- dashboard summary helpers at `src/app.rs:2921`, `src/app.rs:2928`, `src/app.rs:2994`, `src/app.rs:3006`, `src/app.rs:3066`, and `src/app.rs:3098`
 
-### E. Advanced Watchdog rules
-- Current watchdog supports terminate-on-launch and restart-if-exited.
-- Missing CPU threshold watchdog actions.
-- Missing memory threshold watchdog actions.
-- Missing elapsed-time, responsiveness, or other resource-condition triggers.
-- Missing actions such as changing affinity/priority from watchdog conditions.
+Acceptance check: Dashboard still compiles without importing page-specific modules from other sections.
 
-### F. Instance controls
-- Missing per-process instance count limits.
-- Missing Instance Balancer-like behavior.
-- Missing "keep only N instances" and "stop duplicate launch" workflows.
+### 5.3 Power Plan Automation Pages
 
-### G. SmartTrim and memory workflows
-- Missing SmartTrim-style working set trimming.
-- Missing standby-list cleanup.
-- Missing memory pressure telemetry and policy controls.
+Move these into `src/app/power_automation/`:
 
-Process Lasso SmartTrim behavior to match:
-- Periodically trims working sets of high-memory processes when thresholds are
-  reached.
-- Can clear the system standby list / cache.
-- Supports per-process SmartTrim exclusions, shown as `t` in Process Lasso's
-  Rules column.
-- Has an immediate command path (`/TrimNow`) that asks SmartTrim to act now using
-  its configured policy.
+- Section landing page: `home.rs`, rendered when `Page::PowerPlanAutomation` is selected.
+- Activity: `render_activity_page` at `src/app.rs:3153`
+- Foreground rules: `render_foreground_rules_page` at `src/app.rs:3300`, `render_foreground_rule` at `src/app.rs:3374`
+- Schedule: `render_schedule_page` at `src/app.rs:3501`, `render_schedule_rule` at `src/app.rs:3554`
+- CPU usage: `render_cpu_usage_page` at `src/app.rs:3687`, `render_cpu_rule` at `src/app.rs:3747`
+- Performance mode: `render_performance_mode_page` at `src/app.rs:5625`, `render_performance_mode_rules` at `src/app.rs:5699`
 
-Current PowerLeaf status:
-- No SmartTrim manager/module exists.
-- No direct use of `EmptyWorkingSet`, `SetProcessWorkingSetSize`, or standby-list
-  clearing APIs exists.
-- `PROCESS_SET_QUOTA` is already used by App Suspension, but PowerLeaf does not
-  currently use it for memory working-set trimming.
+Acceptance check: each page file exposes one page render entry point and keeps page-local rule row helpers next to it.
 
-System Informer / NTDoc implementation notes:
-- Per-process working-set trim can use the documented `EmptyWorkingSet` API, or
-  `SetProcessWorkingSetSize(process, SIZE_MAX, SIZE_MAX)`.
-- System Informer's lower-level equivalent sets `ProcessQuotaLimits` with
-  `QUOTA_LIMITS_EX { MinimumWorkingSetSize = SIZE_MAX, MaximumWorkingSetSize =
-  SIZE_MAX }` through `NtSetInformationProcess`.
-- Opening a process for trimming normally needs `PROCESS_SET_QUOTA`; the
-  documented `EmptyWorkingSet` path also requires query access.
-- System memory-list inspection uses
-  `NtQuerySystemInformation(SystemMemoryListInformation, SYSTEM_MEMORY_LIST_INFORMATION)`.
-- The `SYSTEM_MEMORY_LIST_INFORMATION` data includes zero, free, modified,
-  modified-no-write, bad, standby-by-priority, repurposed-by-priority, and
-  modified-pagefile page counts.
-- System memory-list commands use
-  `NtSetSystemInformation(SystemMemoryListInformation, SYSTEM_MEMORY_LIST_COMMAND)`.
-- Relevant commands are `MemoryEmptyWorkingSets`, `MemoryFlushModifiedList`,
-  `MemoryPurgeStandbyList`, and `MemoryPurgeLowPriorityStandbyList`.
-- System Informer's headers mark `SystemMemoryListInformation` set operations as
-  requiring `SeProfileSingleProcessPrivilege`.
-- System file-cache flushing can use `SetSystemFileCacheSize(SIZE_MAX, SIZE_MAX,
-  0)` / the native `SystemFileCacheInformationEx` path, and requires
-  `SE_INCREASE_QUOTA_NAME`.
-- For PowerLeaf, prefer documented APIs first. Keep native memory-list and
-  file-cache operations behind an Advanced/off-by-default setting because they
-  can degrade performance and may change across Windows versions.
+### 5.4 Processor Controls Pages
 
-Recommended PowerLeaf implementation:
-1. Add `SmartTrimSettings`:
-   - `enabled`
-   - `check_interval_seconds`
-   - `system_memory_load_threshold_percent`
-   - `process_working_set_threshold_mb`
-   - `process_idle_seconds`
-   - `exclude_foreground_app`
-   - `clear_standby_list_enabled`
-   - `clear_low_priority_standby_only`
-   - `clear_file_cache_enabled`
-   - `trim_now_requested`
-   - `exclusions: Vec<ProcessExclusionRule>`
-2. Add a `smart_trim` manager:
-   - Sample system memory load.
-   - Sample per-process working set/private bytes.
-   - Skip protected/system processes, foreground app, PowerLeaf, and configured
-     exclusions.
-   - Trim only processes above threshold and idle long enough.
-   - Record every trim, skip, and failure in Action Log.
-3. Start with per-process working-set trim only:
-   - Use `EmptyWorkingSet` or `SetProcessWorkingSetSize(..., SIZE_MAX, SIZE_MAX)`
-     conservatively.
-   - Treat access denied as skipped.
-   - Add a cooldown so the same process is not repeatedly trimmed.
-4. Add native memory-list cleanup later:
-   - Keep it off by default.
-   - Prefer `MemoryPurgeLowPriorityStandbyList` before full
-     `MemoryPurgeStandbyList`.
-   - Gate standby-list, modified-list, and file-cache cleanup behind an advanced
-     warning because clearing cache can reduce performance by causing avoidable
-     disk reads/page faults.
-5. Add UI after the backend is stable:
-   - SmartTrim page under Process Policies or Advanced.
-   - Exclusion list.
-   - `Trim Now` button.
-   - Last trim count, freed working-set estimate, skipped count, and last error.
+Move these into `src/app/processor_controls/`:
 
-### H. Forced mode / sticky enforcement
-- Missing a global mode that continuously reapplies process priority and affinity
-  rules when another tool or the user changes them.
-- Existing managers refresh rules, but this is not equivalent to explicit Process
-  Lasso Forced Mode.
+- Section landing page: `home.rs`, rendered when `Page::ProcessorControls` is selected.
+- Background CPU restriction: `render_background_cpu_restriction_page` at `src/app.rs:4878`, `render_background_cpu_exclusions` at `src/app.rs:5160`
+- CPU limiter: `render_cpu_limiter_page` at `src/app.rs:5224`, `render_cpu_limiter_rules` at `src/app.rs:5302`
+- CPU affinity: `render_affinity_page` at `src/app.rs:7052`, `render_affinity_rules` at `src/app.rs:7129`, core tile helpers at `src/app.rs:7247` and `src/app.rs:7339`
+- Core parking and processor power: `render_core_parking_page` at `src/app.rs:8485`, `render_processor_power_card` at `src/app.rs:8491`
 
-### I. More expressive process matching
-- Matching is still mostly process-name based in many modules.
-- Some wildcard behavior exists, but coverage is inconsistent.
-- Missing first-class matching by full path, command line, user, parent process,
-  service identity, and regex.
+Acceptance check: affinity bitmask helpers can be unit-tested without rendering a full page.
 
-### J. Profiles and policy packaging
-- Missing Process Lasso-style configuration profiles.
-- Missing fast profile switching from UI/tray/CLI.
-- Missing versioned policy import/export with compatibility checks.
-- Missing separate per-user versus global policy handling.
+### 5.5 Process Policies Pages
 
-### K. Enterprise and deployment features
-- Missing silent install/update workflows.
-- Missing service startup modes and service recovery configuration.
-- Missing command-line switches for config/log locations and profile selection.
-- Missing server/RDS/multi-session policy controls.
-- Missing centralized policy deployment guidance.
+Move these into `src/app/process_policies/`:
 
-### L. Logging and telemetry depth
-- Action Log exists, but entries are in-memory and reset on app exit.
-- Missing durable historical database/log store.
-- Missing long-range charts for responsiveness, restraints, CPU pressure, and
-  process actions.
-- Missing exportable diagnostic bundles.
+- Section landing page: `home.rs`, rendered when `Page::ProcessPolicies` is selected.
+- Efficiency Mode: `render_efficiency_page` at `src/app.rs:3975` and efficiency selectors through `src/app.rs:4428`
+- App Suspension: `render_suspension_page` at `src/app.rs:4481`, `render_suspendable_apps` at `src/app.rs:4737`
+- Watchdog: `render_watchdog_page` at `src/app.rs:5412`, `render_watchdog_rules` at `src/app.rs:5491`
+- Foreground Responsiveness: `render_foreground_responsiveness_page` at `src/app.rs:5757` and Auto Balance helpers through `src/app.rs:6442`
+- I/O Priority: `render_io_priority_page` at `src/app.rs:6546`, `render_io_priority_rules` at `src/app.rs:6621`
+- SmartTrim: `render_smart_trim_page` at `src/app.rs:6740`, `render_smart_trim_exclusions` at `src/app.rs:7007`
 
-### M. Recommended next parity milestones
-1. Build a live process table with context actions, rule/status columns, and basic
-   process details.
-2. Split automation into a small headless governor or Windows service while keeping
-   the GPUI app as the controller.
-3. Expand watchdog to CPU and memory threshold rules with priority/affinity actions.
-4. Add instance count limits and keep-running/disallowed-process policy depth.
-5. Add Forced Mode for sticky priority/affinity enforcement.
-6. Add richer process matchers: path, command line, user, wildcard, and regex.
-7. Add durable action history and longer-term telemetry charts.
-8. Add GPU and memory priority/telemetry only after the core process manager and
-   governor architecture are stable.
+Acceptance check: each process-policy page imports only its setting type, snapshot type, and shared widgets.
+
+### 5.6 Log, Settings, and Advanced Pages
+
+Move these into `src/app/app_pages/` and `src/app/advanced/`:
+
+- Section landing pages: `src/app/app_pages/home.rs` and `src/app/advanced/home.rs`.
+- Log: `src/app/action_log.rs`, with `render_action_log_page` at `src/app.rs:9026` plus action-log row/CSV helpers at `src/app.rs:11520`.
+- Settings category pages: PowerLeaf Behaviour for general PowerLeaf toggles, Log detail, failure suppression, and settings import/export; Language and Appearance for theme/accent/palette/language.
+- About: `render_about_page` at `src/app.rs:9010`
+- Win32 Priority Separation: `render_win32_priority_separation_page` at `src/app.rs:8083` and registry helpers at `src/app.rs:10331`
+
+Acceptance check: registry read/write helpers are no longer mixed with generic UI helpers.
+
+## 6. Shared Helper Buckets
+
+Move helpers only after page render functions are split. That keeps compiler errors localized.
+
+| Bucket | Move From | Target |
+| --- | --- | --- |
+| Rule cards and setting cards | `src/app.rs:10665` through `src/app.rs:11488` | `src/app/widgets.rs` |
+| Log labels and CSV | `src/app.rs:11520` through `src/app.rs:11745` | `src/app/action_log.rs` or `src/action_log.rs` if backend-neutral |
+| Generic labels | `src/app.rs:11754` through `src/app.rs:11899` | `src/app/labels.rs` |
+| Inputs, sliders, dropdowns | `src/app.rs:9456` through `src/app.rs:9894`, plus `src/app.rs:12866` through `src/app.rs:13573` | `src/app/inputs.rs` and `src/app/widgets.rs` |
+| Theme and color | `src/app.rs:9904` through `src/app.rs:10209` | `src/app/theme.rs` |
+| Process rule factories | `src/app.rs:13604` through `src/app.rs:14024` | section-local page files first; later consider `src/app/process_rule_forms.rs` |
+| Affinity and processor labels | `src/app.rs:14452` through `src/app.rs:14585` | `src/app/processor_controls/affinity.rs` and `src/app/processor_controls/core_parking.rs` |
+| File dialogs | `src/app.rs:14635` through `src/app.rs:14779` | `src/app/dialogs.rs` |
+
+## 7. Runtime and Backend Organization
+
+The backend is already partially organized. Use these rules before creating new features:
+
+- Feature managers stay in feature modules, following the existing snapshot/manager pattern used by `src/ecoqos/mod.rs:107`, `src/cpu_limiter/mod.rs:59`, and `src/watchdog/mod.rs:61`.
+- `src/automation.rs` should remain the scheduler/orchestrator, but feature-specific update details should stay in manager modules.
+- Pure rule conversion belongs under `src/rules/`, following `src/rules/app_resource_adapter.rs:18`.
+- Settings structs belong in `src/config/settings.rs` for now, but if the file continues to grow, split into `src/config/power.rs`, `src/config/process.rs`, `src/config/cpu.rs`, and `src/config/app.rs` while re-exporting from `src/config/mod.rs`.
+- Windows API wrappers should live near the feature using them unless they are shared by three or more features. Shared wrappers should move to explicit modules such as `src/windows/process.rs`, `src/windows/registry.rs`, or `src/windows/power.rs`.
+
+## 8. Naming Rules
+
+- Page render entry points use `render_<page>_page`.
+- Page-local helpers use the page prefix, for example `smart_trim_*`, `watchdog_*`, or `affinity_*`.
+- Shared UI helpers use generic names only inside `widgets.rs`; outside that file, prefer explicit names.
+- Backend manager methods should keep the existing pattern: `update`, `release_non_targets`, `clear_all`, `release_processes`, `apply_*`, and `restore_*`.
+- Pure formatting helpers end with `_label`, `_text`, or `_message`.
+- Constructors for config rules use `new_<feature>_rule`.
+
+## 9. Migration Steps
+
+1. Add empty `src/app/` submodules and wire them from `src/app.rs`.
+2. Add section landing `Page` variants and extend `PageSection` with `landing_page`.
+3. Update left navigation to render only section landing pages.
+4. Add the reusable section-card component and one landing page, starting with Power Plan Automation.
+5. Move top-level render shell functions into `src/app/render.rs`.
+6. Move Dashboard into `src/app/dashboard.rs`.
+7. Move one navigation section at a time: Power Plan Automation, Processor Controls, Process Policies, Log, Settings, Advanced.
+8. Extract shared widgets after page modules compile.
+9. Extract theme, dialogs, labels, and input helpers.
+10. Move page-local tests next to the extracted page code.
+11. Run formatting and the test/check suite after every section move.
+
+## 10. Acceptance Criteria
+
+- `src/app.rs` drops from about 562 KB to an entry point plus state/persistence glue.
+- Every page listed in `src/ui/mod.rs:4` has a matching source file under `src/app/`.
+- The left navigation shows section landing pages instead of every detailed page.
+- Clicking a section landing page shows cards for its child pages.
+- Overview shows CPU Usage, Enabled Rules, and two-column cards for every main section below the summary.
+- Clicking a section card navigates to the existing detailed page.
+- Clicking a child-page breadcrumb parent navigates back to the section landing page.
+- Mouse side Back/Forward buttons move backward and forward through PowerLeaf page history.
+- A child page highlights its parent section in the left navigation.
+- A child page shows enough context to tell which section it belongs to, such as a breadcrumb or compact parent label.
+- A developer can find a feature by first choosing one of the six sections from `src/ui/mod.rs:56`.
+- No behavior changes are introduced during extraction.
+- `cargo fmt` and `cargo check` pass after each migration step.
+- Existing tests in `src/app.rs:14792` either remain passing or move next to their new helper modules.
+
+## 11. Stop Rules
+
+- Stop and split the migration if a single diff touches more than one navigation section plus shared widgets.
+- Stop and add tests before moving a helper that changes rule creation, registry writes, process matching, process priority, affinity, suspension, or file dialog behavior.
+- Stop and reassess if moving code requires making broad internal state public. Prefer `pub(super)` methods or small state accessors over exposing the whole app state.
