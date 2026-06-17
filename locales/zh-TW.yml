@@ -111,6 +111,8 @@ dashboard:
   foreground_app: "前景應用程式"
   activity_state: "活動狀態"
   cpu_usage: "CPU 使用率"
+  memory_usage: "記憶體使用率"
+  io_usage: "I/O"
   efficiency_mode: "效率模式"
   app_suspension: "應用程式暫停"
   cpu_affinity: "核心導向"

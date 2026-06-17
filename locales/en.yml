@@ -118,6 +118,8 @@ dashboard:
   foreground_app: "Foreground app"
   activity_state: "Activity state"
   cpu_usage: "CPU usage"
+  memory_usage: "Memory usage"
+  io_usage: "I/O"
   efficiency_mode: "Efficiency Mode"
   app_suspension: "App Suspension"
   cpu_affinity: "Core Steering"

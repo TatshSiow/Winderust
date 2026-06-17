@@ -15,6 +15,7 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{IoPrioritySettings, ProcessIoPriority},
     foreground::list_processes,
+    rules::{execution_failure_suppression_threshold, ExecutionFailureState},
 };
 
 const PROCESS_IO_PRIORITY: u32 = 33;
@@ -55,7 +56,10 @@ pub struct IoPrioritySnapshot {
 #[derive(Default)]
 pub struct IoPriorityManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
+    failure_suppression: BTreeMap<String, IoPriorityFailureSuppression>,
 }
+
+type IoPriorityFailureSuppression = ExecutionFailureState;
 
 #[derive(Clone)]
 struct AdjustedProcess {
@@ -81,6 +85,7 @@ impl IoPriorityManager {
     ) -> IoPrioritySnapshot {
         if !automation_enabled {
             let failures = self.clear_all(action_log, "automation disabled");
+            self.failure_suppression.clear();
             return IoPrioritySnapshot {
                 enabled: false,
                 failed_processes: failures.count,
@@ -92,6 +97,7 @@ impl IoPriorityManager {
 
         if !settings.enabled {
             let failures = self.clear_all(action_log, "I/O priority rules disabled");
+            self.failure_suppression.clear();
             return IoPrioritySnapshot {
                 enabled: false,
                 failed_processes: failures.count,
@@ -177,6 +183,13 @@ impl IoPriorityManager {
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        let active_target_names = target_processes
+            .values()
+            .map(|(name, _priority)| process_failure_key(name))
+            .collect::<BTreeSet<_>>();
+        self.failure_suppression
+            .retain(|process_name, _| active_target_names.contains(process_name));
+
         let mut failures = self.release_non_targets(
             &target_ids,
             &current_process_names,
@@ -186,13 +199,21 @@ impl IoPriorityManager {
         let mut skipped_processes = 0;
 
         for (process_id, (process_name, priority)) in target_processes {
+            if self.is_process_suppressed(process_id, &process_name, action_log) {
+                skipped_processes += 1;
+                continue;
+            }
+
             match self.apply_process(process_id, process_name.clone(), priority, action_log) {
-                Ok(ApplyOutcome::Applied) | Ok(ApplyOutcome::AlreadyApplied) => {}
+                Ok(ApplyOutcome::Applied) | Ok(ApplyOutcome::AlreadyApplied) => {
+                    self.clear_process_failure(&process_name);
+                }
                 Err(IoPriorityError::ProcessExited) => {
                     skipped_processes += 1;
                 }
                 Err(IoPriorityError::AccessDenied) => {
                     skipped_processes += 1;
+                    self.record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::IoPriority,
                         Some(process_id),
@@ -202,7 +223,10 @@ impl IoPriorityManager {
                         "Skipped because the process could not be opened.",
                     );
                 }
-                Err(err) => failures.record("Apply", process_id, &process_name, err, action_log),
+                Err(err) => {
+                    self.record_process_failure(&process_name);
+                    failures.record("Apply", process_id, &process_name, err, action_log);
+                }
             }
         }
 
@@ -311,19 +335,71 @@ impl IoPriorityManager {
                 .cloned()
                 .unwrap_or_else(|| process_state.process_name.clone());
             match restore_process(*process_id, process_state) {
-                Ok(()) => action_log.record(
-                    ActionLogFeature::IoPriority,
-                    Some(*process_id),
-                    log_name,
-                    ActionLogAction::Restore,
-                    ActionLogResult::Restored,
-                    format!("Restored previous I/O priority: {reason}."),
-                ),
+                Ok(()) => {
+                    self.clear_process_failure(&log_name);
+                    action_log.record(
+                        ActionLogFeature::IoPriority,
+                        Some(*process_id),
+                        log_name,
+                        ActionLogAction::Restore,
+                        ActionLogResult::Restored,
+                        format!("Restored previous I/O priority: {reason}."),
+                    );
+                }
                 Err(IoPriorityError::ProcessExited) => {}
-                Err(err) => failures.record("Restore", *process_id, &log_name, err, action_log),
+                Err(err) => {
+                    self.record_process_failure(&log_name);
+                    failures.record("Restore", *process_id, &log_name, err, action_log);
+                }
             }
         }
         failures
+    }
+
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+    ) -> bool {
+        let Some(suppression) = self
+            .failure_suppression
+            .get_mut(&process_failure_key(process_name))
+        else {
+            return false;
+        };
+        if !suppression.is_suppressed() {
+            return false;
+        }
+
+        if suppression.mark_suppression_logged() {
+            action_log.record(
+                ActionLogFeature::IoPriority,
+                Some(process_id),
+                process_name.to_owned(),
+                ActionLogAction::Skip,
+                ActionLogResult::Skipped,
+                format!(
+                    "Stopped retrying I/O Priority after {} failed attempts.",
+                    execution_failure_suppression_threshold(),
+                ),
+            );
+        }
+
+        true
+    }
+
+    fn record_process_failure(&mut self, process_name: &str) {
+        let suppression = self
+            .failure_suppression
+            .entry(process_failure_key(process_name))
+            .or_default();
+        suppression.record_failure();
+    }
+
+    fn clear_process_failure(&mut self, process_name: &str) {
+        self.failure_suppression
+            .remove(&process_failure_key(process_name));
     }
 }
 
@@ -487,6 +563,10 @@ fn is_process_exited_message(message: &str) -> bool {
         .eq_ignore_ascii_case("Process exited")
 }
 
+fn process_failure_key(process_name: &str) -> String {
+    process_name.trim().to_ascii_lowercase()
+}
+
 fn process_session_id(process_id: u32) -> Option<u32> {
     let mut session_id = 0;
     let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
@@ -546,6 +626,41 @@ unsafe extern "system" {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_process_failures_suppress_io_priority_retries() {
+        let mut manager = IoPriorityManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("APP.exe");
+        manager.record_process_failure("app.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].feature, ActionLogFeature::IoPriority);
+        assert_eq!(entries[0].action, ActionLogAction::Skip);
+        assert_eq!(entries[0].result, ActionLogResult::Skipped);
+        assert!(entries[0].reason.contains("Stopped retrying I/O Priority"));
+    }
+
+    #[test]
+    fn successful_process_clears_io_priority_failure_suppression() {
+        let mut manager = IoPriorityManager::default();
+        let mut log = ActionLog::new(8);
+
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        manager.record_process_failure("app.exe");
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+
+        manager.clear_process_failure("APP.exe");
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+    }
 
     #[test]
     fn terminating_process_ntstatus_is_treated_as_process_exited() {

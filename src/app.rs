@@ -57,6 +57,7 @@ use crate::{
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
+    dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot, MemoryUsageMonitor, MemoryUsageSnapshot},
     ecoqos::{self, EcoQosSnapshot},
     foreground::{list_process_candidates, ForegroundDetector, ProcessCandidateInfo},
     io_priority::{self, IoPrioritySnapshot},
@@ -240,6 +241,10 @@ pub struct PowerLeafApp {
     activity: ActivitySnapshot,
     cpu_usage: CpuUsageSnapshot,
     cpu_usage_history: VecDeque<f32>,
+    memory_usage: MemoryUsageSnapshot,
+    memory_usage_history: VecDeque<f32>,
+    io_usage: IoUsageSnapshot,
+    io_usage_history: VecDeque<f32>,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     cpu_limiter_status: CpuLimiterSnapshot,
@@ -263,6 +268,8 @@ pub struct PowerLeafApp {
     power: PowerPlanManager,
     background_automation: BackgroundAutomation,
     cpu_monitor: CpuUsageMonitor,
+    memory_monitor: MemoryUsageMonitor,
+    io_monitor: IoUsageMonitor,
     idle_detector: IdleDetector,
     input_hook: Option<InputHook>,
     foreground_detector: ForegroundDetector,
@@ -747,6 +754,10 @@ impl PowerLeafApp {
             },
             cpu_usage: CpuUsageSnapshot::default(),
             cpu_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
+            memory_usage: MemoryUsageSnapshot::default(),
+            memory_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
+            io_usage: IoUsageSnapshot::default(),
+            io_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
             eco_qos_status: EcoQosSnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
             cpu_limiter_status: CpuLimiterSnapshot::default(),
@@ -774,6 +785,8 @@ impl PowerLeafApp {
             power,
             background_automation,
             cpu_monitor: CpuUsageMonitor::default(),
+            memory_monitor: MemoryUsageMonitor,
+            io_monitor: IoUsageMonitor::default(),
             idle_detector: IdleDetector,
             input_hook: None,
             foreground_detector: ForegroundDetector,
@@ -1297,7 +1310,7 @@ impl PowerLeafApp {
         self.activity = self.idle_detector.snapshot(Duration::from_secs(
             decision_settings.activity_mode.idle_timeout_seconds,
         ));
-        self.refresh_cpu_usage_sample();
+        self.refresh_dashboard_resource_samples();
         self.foreground_app = self.foreground_detector.process_name();
         let schedule = self
             .scheduler
@@ -1328,6 +1341,8 @@ impl PowerLeafApp {
         let activity_state = self.activity.state;
         let activity_idle_for = self.activity.idle_for;
         let cpu_usage_percent = self.cpu_usage.percent;
+        let memory_usage_percent = self.memory_usage.percent;
+        let io_bytes_per_second = self.io_usage.bytes_per_second;
         let foreground_app = self.foreground_app.clone();
         let decision_target_guid = self.decision.target_guid.clone();
         let decision_state = self.decision.state;
@@ -1342,6 +1357,8 @@ impl PowerLeafApp {
         self.activity.state != activity_state
             || self.activity.idle_for != activity_idle_for
             || self.cpu_usage.percent != cpu_usage_percent
+            || self.memory_usage.percent != memory_usage_percent
+            || self.io_usage.bytes_per_second != io_bytes_per_second
             || self.foreground_app != foreground_app
             || self.decision.target_guid != decision_target_guid
             || self.decision.state != decision_state
@@ -1352,20 +1369,44 @@ impl PowerLeafApp {
             || self.status_message != status_message
     }
 
-    fn refresh_cpu_usage_sample(&mut self) -> bool {
+    fn refresh_dashboard_resource_samples(&mut self) -> bool {
         if Instant::now() < self.next_cpu_usage_refresh {
             return false;
         }
 
-        let previous_percent = self.cpu_usage.percent;
+        let previous_cpu_percent = self.cpu_usage.percent;
+        let previous_memory_percent = self.memory_usage.percent;
+        let previous_io_bytes_per_second = self.io_usage.bytes_per_second;
+
         self.cpu_usage = self.cpu_monitor.sample();
-        let mut changed = self.cpu_usage.percent != previous_percent;
+        self.memory_usage = self.memory_monitor.sample();
+        self.io_usage = self.io_monitor.sample();
+
+        let mut changed = self.cpu_usage.percent != previous_cpu_percent
+            || self.memory_usage.percent != previous_memory_percent
+            || self.io_usage.bytes_per_second != previous_io_bytes_per_second;
 
         if let Some(percent) = self.cpu_usage.percent {
             if self.cpu_usage_history.len() == CPU_USAGE_HISTORY_LEN {
                 self.cpu_usage_history.pop_front();
             }
             self.cpu_usage_history.push_back(percent.clamp(0.0, 100.0));
+            changed = true;
+        }
+        if let Some(percent) = self.memory_usage.percent {
+            if self.memory_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+                self.memory_usage_history.pop_front();
+            }
+            self.memory_usage_history
+                .push_back(percent.clamp(0.0, 100.0));
+            changed = true;
+        }
+        if let Some(bytes_per_second) = self.io_usage.bytes_per_second {
+            if self.io_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+                self.io_usage_history.pop_front();
+            }
+            self.io_usage_history
+                .push_back(bytes_per_second.clamp(0.0, f32::MAX as f64) as f32);
             changed = true;
         }
 
@@ -1743,7 +1784,7 @@ impl PowerLeafApp {
             changed |= self.refresh_process_candidates(false);
         }
 
-        changed |= self.refresh_cpu_usage_sample();
+        changed |= self.refresh_dashboard_resource_samples();
 
         let should_check_now = Instant::now() >= self.next_check;
 
@@ -2725,13 +2766,7 @@ impl Render for PowerLeafApp {
         self.sync_input_values(cx);
 
         let search_query = self.dashboard_search_query(cx);
-        let search_active = !search_query.is_empty()
-            || self
-                .inputs
-                .dashboard_search
-                .read(cx)
-                .focus_handle(cx)
-                .is_focused(window);
+        let search_active = !search_query.is_empty();
         let page = if search_active {
             self.render_search_results_page(&search_query, cx)
         } else {
@@ -2747,7 +2782,8 @@ impl Render for PowerLeafApp {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .font_family("Segoe UI Variable")
-            .on_action(cx.listener(|_, _: &InputEscape, window, cx| {
+            .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
+                clear_input(&app.inputs.dashboard_search, window, cx);
                 window.blur();
                 cx.notify();
             }))
@@ -3147,7 +3183,13 @@ impl PowerLeafApp {
             .gap_2()
             .flex_wrap()
             .child(dashboard_card_slot(
-                self.render_cpu_usage_graph().into_any_element(),
+                self.render_cpu_usage_summary().into_any_element(),
+            ))
+            .child(dashboard_card_slot(
+                self.render_memory_usage_summary().into_any_element(),
+            ))
+            .child(dashboard_card_slot(
+                self.render_io_usage_summary().into_any_element(),
             ))
             .child(dashboard_card_slot(
                 titled_status_list(
@@ -3281,7 +3323,70 @@ impl PowerLeafApp {
         items
     }
 
-    fn render_cpu_usage_graph(&self) -> gpui::Div {
+    fn render_cpu_usage_summary(&self) -> gpui::Div {
+        self.render_metric_summary(
+            t!("dashboard.cpu_usage").to_string(),
+            cpu_usage_label(self.cpu_usage.percent),
+            &self.cpu_usage_history,
+            100.0,
+        )
+    }
+
+    fn render_memory_usage_summary(&self) -> gpui::Div {
+        self.render_metric_summary(
+            t!("dashboard.memory_usage").to_string(),
+            memory_usage_label(self.memory_usage.percent),
+            &self.memory_usage_history,
+            100.0,
+        )
+    }
+
+    fn render_io_usage_summary(&self) -> gpui::Div {
+        let max_value = self
+            .io_usage_history
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max)
+            .max(1.0);
+
+        self.render_metric_summary(
+            t!("dashboard.io_usage").to_string(),
+            io_usage_label(self.io_usage.bytes_per_second),
+            &self.io_usage_history,
+            max_value,
+        )
+    }
+
+    fn render_metric_summary(
+        &self,
+        title: String,
+        label: String,
+        history: &VecDeque<f32>,
+        max_value: f32,
+    ) -> gpui::Div {
+        let graph = self.render_metric_history_graph(history, max_value);
+
+        dashboard_summary_card(
+            title,
+            v_flex()
+                .w_full()
+                .min_w(px(0.0))
+                .flex_1()
+                .min_h(px(0.0))
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(TEXT_BODY_SIZE))
+                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(label),
+                )
+                .child(graph)
+                .into_any_element(),
+        )
+    }
+
+    fn render_metric_history_graph(&self, history: &VecDeque<f32>, max_value: f32) -> gpui::Div {
         let mut graph = h_flex()
             .w_full()
             .h(px(DASHBOARD_CPU_GRAPH_HEIGHT))
@@ -3290,7 +3395,7 @@ impl PowerLeafApp {
             .px_2()
             .py_2();
 
-        let missing_samples = CPU_USAGE_HISTORY_LEN.saturating_sub(self.cpu_usage_history.len());
+        let missing_samples = CPU_USAGE_HISTORY_LEN.saturating_sub(history.len());
         for _ in 0..missing_samples {
             graph = graph.child(
                 v_flex().h_full().flex_1().justify_end().child(
@@ -3304,8 +3409,9 @@ impl PowerLeafApp {
             );
         }
 
-        for percent in &self.cpu_usage_history {
-            let bar_height = 8.0 + (percent / 100.0) * 88.0;
+        let max_value = max_value.max(1.0);
+        for value in history {
+            let bar_height = 8.0 + (value.clamp(0.0, max_value) / max_value) * 88.0;
             graph = graph.child(
                 v_flex().h_full().flex_1().justify_end().child(
                     div()
@@ -3317,24 +3423,7 @@ impl PowerLeafApp {
             );
         }
 
-        dashboard_summary_card(
-            t!("dashboard.cpu_usage").to_string(),
-            v_flex()
-                .w_full()
-                .min_w(px(0.0))
-                .flex_1()
-                .min_h(px(0.0))
-                .gap_2()
-                .child(
-                    h_flex()
-                        .items_center()
-                        .justify_between()
-                        .child(text_muted(cpu_usage_label(self.cpu_usage.percent)))
-                        .child(text_muted(format!("{CPU_USAGE_HISTORY_LEN} samples"))),
-                )
-                .child(graph)
-                .into_any_element(),
-        )
+        graph
     }
 
     fn render_activity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -14526,6 +14615,34 @@ fn cpu_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
         .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+}
+
+fn memory_usage_label(percent: Option<f32>) -> String {
+    percent
+        .map(|percent| format!("{percent:.1}%"))
+        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+}
+
+fn io_usage_label(bytes_per_second: Option<f64>) -> String {
+    bytes_per_second
+        .map(format_bytes_per_second)
+        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+}
+
+fn format_bytes_per_second(bytes_per_second: f64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    if bytes_per_second >= GIB {
+        format!("{:.1} GB/s", bytes_per_second / GIB)
+    } else if bytes_per_second >= MIB {
+        format!("{:.1} MB/s", bytes_per_second / MIB)
+    } else if bytes_per_second >= KIB {
+        format!("{:.1} KB/s", bytes_per_second / KIB)
+    } else {
+        format!("{bytes_per_second:.0} B/s")
+    }
 }
 
 fn input_hook_required(settings: &Settings) -> bool {

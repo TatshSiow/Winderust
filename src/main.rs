@@ -13,6 +13,7 @@ mod background_cpu;
 mod config;
 mod cpu;
 mod cpu_limiter;
+mod dashboard_metrics;
 mod ecoqos;
 mod foreground;
 mod io_priority;
