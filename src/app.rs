@@ -10,7 +10,7 @@ use std::{
     rc::Rc,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        Arc,
+        Arc, LazyLock, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -112,6 +112,7 @@ const DASHBOARD_GRAPH_BAR_WIDTH: f32 = 5.0;
 const DASHBOARD_GRAPH_BAR_GAP: f32 = 4.0;
 const DASHBOARD_IO_SPLIT_ITEM_WIDTH: f32 = 140.0;
 const DASHBOARD_IO_SPLIT_VALUE_WIDTH: f32 = 90.0;
+const CARD_ROW_HEIGHT: f32 = 58.0;
 const MOTION_FAST_SECONDS: f64 = 0.15;
 const MOTION_STANDARD_SECONDS: f64 = 0.22;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -377,6 +378,55 @@ struct BreadcrumbTransition {
     previous: Vec<BreadcrumbSegment>,
     current: Vec<BreadcrumbSegment>,
     started: Instant,
+}
+
+#[derive(Default)]
+struct CardHoverState {
+    hovered: HashSet<String>,
+    changes: HashMap<String, CardHoverChange>,
+    generation: u64,
+}
+
+#[derive(Clone, Copy)]
+struct CardHoverChange {
+    hovered: bool,
+    generation: u64,
+    changed_at: Instant,
+}
+
+static CARD_HOVER_STATE: LazyLock<Mutex<CardHoverState>> =
+    LazyLock::new(|| Mutex::new(CardHoverState::default()));
+
+#[derive(Default)]
+struct ControlMotionState {
+    values: HashMap<String, String>,
+    generation: u64,
+}
+
+static CONTROL_MOTION_STATE: LazyLock<Mutex<ControlMotionState>> =
+    LazyLock::new(|| Mutex::new(ControlMotionState::default()));
+
+#[derive(Clone, Copy)]
+struct DropdownCloseTransition {
+    started: Instant,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct DropdownMotionState {
+    open: HashMap<String, u64>,
+    closing: HashMap<String, DropdownCloseTransition>,
+    generation: u64,
+}
+
+static DROPDOWN_MOTION_STATE: LazyLock<Mutex<DropdownMotionState>> =
+    LazyLock::new(|| Mutex::new(DropdownMotionState::default()));
+
+#[derive(Clone, Copy)]
+enum DropdownPopupPhase {
+    Hidden,
+    Open(u64),
+    Closing(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -4419,7 +4469,7 @@ impl PowerLeafApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        compact_rule_row(cx)
+        compact_rule_row(format!("foreground-rule-row-{index}"))
             .child(rule_enable_checkbox(
                 format!("foreground-rule-enabled-{index}"),
                 rule.enabled,
@@ -5508,7 +5558,7 @@ impl PowerLeafApp {
             .enumerate()
         {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(cx)
+            let row = compact_rule_row(format!("eco-qos-exclusion-row-{index}"))
                 .child(rule_enable_checkbox(
                     format!("eco-qos-exclusion-enabled-{index}"),
                     rule.enabled,
@@ -6291,7 +6341,7 @@ impl PowerLeafApp {
             .enumerate()
         {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(cx)
+            let row = compact_rule_row(format!("background-cpu-exclusion-row-{index}"))
                 .child(rule_enable_checkbox(
                     format!("background-cpu-exclusion-enabled-{index}"),
                     rule.enabled,
@@ -6851,7 +6901,7 @@ impl PowerLeafApp {
         let mut list = rule_list();
         for (index, rule) in self.settings.performance_mode.rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(cx)
+            let row = compact_rule_row(format!("performance-mode-rule-row-{index}"))
                 .child(rule_enable_checkbox(
                     format!("performance-mode-rule-enabled-{index}"),
                     rule.enabled,
@@ -7755,7 +7805,7 @@ impl PowerLeafApp {
             .enumerate()
         {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(cx)
+            let row = compact_rule_row(format!("responsiveness-exclusion-row-{index}"))
                 .child(rule_enable_checkbox(
                     format!("responsiveness-exclusion-enabled-{index}"),
                     rule.enabled,
@@ -8167,7 +8217,7 @@ impl PowerLeafApp {
         let mut list = rule_list();
         for (index, rule) in self.settings.memory_priority.rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(cx)
+            let row = compact_rule_row(format!("memory-priority-rule-row-{index}"))
                 .child(rule_enable_checkbox(
                     format!("memory-priority-rule-enabled-{index}"),
                     rule.enabled,
@@ -8663,7 +8713,7 @@ impl PowerLeafApp {
         let mut list = v_flex().gap_2();
         for (index, rule) in self.settings.smart_trim.exclusions.iter().enumerate() {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(cx)
+            let row = compact_rule_row(format!("smart-trim-exclusion-row-{index}"))
                 .child(rule_enable_checkbox(
                     format!("smart-trim-exclusion-enabled-{index}"),
                     rule.enabled,
@@ -9585,6 +9635,7 @@ impl PowerLeafApp {
             color_palette.into_any_element(),
         ));
         let header_toggle_target = accent_target;
+        let accent_hover_id = "accent-source-card".to_string();
 
         let mut accent_card = v_flex()
             .id("accent-color-card")
@@ -9603,19 +9654,26 @@ impl PowerLeafApp {
                     .id("accent-source-card")
                     .w_full()
                     .min_w(px(0.0))
-                    .min_h(px(58.0))
+                    .h(px(CARD_ROW_HEIGHT))
                     .items_center()
                     .justify_between()
                     .gap_2()
                     .py_3()
                     .px_4()
+                    .relative()
+                    .overflow_hidden()
                     .block_mouse_except_scroll()
-                    .occlude()
                     .cursor_pointer()
-                    .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                    .on_hover({
+                        let accent_hover_id = accent_hover_id.clone();
+                        move |hovered, _, cx| {
+                            set_card_hovered(accent_hover_id.clone(), *hovered, cx);
+                        }
+                    })
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.toggle_setting_group(header_toggle_target, cx);
                     }))
+                    .child(animated_card_hover_layer(&accent_hover_id))
                     .child(
                         div()
                             .id("accent-color-title")
@@ -9644,6 +9702,7 @@ impl PowerLeafApp {
                                     .text_color(rgb(dim_text_color()))
                                     .opacity(0.72)
                                     .hover(|style| style.opacity(1.0))
+                                    .cursor_pointer()
                                     .child(collapsible_chevron_icon("accent-color", collapsed)),
                             ),
                     ),
@@ -9663,6 +9722,8 @@ impl PowerLeafApp {
                     .child(palette_content)
                     .into_any_element(),
             ));
+        } else {
+            remember_expanded_child_hidden("accent-palette-subcard");
         }
 
         accent_card.into_any_element()
@@ -10643,13 +10704,15 @@ impl PowerLeafApp {
         let picker = v_flex().w_full().min_w(px(0.0)).relative().child(
             h_flex()
                 .id("processor-power-target-plan-card")
-                .min_h(px(58.0))
+                .h(px(CARD_ROW_HEIGHT))
                 .w_full()
                 .items_center()
                 .justify_between()
                 .gap_2()
                 .py_3()
                 .px_4()
+                .relative()
+                .overflow_hidden()
                 .rounded_sm()
                 .border_1()
                 .border_color(rgb(border_color()))
@@ -10657,7 +10720,12 @@ impl PowerLeafApp {
                 .text_color(rgb(primary_text_color()))
                 .text_size(px(TEXT_BODY_SIZE))
                 .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                .on_hover(|hovered, _, cx| {
+                    set_card_hovered("processor-power-target-plan-card".to_string(), *hovered, cx);
+                })
+                .child(animated_card_hover_layer(
+                    "processor-power-target-plan-card",
+                ))
                 .child(
                     h_flex()
                         .flex_1()
@@ -11058,8 +11126,7 @@ impl PowerLeafApp {
             ))
             .child(if is_open {
                 deferred(
-                    dropdown_popup_layer(placement)
-                        .occlude()
+                    dropdown_popup_layer(placement, true)
                         .on_mouse_down_out(cx.listener(
                             |_, _: &gpui::MouseDownEvent, window, cx| {
                                 window.blur();
@@ -11171,6 +11238,82 @@ fn dropdown_list_height(row_count: usize) -> Pixels {
         + (row_count.saturating_sub(1) as f32 * DROPDOWN_OPTION_GAP))
 }
 
+fn dropdown_popup_phase(
+    id: &str,
+    is_open: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> DropdownPopupPhase {
+    let mut schedule_cleanup = false;
+    let phase = {
+        let Ok(mut state) = DROPDOWN_MOTION_STATE.lock() else {
+            return if is_open {
+                DropdownPopupPhase::Open(0)
+            } else {
+                DropdownPopupPhase::Hidden
+            };
+        };
+
+        if is_open {
+            let generation = match state.open.get(id).copied() {
+                Some(generation) => generation,
+                None => {
+                    state.generation = state.generation.wrapping_add(1);
+                    let generation = state.generation;
+                    state.open.insert(id.to_owned(), generation);
+                    generation
+                }
+            };
+            state.closing.remove(id);
+            DropdownPopupPhase::Open(generation)
+        } else if let Some(_generation) = state.open.remove(id) {
+            if ui_animations_enabled() {
+                state.generation = state.generation.wrapping_add(1);
+                let generation = state.generation;
+                state.closing.insert(
+                    id.to_owned(),
+                    DropdownCloseTransition {
+                        started: Instant::now(),
+                        generation,
+                    },
+                );
+                schedule_cleanup = true;
+                DropdownPopupPhase::Closing(generation)
+            } else {
+                state.closing.remove(id);
+                DropdownPopupPhase::Hidden
+            }
+        } else if let Some(transition) = state.closing.get(id).copied() {
+            if transition.started.elapsed() < Duration::from_secs_f64(MOTION_FAST_SECONDS) {
+                DropdownPopupPhase::Closing(transition.generation)
+            } else {
+                state.closing.remove(id);
+                DropdownPopupPhase::Hidden
+            }
+        } else {
+            DropdownPopupPhase::Hidden
+        }
+    };
+
+    if schedule_cleanup {
+        let id = id.to_owned();
+        cx.spawn(async move |this, cx| {
+            Timer::after(Duration::from_secs_f64(MOTION_FAST_SECONDS)).await;
+            if let Ok(mut state) = DROPDOWN_MOTION_STATE.lock() {
+                let expired = state.closing.get(&id).is_some_and(|transition| {
+                    transition.started.elapsed() >= Duration::from_secs_f64(MOTION_FAST_SECONDS)
+                });
+                if expired {
+                    state.closing.remove(&id);
+                }
+            }
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    phase
+}
+
 fn dropdown_anchor_sensor(
     id: impl Into<String>,
     anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
@@ -11210,8 +11353,12 @@ fn dropdown_select_container(width: DropdownSelectWidth) -> gpui::Div {
         .min_h(px(DROPDOWN_CONTROL_HEIGHT))
 }
 
-fn dropdown_popup_layer(placement: DropdownPlacement) -> gpui::Div {
-    let layer = div().absolute().left(px(0.0)).right(px(0.0)).occlude();
+fn dropdown_popup_layer(placement: DropdownPlacement, interactive: bool) -> gpui::Div {
+    let layer = div()
+        .absolute()
+        .left(px(0.0))
+        .right(px(0.0))
+        .when(interactive, |layer| layer.occlude());
 
     if placement.open_up {
         layer.bottom(px(DROPDOWN_MENU_OFFSET))
@@ -11227,45 +11374,68 @@ fn dropdown_popup_or_empty(
     options: Scrollable<gpui::Div>,
     cx: &mut Context<PowerLeafApp>,
 ) -> AnyElement {
-    if is_open {
-        let popup = dropdown_popup_layer(placement)
-            .occlude()
-            .on_mouse_down_out(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
-                let click_is_on_trigger = app
-                    .active_power_plan_picker
-                    .as_deref()
-                    .and_then(|id| app.dropdown_anchor_bounds.borrow().get(id).copied())
-                    .is_some_and(|bounds| bounds.contains(&event.position));
+    match dropdown_popup_phase(id.as_ref(), is_open, cx) {
+        DropdownPopupPhase::Hidden => Empty.into_any_element(),
+        DropdownPopupPhase::Open(generation) => {
+            let popup = dropdown_popup_layer(placement, true)
+                .on_mouse_down_out(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
+                    let click_is_on_trigger = app
+                        .active_power_plan_picker
+                        .as_deref()
+                        .and_then(|id| app.dropdown_anchor_bounds.borrow().get(id).copied())
+                        .is_some_and(|bounds| bounds.contains(&event.position));
 
-                if click_is_on_trigger {
-                    return;
-                }
+                    if click_is_on_trigger {
+                        return;
+                    }
 
-                app.active_power_plan_picker = None;
-                cx.notify();
-            }))
-            .child(options);
-        let popup = with_optional_motion(
-            popup,
-            SharedString::from(format!("dropdown-popup-{id}")),
-            MotionSpeed::Fast,
-            |popup| popup,
-            move |popup, delta| {
-                let offset = (1.0 - delta) * 6.0;
-                let popup = popup.opacity(0.18 + 0.82 * delta);
-                if placement.open_up {
-                    popup.bottom(px(DROPDOWN_MENU_OFFSET + offset))
-                } else {
-                    popup.top(px(DROPDOWN_MENU_OFFSET + offset))
-                }
-            },
-        );
+                    app.active_power_plan_picker = None;
+                    cx.notify();
+                }))
+                .child(options);
 
-        deferred(popup)
-            .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-            .into_any_element()
-    } else {
-        Empty.into_any_element()
+            let popup = with_optional_motion(
+                popup,
+                SharedString::from(format!("dropdown-popup-open-{id}-{generation}")),
+                MotionSpeed::Fast,
+                |popup| popup,
+                move |popup, delta| {
+                    let offset = (1.0 - delta) * 6.0;
+                    let popup = popup.opacity(0.18 + 0.82 * delta);
+                    if placement.open_up {
+                        popup.bottom(px(DROPDOWN_MENU_OFFSET + offset))
+                    } else {
+                        popup.top(px(DROPDOWN_MENU_OFFSET + offset))
+                    }
+                },
+            );
+
+            deferred(popup)
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+        }
+        DropdownPopupPhase::Closing(generation) => {
+            let popup = dropdown_popup_layer(placement, false).child(options);
+            let popup = with_optional_motion(
+                popup,
+                SharedString::from(format!("dropdown-popup-close-{id}-{generation}")),
+                MotionSpeed::Fast,
+                |popup| popup.opacity(0.0),
+                move |popup, delta| {
+                    let offset = delta * 6.0;
+                    let popup = popup.opacity(1.0 - delta);
+                    if placement.open_up {
+                        popup.bottom(px(DROPDOWN_MENU_OFFSET + offset))
+                    } else {
+                        popup.top(px(DROPDOWN_MENU_OFFSET + offset))
+                    }
+                },
+            );
+
+            deferred(popup)
+                .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+                .into_any_element()
+        }
     }
 }
 
@@ -11448,9 +11618,10 @@ fn dropdown_chevron(id: SharedString, open: bool, cx: &mut Context<PowerLeafApp>
     let icon = Icon::new(NavIcon::ChevronDown)
         .with_size(px(16.0))
         .text_color(cx.theme().muted_foreground);
-    let icon = with_optional_motion(
+    let icon = with_state_change_motion(
         icon,
-        SharedString::from(format!("dropdown-chevron-{id}-{open}")),
+        SharedString::from(format!("dropdown-chevron-{id}")),
+        SharedString::from(open.to_string()),
         MotionSpeed::Fast,
         move |icon| icon.rotate(percentage(end_turns)),
         move |icon, delta| {
@@ -12528,8 +12699,9 @@ fn breadcrumb_button(
 ) -> gpui::Stateful<gpui::Div> {
     let hover_bg: Hsla = rgb(settings_card_hover_color()).into();
 
-    breadcrumb_label_base(label)
+    breadcrumb_label_base(label, Some(360.0))
         .id(id)
+        .flex_shrink_0()
         .opacity(0.68)
         .hover(move |style| style.bg(hover_bg))
         .cursor_pointer()
@@ -12538,22 +12710,30 @@ fn breadcrumb_button(
         }))
 }
 
-fn breadcrumb_label_base(label: String) -> gpui::Div {
-    h_flex()
+fn breadcrumb_label_base(label: String, max_width: Option<f32>) -> gpui::Div {
+    let label_container = h_flex()
         .min_w(px(0.0))
-        .max_w(px(360.0))
         .items_center()
+        .overflow_hidden()
         .px_1()
         .py(px(2.0))
         .rounded_sm()
         .text_size(px(TEXT_PAGE_TITLE_SIZE))
         .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .child(div().min_w(px(0.0)).truncate().child(label))
+        .font_weight(gpui::FontWeight::SEMIBOLD);
+
+    let label_container = if let Some(max_width) = max_width {
+        label_container.max_w(px(max_width))
+    } else {
+        label_container
+    };
+
+    label_container.child(div().flex_1().min_w(px(0.0)).truncate().child(label))
 }
 
 fn breadcrumb_separator() -> gpui::Div {
     div()
+        .flex_shrink_0()
         .text_size(px(TEXT_PAGE_CRUMB_SIZE))
         .line_height(px(TEXT_PAGE_CRUMB_LINE_HEIGHT))
         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -12611,8 +12791,11 @@ fn breadcrumb_starts_with(trail: &[BreadcrumbSegment], prefix: &[BreadcrumbSegme
             .all(|(trail, prefix)| trail.page == prefix.page)
 }
 
-fn breadcrumb_plain_label(label: String, current: bool) -> gpui::Div {
-    breadcrumb_label_base(label).when(!current, |label| label.opacity(0.68))
+fn breadcrumb_plain_label(label: String, current: bool, flexible: bool) -> gpui::Div {
+    breadcrumb_label_base(label, if flexible { None } else { Some(360.0) })
+        .when(flexible, |label| label.flex_1().overflow_hidden())
+        .when(!flexible, |label| label.flex_shrink_0())
+        .when(!current, |label| label.opacity(0.68))
 }
 
 fn breadcrumb_segment_element(
@@ -12630,7 +12813,8 @@ fn breadcrumb_segment_element(
         )
         .into_any_element()
     } else {
-        breadcrumb_plain_label(segment.label.clone(), current).into_any_element()
+        breadcrumb_plain_label(segment.label.clone(), current, current && interactive)
+            .into_any_element()
     }
 }
 
@@ -12640,9 +12824,14 @@ fn breadcrumb_segment_group(
     interactive: bool,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Div {
+    let flexible = current && interactive;
+
     h_flex()
+        .min_w(px(0.0))
         .items_center()
         .gap_2()
+        .when(flexible, |group| group.flex_1().overflow_hidden())
+        .when(!flexible, |group| group.flex_shrink_0())
         .child(breadcrumb_separator())
         .child(breadcrumb_segment_element(
             segment,
@@ -12670,6 +12859,45 @@ fn breadcrumb_transition_group(id: SharedString, entering: bool, group: gpui::Di
             |group, delta| group.opacity(1.0 - delta),
         )
     }
+}
+
+fn breadcrumb_exit_overlay(
+    transition: &BreadcrumbTransition,
+    current_trail_len: usize,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Div {
+    let mut overlay = h_flex()
+        .absolute()
+        .inset_0()
+        .min_w(px(0.0))
+        .items_center()
+        .gap_2()
+        .overflow_hidden();
+
+    if let Some(first) = transition.previous.first() {
+        overlay = overlay.child(
+            breadcrumb_plain_label(first.label.clone(), transition.previous.len() == 1, false)
+                .opacity(0.0),
+        );
+    }
+
+    for (index, segment) in transition.previous.iter().enumerate().skip(1) {
+        let current = index + 1 == transition.previous.len();
+        let exiting = index >= current_trail_len;
+        let group = breadcrumb_segment_group(segment, current, exiting && current, cx);
+
+        if exiting {
+            overlay = overlay.child(breadcrumb_transition_group(
+                SharedString::from(format!("breadcrumb-{:?}-{index}", segment.page)),
+                false,
+                group,
+            ));
+        } else {
+            overlay = overlay.child(group.opacity(0.0));
+        }
+    }
+
+    overlay
 }
 
 fn dashboard_sections_in_nav_order() -> Vec<&'static ui::PageSection> {
@@ -12991,15 +13219,125 @@ where
     }
 }
 
+fn control_motion_generation(id: &str, state: &str) -> Option<u64> {
+    let Ok(mut motion_state) = CONTROL_MOTION_STATE.lock() else {
+        return None;
+    };
+
+    let previous = motion_state.values.insert(id.to_owned(), state.to_owned());
+    if previous.is_some_and(|previous| previous != state) && ui_animations_enabled() {
+        motion_state.generation = motion_state.generation.wrapping_add(1);
+        Some(motion_state.generation)
+    } else {
+        None
+    }
+}
+
+fn with_state_change_motion<E>(
+    element: E,
+    id: impl Into<SharedString>,
+    state: impl Into<SharedString>,
+    speed: MotionSpeed,
+    final_state: impl FnOnce(E) -> E,
+    animator: impl Fn(E, f32) -> E + 'static,
+) -> AnyElement
+where
+    E: IntoElement + 'static,
+{
+    let id = id.into();
+    let state = state.into();
+
+    if let Some(generation) = control_motion_generation(id.as_ref(), state.as_ref()) {
+        with_optional_motion(
+            element,
+            SharedString::from(format!("control-motion-{id}-{state}-{generation}")),
+            speed,
+            final_state,
+            animator,
+        )
+    } else {
+        final_state(element).into_any_element()
+    }
+}
+
+fn card_hover_snapshot(id: &str) -> (bool, Option<u64>) {
+    let Ok(state) = CARD_HOVER_STATE.lock() else {
+        return (false, None);
+    };
+    let hovered = state.hovered.contains(id);
+    let animation_generation = state.changes.get(id).and_then(|change| {
+        let fresh =
+            change.changed_at.elapsed() <= Duration::from_secs_f64(MOTION_FAST_SECONDS + 0.05);
+        (change.hovered == hovered && fresh).then_some(change.generation)
+    });
+
+    (hovered, animation_generation)
+}
+
+fn set_card_hovered(id: String, hovered: bool, cx: &mut App) {
+    let Ok(mut state) = CARD_HOVER_STATE.lock() else {
+        return;
+    };
+
+    let changed = if hovered {
+        state.hovered.insert(id.clone())
+    } else {
+        state.hovered.remove(&id)
+    };
+
+    if changed {
+        state.generation = state.generation.wrapping_add(1);
+        let generation = state.generation;
+        state.changes.insert(
+            id,
+            CardHoverChange {
+                hovered,
+                generation,
+                changed_at: Instant::now(),
+            },
+        );
+        cx.refresh_windows();
+    }
+}
+
+fn animated_card_hover_layer(id: &str) -> AnyElement {
+    let (hovered, animation_generation) = card_hover_snapshot(id);
+    let target_opacity = if hovered { 1.0 } else { 0.0 };
+    let layer = div()
+        .absolute()
+        .inset_0()
+        .bg(rgb(settings_card_hover_color()))
+        .opacity(target_opacity);
+
+    if ui_animations_enabled() {
+        if let Some(generation) = animation_generation {
+            let start_opacity = if hovered { 0.0 } else { 1.0 };
+            return with_optional_motion(
+                layer,
+                SharedString::from(format!("card-hover-{id}-{generation}")),
+                MotionSpeed::Fast,
+                move |layer| layer.opacity(target_opacity),
+                move |layer, delta| {
+                    let opacity = start_opacity + (target_opacity - start_opacity) * delta;
+                    layer.opacity(opacity)
+                },
+            );
+        }
+    }
+
+    layer.into_any_element()
+}
+
 fn collapsible_chevron_icon(id: impl Into<SharedString>, collapsed: bool) -> AnyElement {
     let id = id.into();
     let start_turns = if collapsed { 90.0 / 360.0 } else { 0.0 };
     let end_turns = if collapsed { 0.0 } else { 90.0 / 360.0 };
     let icon = Icon::new(NavIcon::ChevronRight).with_size(px(16.0));
 
-    with_optional_motion(
+    with_state_change_motion(
         icon,
-        SharedString::from(format!("collapse-chevron-{id}-{collapsed}")),
+        SharedString::from(format!("collapse-chevron-{id}")),
+        SharedString::from(collapsed.to_string()),
         MotionSpeed::Fast,
         move |icon| icon.rotate(percentage(end_turns)),
         move |icon, delta| {
@@ -13011,14 +13349,26 @@ fn collapsible_chevron_icon(id: impl Into<SharedString>, collapsed: bool) -> Any
 
 fn animated_expanded_child(id: impl Into<SharedString>, child: AnyElement) -> AnyElement {
     let id = id.into();
+    let motion_id = format!("expanded-child-{id}");
+    let animation_generation = control_motion_generation(&motion_id, "visible");
     let container = div().w_full().min_w(px(0.0)).overflow_hidden().child(child);
-    with_optional_motion(
-        container,
-        SharedString::from(format!("expanded-child-{id}")),
-        MotionSpeed::Standard,
-        |container| container,
-        |container, delta| container.opacity(0.28 + 0.72 * delta),
-    )
+
+    if let Some(generation) = animation_generation {
+        with_optional_motion(
+            container,
+            SharedString::from(format!("{motion_id}-{generation}")),
+            MotionSpeed::Standard,
+            |container| container,
+            |container, delta| container.opacity(0.28 + 0.72 * delta),
+        )
+    } else {
+        container.into_any_element()
+    }
+}
+
+fn remember_expanded_child_hidden(id: impl Into<SharedString>) {
+    let id = id.into();
+    let _ = control_motion_generation(&format!("expanded-child-{id}"), "hidden");
 }
 
 fn animated_presence_child(id: impl Into<SharedString>, child: AnyElement) -> AnyElement {
@@ -13044,10 +13394,7 @@ fn animated_list_item_child(
         .min_w(px(0.0))
         .overflow_hidden()
         .when(exiting, |container| {
-            container
-                .block_mouse_except_scroll()
-                .occlude()
-                .cursor_default()
+            container.block_mouse_except_scroll().cursor_default()
         })
         .child(child);
 
@@ -13090,6 +13437,12 @@ fn page_header_with_help(
         .items_center()
         .gap_2()
         .overflow_hidden();
+    let mut breadcrumb_row = h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .items_center()
+        .gap_2()
+        .overflow_hidden();
 
     let current_trail = breadcrumb_trail(page);
     let transition = transition.and_then(|transition| {
@@ -13104,7 +13457,7 @@ fn page_header_with_help(
         .unwrap_or(current_trail.len());
 
     if let Some(first) = current_trail.first() {
-        header = header.child(breadcrumb_segment_element(
+        breadcrumb_row = breadcrumb_row.child(breadcrumb_segment_element(
             first,
             current_trail.len() == 1,
             true,
@@ -13117,36 +13470,33 @@ fn page_header_with_help(
         let group = breadcrumb_segment_group(segment, current, true, cx);
 
         if transition.is_some() && index >= entering_start {
-            header = header.child(breadcrumb_transition_group(
+            breadcrumb_row = breadcrumb_row.child(breadcrumb_transition_group(
                 SharedString::from(format!("breadcrumb-{:?}-{index}", segment.page)),
                 true,
                 group,
             ));
         } else {
-            header = header.child(group);
+            breadcrumb_row = breadcrumb_row.child(group);
         }
     }
+
+    let mut breadcrumbs = div()
+        .flex_1()
+        .min_w(px(0.0))
+        .relative()
+        .overflow_hidden()
+        .child(breadcrumb_row);
 
     if let Some(transition) = transition {
         if breadcrumb_starts_with(&transition.previous, &current_trail)
             && transition.previous.len() > current_trail.len()
         {
-            for (index, segment) in transition
-                .previous
-                .iter()
-                .enumerate()
-                .skip(current_trail.len())
-            {
-                let current = index + 1 == transition.previous.len();
-                let group = breadcrumb_segment_group(segment, current, false, cx);
-                header = header.child(breadcrumb_transition_group(
-                    SharedString::from(format!("breadcrumb-{:?}-{index}", segment.page)),
-                    false,
-                    group,
-                ));
-            }
+            breadcrumbs =
+                breadcrumbs.child(breadcrumb_exit_overlay(transition, current_trail.len(), cx));
         }
     }
+
+    header = header.child(breadcrumbs);
 
     if let Some(help) = help {
         header = header.child(title_info_button(
@@ -13257,8 +13607,10 @@ fn rule_card_with_header_action(
     let card_id = SharedString::from(format!("rule-card-{card_target:?}"));
     let header_id = SharedString::from(format!("rule-card-header-{card_target:?}"));
     let header_action_id = SharedString::from(format!("rule-card-header-action-{card_target:?}"));
+    let hover_id = format!("rule-card-hover-{card_target:?}");
     let header_card_target = card_target.clone();
     let trailing_card_target = card_target.clone();
+    let trailing_hover_id = hover_id.clone();
     let mut trailing = h_flex()
         .id(SharedString::from(format!(
             "rule-card-trailing-{card_target:?}"
@@ -13266,13 +13618,15 @@ fn rule_card_with_header_action(
         .absolute()
         .top(px(0.0))
         .right(px(0.0))
-        .h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .gap_1()
         .px_2()
         .block_mouse_except_scroll()
-        .occlude()
         .cursor_pointer()
+        .on_hover(move |hovered, _, cx| {
+            set_card_hovered(trailing_hover_id.clone(), *hovered, cx);
+        })
         .on_click(cx.listener(move |app, _, _, cx| {
             app.toggle_rule_card(trailing_card_target.clone(), cx);
         }));
@@ -13298,22 +13652,28 @@ fn rule_card_with_header_action(
                 .relative()
                 .w_full()
                 .min_w(px(0.0))
-                .min_h(px(58.0))
+                .h(px(CARD_ROW_HEIGHT))
                 .id(header_id)
+                .overflow_hidden()
+                .child(animated_card_hover_layer(&hover_id))
                 .child(
                     h_flex()
                         .w_full()
                         .min_w(px(0.0))
-                        .h(px(58.0))
+                        .h(px(CARD_ROW_HEIGHT))
                         .items_center()
                         .gap_2()
                         .pl_4()
                         .pr(header_padding)
                         .id(header_action_id)
                         .block_mouse_except_scroll()
-                        .occlude()
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                        .on_hover({
+                            let hover_id = hover_id.clone();
+                            move |hovered, _, cx| {
+                                set_card_hovered(hover_id.clone(), *hovered, cx);
+                            }
+                        })
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.toggle_rule_card(header_card_target.clone(), cx);
                         }))
@@ -13333,6 +13693,7 @@ fn rule_card_collapse_indicator(card_target: RuleCardTarget, collapsed: bool) ->
         .justify_center()
         .text_color(rgb(dim_text_color()))
         .opacity(0.72)
+        .cursor_pointer()
         .child(collapsible_chevron_icon(
             SharedString::from(format!("rule-card-{card_target:?}")),
             collapsed,
@@ -13368,11 +13729,7 @@ fn disabled_feature_body(
         0.0
     };
     let dim_layer = with_optional_motion(
-        div()
-            .absolute()
-            .inset_0()
-            .bg(cx.theme().background)
-            .cursor_default(),
+        div().absolute().inset_0().bg(cx.theme().background),
         SharedString::from(format!("feature-gray-layer-{id}-{enabled}")),
         MotionSpeed::Standard,
         move |layer| layer.opacity(target_opacity),
@@ -13381,9 +13738,9 @@ fn disabled_feature_body(
             layer.opacity(opacity)
         },
     );
-    let body = body.child(dim_layer).when(!enabled, |body| {
-        body.cursor_default().child(disabled_interaction_shield(cx))
-    });
+    let body = body
+        .child(dim_layer)
+        .when(!enabled, |body| body.child(disabled_interaction_shield(cx)));
 
     body.into_any_element()
 }
@@ -13392,7 +13749,6 @@ fn disabled_interaction_shield(cx: &mut Context<PowerLeafApp>) -> AnyElement {
     div()
         .absolute()
         .inset_0()
-        .cursor_default()
         .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
             match event.button {
                 MouseButton::Navigate(NavigationDirection::Back) => {
@@ -13435,7 +13791,7 @@ fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_end()
         .gap_2()
@@ -13457,16 +13813,22 @@ fn rename_rule_button(target: RuleTitleTarget, cx: &mut Context<PowerLeafApp>) -
         .into_any_element()
 }
 
-fn compact_rule_row(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
+fn compact_rule_row(id: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
+    let hover_id = id.to_string();
+
     h_flex()
+        .id(id)
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
         .py_3()
         .px_4()
+        .relative()
+        .overflow_hidden()
         .rounded_sm()
         .border_1()
         .border_color(rgb(border_color()))
@@ -13474,7 +13836,13 @@ fn compact_rule_row(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .on_hover({
+            let hover_id = hover_id.clone();
+            move |hovered, _, cx| {
+                set_card_hovered(hover_id.clone(), *hovered, cx);
+            }
+        })
+        .child(animated_card_hover_layer(&hover_id))
 }
 
 fn create_rule_card(
@@ -13548,6 +13916,7 @@ fn setting_group_with_title_element(
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let chevron_target = target;
+    let hover_id = format!("setting-group-hover-{target:?}");
     let mut group = v_flex()
         .id(SharedString::from(format!("setting-group-{target:?}")))
         .w_full()
@@ -13567,20 +13936,27 @@ fn setting_group_with_title_element(
                 )))
                 .w_full()
                 .min_w(px(0.0))
-                .min_h(px(58.0))
+                .h(px(CARD_ROW_HEIGHT))
                 .items_center()
                 .justify_between()
                 .gap_2()
                 .py_3()
                 .pl_4()
                 .pr_2()
+                .relative()
+                .overflow_hidden()
                 .block_mouse_except_scroll()
-                .occlude()
                 .cursor_pointer()
-                .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                .on_hover({
+                    let hover_id = hover_id.clone();
+                    move |hovered, _, cx| {
+                        set_card_hovered(hover_id.clone(), *hovered, cx);
+                    }
+                })
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.toggle_setting_group(target, cx);
                 }))
+                .child(animated_card_hover_layer(&hover_id))
                 .child(
                     div()
                         .id(SharedString::from(format!(
@@ -13601,7 +13977,13 @@ fn setting_group_with_title_element(
                         .child(setting_group_collapse_button(chevron_target, collapsed, cx)),
                 ),
         );
-    if !collapsed {
+    if collapsed {
+        for index in 0..rows.len() {
+            remember_expanded_child_hidden(SharedString::from(format!(
+                "setting-group-{target:?}-row-{index}"
+            )));
+        }
+    } else {
         for (index, row) in rows.into_iter().enumerate() {
             group = group.child(animated_expanded_child(
                 SharedString::from(format!("setting-group-{target:?}-row-{index}")),
@@ -13631,6 +14013,7 @@ fn setting_group_collapse_button(
         .text_color(rgb(dim_text_color()))
         .opacity(0.72)
         .hover(|style| style.opacity(1.0))
+        .cursor_pointer()
         .child(collapsible_chevron_icon(
             SharedString::from(format!("setting-group-{target:?}")),
             collapsed,
@@ -13675,7 +14058,7 @@ fn setting_group_action_row_element(
         .id(id.into())
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
@@ -13803,7 +14186,7 @@ fn rule_action_row_with_title_color(
         .id(id.into())
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
@@ -13903,7 +14286,7 @@ fn rule_checkbox_row(
         .id(id.clone())
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
@@ -13969,7 +14352,7 @@ fn rule_notice_row(id: impl Into<SharedString>, notice: AnyElement) -> gpui::Sta
         .id(id.into())
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .gap_2()
         .border_t_1()
@@ -14025,16 +14408,21 @@ fn setting_action_card_element(
     title: AnyElement,
     action: AnyElement,
 ) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
+    let hover_id = id.to_string();
+
     h_flex()
-        .id(id.into())
+        .id(id)
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
         .py_3()
         .px_4()
+        .relative()
+        .overflow_hidden()
         .rounded_sm()
         .border_1()
         .border_color(rgb(border_color()))
@@ -14042,7 +14430,13 @@ fn setting_action_card_element(
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .on_hover({
+            let hover_id = hover_id.clone();
+            move |hovered, _, cx| {
+                set_card_hovered(hover_id.clone(), *hovered, cx);
+            }
+        })
+        .child(animated_card_hover_layer(&hover_id))
         .child(title)
         .child(
             h_flex()
@@ -14432,7 +14826,7 @@ fn action_log_empty_row(message: impl Into<SharedString>) -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .px_4()
         .py_3()
@@ -14553,10 +14947,18 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
         .w_full()
         .min_w(px(0.0))
         .min_h(px(46.0))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .relative()
+        .overflow_hidden()
+        .on_hover({
+            let row_id = row_id.to_string();
+            move |hovered, _, cx| {
+                set_card_hovered(row_id.clone(), *hovered, cx);
+            }
+        })
         .when(divided, |row| {
             row.border_t_1().border_color(rgb(border_color()))
         })
+        .child(animated_card_hover_layer(row_id.as_ref()))
         .child(animated_presence_child(row_id, content.into_any_element()))
 }
 
@@ -14767,7 +15169,7 @@ fn auto_balance_status_row(detail: &responsiveness::AutoBalanceProcessStatus) ->
     h_flex()
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_3()
@@ -14946,7 +15348,11 @@ fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
         .into_any_element()
 }
 
-fn animated_checkmark(id: impl Into<SharedString>, check_color: u32) -> AnyElement {
+fn animated_checkmark(
+    id: impl Into<SharedString>,
+    check_color: u32,
+    animation_generation: Option<u64>,
+) -> AnyElement {
     let id = id.into();
     let mark = div()
         .text_size(px(TEXT_LABEL_SIZE))
@@ -14955,13 +15361,17 @@ fn animated_checkmark(id: impl Into<SharedString>, check_color: u32) -> AnyEleme
         .text_color(rgb(check_color))
         .child("\u{2713}");
 
-    with_optional_motion(
-        mark,
-        SharedString::from(format!("checkmark-{id}")),
-        MotionSpeed::Fast,
-        |mark| mark,
-        |mark, delta| mark.opacity(delta),
-    )
+    if let Some(generation) = animation_generation {
+        with_optional_motion(
+            mark,
+            SharedString::from(format!("checkmark-{id}-{generation}")),
+            MotionSpeed::Fast,
+            |mark| mark,
+            |mark, delta| mark.opacity(delta),
+        )
+    } else {
+        mark.into_any_element()
+    }
 }
 
 fn rule_enable_checkbox(
@@ -14974,6 +15384,11 @@ fn rule_enable_checkbox(
     let border_color = if checked { accent } else { border_color() };
     let check_color = accent_glyph_color(accent);
     let mark_id = SharedString::from(format!("{id}-mark"));
+    let mark_motion_id = format!("checkmark-{mark_id}");
+    let mark_animation_generation = control_motion_generation(
+        &mark_motion_id,
+        if checked { "checked" } else { "unchecked" },
+    );
 
     div()
         .id(id)
@@ -14996,7 +15411,11 @@ fn rule_enable_checkbox(
                 .border_color(rgb(border_color))
                 .when(checked, |this| this.bg(rgb(accent)))
                 .when(checked, |this| {
-                    this.child(animated_checkmark(mark_id, check_color))
+                    this.child(animated_checkmark(
+                        mark_id,
+                        check_color,
+                        mark_animation_generation,
+                    ))
                 }),
         )
         .on_click(move |_, window, cx| {
@@ -15031,6 +15450,11 @@ fn checkbox(
     let box_handler = handler.clone();
     let label_handler = handler;
     let mark_id = SharedString::from(format!("{id}-mark"));
+    let mark_motion_id = format!("checkmark-{mark_id}");
+    let mark_animation_generation = control_motion_generation(
+        &mark_motion_id,
+        if checked { "checked" } else { "unchecked" },
+    );
 
     h_flex()
         .w_full()
@@ -15060,7 +15484,11 @@ fn checkbox(
                         .border_color(rgb(border_color))
                         .when(checked, |this| this.bg(rgb(accent)))
                         .when(checked, |this| {
-                            this.child(animated_checkmark(mark_id, check_color))
+                            this.child(animated_checkmark(
+                                mark_id,
+                                check_color,
+                                mark_animation_generation,
+                            ))
                         })
                         .hover(|style| style.opacity(0.86))
                         .cursor_pointer()
@@ -15109,6 +15537,11 @@ fn checkbox_with_help(
     let box_handler = handler.clone();
     let label_handler = handler;
     let mark_id = SharedString::from(format!("{id}-mark"));
+    let mark_motion_id = format!("checkmark-{mark_id}");
+    let mark_animation_generation = control_motion_generation(
+        &mark_motion_id,
+        if checked { "checked" } else { "unchecked" },
+    );
 
     h_flex()
         .w_full()
@@ -15138,7 +15571,11 @@ fn checkbox_with_help(
                         .border_color(rgb(border_color))
                         .when(checked, |this| this.bg(rgb(accent)))
                         .when(checked, |this| {
-                            this.child(animated_checkmark(mark_id, check_color))
+                            this.child(animated_checkmark(
+                                mark_id,
+                                check_color,
+                                mark_animation_generation,
+                            ))
                         })
                         .hover(|style| style.opacity(0.86))
                         .cursor_pointer()
@@ -15270,24 +15707,34 @@ fn section_landing_card(
             .with_size(px(16.0))
             .text_color(cx.theme().muted_foreground),
     );
+    let id = SharedString::from(format!("section-card-{page:?}"));
+    let hover_id = id.to_string();
 
     h_flex()
-        .id(SharedString::from(format!("section-card-{page:?}")))
+        .id(id)
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_3()
         .py_3()
         .px_4()
+        .relative()
+        .overflow_hidden()
         .rounded_sm()
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .on_hover({
+            let hover_id = hover_id.clone();
+            move |hovered, _, cx| {
+                set_card_hovered(hover_id.clone(), *hovered, cx);
+            }
+        })
         .cursor_pointer()
+        .child(animated_card_hover_layer(&hover_id))
         .child(nav_icon(page, true, cx))
         .child(
             div()
@@ -15666,6 +16113,7 @@ fn feature_toggle_switch_inner(
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id: SharedString = id.into();
+    let hover_id = id.to_string();
     let label = label.into();
     let label_id = id.clone();
     let mut label_row = h_flex()
@@ -15682,12 +16130,14 @@ fn feature_toggle_switch_inner(
         .id(id.clone())
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
         .py_3()
         .px_4()
+        .relative()
+        .overflow_hidden()
         .rounded_sm()
         .border_1()
         .border_color(rgb(border_color()))
@@ -15695,7 +16145,13 @@ fn feature_toggle_switch_inner(
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .on_hover({
+            let hover_id = hover_id.clone();
+            move |hovered, _, cx| {
+                set_card_hovered(hover_id.clone(), *hovered, cx);
+            }
+        })
+        .child(animated_card_hover_layer(&hover_id))
         .child(label_row)
         .child(switch_toggle_action(
             format!("{id}-switch"),
@@ -15748,9 +16204,10 @@ fn switch_indicator(id: SharedString, enabled: bool) -> gpui::Div {
         .size(px(12.0))
         .rounded_full()
         .bg(rgb(knob_bg));
-    let knob = with_optional_motion(
+    let knob = with_state_change_motion(
         knob,
-        SharedString::from(format!("switch-knob-{id}-{enabled}")),
+        SharedString::from(format!("switch-knob-{id}")),
+        SharedString::from(enabled.to_string()),
         MotionSpeed::Fast,
         move |knob| knob.left(px(knob_end)),
         move |knob, delta| {
@@ -15899,16 +16356,20 @@ fn processor_power_setting_row(
     label: impl Into<SharedString>,
     value_element: AnyElement,
 ) -> AnyElement {
+    let hover_id = id.to_string();
+
     h_flex()
         .id(id)
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
         .py_3()
         .px_4()
+        .relative()
+        .overflow_hidden()
         .rounded_sm()
         .border_1()
         .border_color(rgb(border_color()))
@@ -15916,7 +16377,13 @@ fn processor_power_setting_row(
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .on_hover({
+            let hover_id = hover_id.clone();
+            move |hovered, _, cx| {
+                set_card_hovered(hover_id.clone(), *hovered, cx);
+            }
+        })
+        .child(animated_card_hover_layer(&hover_id))
         .child(
             div()
                 .w(px(180.0))
@@ -15943,6 +16410,7 @@ fn win32_priority_registry_value_row(
     divided: bool,
 ) -> AnyElement {
     let id: SharedString = id.into();
+    let hover_id = id.to_string();
     let mut label_row = h_flex()
         .flex_1()
         .min_w(px(0.0))
@@ -15957,16 +16425,24 @@ fn win32_priority_registry_value_row(
         .id(id)
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
         .py_3()
         .px_4()
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .relative()
+        .overflow_hidden()
+        .on_hover({
+            let hover_id = hover_id.clone();
+            move |hovered, _, cx| {
+                set_card_hovered(hover_id.clone(), *hovered, cx);
+            }
+        })
         .when(divided, |row| {
             row.border_t_1().border_color(rgb(border_color()))
         })
+        .child(animated_card_hover_layer(&hover_id))
         .child(label_row)
         .child(value_pill(value))
         .into_any_element()
@@ -15979,6 +16455,7 @@ fn win32_priority_row(
     value_element: AnyElement,
 ) -> AnyElement {
     let id: SharedString = id.into();
+    let hover_id = id.to_string();
     let mut label_row = h_flex()
         .flex_1()
         .min_w(px(0.0))
@@ -15993,12 +16470,14 @@ fn win32_priority_row(
         .id(id)
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
         .py_3()
         .px_4()
+        .relative()
+        .overflow_hidden()
         .rounded_sm()
         .border_1()
         .border_color(rgb(border_color()))
@@ -16006,7 +16485,13 @@ fn win32_priority_row(
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .on_hover({
+            let hover_id = hover_id.clone();
+            move |hovered, _, cx| {
+                set_card_hovered(hover_id.clone(), *hovered, cx);
+            }
+        })
+        .child(animated_card_hover_layer(&hover_id))
         .child(label_row)
         .child(
             h_flex()
@@ -16409,6 +16894,7 @@ where
     T: Copy + 'static,
 {
     let id: SharedString = id.into();
+    let hover_id = id.to_string();
     let handler: Rc<dyn Fn(&StepChange<T>, &mut Window, &mut App)> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let down_delta = delta;
@@ -16432,12 +16918,14 @@ where
     h_flex()
         .id(id.clone())
         .w_full()
-        .min_h(px(58.0))
+        .h(px(CARD_ROW_HEIGHT))
         .items_center()
         .justify_between()
         .gap_2()
         .py_3()
         .px_4()
+        .relative()
+        .overflow_hidden()
         .rounded_sm()
         .border_1()
         .border_color(rgb(border_color()))
@@ -16445,7 +16933,13 @@ where
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .on_hover({
+            let hover_id = hover_id.clone();
+            move |hovered, _, cx| {
+                set_card_hovered(hover_id.clone(), *hovered, cx);
+            }
+        })
+        .child(animated_card_hover_layer(&hover_id))
         .child(
             div()
                 .flex_1()
