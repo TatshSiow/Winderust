@@ -3,6 +3,10 @@ use std::time::Instant;
 use crate::foreground::list_processes;
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HANDLE},
+    NetworkManagement::{
+        IpHelper::{FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2},
+        Ndis::{IfOperStatusUp, MediaConnectStateConnected},
+    },
     System::{
         SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
         Threading::{
@@ -11,9 +15,11 @@ use windows_sys::Win32::{
     },
 };
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MemoryUsageSnapshot {
     pub percent: Option<f32>,
+    pub used_physical_bytes: Option<u64>,
+    pub total_physical_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -21,6 +27,13 @@ pub struct IoUsageSnapshot {
     pub bytes_per_second: Option<f64>,
     pub read_bytes_per_second: Option<f64>,
     pub write_bytes_per_second: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct NetworkUsageSnapshot {
+    pub bytes_per_second: Option<f64>,
+    pub download_bytes_per_second: Option<f64>,
+    pub upload_bytes_per_second: Option<f64>,
 }
 
 #[derive(Debug, Default)]
@@ -31,6 +44,11 @@ pub struct IoUsageMonitor {
     previous: Option<IoCounterSample>,
 }
 
+#[derive(Debug, Default)]
+pub struct NetworkUsageMonitor {
+    previous: Option<NetworkCounterSample>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct IoCounterSample {
     read_bytes: u64,
@@ -38,10 +56,26 @@ struct IoCounterSample {
     sampled_at: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct NetworkCounterSample {
+    download_bytes: u64,
+    upload_bytes: u64,
+    sampled_at: Instant,
+}
+
 impl MemoryUsageMonitor {
     pub fn sample(&mut self) -> MemoryUsageSnapshot {
+        let Some(status) = system_memory_status() else {
+            return MemoryUsageSnapshot::default();
+        };
+        let total_physical_bytes = status.ullTotalPhys;
+        let available_physical_bytes = status.ullAvailPhys;
+        let used_physical_bytes = total_physical_bytes.saturating_sub(available_physical_bytes);
+
         MemoryUsageSnapshot {
-            percent: system_memory_load_percent().map(f32::from),
+            percent: Some(status.dwMemoryLoad.min(100) as f32),
+            used_physical_bytes: Some(used_physical_bytes),
+            total_physical_bytes: Some(total_physical_bytes),
         }
     }
 }
@@ -85,13 +119,55 @@ impl IoUsageMonitor {
     }
 }
 
-fn system_memory_load_percent() -> Option<u8> {
+impl NetworkUsageMonitor {
+    pub fn sample(&mut self) -> NetworkUsageSnapshot {
+        let Some(current) = read_system_network_counters() else {
+            return NetworkUsageSnapshot::default();
+        };
+
+        let (download_bytes_per_second, upload_bytes_per_second) =
+            self.previous.map_or((None, None), |previous| {
+                let elapsed = current.sampled_at.duration_since(previous.sampled_at);
+                let elapsed_seconds = elapsed.as_secs_f64();
+                if elapsed_seconds > 0.0 {
+                    (
+                        Some(
+                            current
+                                .download_bytes
+                                .saturating_sub(previous.download_bytes)
+                                as f64
+                                / elapsed_seconds,
+                        ),
+                        Some(
+                            current.upload_bytes.saturating_sub(previous.upload_bytes) as f64
+                                / elapsed_seconds,
+                        ),
+                    )
+                } else {
+                    (None, None)
+                }
+            });
+        let bytes_per_second = match (download_bytes_per_second, upload_bytes_per_second) {
+            (Some(download), Some(upload)) => Some(download + upload),
+            _ => None,
+        };
+
+        self.previous = Some(current);
+        NetworkUsageSnapshot {
+            bytes_per_second,
+            download_bytes_per_second,
+            upload_bytes_per_second,
+        }
+    }
+}
+
+fn system_memory_status() -> Option<MEMORYSTATUSEX> {
     let mut status = MEMORYSTATUSEX {
         dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
         ..Default::default()
     };
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
-    (ok != 0).then_some(status.dwMemoryLoad.min(100) as u8)
+    (ok != 0).then_some(status)
 }
 
 fn read_system_io_counters() -> Option<IoCounterSample> {
@@ -136,4 +212,46 @@ fn process_io_counters_for_handle(process: HANDLE) -> Option<IO_COUNTERS> {
     let mut counters = IO_COUNTERS::default();
     let ok = unsafe { GetProcessIoCounters(process, &mut counters) };
     (ok != 0).then_some(counters)
+}
+
+fn read_system_network_counters() -> Option<NetworkCounterSample> {
+    let mut table = std::ptr::null_mut::<MIB_IF_TABLE2>();
+    let result = unsafe { GetIfTable2(&mut table) };
+    if result != 0 || table.is_null() {
+        return None;
+    }
+
+    let counters = network_counters_from_table(table);
+    unsafe {
+        FreeMibTable(table.cast());
+    }
+    counters
+}
+
+fn network_counters_from_table(table: *const MIB_IF_TABLE2) -> Option<NetworkCounterSample> {
+    let table = unsafe { &*table };
+    let rows =
+        unsafe { std::slice::from_raw_parts(table.Table.as_ptr(), table.NumEntries as usize) };
+    let mut download_bytes = 0u64;
+    let mut upload_bytes = 0u64;
+    let mut sampled_any = false;
+
+    for row in rows {
+        if row.Type == IF_TYPE_SOFTWARE_LOOPBACK
+            || row.OperStatus != IfOperStatusUp
+            || row.MediaConnectState != MediaConnectStateConnected
+        {
+            continue;
+        }
+
+        download_bytes = download_bytes.saturating_add(row.InOctets);
+        upload_bytes = upload_bytes.saturating_add(row.OutOctets);
+        sampled_any = true;
+    }
+
+    sampled_any.then_some(NetworkCounterSample {
+        download_bytes,
+        upload_bytes,
+        sampled_at: Instant::now(),
+    })
 }

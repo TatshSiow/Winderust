@@ -58,7 +58,10 @@ use crate::{
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
-    dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot, MemoryUsageMonitor, MemoryUsageSnapshot},
+    dashboard_metrics::{
+        IoUsageMonitor, IoUsageSnapshot, MemoryUsageMonitor, MemoryUsageSnapshot,
+        NetworkUsageMonitor, NetworkUsageSnapshot,
+    },
     ecoqos::{self, EcoQosSnapshot},
     foreground::{list_process_candidates, ForegroundDetector, ProcessCandidateInfo},
     io_priority::{self, IoPrioritySnapshot},
@@ -248,6 +251,24 @@ impl IoUsageHistorySample {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct NetworkUsageHistorySample {
+    download_bytes_per_second: f32,
+    upload_bytes_per_second: f32,
+}
+
+impl NetworkUsageHistorySample {
+    fn total(self) -> f32 {
+        self.download_bytes_per_second + self.upload_bytes_per_second
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MemoryCapacityParts {
+    value: f64,
+    unit: &'static str,
+}
+
 pub struct PowerLeafApp {
     settings: Settings,
     saved_settings: Settings,
@@ -263,6 +284,8 @@ pub struct PowerLeafApp {
     memory_usage_history: VecDeque<f32>,
     io_usage: IoUsageSnapshot,
     io_usage_history: VecDeque<IoUsageHistorySample>,
+    network_usage: NetworkUsageSnapshot,
+    network_usage_history: VecDeque<NetworkUsageHistorySample>,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     cpu_limiter_status: CpuLimiterSnapshot,
@@ -289,6 +312,7 @@ pub struct PowerLeafApp {
     cpu_monitor: CpuUsageMonitor,
     memory_monitor: MemoryUsageMonitor,
     io_monitor: IoUsageMonitor,
+    network_monitor: NetworkUsageMonitor,
     idle_detector: IdleDetector,
     input_hook: Option<InputHook>,
     foreground_detector: ForegroundDetector,
@@ -779,6 +803,8 @@ impl PowerLeafApp {
             memory_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
             io_usage: IoUsageSnapshot::default(),
             io_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
+            network_usage: NetworkUsageSnapshot::default(),
+            network_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
             eco_qos_status: EcoQosSnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
             cpu_limiter_status: CpuLimiterSnapshot::default(),
@@ -809,6 +835,7 @@ impl PowerLeafApp {
             cpu_monitor: CpuUsageMonitor::default(),
             memory_monitor: MemoryUsageMonitor,
             io_monitor: IoUsageMonitor::default(),
+            network_monitor: NetworkUsageMonitor::default(),
             idle_detector: IdleDetector,
             input_hook: None,
             foreground_detector: ForegroundDetector,
@@ -1362,9 +1389,10 @@ impl PowerLeafApp {
     fn run_check_changed(&mut self) -> bool {
         let activity_state = self.activity.state;
         let activity_idle_for = self.activity.idle_for;
-        let cpu_usage_percent = self.cpu_usage.percent;
-        let memory_usage_percent = self.memory_usage.percent;
+        let cpu_usage = self.cpu_usage;
+        let memory_usage = self.memory_usage;
         let io_usage = self.io_usage;
+        let network_usage = self.network_usage;
         let foreground_app = self.foreground_app.clone();
         let decision_target_guid = self.decision.target_guid.clone();
         let decision_state = self.decision.state;
@@ -1378,9 +1406,10 @@ impl PowerLeafApp {
 
         self.activity.state != activity_state
             || self.activity.idle_for != activity_idle_for
-            || self.cpu_usage.percent != cpu_usage_percent
-            || self.memory_usage.percent != memory_usage_percent
+            || self.cpu_usage != cpu_usage
+            || self.memory_usage != memory_usage
             || self.io_usage != io_usage
+            || self.network_usage != network_usage
             || self.foreground_app != foreground_app
             || self.decision.target_guid != decision_target_guid
             || self.decision.state != decision_state
@@ -1396,17 +1425,20 @@ impl PowerLeafApp {
             return false;
         }
 
-        let previous_cpu_percent = self.cpu_usage.percent;
-        let previous_memory_percent = self.memory_usage.percent;
+        let previous_cpu_usage = self.cpu_usage;
+        let previous_memory_usage = self.memory_usage;
         let previous_io_usage = self.io_usage;
+        let previous_network_usage = self.network_usage;
 
         self.cpu_usage = self.cpu_monitor.sample();
         self.memory_usage = self.memory_monitor.sample();
         self.io_usage = self.io_monitor.sample();
+        self.network_usage = self.network_monitor.sample();
 
-        let mut changed = self.cpu_usage.percent != previous_cpu_percent
-            || self.memory_usage.percent != previous_memory_percent
-            || self.io_usage != previous_io_usage;
+        let mut changed = self.cpu_usage != previous_cpu_usage
+            || self.memory_usage != previous_memory_usage
+            || self.io_usage != previous_io_usage
+            || self.network_usage != previous_network_usage;
 
         if let Some(percent) = self.cpu_usage.percent {
             if self.cpu_usage_history.len() == CPU_USAGE_HISTORY_LEN {
@@ -1439,6 +1471,27 @@ impl PowerLeafApp {
                     .unwrap_or(0.0)
                     .clamp(0.0, f32::MAX as f64) as f32,
             });
+            changed = true;
+        }
+        if self.network_usage.bytes_per_second.is_some() {
+            if self.network_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+                self.network_usage_history.pop_front();
+            }
+            self.network_usage_history
+                .push_back(NetworkUsageHistorySample {
+                    download_bytes_per_second: self
+                        .network_usage
+                        .download_bytes_per_second
+                        .unwrap_or(0.0)
+                        .clamp(0.0, f32::MAX as f64)
+                        as f32,
+                    upload_bytes_per_second: self
+                        .network_usage
+                        .upload_bytes_per_second
+                        .unwrap_or(0.0)
+                        .clamp(0.0, f32::MAX as f64)
+                        as f32,
+                });
             changed = true;
         }
 
@@ -3247,6 +3300,9 @@ impl PowerLeafApp {
                 self.render_io_usage_summary().into_any_element(),
             ))
             .child(dashboard_card_slot(
+                self.render_network_usage_summary().into_any_element(),
+            ))
+            .child(dashboard_card_slot(
                 titled_status_list(
                     &t!("dashboard.enabled_rules"),
                     self.dashboard_enabled_function_items(settings),
@@ -3391,6 +3447,10 @@ impl PowerLeafApp {
         self.render_metric_summary(
             t!("dashboard.cpu_usage").to_string(),
             cpu_usage_label(self.cpu_usage.percent),
+            Some(
+                dashboard_metric_detail_value(cpu_frequency_label(self.cpu_usage.frequency_mhz))
+                    .into_any_element(),
+            ),
             &self.cpu_usage_history,
             100.0,
         )
@@ -3400,6 +3460,10 @@ impl PowerLeafApp {
         self.render_metric_summary(
             t!("dashboard.memory_usage").to_string(),
             memory_usage_label(self.memory_usage.percent),
+            Some(
+                dashboard_metric_detail_value(memory_usage_value_label(self.memory_usage))
+                    .into_any_element(),
+            ),
             &self.memory_usage_history,
             100.0,
         )
@@ -3452,27 +3516,79 @@ impl PowerLeafApp {
         )
     }
 
-    fn render_metric_summary(
-        &self,
-        title: String,
-        label: String,
-        history: &VecDeque<f32>,
-        max_value: f32,
-    ) -> gpui::Div {
-        let graph = self.render_metric_history_graph(history, max_value);
+    fn render_network_usage_summary(&self) -> gpui::Div {
+        let max_value = self
+            .network_usage_history
+            .iter()
+            .map(|sample| sample.total())
+            .fold(0.0_f32, f32::max)
+            .max(1.0);
+        let graph = self.render_network_history_graph(&self.network_usage_history, max_value);
 
         dashboard_summary_card(
-            title,
-            Some(dashboard_summary_header_value(label).into_any_element()),
+            t!("dashboard.network_usage").to_string(),
+            Some(
+                dashboard_summary_header_value(io_usage_label(self.network_usage.bytes_per_second))
+                    .into_any_element(),
+            ),
             v_flex()
                 .w_full()
                 .h_full()
                 .min_w(px(0.0))
                 .flex_1()
                 .min_h(px(0.0))
+                .gap_2()
                 .justify_end()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(io_usage_split_value(
+                            t!("dashboard.network_download").to_string(),
+                            self.network_usage.download_bytes_per_second,
+                            network_download_color(),
+                        ))
+                        .child(io_usage_split_value(
+                            t!("dashboard.network_upload").to_string(),
+                            self.network_usage.upload_bytes_per_second,
+                            network_upload_color(),
+                        )),
+                )
                 .child(graph)
                 .into_any_element(),
+        )
+    }
+
+    fn render_metric_summary(
+        &self,
+        title: String,
+        label: String,
+        detail: Option<AnyElement>,
+        history: &VecDeque<f32>,
+        max_value: f32,
+    ) -> gpui::Div {
+        let graph = self.render_metric_history_graph(history, max_value);
+        let mut body = v_flex()
+            .w_full()
+            .h_full()
+            .min_w(px(0.0))
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .justify_end();
+        if let Some(detail) = detail {
+            body = body.child(detail);
+        }
+        body = body.child(graph);
+
+        dashboard_summary_card(
+            title,
+            Some(dashboard_summary_header_value(label).into_any_element()),
+            body.into_any_element(),
         )
     }
 
@@ -3563,6 +3679,55 @@ impl PowerLeafApp {
                     .flex_shrink_0()
                     .justify_end()
                     .child(io_stacked_history_bar(*sample, bar_height)),
+            );
+        }
+
+        graph
+    }
+
+    fn render_network_history_graph(
+        &self,
+        history: &VecDeque<NetworkUsageHistorySample>,
+        max_value: f32,
+    ) -> gpui::Div {
+        let mut graph = h_flex()
+            .w_full()
+            .h(px(DASHBOARD_CPU_GRAPH_HEIGHT))
+            .items_center()
+            .justify_center()
+            .gap(px(DASHBOARD_GRAPH_BAR_GAP))
+            .px_2()
+            .py_2();
+
+        let missing_samples = CPU_USAGE_HISTORY_LEN.saturating_sub(history.len());
+        for _ in 0..missing_samples {
+            graph = graph.child(
+                v_flex()
+                    .h_full()
+                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
+                    .flex_shrink_0()
+                    .justify_end()
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(8.0))
+                            .bg(rgb(border_color()))
+                            .opacity(0.35),
+                    ),
+            );
+        }
+
+        let max_value = max_value.max(1.0);
+        for sample in history {
+            let total = sample.total();
+            let bar_height = 8.0 + (total.clamp(0.0, max_value) / max_value) * 88.0;
+            graph = graph.child(
+                v_flex()
+                    .h_full()
+                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
+                    .flex_shrink_0()
+                    .justify_end()
+                    .child(network_stacked_history_bar(*sample, bar_height)),
             );
         }
 
@@ -13105,6 +13270,23 @@ fn dashboard_summary_header_value(value: impl Into<SharedString>) -> gpui::Div {
         .child(value.into())
 }
 
+fn dashboard_metric_detail_value(value: impl Into<SharedString>) -> gpui::Div {
+    h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .items_center()
+        .justify_center()
+        .text_size(px(TEXT_CAPTION_SIZE))
+        .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
+        .text_color(rgb(muted_text_color()))
+        .child(
+            h_flex()
+                .min_w(px(128.0))
+                .justify_center()
+                .child(value.into()),
+        )
+}
+
 fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui::Div {
     let value = io_usage_label(value);
 
@@ -13149,11 +13331,49 @@ fn io_stacked_history_bar(sample: IoUsageHistorySample, bar_height: f32) -> gpui
         .child(div().w_full().h(px(read_height)).bg(io_read_color()))
 }
 
+fn network_stacked_history_bar(sample: NetworkUsageHistorySample, bar_height: f32) -> gpui::Div {
+    let total = sample.total();
+    if total <= 0.0 {
+        return div()
+            .w_full()
+            .h(px(8.0))
+            .bg(rgb(border_color()))
+            .opacity(0.35);
+    }
+
+    let download_height = bar_height * (sample.download_bytes_per_second / total);
+    let upload_height = (bar_height - download_height).max(0.0);
+    v_flex()
+        .w_full()
+        .h(px(bar_height))
+        .overflow_hidden()
+        .child(
+            div()
+                .w_full()
+                .h(px(upload_height))
+                .bg(network_upload_color()),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(download_height))
+                .bg(network_download_color()),
+        )
+}
+
 fn io_read_color() -> Hsla {
     Hsla::from(rgb(accent_color())).lighten(0.16)
 }
 
 fn io_write_color() -> Hsla {
+    Hsla::from(rgb(accent_color())).darken(0.18)
+}
+
+fn network_download_color() -> Hsla {
+    Hsla::from(rgb(accent_color())).lighten(0.16)
+}
+
+fn network_upload_color() -> Hsla {
     Hsla::from(rgb(accent_color())).darken(0.18)
 }
 
@@ -15364,16 +15584,107 @@ fn cpu_usage_label(percent: Option<f32>) -> String {
         .unwrap_or_else(|| t!("dashboard.collecting").to_string())
 }
 
+fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
+    frequency_mhz
+        .map(|frequency_mhz| {
+            if frequency_mhz >= 1_000 {
+                format!("{:.2} GHz", frequency_mhz as f64 / 1_000.0)
+            } else {
+                format!("{frequency_mhz} MHz")
+            }
+        })
+        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+}
+
 fn memory_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
         .unwrap_or_else(|| t!("dashboard.collecting").to_string())
 }
 
+fn memory_usage_value_label(snapshot: MemoryUsageSnapshot) -> String {
+    match (snapshot.used_physical_bytes, snapshot.total_physical_bytes) {
+        (Some(used), Some(total)) => format_memory_used_total(used, total),
+        _ => t!("dashboard.collecting").to_string(),
+    }
+}
+
 fn io_usage_label(bytes_per_second: Option<f64>) -> String {
     bytes_per_second
         .map(format_bytes_per_second)
         .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+}
+
+fn format_memory_used_total(used_bytes: u64, total_bytes: u64) -> String {
+    let used = memory_capacity_parts(used_bytes);
+    let total = memory_capacity_parts(total_bytes);
+
+    if used.unit == total.unit && used.unit != "B" {
+        format!(
+            "{} / {} {}",
+            format_capacity_number(used.value),
+            format_capacity_number(total.value),
+            used.unit
+        )
+    } else {
+        format!(
+            "{} / {}",
+            format_memory_capacity(used_bytes),
+            format_memory_capacity(total_bytes)
+        )
+    }
+}
+
+fn format_memory_capacity(bytes: u64) -> String {
+    let capacity = memory_capacity_parts(bytes);
+    if capacity.unit == "B" {
+        format!("{} B", bytes)
+    } else {
+        format!(
+            "{} {}",
+            format_capacity_number(capacity.value),
+            capacity.unit
+        )
+    }
+}
+
+fn format_capacity_number(value: f64) -> String {
+    format!("{value:.1}")
+}
+
+fn memory_capacity_parts(bytes: u64) -> MemoryCapacityParts {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+    const TIB: f64 = GIB * 1024.0;
+
+    let bytes = bytes as f64;
+    if bytes >= TIB {
+        MemoryCapacityParts {
+            value: bytes / TIB,
+            unit: "TB",
+        }
+    } else if bytes >= GIB {
+        MemoryCapacityParts {
+            value: bytes / GIB,
+            unit: "GB",
+        }
+    } else if bytes >= MIB {
+        MemoryCapacityParts {
+            value: bytes / MIB,
+            unit: "MB",
+        }
+    } else if bytes >= KIB {
+        MemoryCapacityParts {
+            value: bytes / KIB,
+            unit: "KB",
+        }
+    } else {
+        MemoryCapacityParts {
+            value: bytes,
+            unit: "B",
+        }
+    }
 }
 
 fn format_bytes_per_second(bytes_per_second: f64) -> String {
