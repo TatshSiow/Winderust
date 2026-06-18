@@ -16,9 +16,11 @@ pub struct MemoryUsageSnapshot {
     pub percent: Option<f32>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct IoUsageSnapshot {
     pub bytes_per_second: Option<f64>,
+    pub read_bytes_per_second: Option<f64>,
+    pub write_bytes_per_second: Option<f64>,
 }
 
 #[derive(Debug, Default)]
@@ -31,7 +33,8 @@ pub struct IoUsageMonitor {
 
 #[derive(Debug, Clone, Copy)]
 struct IoCounterSample {
-    bytes: u64,
+    read_bytes: u64,
+    write_bytes: u64,
     sampled_at: Instant,
 }
 
@@ -46,20 +49,39 @@ impl MemoryUsageMonitor {
 impl IoUsageMonitor {
     pub fn sample(&mut self) -> IoUsageSnapshot {
         let Some(current) = read_system_io_counters() else {
-            return IoUsageSnapshot {
-                bytes_per_second: None,
-            };
+            return IoUsageSnapshot::default();
         };
 
-        let bytes_per_second = self.previous.and_then(|previous| {
-            let elapsed = current.sampled_at.duration_since(previous.sampled_at);
-            let elapsed_seconds = elapsed.as_secs_f64();
-            (elapsed_seconds > 0.0)
-                .then(|| current.bytes.saturating_sub(previous.bytes) as f64 / elapsed_seconds)
-        });
+        let (read_bytes_per_second, write_bytes_per_second) =
+            self.previous.map_or((None, None), |previous| {
+                let elapsed = current.sampled_at.duration_since(previous.sampled_at);
+                let elapsed_seconds = elapsed.as_secs_f64();
+                if elapsed_seconds > 0.0 {
+                    (
+                        Some(
+                            current.read_bytes.saturating_sub(previous.read_bytes) as f64
+                                / elapsed_seconds,
+                        ),
+                        Some(
+                            current.write_bytes.saturating_sub(previous.write_bytes) as f64
+                                / elapsed_seconds,
+                        ),
+                    )
+                } else {
+                    (None, None)
+                }
+            });
+        let bytes_per_second = match (read_bytes_per_second, write_bytes_per_second) {
+            (Some(read), Some(write)) => Some(read + write),
+            _ => None,
+        };
 
         self.previous = Some(current);
-        IoUsageSnapshot { bytes_per_second }
+        IoUsageSnapshot {
+            bytes_per_second,
+            read_bytes_per_second,
+            write_bytes_per_second,
+        }
     }
 }
 
@@ -73,21 +95,22 @@ fn system_memory_load_percent() -> Option<u8> {
 }
 
 fn read_system_io_counters() -> Option<IoCounterSample> {
-    let mut bytes = 0u64;
+    let mut read_bytes = 0u64;
+    let mut write_bytes = 0u64;
     let mut sampled_any = false;
 
     for process in list_processes().ok()? {
         let Some(counters) = process_io_counters(process.id) else {
             continue;
         };
-        bytes = bytes
-            .saturating_add(counters.ReadTransferCount)
-            .saturating_add(counters.WriteTransferCount);
+        read_bytes = read_bytes.saturating_add(counters.ReadTransferCount);
+        write_bytes = write_bytes.saturating_add(counters.WriteTransferCount);
         sampled_any = true;
     }
 
     sampled_any.then_some(IoCounterSample {
-        bytes,
+        read_bytes,
+        write_bytes,
         sampled_at: Instant::now(),
     })
 }

@@ -101,6 +101,10 @@ const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_HISTORY_LEN: usize = 30;
 const DASHBOARD_SUMMARY_CARD_HEIGHT: f32 = 196.0;
 const DASHBOARD_CPU_GRAPH_HEIGHT: f32 = 112.0;
+const DASHBOARD_GRAPH_BAR_WIDTH: f32 = 5.0;
+const DASHBOARD_GRAPH_BAR_GAP: f32 = 4.0;
+const DASHBOARD_IO_SPLIT_ITEM_WIDTH: f32 = 140.0;
+const DASHBOARD_IO_SPLIT_VALUE_WIDTH: f32 = 90.0;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TITLE_BAR_HEIGHT: f32 = 40.0;
 const PAGE_HEADER_HEIGHT: f32 = 48.0;
@@ -232,6 +236,18 @@ impl PartialEq for ProcessCandidate {
 
 impl Eq for ProcessCandidate {}
 
+#[derive(Clone, Copy, Debug, Default)]
+struct IoUsageHistorySample {
+    read_bytes_per_second: f32,
+    write_bytes_per_second: f32,
+}
+
+impl IoUsageHistorySample {
+    fn total(self) -> f32 {
+        self.read_bytes_per_second + self.write_bytes_per_second
+    }
+}
+
 pub struct PowerLeafApp {
     settings: Settings,
     saved_settings: Settings,
@@ -246,7 +262,7 @@ pub struct PowerLeafApp {
     memory_usage: MemoryUsageSnapshot,
     memory_usage_history: VecDeque<f32>,
     io_usage: IoUsageSnapshot,
-    io_usage_history: VecDeque<f32>,
+    io_usage_history: VecDeque<IoUsageHistorySample>,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     cpu_limiter_status: CpuLimiterSnapshot,
@@ -1348,7 +1364,7 @@ impl PowerLeafApp {
         let activity_idle_for = self.activity.idle_for;
         let cpu_usage_percent = self.cpu_usage.percent;
         let memory_usage_percent = self.memory_usage.percent;
-        let io_bytes_per_second = self.io_usage.bytes_per_second;
+        let io_usage = self.io_usage;
         let foreground_app = self.foreground_app.clone();
         let decision_target_guid = self.decision.target_guid.clone();
         let decision_state = self.decision.state;
@@ -1364,7 +1380,7 @@ impl PowerLeafApp {
             || self.activity.idle_for != activity_idle_for
             || self.cpu_usage.percent != cpu_usage_percent
             || self.memory_usage.percent != memory_usage_percent
-            || self.io_usage.bytes_per_second != io_bytes_per_second
+            || self.io_usage != io_usage
             || self.foreground_app != foreground_app
             || self.decision.target_guid != decision_target_guid
             || self.decision.state != decision_state
@@ -1382,7 +1398,7 @@ impl PowerLeafApp {
 
         let previous_cpu_percent = self.cpu_usage.percent;
         let previous_memory_percent = self.memory_usage.percent;
-        let previous_io_bytes_per_second = self.io_usage.bytes_per_second;
+        let previous_io_usage = self.io_usage;
 
         self.cpu_usage = self.cpu_monitor.sample();
         self.memory_usage = self.memory_monitor.sample();
@@ -1390,7 +1406,7 @@ impl PowerLeafApp {
 
         let mut changed = self.cpu_usage.percent != previous_cpu_percent
             || self.memory_usage.percent != previous_memory_percent
-            || self.io_usage.bytes_per_second != previous_io_bytes_per_second;
+            || self.io_usage != previous_io_usage;
 
         if let Some(percent) = self.cpu_usage.percent {
             if self.cpu_usage_history.len() == CPU_USAGE_HISTORY_LEN {
@@ -1407,12 +1423,22 @@ impl PowerLeafApp {
                 .push_back(percent.clamp(0.0, 100.0));
             changed = true;
         }
-        if let Some(bytes_per_second) = self.io_usage.bytes_per_second {
+        if self.io_usage.bytes_per_second.is_some() {
             if self.io_usage_history.len() == CPU_USAGE_HISTORY_LEN {
                 self.io_usage_history.pop_front();
             }
-            self.io_usage_history
-                .push_back(bytes_per_second.clamp(0.0, f32::MAX as f64) as f32);
+            self.io_usage_history.push_back(IoUsageHistorySample {
+                read_bytes_per_second: self
+                    .io_usage
+                    .read_bytes_per_second
+                    .unwrap_or(0.0)
+                    .clamp(0.0, f32::MAX as f64) as f32,
+                write_bytes_per_second: self
+                    .io_usage
+                    .write_bytes_per_second
+                    .unwrap_or(0.0)
+                    .clamp(0.0, f32::MAX as f64) as f32,
+            });
             changed = true;
         }
 
@@ -2955,12 +2981,8 @@ impl PowerLeafApp {
             .border_color(cx.theme().sidebar_border)
             .bg(cx.theme().sidebar);
 
-        let mut drawer = v_flex()
-            .flex_1()
-            .min_h(px(0.0))
-            .gap_3()
-            .p_2()
-            .overflow_y_scrollbar();
+        let drawer = v_flex().flex_1().min_h(px(0.0)).overflow_y_scrollbar();
+        let mut drawer_items = v_flex().gap_1().p_2();
         let mut footer = v_flex()
             .flex_shrink_0()
             .gap_1()
@@ -2982,11 +3004,11 @@ impl PowerLeafApp {
             if nav_section_in_footer(section.landing_page) {
                 footer = footer.child(row);
             } else {
-                drawer = drawer.child(row);
+                drawer_items = drawer_items.child(row);
             }
         }
 
-        nav = nav.child(drawer).child(footer);
+        nav = nav.child(drawer.child(drawer_items)).child(footer);
         nav.into_any_element()
     }
 
@@ -3387,15 +3409,46 @@ impl PowerLeafApp {
         let max_value = self
             .io_usage_history
             .iter()
-            .copied()
+            .map(|sample| sample.total())
             .fold(0.0_f32, f32::max)
             .max(1.0);
+        let graph = self.render_io_history_graph(&self.io_usage_history, max_value);
 
-        self.render_metric_summary(
+        dashboard_summary_card(
             t!("dashboard.io_usage").to_string(),
-            io_usage_label(self.io_usage.bytes_per_second),
-            &self.io_usage_history,
-            max_value,
+            Some(
+                dashboard_summary_header_value(io_usage_label(self.io_usage.bytes_per_second))
+                    .into_any_element(),
+            ),
+            v_flex()
+                .w_full()
+                .h_full()
+                .min_w(px(0.0))
+                .flex_1()
+                .min_h(px(0.0))
+                .gap_2()
+                .justify_end()
+                .child(
+                    h_flex()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .flex_wrap()
+                        .child(io_usage_split_value(
+                            t!("dashboard.io_read").to_string(),
+                            self.io_usage.read_bytes_per_second,
+                            io_read_color(),
+                        ))
+                        .child(io_usage_split_value(
+                            t!("dashboard.io_write").to_string(),
+                            self.io_usage.write_bytes_per_second,
+                            io_write_color(),
+                        )),
+                )
+                .child(graph)
+                .into_any_element(),
         )
     }
 
@@ -3410,19 +3463,14 @@ impl PowerLeafApp {
 
         dashboard_summary_card(
             title,
+            Some(dashboard_summary_header_value(label).into_any_element()),
             v_flex()
                 .w_full()
+                .h_full()
                 .min_w(px(0.0))
                 .flex_1()
                 .min_h(px(0.0))
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(px(TEXT_BODY_SIZE))
-                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(label),
-                )
+                .justify_end()
                 .child(graph)
                 .into_any_element(),
         )
@@ -3433,21 +3481,26 @@ impl PowerLeafApp {
             .w_full()
             .h(px(DASHBOARD_CPU_GRAPH_HEIGHT))
             .items_center()
-            .gap_1()
+            .justify_center()
+            .gap(px(DASHBOARD_GRAPH_BAR_GAP))
             .px_2()
             .py_2();
 
         let missing_samples = CPU_USAGE_HISTORY_LEN.saturating_sub(history.len());
         for _ in 0..missing_samples {
             graph = graph.child(
-                v_flex().h_full().flex_1().justify_end().child(
-                    div()
-                        .w_full()
-                        .h(px(8.0))
-                        .rounded_sm()
-                        .bg(rgb(border_color()))
-                        .opacity(0.35),
-                ),
+                v_flex()
+                    .h_full()
+                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
+                    .flex_shrink_0()
+                    .justify_end()
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(8.0))
+                            .bg(rgb(border_color()))
+                            .opacity(0.35),
+                    ),
             );
         }
 
@@ -3455,13 +3508,61 @@ impl PowerLeafApp {
         for value in history {
             let bar_height = 8.0 + (value.clamp(0.0, max_value) / max_value) * 88.0;
             graph = graph.child(
-                v_flex().h_full().flex_1().justify_end().child(
-                    div()
-                        .w_full()
-                        .h(px(bar_height))
-                        .rounded_sm()
-                        .bg(rgb(accent_color())),
-                ),
+                v_flex()
+                    .h_full()
+                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
+                    .flex_shrink_0()
+                    .justify_end()
+                    .child(div().w_full().h(px(bar_height)).bg(rgb(accent_color()))),
+            );
+        }
+
+        graph
+    }
+
+    fn render_io_history_graph(
+        &self,
+        history: &VecDeque<IoUsageHistorySample>,
+        max_value: f32,
+    ) -> gpui::Div {
+        let mut graph = h_flex()
+            .w_full()
+            .h(px(DASHBOARD_CPU_GRAPH_HEIGHT))
+            .items_center()
+            .justify_center()
+            .gap(px(DASHBOARD_GRAPH_BAR_GAP))
+            .px_2()
+            .py_2();
+
+        let missing_samples = CPU_USAGE_HISTORY_LEN.saturating_sub(history.len());
+        for _ in 0..missing_samples {
+            graph = graph.child(
+                v_flex()
+                    .h_full()
+                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
+                    .flex_shrink_0()
+                    .justify_end()
+                    .child(
+                        div()
+                            .w_full()
+                            .h(px(8.0))
+                            .bg(rgb(border_color()))
+                            .opacity(0.35),
+                    ),
+            );
+        }
+
+        let max_value = max_value.max(1.0);
+        for sample in history {
+            let total = sample.total();
+            let bar_height = 8.0 + (total.clamp(0.0, max_value) / max_value) * 88.0;
+            graph = graph.child(
+                v_flex()
+                    .h_full()
+                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
+                    .flex_shrink_0()
+                    .justify_end()
+                    .child(io_stacked_history_bar(*sample, bar_height)),
             );
         }
 
@@ -4315,8 +4416,6 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(self.render_efficiency_aggressiveness_selector(window, cx))
-            .child(self.render_efficiency_cpu_set_preference(window, cx))
             .child(section_header(
                 &t!("efficiency.whitelist"),
                 t!("efficiency.whitelist_help").to_string(),
@@ -4364,116 +4463,111 @@ impl PowerLeafApp {
             t!("efficiency.intro_2").to_string(),
             t!("efficiency.intro_3").to_string(),
         ]);
+        let cpu_restriction =
+            feature_body(enabled).child(self.render_efficiency_cpu_set_preference(window, cx));
 
         page_shell(Page::EfficiencyMode, cx)
-            .child(feature_toggle_switch_with_help(
-                "eco-qos-enabled",
-                t!("efficiency.enable").to_string(),
-                help,
+            .child(self.render_efficiency_enable_card(enabled, help, window, cx))
+            .child(disabled_feature_body(cpu_restriction, enabled, cx))
+            .child(disabled_feature_body(body, enabled, cx))
+            .into_any_element()
+    }
+
+    fn render_efficiency_enable_card(
+        &self,
+        enabled: bool,
+        help: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        setting_group_with_help(
+            SettingGroupTarget::EfficiencyEnable,
+            t!("efficiency.enable").to_string(),
+            help,
+            setting_group_switch_action(
+                "eco-qos-enabled-switch",
                 enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.eco_qos.enabled = *checked;
                     cx.notify();
                 }),
-            ))
-            .child(disabled_feature_body(body, enabled, cx))
-            .into_any_element()
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::EfficiencyEnable),
+            vec![self.render_efficiency_aggressiveness_selector(enabled, window, cx)],
+            cx,
+        )
+        .into_any_element()
     }
 
     fn render_efficiency_aggressiveness_selector(
         &self,
+        enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let selected = self.settings.eco_qos.aggressiveness;
-        h_flex()
-            .id("eco-qos-aggressiveness-row")
-            .w_full()
-            .min_w(px(0.0))
-            .min_h(px(58.0))
-            .items_center()
-            .justify_between()
-            .gap_3()
-            .py_3()
-            .px_4()
-            .text_color(rgb(primary_text_color()))
-            .text_size(px(TEXT_BODY_SIZE))
-            .line_height(px(TEXT_BODY_LINE_HEIGHT))
-            .border_t_1()
-            .border_color(rgb(border_color()))
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(t!("efficiency.aggressiveness").to_string()),
-                    )
-                    .child(title_info_button(
-                        "eco-qos-aggressiveness-info",
-                        t!("efficiency.aggressiveness_help").to_string(),
-                    )),
-            )
-            .child(self.render_efficiency_aggressiveness_picker(selected, window, cx))
-            .into_any_element()
+        setting_group_action_row_element(
+            "eco-qos-aggressiveness-row",
+            h_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .child(t!("efficiency.aggressiveness").to_string()),
+                )
+                .child(title_info_button(
+                    "eco-qos-aggressiveness-info",
+                    t!("efficiency.aggressiveness_help").to_string(),
+                ))
+                .into_any_element(),
+            self.render_efficiency_aggressiveness_picker(selected, enabled, window, cx),
+            true,
+        )
+        .when(!enabled, |row| row.opacity(0.42).cursor_default())
+        .into_any_element()
     }
 
     fn render_efficiency_aggressiveness_picker(
         &self,
         selected: EcoQosAggressiveness,
+        enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let picker_id = "eco-qos-aggressiveness";
-        let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id);
-        let placement = self.dropdown_placement(
-            picker_id,
-            dropdown_list_height(EcoQosAggressiveness::ALL.len()),
+        self.render_dropdown_select(
+            "eco-qos-aggressiveness",
+            efficiency_aggressiveness_label(selected),
+            enabled,
+            DropdownSelectWidth::Standard,
+            EcoQosAggressiveness::ALL.len(),
             window,
-        );
-        let mut options = dropdown_surface(cx, placement.max_height);
-        for aggressiveness in EcoQosAggressiveness::ALL {
-            options = options.child(
-                dropdown_option_row(
-                    SharedString::from(format!("{picker_id}-option-{aggressiveness:?}")),
-                    efficiency_aggressiveness_label(aggressiveness),
-                    selected == aggressiveness,
-                    cx,
-                )
-                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                    app.settings.eco_qos.aggressiveness = aggressiveness;
-                    app.active_power_plan_picker = None;
-                    cx.notify();
-                })),
-            );
-        }
-
-        dropdown_select_container(DropdownSelectWidth::Standard)
-            .child(
-                dropdown_select_control(
-                    "eco-qos-aggressiveness-control",
-                    efficiency_aggressiveness_label(selected),
-                    true,
-                    is_open,
-                    cx,
-                )
-                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-                    app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                        != Some(picker_id))
-                    .then_some(picker_id.to_owned());
-                    cx.notify();
-                })),
-            )
-            .child(dropdown_anchor_sensor(
-                picker_id,
-                Rc::clone(&self.dropdown_anchor_bounds),
-            ))
-            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
-            .into_any_element()
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for aggressiveness in EcoQosAggressiveness::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "eco-qos-aggressiveness-option-{aggressiveness:?}"
+                            )),
+                            efficiency_aggressiveness_label(aggressiveness),
+                            selected == aggressiveness,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.eco_qos.aggressiveness = aggressiveness;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
     }
 
     fn render_efficiency_cpu_set_preference(
@@ -4794,15 +4888,7 @@ impl PowerLeafApp {
                             cx.notify();
                         }),
                     ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(160.0))
-                            .text_size(px(RULE_TITLE_TEXT_SIZE))
-                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                            .truncate()
-                            .child(process),
-                    )
+                    .child(self.process_rule_title(&process, cx))
                     .child(
                         danger_control_button(Button::new(SharedString::from(format!(
                             "remove-eco-qos-{index}"
@@ -5574,15 +5660,7 @@ impl PowerLeafApp {
                             cx.notify();
                         }),
                     ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(160.0))
-                            .text_size(px(RULE_TITLE_TEXT_SIZE))
-                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                            .truncate()
-                            .child(process),
-                    )
+                    .child(self.process_rule_title(&process, cx))
                     .child(
                         danger_control_button(Button::new(SharedString::from(format!(
                             "remove-background-cpu-exclusion-{index}"
@@ -6370,6 +6448,7 @@ impl PowerLeafApp {
                         t!("responsiveness.auto_efficiency_level").to_string(),
                         self.render_efficiency_aggressiveness_picker(
                             self.settings.eco_qos.aggressiveness,
+                            enabled,
                             window,
                             cx,
                         ),
@@ -7028,15 +7107,7 @@ impl PowerLeafApp {
                             cx.notify();
                         }),
                     ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(160.0))
-                            .text_size(px(RULE_TITLE_TEXT_SIZE))
-                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                            .truncate()
-                            .child(process),
-                    )
+                    .child(self.process_rule_title(&process, cx))
                     .child(
                         danger_control_button(Button::new(SharedString::from(format!(
                             "remove-responsiveness-exclusion-{index}"
@@ -8789,8 +8860,7 @@ impl PowerLeafApp {
             t!("accent.color_palette").to_string(),
             color_palette.into_any_element(),
         ));
-        let title_toggle_target = accent_target;
-        let chevron_toggle_target = accent_target;
+        let header_toggle_target = accent_target;
         let chevron_icon = if collapsed {
             NavIcon::ChevronRight
         } else {
@@ -8820,16 +8890,18 @@ impl PowerLeafApp {
                     .gap_2()
                     .py_3()
                     .px_4()
+                    .block_mouse_except_scroll()
+                    .occlude()
+                    .cursor_pointer()
                     .hover(|style| style.bg(rgb(settings_card_hover_color())))
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.toggle_setting_group(header_toggle_target, cx);
+                    }))
                     .child(
                         div()
                             .id("accent-color-title")
                             .flex_1()
                             .min_w(px(0.0))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                app.toggle_setting_group(title_toggle_target, cx);
-                            }))
                             .truncate()
                             .child(t!("accent.source").to_string()),
                     )
@@ -8850,13 +8922,9 @@ impl PowerLeafApp {
                                     .justify_center()
                                     .flex_shrink_0()
                                     .rounded_sm()
-                                    .cursor_pointer()
                                     .text_color(rgb(dim_text_color()))
                                     .opacity(0.72)
                                     .hover(|style| style.opacity(1.0))
-                                    .on_click(cx.listener(move |app, _, _, cx| {
-                                        app.toggle_setting_group(chevron_toggle_target, cx);
-                                    }))
                                     .child(Icon::new(chevron_icon).with_size(px(16.0))),
                             ),
                     ),
@@ -9057,10 +9125,6 @@ impl PowerLeafApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let edit_value = self.win32_priority_separation_edit_value;
-        let backup_value = self
-            .win32_priority_separation_backup
-            .map(format_win32_priority_separation_with_description)
-            .unwrap_or_else(|| t!("settings.win32_priority_separation_no_backup").to_string());
         let has_backup = self.win32_priority_separation_backup.is_some();
 
         v_flex()
@@ -9125,12 +9189,6 @@ impl PowerLeafApp {
                         value_pill(format_win32_priority_separation(edit_value)).into_any_element(),
                     )),
             )
-            .child(win32_priority_row(
-                "win32-priority-separation-backup-row",
-                t!("settings.win32_priority_separation_backup").to_string(),
-                None,
-                value_pill(backup_value).into_any_element(),
-            ))
             .child(
                 h_flex()
                     .gap_2()
@@ -9185,15 +9243,16 @@ impl PowerLeafApp {
             .win32_priority_separation_value
             .map(format_win32_priority_separation_with_description)
             .unwrap_or_else(|| t!("settings.win32_priority_separation_unavailable").to_string());
-        h_flex()
+        let backup_value = self
+            .win32_priority_separation_backup
+            .map(format_win32_priority_separation_with_description)
+            .unwrap_or_else(|| t!("settings.win32_priority_separation_no_backup").to_string());
+
+        v_flex()
             .id("win32-priority-separation-target-card")
-            .min_h(px(58.0))
             .w_full()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .py_3()
-            .px_4()
+            .min_w(px(0.0))
+            .overflow_hidden()
             .rounded_sm()
             .border_1()
             .border_color(rgb(border_color()))
@@ -9201,25 +9260,20 @@ impl PowerLeafApp {
             .text_color(rgb(primary_text_color()))
             .text_size(px(TEXT_BODY_SIZE))
             .line_height(px(TEXT_BODY_LINE_HEIGHT))
-            .hover(|style| style.bg(rgb(settings_card_hover_color())))
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(t!("settings.win32_priority_separation_current").to_string()),
-                    )
-                    .child(title_info_button(
-                        "win32-priority-separation-current-info",
-                        t!("settings.win32_priority_separation_warning").to_string(),
-                    )),
-            )
-            .child(value_pill(current_value))
+            .child(win32_priority_registry_value_row(
+                "win32-priority-separation-current-row",
+                t!("settings.win32_priority_separation_current").to_string(),
+                Some(t!("settings.win32_priority_separation_warning").to_string()),
+                current_value,
+                false,
+            ))
+            .child(win32_priority_registry_value_row(
+                "win32-priority-separation-backup-row",
+                t!("settings.win32_priority_separation_backup").to_string(),
+                None,
+                backup_value,
+                true,
+            ))
             .into_any_element()
     }
 
@@ -9921,23 +9975,17 @@ impl PowerLeafApp {
             }
         }
 
-        let mut list = rule_list();
+        let mut list = action_log_list_surface();
         if self.action_log_entries.is_empty() {
-            list = list.child(
-                GroupBox::new()
-                    .outline()
-                    .child(text_muted(t!("action_log.empty").to_string())),
-            );
+            list = list.child(action_log_empty_row(t!("action_log.empty").to_string()));
         } else if visible_entries.is_empty() {
-            list = list.child(
-                GroupBox::new()
-                    .outline()
-                    .child(text_muted(t!("action_log.no_filter_matches").to_string())),
-            );
+            list = list.child(action_log_empty_row(
+                t!("action_log.no_filter_matches").to_string(),
+            ));
         } else {
             list = list.child(action_log_header_row());
-            for entry in visible_entries {
-                list = list.child(action_log_entry_row(entry, cx));
+            for (index, entry) in visible_entries.into_iter().enumerate() {
+                list = list.child(action_log_entry_row(entry, index > 0));
             }
         }
 
@@ -9976,9 +10024,11 @@ impl PowerLeafApp {
                     ),
             )
             .child(
-                GroupBox::new()
-                    .outline()
-                    .title(section_title_label(
+                v_flex()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .gap_2()
+                    .child(section_title_label(
                         t!("action_log.recent_entries").to_string(),
                     ))
                     .child(list),
@@ -10748,6 +10798,7 @@ enum SettingGroupTarget {
     AutoBalanceExclusions,
     AutoBalanceIoPriority,
     AutoBalanceMemoryPriority,
+    EfficiencyEnable,
     EfficiencyCpuRestriction,
     BackgroundCpuRestriction,
     SmartTrimBehaviour,
@@ -11675,8 +11726,18 @@ fn breadcrumb_button(
 ) -> gpui::Stateful<gpui::Div> {
     let hover_bg: Hsla = rgb(settings_card_hover_color()).into();
 
-    h_flex()
+    breadcrumb_label_base(label)
         .id(id)
+        .opacity(0.68)
+        .hover(move |style| style.bg(hover_bg))
+        .cursor_pointer()
+        .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+            app.navigate_to(target, cx);
+        }))
+}
+
+fn breadcrumb_label_base(label: String) -> gpui::Div {
+    h_flex()
         .min_w(px(0.0))
         .max_w(px(360.0))
         .items_center()
@@ -11686,13 +11747,11 @@ fn breadcrumb_button(
         .text_size(px(TEXT_PAGE_TITLE_SIZE))
         .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .opacity(0.68)
-        .hover(move |style| style.bg(hover_bg))
-        .cursor_pointer()
         .child(div().min_w(px(0.0)).truncate().child(label))
-        .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
-            app.navigate_to(target, cx);
-        }))
+}
+
+fn breadcrumb_current_label(label: String) -> gpui::Div {
+    breadcrumb_label_base(label)
 }
 
 fn breadcrumb_separator() -> gpui::Div {
@@ -11987,15 +12046,7 @@ fn page_shell_with_help(
         .overflow_hidden();
 
     if page == Page::Dashboard {
-        header = header.child(
-            div()
-                .min_w(px(0.0))
-                .text_size(px(TEXT_PAGE_TITLE_SIZE))
-                .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .truncate()
-                .child(page.label()),
-        );
+        header = header.child(breadcrumb_current_label(page.label()));
     } else {
         let section_page = page.section_landing_page();
         header = header
@@ -12018,15 +12069,7 @@ fn page_shell_with_help(
                 .child(breadcrumb_separator());
         }
 
-        header = header.child(
-            div()
-                .min_w(px(0.0))
-                .text_size(px(TEXT_PAGE_TITLE_SIZE))
-                .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .truncate()
-                .child(page.label()),
-        );
+        header = header.child(breadcrumb_current_label(page.label()));
     }
 
     if let Some(help) = help {
@@ -12152,6 +12195,7 @@ fn rule_card_with_header_action(
         .gap_1()
         .px_2()
         .block_mouse_except_scroll()
+        .occlude()
         .cursor_pointer()
         .on_click(cx.listener(move |app, _, _, cx| {
             app.toggle_rule_card(trailing_card_target.clone(), cx);
@@ -12191,6 +12235,7 @@ fn rule_card_with_header_action(
                         .pr(header_padding)
                         .id(header_action_id)
                         .block_mouse_except_scroll()
+                        .occlude()
                         .cursor_pointer()
                         .hover(|style| style.bg(rgb(settings_card_hover_color())))
                         .on_click(cx.listener(move |app, _, _, cx| {
@@ -12430,6 +12475,7 @@ fn setting_group_with_title_element(
                 .pl_4()
                 .pr_2()
                 .block_mouse_except_scroll()
+                .occlude()
                 .cursor_pointer()
                 .hover(|style| style.bg(rgb(settings_card_hover_color())))
                 .on_click(cx.listener(move |app, _, _, cx| {
@@ -13004,7 +13050,29 @@ fn dashboard_card_slot(card: AnyElement) -> gpui::Div {
         .child(card)
 }
 
-fn dashboard_summary_card(title: impl Into<SharedString>, body: AnyElement) -> gpui::Div {
+fn dashboard_summary_card(
+    title: impl Into<SharedString>,
+    header_trailing: Option<AnyElement>,
+    body: AnyElement,
+) -> gpui::Div {
+    let mut header = h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .child(section_title_label(title)),
+        );
+
+    if let Some(header_trailing) = header_trailing {
+        header = header.child(header_trailing);
+    }
+
     v_flex()
         .w_full()
         .min_w(px(0.0))
@@ -13014,7 +13082,7 @@ fn dashboard_summary_card(title: impl Into<SharedString>, body: AnyElement) -> g
         .rounded_sm()
         .border_1()
         .border_color(rgb(border_color()))
-        .child(section_title_label(title))
+        .child(header)
         .child(
             div()
                 .w_full()
@@ -13023,6 +13091,70 @@ fn dashboard_summary_card(title: impl Into<SharedString>, body: AnyElement) -> g
                 .min_h(px(0.0))
                 .child(body),
         )
+}
+
+fn dashboard_summary_header_value(value: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .max_w(px(180.0))
+        .flex_shrink_0()
+        .truncate()
+        .whitespace_nowrap()
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .child(value.into())
+}
+
+fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui::Div {
+    let value = io_usage_label(value);
+
+    h_flex()
+        .w(px(DASHBOARD_IO_SPLIT_ITEM_WIDTH))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .gap_1()
+        .text_size(px(TEXT_CAPTION_SIZE))
+        .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
+        .text_color(rgb(muted_text_color()))
+        .child(div().size(px(7.0)).rounded_full().flex_shrink_0().bg(color))
+        .child(div().flex_shrink_0().whitespace_nowrap().child(label))
+        .child(
+            div()
+                .w(px(DASHBOARD_IO_SPLIT_VALUE_WIDTH))
+                .flex_shrink_0()
+                .truncate()
+                .whitespace_nowrap()
+                .child(value),
+        )
+}
+
+fn io_stacked_history_bar(sample: IoUsageHistorySample, bar_height: f32) -> gpui::Div {
+    let total = sample.total();
+    if total <= 0.0 {
+        return div()
+            .w_full()
+            .h(px(8.0))
+            .bg(rgb(border_color()))
+            .opacity(0.35);
+    }
+
+    let read_height = bar_height * (sample.read_bytes_per_second / total);
+    let write_height = (bar_height - read_height).max(0.0);
+    v_flex()
+        .w_full()
+        .h(px(bar_height))
+        .overflow_hidden()
+        .child(div().w_full().h(px(write_height)).bg(io_write_color()))
+        .child(div().w_full().h(px(read_height)).bg(io_read_color()))
+}
+
+fn io_read_color() -> Hsla {
+    Hsla::from(rgb(accent_color())).lighten(0.16)
+}
+
+fn io_write_color() -> Hsla {
+    Hsla::from(rgb(accent_color())).darken(0.18)
 }
 
 fn titled_status_list(title: &str, items: Vec<(String, String)>) -> gpui::Div {
@@ -13072,34 +13204,83 @@ fn titled_status_list(title: &str, items: Vec<(String, String)>) -> gpui::Div {
         );
     }
 
-    dashboard_summary_card(title.to_owned(), list.into_any_element())
+    dashboard_summary_card(title.to_owned(), None, list.into_any_element())
+}
+
+const ACTION_LOG_SEQUENCE_WIDTH: f32 = 56.0;
+const ACTION_LOG_TIME_WIDTH: f32 = 96.0;
+const ACTION_LOG_FEATURE_WIDTH: f32 = 156.0;
+const ACTION_LOG_RESULT_WIDTH: f32 = 88.0;
+const ACTION_LOG_PROCESS_WIDTH: f32 = 176.0;
+
+fn action_log_list_surface() -> gpui::Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+}
+
+fn action_log_empty_row(message: impl Into<SharedString>) -> gpui::Div {
+    h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .px_4()
+        .py_3()
+        .child(text_muted(message.into()))
 }
 
 fn action_log_header_row() -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
+        .min_h(px(34.0))
+        .items_center()
         .gap_3()
         .px_4()
-        .pb_1()
+        .py_2()
+        .border_b_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(panel_active_color()))
         .text_size(px(TEXT_LABEL_SIZE))
         .line_height(px(TEXT_LABEL_LINE_HEIGHT))
         .text_color(rgb(muted_text_color()))
         .child(
             div()
-                .w(px(56.0))
+                .w(px(ACTION_LOG_SEQUENCE_WIDTH))
+                .flex_shrink_0()
                 .child(t!("action_log.sequence").to_string()),
         )
-        .child(div().w(px(96.0)).child(t!("action_log.time").to_string()))
         .child(
             div()
-                .w(px(156.0))
+                .w(px(ACTION_LOG_TIME_WIDTH))
+                .flex_shrink_0()
+                .child(t!("action_log.time").to_string()),
+        )
+        .child(
+            div()
+                .w(px(ACTION_LOG_FEATURE_WIDTH))
+                .flex_shrink_0()
                 .child(t!("action_log.feature").to_string()),
         )
-        .child(div().w(px(88.0)).child(t!("action_log.result").to_string()))
         .child(
             div()
-                .w(px(176.0))
+                .w(px(ACTION_LOG_RESULT_WIDTH))
+                .flex_shrink_0()
+                .child(t!("action_log.result").to_string()),
+        )
+        .child(
+            div()
+                .w(px(ACTION_LOG_PROCESS_WIDTH))
+                .flex_shrink_0()
                 .child(t!("action_log.process").to_string()),
         )
         .child(
@@ -13110,39 +13291,55 @@ fn action_log_header_row() -> gpui::Div {
         )
 }
 
-fn action_log_entry_row(entry: &ActionLogEntry, cx: &mut Context<PowerLeafApp>) -> gpui::Div {
-    compact_rule_row(cx)
+fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful<gpui::Div> {
+    h_flex()
+        .id(SharedString::from(format!(
+            "action-log-entry-{}",
+            entry.sequence
+        )))
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(46.0))
+        .items_center()
         .gap_3()
+        .px_4()
+        .py_2()
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .when(divided, |row| {
+            row.border_t_1().border_color(rgb(border_color()))
+        })
         .child(
             div()
-                .w(px(56.0))
+                .w(px(ACTION_LOG_SEQUENCE_WIDTH))
                 .flex_shrink_0()
                 .text_color(rgb(dim_text_color()))
                 .child(format!("#{}", entry.sequence)),
         )
         .child(
             div()
-                .w(px(96.0))
+                .w(px(ACTION_LOG_TIME_WIDTH))
                 .flex_shrink_0()
                 .text_color(rgb(muted_text_color()))
                 .child(action_log_time_label(entry.timestamp_epoch_ms)),
         )
         .child(
             div()
-                .w(px(156.0))
+                .w(px(ACTION_LOG_FEATURE_WIDTH))
                 .flex_shrink_0()
                 .truncate()
                 .child(action_log_feature_label(entry.feature)),
         )
         .child(
             div()
-                .w(px(88.0))
+                .w(px(ACTION_LOG_RESULT_WIDTH))
                 .flex_shrink_0()
                 .child(action_log_result_tag(entry.result).into_any_element()),
         )
         .child(
             div()
-                .w(px(176.0))
+                .w(px(ACTION_LOG_PROCESS_WIDTH))
                 .min_w(px(0.0))
                 .flex_shrink_0()
                 .truncate()
@@ -13153,6 +13350,7 @@ fn action_log_entry_row(entry: &ActionLogEntry, cx: &mut Context<PowerLeafApp>) 
                 .flex_1()
                 .min_w(px(120.0))
                 .text_color(rgb(muted_text_color()))
+                .truncate()
                 .child(entry.reason.clone()),
         )
 }
@@ -14477,6 +14675,43 @@ fn processor_power_setting_row(
                 .justify_end()
                 .child(value_element),
         )
+        .into_any_element()
+}
+
+fn win32_priority_registry_value_row(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    help: Option<String>,
+    value: impl Into<SharedString>,
+    divided: bool,
+) -> AnyElement {
+    let id: SharedString = id.into();
+    let mut label_row = h_flex()
+        .flex_1()
+        .min_w(px(0.0))
+        .items_center()
+        .gap_1()
+        .child(div().min_w(px(0.0)).truncate().child(label.into()));
+    if let Some(help) = help {
+        label_row = label_row.child(title_info_button(format!("{id}-info"), help));
+    }
+
+    h_flex()
+        .id(id)
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(58.0))
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .py_3()
+        .px_4()
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .when(divided, |row| {
+            row.border_t_1().border_color(rgb(border_color()))
+        })
+        .child(label_row)
+        .child(value_pill(value))
         .into_any_element()
 }
 
