@@ -45,6 +45,7 @@ common:
   save: "儲存"
   theme: "佈景主題"
   language: "語言"
+  animation: "動畫"
   unknown: "未知"
   status: "狀態"
   last_failure: "最後失敗"
@@ -61,15 +62,20 @@ common:
   power_plan_pause_priority: "停止條件會覆蓋所有偵測：主開關關閉、手動覆蓋，或插電時暫停。"
 
 theme:
-  system: "系統"
+  system: "跟隨系統"
   light: "淺色"
   dark: "深色"
+
+animation:
+  system: "跟隨系統"
+  on: "開啟"
+  off: "關閉"
 
 accent:
   recent_colors: "Recent colors"
   color_palette: "Color Palette"
   source: "色彩來源"
-  windows: "系統"
+  windows: "跟隨系統"
   custom: "自訂"
   palette: "調色盤"
   edit_color: "編輯顏色"

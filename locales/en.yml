@@ -48,6 +48,7 @@ common:
   save: "Save"
   theme: "Theme"
   language: "Language"
+  animation: "Animation"
   unknown: "Unknown"
   status: "Status"
   last_failure: "Last failure"
@@ -64,13 +65,18 @@ common:
   power_plan_pause_priority: "Stop conditions override all detection: master switch off, manual override, or paused while plugged in."
 
 theme:
-  system: "System"
+  system: "Follow system"
   light: "Light"
   dark: "Dark"
 
+animation:
+  system: "Follow system"
+  on: "On"
+  off: "Off"
+
 accent:
   source: "Accent color"
-  windows: "System"
+  windows: "Follow system"
   custom: "Custom"
   palette: "Palette"
   recent_colors: "Recent colors"

@@ -86,6 +86,8 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub language: AppLanguage,
     #[serde(default)]
+    pub animation_mode: AnimationMode,
+    #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
     pub manual_override: ManualOverride,
@@ -102,6 +104,19 @@ pub enum AppThemeMode {
 
 impl AppThemeMode {
     pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnimationMode {
+    #[default]
+    System,
+    On,
+    Off,
+}
+
+impl AnimationMode {
+    pub const ALL: [Self; 3] = [Self::System, Self::On, Self::Off];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -828,6 +843,7 @@ impl Default for Settings {
                 theme_mode: AppThemeMode::System,
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
+                animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
                 manual_override: ManualOverride::None,

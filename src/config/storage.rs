@@ -114,12 +114,12 @@ fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
 mod tests {
     use super::*;
     use crate::config::{
-        AccentSettings, ActionLogMode, ActivityModeSettings, AdvancedSettings, AppLanguage,
-        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
-        CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
-        CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule, EcoQosAggressiveness,
-        EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
-        EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
+        AccentSettings, ActionLogMode, ActivityModeSettings, AdvancedSettings, AnimationMode,
+        AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
+        BackgroundCpuRestrictionSettings, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
+        CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule,
+        EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode,
+        EcoQosCpuRestrictionStrategy, EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
         ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GeneralSettings,
         InputDetectionSettings, IoPriorityRule, IoPrioritySettings, ManualOverride,
         MemoryPriorityRule, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
@@ -140,6 +140,7 @@ mod tests {
                 theme_mode: AppThemeMode::Dark,
                 accent: AccentSettings::default(),
                 language: AppLanguage::ZhTw,
+                animation_mode: AnimationMode::Off,
                 pause_power_plan_switching_while_plugged_in: true,
                 check_interval_ms: 2_500,
                 manual_override: ManualOverride::UntilEpochSeconds(42),

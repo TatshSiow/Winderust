@@ -19,12 +19,13 @@ use rust_i18n::t;
 
 use chrono::{Local, TimeZone};
 use gpui::{
-    canvas, deferred, div, img, prelude::*, px, relative, rgb, AnyElement, App, Bounds, Context,
-    DragMoveEvent, Empty, Entity, EntityId, Focusable, Hsla, Image, IntoElement, MouseButton,
-    NavigationDirection, Pixels, Point, Render, SharedString, Subscription, Task, Timer, Window,
-    WindowControlArea,
+    canvas, deferred, div, img, percentage, prelude::*, px, relative, rgb, Animation, AnimationExt,
+    AnyElement, App, Bounds, Context, DragMoveEvent, Empty, Entity, EntityId, Focusable, Hsla,
+    Image, IntoElement, MouseButton, NavigationDirection, Pixels, Point, Render, SharedString,
+    Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
+    animation::cubic_bezier,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     description_list::DescriptionList,
     group_box::{GroupBox, GroupBoxVariants},
@@ -44,9 +45,9 @@ use crate::{
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
-        self, AccentColorSource, AccentSettings, ActionLogMode, AppLanguage, AppSuspensionRule,
-        AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings, CpuAffinityMode,
-        CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
+        self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
+        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
+        CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
         CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
@@ -97,6 +98,9 @@ use windows_sys::Win32::UI::Controls::Dialogs::{
     CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY,
     OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
+};
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
@@ -108,6 +112,8 @@ const DASHBOARD_GRAPH_BAR_WIDTH: f32 = 5.0;
 const DASHBOARD_GRAPH_BAR_GAP: f32 = 4.0;
 const DASHBOARD_IO_SPLIT_ITEM_WIDTH: f32 = 140.0;
 const DASHBOARD_IO_SPLIT_VALUE_WIDTH: f32 = 90.0;
+const MOTION_FAST_SECONDS: f64 = 0.15;
+const MOTION_STANDARD_SECONDS: f64 = 0.22;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TITLE_BAR_HEIGHT: f32 = 40.0;
 const PAGE_HEADER_HEIGHT: f32 = 48.0;
@@ -221,6 +227,7 @@ const ACCENT_PALETTE: [u32; 48] = [
 
 static UI_ACCENT_COLOR: AtomicU32 = AtomicU32::new(COLOR_ACCENT);
 static UI_DARK_MODE: AtomicBool = AtomicBool::new(true);
+static UI_ANIMATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 const NAV_HISTORY_LIMIT: usize = 64;
 
@@ -346,6 +353,8 @@ pub struct PowerLeafApp {
     editing_numeric: Option<NumericField>,
     expanded_rule_cards: HashSet<RuleCardTarget>,
     expanded_setting_groups: HashSet<SettingGroupTarget>,
+    breadcrumb_transition: Option<BreadcrumbTransition>,
+    pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     _rule_title_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
@@ -356,6 +365,103 @@ pub struct PowerLeafApp {
     _window_activation_subscription: Subscription,
     inputs: UiInputs,
     _tick_task: Task<()>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BreadcrumbSegment {
+    page: Page,
+    label: String,
+}
+
+struct BreadcrumbTransition {
+    previous: Vec<BreadcrumbSegment>,
+    current: Vec<BreadcrumbSegment>,
+    started: Instant,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ListItemRemovalTarget {
+    ForegroundRule(usize),
+    ScheduleRule(usize),
+    CpuUsageRule(usize),
+    EcoQosExclusion(usize),
+    AppSuspensionRule(usize),
+    BackgroundCpuExclusion(usize),
+    CpuLimiterRule(usize),
+    WatchdogRule(usize),
+    PerformanceModeRule(usize),
+    ResponsivenessRule(usize),
+    ResponsivenessExclusion(usize),
+    IoPriorityRule(usize),
+    MemoryPriorityRule(usize),
+    SmartTrimExclusion(usize),
+    CpuAffinityRule(usize),
+}
+
+impl ListItemRemovalTarget {
+    fn list_order(self) -> u8 {
+        match self {
+            Self::ForegroundRule(_) => 0,
+            Self::ScheduleRule(_) => 1,
+            Self::CpuUsageRule(_) => 2,
+            Self::EcoQosExclusion(_) => 3,
+            Self::AppSuspensionRule(_) => 4,
+            Self::BackgroundCpuExclusion(_) => 5,
+            Self::CpuLimiterRule(_) => 6,
+            Self::WatchdogRule(_) => 7,
+            Self::PerformanceModeRule(_) => 8,
+            Self::ResponsivenessRule(_) => 9,
+            Self::ResponsivenessExclusion(_) => 10,
+            Self::IoPriorityRule(_) => 11,
+            Self::MemoryPriorityRule(_) => 12,
+            Self::SmartTrimExclusion(_) => 13,
+            Self::CpuAffinityRule(_) => 14,
+        }
+    }
+
+    fn index(self) -> usize {
+        match self {
+            Self::ForegroundRule(index)
+            | Self::ScheduleRule(index)
+            | Self::CpuUsageRule(index)
+            | Self::EcoQosExclusion(index)
+            | Self::AppSuspensionRule(index)
+            | Self::BackgroundCpuExclusion(index)
+            | Self::CpuLimiterRule(index)
+            | Self::WatchdogRule(index)
+            | Self::PerformanceModeRule(index)
+            | Self::ResponsivenessRule(index)
+            | Self::ResponsivenessExclusion(index)
+            | Self::IoPriorityRule(index)
+            | Self::MemoryPriorityRule(index)
+            | Self::SmartTrimExclusion(index)
+            | Self::CpuAffinityRule(index) => index,
+        }
+    }
+
+    fn with_index(self, index: usize) -> Self {
+        match self {
+            Self::ForegroundRule(_) => Self::ForegroundRule(index),
+            Self::ScheduleRule(_) => Self::ScheduleRule(index),
+            Self::CpuUsageRule(_) => Self::CpuUsageRule(index),
+            Self::EcoQosExclusion(_) => Self::EcoQosExclusion(index),
+            Self::AppSuspensionRule(_) => Self::AppSuspensionRule(index),
+            Self::BackgroundCpuExclusion(_) => Self::BackgroundCpuExclusion(index),
+            Self::CpuLimiterRule(_) => Self::CpuLimiterRule(index),
+            Self::WatchdogRule(_) => Self::WatchdogRule(index),
+            Self::PerformanceModeRule(_) => Self::PerformanceModeRule(index),
+            Self::ResponsivenessRule(_) => Self::ResponsivenessRule(index),
+            Self::ResponsivenessExclusion(_) => Self::ResponsivenessExclusion(index),
+            Self::IoPriorityRule(_) => Self::IoPriorityRule(index),
+            Self::MemoryPriorityRule(_) => Self::MemoryPriorityRule(index),
+            Self::SmartTrimExclusion(_) => Self::SmartTrimExclusion(index),
+            Self::CpuAffinityRule(_) => Self::CpuAffinityRule(index),
+        }
+    }
+
+    fn same_list(self, other: Self) -> bool {
+        self.list_order() == other.list_order()
+    }
 }
 
 struct UiInputs {
@@ -876,6 +982,8 @@ impl PowerLeafApp {
             editing_numeric: None,
             expanded_rule_cards: HashSet::new(),
             expanded_setting_groups: HashSet::new(),
+            breadcrumb_transition: None,
+            pending_list_item_removals: HashMap::new(),
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             _rule_title_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
@@ -910,6 +1018,7 @@ impl PowerLeafApp {
         }
 
         Self::push_navigation_page(&mut self.back_stack, self.page);
+        self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
         self.forward_stack.clear();
         cx.notify();
@@ -921,6 +1030,7 @@ impl PowerLeafApp {
         };
 
         Self::push_navigation_page(&mut self.forward_stack, self.page);
+        self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
         cx.notify();
     }
@@ -931,8 +1041,271 @@ impl PowerLeafApp {
         };
 
         Self::push_navigation_page(&mut self.back_stack, self.page);
+        self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
         cx.notify();
+    }
+
+    fn begin_breadcrumb_transition(&mut self, previous: Page, current: Page) {
+        if previous == current || !ui_animations_enabled() {
+            self.breadcrumb_transition = None;
+            return;
+        }
+
+        let previous = breadcrumb_trail(previous);
+        let current = breadcrumb_trail(current);
+        if previous == current {
+            self.breadcrumb_transition = None;
+            return;
+        }
+
+        self.breadcrumb_transition = Some(BreadcrumbTransition {
+            previous,
+            current,
+            started: Instant::now(),
+        });
+    }
+
+    fn clear_finished_breadcrumb_transition(&mut self) {
+        if !ui_animations_enabled()
+            || self
+                .breadcrumb_transition
+                .as_ref()
+                .is_some_and(|transition| {
+                    transition.started.elapsed() >= Duration::from_secs_f64(MOTION_FAST_SECONDS)
+                })
+        {
+            self.breadcrumb_transition = None;
+        }
+    }
+
+    fn active_breadcrumb_transition(&self, page: Page) -> Option<&BreadcrumbTransition> {
+        self.breadcrumb_transition
+            .as_ref()
+            .filter(|transition| transition.current == breadcrumb_trail(page))
+    }
+
+    fn page_header(&self, page: Page, cx: &mut Context<Self>) -> gpui::Div {
+        page_header_with_help(
+            page,
+            self.page_header_help(page),
+            self.active_breadcrumb_transition(page),
+            cx,
+        )
+    }
+
+    fn page_header_help(&self, page: Page) -> Option<SharedString> {
+        match page {
+            Page::ActionLog => Some(action_log_page_help()),
+            _ => None,
+        }
+    }
+
+    fn page_shell(&self, _page: Page, _cx: &mut Context<Self>) -> gpui::Div {
+        page_body_shell()
+    }
+
+    fn animated_list_item(
+        &self,
+        target: ListItemRemovalTarget,
+        id: impl Into<SharedString>,
+        child: AnyElement,
+    ) -> AnyElement {
+        animated_list_item_child(
+            id,
+            child,
+            self.pending_list_item_removals.contains_key(&target),
+        )
+    }
+
+    fn request_list_item_removal(&mut self, target: ListItemRemovalTarget, cx: &mut Context<Self>) {
+        if !ui_animations_enabled() {
+            self.commit_list_item_removal(target);
+            cx.notify();
+            return;
+        }
+
+        if self.pending_list_item_removals.contains_key(&target) {
+            cx.notify();
+            return;
+        }
+
+        self.pending_list_item_removals
+            .insert(target, Instant::now());
+
+        cx.spawn(async move |this, cx| {
+            Timer::after(Duration::from_secs_f64(MOTION_FAST_SECONDS)).await;
+            let _ = this.update(cx, |app, cx| {
+                app.finish_due_list_item_removals();
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn finish_due_list_item_removals(&mut self) {
+        let now = Instant::now();
+        let mut due = self
+            .pending_list_item_removals
+            .iter()
+            .filter_map(|(target, started)| {
+                (now.duration_since(*started) >= Duration::from_secs_f64(MOTION_FAST_SECONDS))
+                    .then_some(*target)
+            })
+            .collect::<Vec<_>>();
+
+        due.sort_by(|a, b| {
+            a.list_order()
+                .cmp(&b.list_order())
+                .then_with(|| b.index().cmp(&a.index()))
+        });
+
+        for target in due {
+            if self.pending_list_item_removals.remove(&target).is_some() {
+                self.commit_list_item_removal(target);
+                self.shift_pending_list_item_removals_after(target);
+            }
+        }
+    }
+
+    fn shift_pending_list_item_removals_after(&mut self, removed: ListItemRemovalTarget) {
+        let mut shifted = HashMap::new();
+        for (target, started) in self.pending_list_item_removals.drain() {
+            let target = if target.same_list(removed) && target.index() > removed.index() {
+                target.with_index(target.index() - 1)
+            } else {
+                target
+            };
+            shifted.insert(target, started);
+        }
+        self.pending_list_item_removals = shifted;
+    }
+
+    fn commit_list_item_removal(&mut self, target: ListItemRemovalTarget) {
+        match target {
+            ListItemRemovalTarget::ForegroundRule(index) => {
+                if index < self.settings.foreground_rules.rules.len() {
+                    self.settings.foreground_rules.rules.remove(index);
+                }
+                self.editing_rule_title = None;
+                self.expanded_rule_cards.clear();
+            }
+            ListItemRemovalTarget::ScheduleRule(index) => {
+                if index < self.settings.schedule_mode.rules.len() {
+                    self.settings.schedule_mode.rules.remove(index);
+                }
+                self.editing_rule_title = None;
+                self.expanded_rule_cards.clear();
+            }
+            ListItemRemovalTarget::CpuUsageRule(index) => {
+                if index < self.settings.cpu_usage_mode.rules.len() {
+                    self.settings.cpu_usage_mode.rules.remove(index);
+                }
+                self.editing_rule_title = None;
+                self.expanded_rule_cards.clear();
+            }
+            ListItemRemovalTarget::EcoQosExclusion(index) => {
+                if index < self.settings.eco_qos.efficiency_whitelist.len() {
+                    self.settings.eco_qos.efficiency_whitelist.remove(index);
+                }
+            }
+            ListItemRemovalTarget::AppSuspensionRule(index) => {
+                if let Some(rule) = self.settings.app_suspension.suspendable_apps.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::Suspension(rule.process_name.clone()));
+                }
+                if index < self.settings.app_suspension.suspendable_apps.len() {
+                    self.settings.app_suspension.suspendable_apps.remove(index);
+                }
+            }
+            ListItemRemovalTarget::BackgroundCpuExclusion(index) => {
+                if index < self.settings.background_cpu_restriction.exclusions.len() {
+                    self.settings
+                        .background_cpu_restriction
+                        .exclusions
+                        .remove(index);
+                }
+            }
+            ListItemRemovalTarget::CpuLimiterRule(index) => {
+                if let Some(rule) = self.settings.cpu_limiter.rules.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::CpuLimiter(rule.process_name.clone()));
+                }
+                if index < self.settings.cpu_limiter.rules.len() {
+                    self.settings.cpu_limiter.rules.remove(index);
+                }
+            }
+            ListItemRemovalTarget::WatchdogRule(index) => {
+                if let Some(rule) = self.settings.watchdog.rules.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::Watchdog(rule.process_name.clone()));
+                }
+                if index < self.settings.watchdog.rules.len() {
+                    self.settings.watchdog.rules.remove(index);
+                }
+            }
+            ListItemRemovalTarget::PerformanceModeRule(index) => {
+                if index < self.settings.performance_mode.rules.len() {
+                    self.settings.performance_mode.rules.remove(index);
+                }
+                self.editing_rule_title = None;
+                self.expanded_rule_cards.clear();
+            }
+            ListItemRemovalTarget::ResponsivenessRule(index) => {
+                if let Some(rule) = self.settings.foreground_responsiveness.rules.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::Responsiveness(rule.process_name.clone()));
+                }
+                if index < self.settings.foreground_responsiveness.rules.len() {
+                    self.settings.foreground_responsiveness.rules.remove(index);
+                }
+            }
+            ListItemRemovalTarget::ResponsivenessExclusion(index) => {
+                if index
+                    < self
+                        .settings
+                        .foreground_responsiveness
+                        .auto_balance_exclusions
+                        .len()
+                {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_exclusions
+                        .remove(index);
+                }
+            }
+            ListItemRemovalTarget::IoPriorityRule(index) => {
+                if let Some(rule) = self.settings.io_priority.rules.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::IoPriority(rule.process_name.clone()));
+                }
+                if index < self.settings.io_priority.rules.len() {
+                    self.settings.io_priority.rules.remove(index);
+                }
+            }
+            ListItemRemovalTarget::MemoryPriorityRule(index) => {
+                if index < self.settings.memory_priority.rules.len() {
+                    self.settings.memory_priority.rules.remove(index);
+                }
+                self.editing_rule_title = None;
+                self.expanded_rule_cards.clear();
+            }
+            ListItemRemovalTarget::SmartTrimExclusion(index) => {
+                if index < self.settings.smart_trim.exclusions.len() {
+                    self.settings.smart_trim.exclusions.remove(index);
+                }
+            }
+            ListItemRemovalTarget::CpuAffinityRule(index) => {
+                if let Some(rule) = self.settings.cpu_affinity.rules.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::Affinity(rule.process_name.clone()));
+                }
+                if index < self.settings.cpu_affinity.rules.len() {
+                    self.settings.cpu_affinity.rules.remove(index);
+                }
+            }
+        }
     }
 
     fn push_navigation_page(stack: &mut Vec<Page>, page: Page) {
@@ -2653,7 +3026,13 @@ impl PowerLeafApp {
                 id.clone(),
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
+            .child(dropdown_popup_or_empty(
+                is_open,
+                SharedString::from(id),
+                placement,
+                options,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -2861,13 +3240,28 @@ impl Render for PowerLeafApp {
         self.ensure_rule_title_input_subscriptions(window, cx);
         self.ensure_cpu_threshold_slider_subscriptions(window, cx);
         self.sync_input_values(cx);
+        UI_ANIMATIONS_ENABLED.store(
+            resolve_animation_enabled(self.settings.general.animation_mode),
+            Ordering::Relaxed,
+        );
+        self.clear_finished_breadcrumb_transition();
 
         let search_query = self.dashboard_search_query(cx);
         let search_active = !search_query.is_empty();
-        let page = if search_active {
+        let page_body = if search_active {
             self.render_search_results_page(&search_query, cx)
         } else {
             self.render_page(window, cx)
+        };
+        let page_header = if search_active {
+            search_results_page_header(cx).into_any_element()
+        } else {
+            self.page_header(self.page, cx).into_any_element()
+        };
+        let page_animation_key = if search_active {
+            SharedString::from("SearchResults")
+        } else {
+            SharedString::from(format!("{:?}", self.page))
         };
         let unsaved = self.settings != self.saved_settings;
 
@@ -2937,7 +3331,11 @@ impl Render for PowerLeafApp {
                                     .min_w(px(0.0))
                                     .min_h(px(0.0))
                                     .overflow_y_scrollbar()
-                                    .child(page_content_frame(page)),
+                                    .child(page_content_frame(
+                                        page_header,
+                                        page_body,
+                                        page_animation_key,
+                                    )),
                             )
                             .child(self.render_status_bar(cx)),
                     ),
@@ -3083,7 +3481,7 @@ impl PowerLeafApp {
     }
 
     fn render_unsaved_popup(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        v_flex()
+        let popup = v_flex()
             .absolute()
             .right(px(24.0))
             .bottom(px(54.0))
@@ -3131,8 +3529,19 @@ impl PowerLeafApp {
                                 cx.notify();
                             })),
                     ),
-            )
-            .into_any_element()
+            );
+
+        with_optional_motion(
+            popup,
+            "unsaved-popup",
+            MotionSpeed::Standard,
+            |popup| popup,
+            |popup, delta| {
+                popup
+                    .bottom(px(46.0 + 8.0 * delta))
+                    .opacity(0.18 + 0.82 * delta)
+            },
+        )
     }
 
     fn render_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -3197,7 +3606,9 @@ impl PowerLeafApp {
             }
         }
 
-        page_shell(section_page, cx).child(cards).into_any_element()
+        self.page_shell(section_page, cx)
+            .child(cards)
+            .into_any_element()
     }
 
     fn render_dashboard_page_card(&self, target: Page, cx: &mut Context<Self>) -> gpui::Div {
@@ -3254,18 +3665,30 @@ impl PowerLeafApp {
         if search_query.is_empty() {
             search_result_cards = search_result_cards.child(div().w_full().min_h(px(8.0)));
         } else if search_results.is_empty() {
-            search_result_cards =
-                search_result_cards.child(div().w_full().min_w(px(0.0)).py_2().child(text_muted(
-                    t!("dashboard.no_matching_functions").to_string(),
-                )));
+            search_result_cards = search_result_cards.child(animated_presence_child(
+                SharedString::from(format!("search-results-empty-{search_query}")),
+                div()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .py_2()
+                    .child(text_muted(
+                        t!("dashboard.no_matching_functions").to_string(),
+                    ))
+                    .into_any_element(),
+            ));
         } else {
             for target in search_results {
-                search_result_cards =
-                    search_result_cards.child(self.render_search_result_page_card(target, cx));
+                search_result_cards = search_result_cards.child(with_optional_motion(
+                    self.render_search_result_page_card(target, cx),
+                    SharedString::from(format!("search-result-card-{target:?}")),
+                    MotionSpeed::Fast,
+                    |card| card,
+                    |card, delta| card.opacity(0.18 + 0.82 * delta),
+                ));
             }
         }
 
-        search_results_page_shell(cx)
+        page_body_shell()
             .child(search_result_cards)
             .into_any_element()
     }
@@ -3310,7 +3733,7 @@ impl PowerLeafApp {
                 .into_any_element(),
             ));
 
-        page_shell(Page::Dashboard, cx)
+        self.page_shell(Page::Dashboard, cx)
             .child(section_title_text(t!("dashboard.overview").to_string()))
             .child(summary)
             .child(section_title_text(
@@ -3445,6 +3868,7 @@ impl PowerLeafApp {
 
     fn render_cpu_usage_summary(&self) -> gpui::Div {
         self.render_metric_summary(
+            "cpu",
             t!("dashboard.cpu_usage").to_string(),
             cpu_usage_label(self.cpu_usage.percent),
             Some(
@@ -3458,6 +3882,7 @@ impl PowerLeafApp {
 
     fn render_memory_usage_summary(&self) -> gpui::Div {
         self.render_metric_summary(
+            "memory",
             t!("dashboard.memory_usage").to_string(),
             memory_usage_label(self.memory_usage.percent),
             Some(
@@ -3476,7 +3901,7 @@ impl PowerLeafApp {
             .map(|sample| sample.total())
             .fold(0.0_f32, f32::max)
             .max(1.0);
-        let graph = self.render_io_history_graph(&self.io_usage_history, max_value);
+        let graph = self.render_io_history_graph("io", &self.io_usage_history, max_value);
 
         dashboard_summary_card(
             t!("dashboard.io_usage").to_string(),
@@ -3523,7 +3948,8 @@ impl PowerLeafApp {
             .map(|sample| sample.total())
             .fold(0.0_f32, f32::max)
             .max(1.0);
-        let graph = self.render_network_history_graph(&self.network_usage_history, max_value);
+        let graph =
+            self.render_network_history_graph("network", &self.network_usage_history, max_value);
 
         dashboard_summary_card(
             t!("dashboard.network_usage").to_string(),
@@ -3565,13 +3991,14 @@ impl PowerLeafApp {
 
     fn render_metric_summary(
         &self,
+        graph_id: &'static str,
         title: String,
         label: String,
         detail: Option<AnyElement>,
         history: &VecDeque<f32>,
         max_value: f32,
     ) -> gpui::Div {
-        let graph = self.render_metric_history_graph(history, max_value);
+        let graph = self.render_metric_history_graph(graph_id, history, max_value);
         let mut body = v_flex()
             .w_full()
             .h_full()
@@ -3592,7 +4019,12 @@ impl PowerLeafApp {
         )
     }
 
-    fn render_metric_history_graph(&self, history: &VecDeque<f32>, max_value: f32) -> gpui::Div {
+    fn render_metric_history_graph(
+        &self,
+        graph_id: &'static str,
+        history: &VecDeque<f32>,
+        max_value: f32,
+    ) -> gpui::Div {
         let mut graph = h_flex()
             .w_full()
             .h(px(DASHBOARD_CPU_GRAPH_HEIGHT))
@@ -3621,7 +4053,7 @@ impl PowerLeafApp {
         }
 
         let max_value = max_value.max(1.0);
-        for value in history {
+        for (index, value) in history.iter().enumerate() {
             let bar_height = 8.0 + (value.clamp(0.0, max_value) / max_value) * 88.0;
             graph = graph.child(
                 v_flex()
@@ -3629,7 +4061,11 @@ impl PowerLeafApp {
                     .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
                     .flex_shrink_0()
                     .justify_end()
-                    .child(div().w_full().h(px(bar_height)).bg(rgb(accent_color()))),
+                    .child(animated_metric_history_bar(
+                        format!("dashboard-{graph_id}-bar-{index}"),
+                        bar_height,
+                        rgb(accent_color()).into(),
+                    )),
             );
         }
 
@@ -3638,6 +4074,7 @@ impl PowerLeafApp {
 
     fn render_io_history_graph(
         &self,
+        graph_id: &'static str,
         history: &VecDeque<IoUsageHistorySample>,
         max_value: f32,
     ) -> gpui::Div {
@@ -3669,7 +4106,7 @@ impl PowerLeafApp {
         }
 
         let max_value = max_value.max(1.0);
-        for sample in history {
+        for (index, sample) in history.iter().enumerate() {
             let total = sample.total();
             let bar_height = 8.0 + (total.clamp(0.0, max_value) / max_value) * 88.0;
             graph = graph.child(
@@ -3678,7 +4115,11 @@ impl PowerLeafApp {
                     .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
                     .flex_shrink_0()
                     .justify_end()
-                    .child(io_stacked_history_bar(*sample, bar_height)),
+                    .child(io_stacked_history_bar(
+                        format!("dashboard-{graph_id}-bar-{index}"),
+                        *sample,
+                        bar_height,
+                    )),
             );
         }
 
@@ -3687,6 +4128,7 @@ impl PowerLeafApp {
 
     fn render_network_history_graph(
         &self,
+        graph_id: &'static str,
         history: &VecDeque<NetworkUsageHistorySample>,
         max_value: f32,
     ) -> gpui::Div {
@@ -3718,7 +4160,7 @@ impl PowerLeafApp {
         }
 
         let max_value = max_value.max(1.0);
-        for sample in history {
+        for (index, sample) in history.iter().enumerate() {
             let total = sample.total();
             let bar_height = 8.0 + (total.clamp(0.0, max_value) / max_value) * 88.0;
             graph = graph.child(
@@ -3727,7 +4169,11 @@ impl PowerLeafApp {
                     .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
                     .flex_shrink_0()
                     .justify_end()
-                    .child(network_stacked_history_bar(*sample, bar_height)),
+                    .child(network_stacked_history_bar(
+                        format!("dashboard-{graph_id}-bar-{index}"),
+                        *sample,
+                        bar_height,
+                    )),
             );
         }
 
@@ -3866,7 +4312,7 @@ impl PowerLeafApp {
             t!("common.power_plan_pause_priority").to_string(),
         ]);
 
-        page_shell(Page::Activity, cx)
+        self.page_shell(Page::Activity, cx)
             .child(feature_toggle_switch_with_help(
                 "activity-enabled",
                 t!("activity.enable").to_string(),
@@ -3877,7 +4323,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body("activity-body", body, enabled, cx))
             .into_any_element()
     }
 
@@ -3895,16 +4341,17 @@ impl PowerLeafApp {
             t!("common.power_plan_pause_priority").to_string(),
         ]);
         let mut content =
-            page_shell(Page::ForegroundRules, cx).child(feature_toggle_switch_with_help(
-                "foreground-enabled",
-                t!("foreground.enable").to_string(),
-                help,
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.foreground_rules.enabled = *checked;
-                    cx.notify();
-                }),
-            ));
+            self.page_shell(Page::ForegroundRules, cx)
+                .child(feature_toggle_switch_with_help(
+                    "foreground-enabled",
+                    t!("foreground.enable").to_string(),
+                    help,
+                    enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.foreground_rules.enabled = *checked;
+                        cx.notify();
+                    }),
+                ));
 
         let mut body =
             feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
@@ -3948,10 +4395,19 @@ impl PowerLeafApp {
         );
         let mut rules = rule_list();
         for (index, rule) in self.settings.foreground_rules.rules.iter().enumerate() {
-            rules = rules.child(self.render_foreground_rule(index, rule, window, cx));
+            rules = rules.child(self.animated_list_item(
+                ListItemRemovalTarget::ForegroundRule(index),
+                SharedString::from(format!("foreground-rule-{index}")),
+                self.render_foreground_rule(index, rule, window, cx),
+            ));
         }
         body = body.child(rules);
-        content = content.child(disabled_feature_body(body, enabled, cx));
+        content = content.child(disabled_feature_body(
+            "foreground-rules-body",
+            body,
+            enabled,
+            cx,
+        ));
 
         content.into_any_element()
     }
@@ -3988,12 +4444,7 @@ impl PowerLeafApp {
                 ))))
                 .label(t!("common.remove").to_string())
                 .on_click(cx.listener(move |app, _, _, cx| {
-                    if index < app.settings.foreground_rules.rules.len() {
-                        app.settings.foreground_rules.rules.remove(index);
-                    }
-                    app.editing_rule_title = None;
-                    app.expanded_rule_cards.clear();
-                    cx.notify();
+                    app.request_list_item_removal(ListItemRemovalTarget::ForegroundRule(index), cx);
                 }))
                 .into_any_element(),
             )
@@ -4083,16 +4534,18 @@ impl PowerLeafApp {
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
-        let mut content = page_shell(Page::Schedule, cx).child(feature_toggle_switch_with_help(
-            "schedule-enabled",
-            t!("schedule.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.schedule_mode.enabled = *checked;
-                cx.notify();
-            }),
-        ));
+        let mut content =
+            self.page_shell(Page::Schedule, cx)
+                .child(feature_toggle_switch_with_help(
+                    "schedule-enabled",
+                    t!("schedule.enable").to_string(),
+                    help,
+                    enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.schedule_mode.enabled = *checked;
+                        cx.notify();
+                    }),
+                ));
 
         let mut body =
             feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
@@ -4120,10 +4573,14 @@ impl PowerLeafApp {
         ));
         let mut rules = rule_list();
         for (index, rule) in self.settings.schedule_mode.rules.iter().enumerate() {
-            rules = rules.child(self.render_schedule_rule(index, rule, window, cx));
+            rules = rules.child(self.animated_list_item(
+                ListItemRemovalTarget::ScheduleRule(index),
+                SharedString::from(format!("schedule-rule-{index}")),
+                self.render_schedule_rule(index, rule, window, cx),
+            ));
         }
         body = body.child(rules);
-        content = content.child(disabled_feature_body(body, enabled, cx));
+        content = content.child(disabled_feature_body("schedule-body", body, enabled, cx));
 
         content.into_any_element()
     }
@@ -4175,7 +4632,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ),
-            rule_card_collapse_indicator(collapsed),
+            rule_card_collapse_indicator(card_target.clone(), collapsed),
             card_target.clone(),
             cx,
         );
@@ -4248,12 +4705,10 @@ impl PowerLeafApp {
                     ))))
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
-                        if index < app.settings.schedule_mode.rules.len() {
-                            app.settings.schedule_mode.rules.remove(index);
-                        }
-                        app.editing_rule_title = None;
-                        app.expanded_rule_cards.clear();
-                        cx.notify();
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::ScheduleRule(index),
+                            cx,
+                        );
                     }))
                     .into_any_element(),
                 ]));
@@ -4271,16 +4726,18 @@ impl PowerLeafApp {
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
-        let mut content = page_shell(Page::CpuUsage, cx).child(feature_toggle_switch_with_help(
-            "cpu-usage-enabled",
-            t!("cpu_rules.enable").to_string(),
-            help,
-            enabled,
-            cx.listener(|app, checked, _, cx| {
-                app.settings.cpu_usage_mode.enabled = *checked;
-                cx.notify();
-            }),
-        ));
+        let mut content =
+            self.page_shell(Page::CpuUsage, cx)
+                .child(feature_toggle_switch_with_help(
+                    "cpu-usage-enabled",
+                    t!("cpu_rules.enable").to_string(),
+                    help,
+                    enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.cpu_usage_mode.enabled = *checked;
+                        cx.notify();
+                    }),
+                ));
 
         let mut body =
             feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
@@ -4313,10 +4770,14 @@ impl PowerLeafApp {
         ));
         let mut rules = rule_list();
         for (index, rule) in self.settings.cpu_usage_mode.rules.iter().enumerate() {
-            rules = rules.child(self.render_cpu_rule(index, rule, enabled, window, cx));
+            rules = rules.child(self.animated_list_item(
+                ListItemRemovalTarget::CpuUsageRule(index),
+                SharedString::from(format!("cpu-rule-{index}")),
+                self.render_cpu_rule(index, rule, enabled, window, cx),
+            ));
         }
         body = body.child(rules);
-        content = content.child(disabled_feature_body(body, enabled, cx));
+        content = content.child(disabled_feature_body("cpu-usage-body", body, enabled, cx));
 
         content.into_any_element()
     }
@@ -4397,7 +4858,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ),
-            rule_card_collapse_indicator(collapsed),
+            rule_card_collapse_indicator(card_target.clone(), collapsed),
             card_target.clone(),
             cx,
         );
@@ -4554,12 +5015,10 @@ impl PowerLeafApp {
                     ))))
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
-                        if index < app.settings.cpu_usage_mode.rules.len() {
-                            app.settings.cpu_usage_mode.rules.remove(index);
-                        }
-                        app.editing_rule_title = None;
-                        app.expanded_rule_cards.clear();
-                        cx.notify();
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::CpuUsageRule(index),
+                            cx,
+                        );
                     }))
                     .into_any_element(),
                 ]));
@@ -4631,10 +5090,20 @@ impl PowerLeafApp {
         let cpu_restriction =
             feature_body(enabled).child(self.render_efficiency_cpu_set_preference(window, cx));
 
-        page_shell(Page::EfficiencyMode, cx)
+        self.page_shell(Page::EfficiencyMode, cx)
             .child(self.render_efficiency_enable_card(enabled, help, window, cx))
-            .child(disabled_feature_body(cpu_restriction, enabled, cx))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body(
+                "efficiency-cpu-restriction-body",
+                cpu_restriction,
+                enabled,
+                cx,
+            ))
+            .child(disabled_feature_body(
+                "efficiency-exclusions-body",
+                body,
+                enabled,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -5039,34 +5508,36 @@ impl PowerLeafApp {
             .enumerate()
         {
             let process = rule.process_name.clone();
-            list = list.child(
-                compact_rule_row(cx)
-                    .child(rule_enable_checkbox(
-                        format!("eco-qos-exclusion-enabled-{index}"),
-                        rule.enabled,
-                        cx.listener(move |app, checked, _, cx| {
-                            if let Some(rule) =
-                                app.settings.eco_qos.efficiency_whitelist.get_mut(index)
-                            {
-                                rule.enabled = *checked;
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(self.process_rule_title(&process, cx))
-                    .child(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-eco-qos-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if index < app.settings.eco_qos.efficiency_whitelist.len() {
-                                app.settings.eco_qos.efficiency_whitelist.remove(index);
-                            }
-                            cx.notify();
-                        })),
-                    ),
-            );
+            let row = compact_rule_row(cx)
+                .child(rule_enable_checkbox(
+                    format!("eco-qos-exclusion-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.eco_qos.efficiency_whitelist.get_mut(index)
+                        {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-eco-qos-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::EcoQosExclusion(index),
+                            cx,
+                        );
+                    })),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::EcoQosExclusion(index),
+                SharedString::from(format!("eco-qos-exclusion-{index}")),
+                row.into_any_element(),
+            ));
         }
         if self.settings.eco_qos.efficiency_whitelist.is_empty() {
             list = list.child(text_muted(t!("efficiency.no_whitelist").to_string()));
@@ -5315,7 +5786,7 @@ impl PowerLeafApp {
             t!("suspension.intro_3").to_string(),
         ]);
 
-        page_shell(Page::AppSuspension, cx)
+        self.page_shell(Page::AppSuspension, cx)
             .child(feature_toggle_switch_with_help(
                 "app-suspension-enabled",
                 t!("suspension.enable").to_string(),
@@ -5326,7 +5797,12 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body(
+                "app-suspension-body",
+                body,
+                enabled,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -5387,7 +5863,7 @@ impl PowerLeafApp {
                     }),
                 ),
                 Some(freeze_action),
-                rule_card_collapse_indicator(collapsed),
+                rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
                 cx,
             );
@@ -5451,19 +5927,21 @@ impl PowerLeafApp {
                         ))))
                         .label(t!("common.remove").to_string())
                         .on_click(cx.listener({
-                            let card_target = card_target.clone();
                             move |app, _, _, cx| {
-                                if index < app.settings.app_suspension.suspendable_apps.len() {
-                                    app.settings.app_suspension.suspendable_apps.remove(index);
-                                }
-                                app.expanded_rule_cards.remove(&card_target);
-                                cx.notify();
+                                app.request_list_item_removal(
+                                    ListItemRemovalTarget::AppSuspensionRule(index),
+                                    cx,
+                                );
                             }
                         }))
                         .into_any_element(),
                     ));
             }
-            list = list.child(card);
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::AppSuspensionRule(index),
+                SharedString::from(format!("suspension-rule-{index}")),
+                card.into_any_element(),
+            ));
         }
         if self.settings.app_suspension.suspendable_apps.is_empty() {
             list = list.child(text_muted(t!("suspension.no_suspendable").to_string()));
@@ -5780,7 +6258,7 @@ impl PowerLeafApp {
             )
             .child(self.render_background_cpu_exclusions(cx));
 
-        page_shell(Page::BackgroundCpuRestriction, cx)
+        self.page_shell(Page::BackgroundCpuRestriction, cx)
             .child(feature_toggle_switch_with_help(
                 "background-cpu-enabled",
                 t!("background_cpu.enable").to_string(),
@@ -5794,7 +6272,12 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body(
+                "background-cpu-body",
+                body,
+                enabled,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -5808,40 +6291,40 @@ impl PowerLeafApp {
             .enumerate()
         {
             let process = rule.process_name.clone();
-            list = list.child(
-                compact_rule_row(cx)
-                    .child(rule_enable_checkbox(
-                        format!("background-cpu-exclusion-enabled-{index}"),
-                        rule.enabled,
-                        cx.listener(move |app, checked, _, cx| {
-                            if let Some(rule) = app
-                                .settings
-                                .background_cpu_restriction
-                                .exclusions
-                                .get_mut(index)
-                            {
-                                rule.enabled = *checked;
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(self.process_rule_title(&process, cx))
-                    .child(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-background-cpu-exclusion-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if index < app.settings.background_cpu_restriction.exclusions.len() {
-                                app.settings
-                                    .background_cpu_restriction
-                                    .exclusions
-                                    .remove(index);
-                            }
-                            cx.notify();
-                        })),
-                    ),
-            );
+            let row = compact_rule_row(cx)
+                .child(rule_enable_checkbox(
+                    format!("background-cpu-exclusion-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app
+                            .settings
+                            .background_cpu_restriction
+                            .exclusions
+                            .get_mut(index)
+                        {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-background-cpu-exclusion-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::BackgroundCpuExclusion(index),
+                            cx,
+                        );
+                    })),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::BackgroundCpuExclusion(index),
+                SharedString::from(format!("background-cpu-exclusion-{index}")),
+                row.into_any_element(),
+            ));
         }
         if self
             .settings
@@ -5917,7 +6400,7 @@ impl PowerLeafApp {
             t!("cpu_limiter.intro_3").to_string(),
         ]);
 
-        page_shell(Page::CpuLimiter, cx)
+        self.page_shell(Page::CpuLimiter, cx)
             .child(feature_toggle_switch_with_help(
                 "cpu-limiter-enabled",
                 t!("cpu_limiter.enable").to_string(),
@@ -5928,7 +6411,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body("cpu-limiter-body", body, enabled, cx))
             .into_any_element()
     }
 
@@ -5951,7 +6434,7 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 ),
-                rule_card_collapse_indicator(collapsed),
+                rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
                 cx,
             );
@@ -6005,19 +6488,21 @@ impl PowerLeafApp {
                         ))))
                         .label(t!("common.remove").to_string())
                         .on_click(cx.listener({
-                            let card_target = card_target.clone();
                             move |app, _, _, cx| {
-                                if index < app.settings.cpu_limiter.rules.len() {
-                                    app.settings.cpu_limiter.rules.remove(index);
-                                }
-                                app.expanded_rule_cards.remove(&card_target);
-                                cx.notify();
+                                app.request_list_item_removal(
+                                    ListItemRemovalTarget::CpuLimiterRule(index),
+                                    cx,
+                                );
                             }
                         }))
                         .into_any_element(),
                     ));
             }
-            list = list.child(card);
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::CpuLimiterRule(index),
+                SharedString::from(format!("cpu-limiter-rule-{index}")),
+                card.into_any_element(),
+            ));
         }
         if self.settings.cpu_limiter.rules.is_empty() {
             list = list.child(text_muted(t!("cpu_limiter.no_rules").to_string()));
@@ -6106,7 +6591,7 @@ impl PowerLeafApp {
             t!("watchdog.intro_3").to_string(),
         ]);
 
-        page_shell(Page::Watchdog, cx)
+        self.page_shell(Page::Watchdog, cx)
             .child(feature_toggle_switch_with_help(
                 "watchdog-enabled",
                 t!("watchdog.enable").to_string(),
@@ -6117,7 +6602,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body("watchdog-body", body, enabled, cx))
             .into_any_element()
     }
 
@@ -6140,7 +6625,7 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 ),
-                rule_card_collapse_indicator(collapsed),
+                rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
                 cx,
             );
@@ -6206,19 +6691,21 @@ impl PowerLeafApp {
                     ))))
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener({
-                        let card_target = card_target.clone();
                         move |app, _, _, cx| {
-                            if index < app.settings.watchdog.rules.len() {
-                                app.settings.watchdog.rules.remove(index);
-                            }
-                            app.expanded_rule_cards.remove(&card_target);
-                            cx.notify();
+                            app.request_list_item_removal(
+                                ListItemRemovalTarget::WatchdogRule(index),
+                                cx,
+                            );
                         }
                     }))
                     .into_any_element(),
                 ));
             }
-            list = list.child(card);
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::WatchdogRule(index),
+                SharedString::from(format!("watchdog-rule-{index}")),
+                card.into_any_element(),
+            ));
         }
         if self.settings.watchdog.rules.is_empty() {
             list = list.child(text_muted(t!("watchdog.no_rules").to_string()));
@@ -6336,7 +6823,7 @@ impl PowerLeafApp {
             t!("common.power_plan_pause_priority").to_string(),
         ]);
 
-        page_shell(Page::PerformanceMode, cx)
+        self.page_shell(Page::PerformanceMode, cx)
             .child(feature_toggle_switch_with_help(
                 "performance-mode-enabled",
                 t!("performance_mode.enable").to_string(),
@@ -6347,7 +6834,12 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body(
+                "performance-mode-body",
+                body,
+                enabled,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -6359,42 +6851,43 @@ impl PowerLeafApp {
         let mut list = rule_list();
         for (index, rule) in self.settings.performance_mode.rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            list = list.child(
-                compact_rule_row(cx)
-                    .child(rule_enable_checkbox(
-                        format!("performance-mode-rule-enabled-{index}"),
-                        rule.enabled,
-                        cx.listener(move |app, checked, _, cx| {
-                            if let Some(rule) = app.settings.performance_mode.rules.get_mut(index) {
-                                rule.enabled = *checked;
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(self.process_rule_title(&process, cx))
-                    .child(self.render_inline_power_plan_picker(
-                        format!("performance-mode-plan-{index}"),
-                        rule.power_plan_guid.clone(),
-                        PowerPlanField::PerformanceModeRule(index),
-                        window,
-                        cx,
-                    ))
-                    .child(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-performance-mode-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if index < app.settings.performance_mode.rules.len() {
-                                app.settings.performance_mode.rules.remove(index);
-                            }
-                            app.editing_rule_title = None;
-                            app.expanded_rule_cards.clear();
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                    ),
-            );
+            let row = compact_rule_row(cx)
+                .child(rule_enable_checkbox(
+                    format!("performance-mode-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.performance_mode.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(self.render_inline_power_plan_picker(
+                    format!("performance-mode-plan-{index}"),
+                    rule.power_plan_guid.clone(),
+                    PowerPlanField::PerformanceModeRule(index),
+                    window,
+                    cx,
+                ))
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-performance-mode-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::PerformanceModeRule(index),
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::PerformanceModeRule(index),
+                SharedString::from(format!("performance-mode-rule-{index}")),
+                row.into_any_element(),
+            ));
         }
         list.into_any_element()
     }
@@ -6438,7 +6931,7 @@ impl PowerLeafApp {
             t!("responsiveness.intro_3").to_string(),
         ]);
 
-        page_shell(Page::ForegroundResponsiveness, cx)
+        self.page_shell(Page::ForegroundResponsiveness, cx)
             .child(feature_toggle_switch_with_help(
                 "foreground-responsiveness-enabled",
                 t!("responsiveness.enable").to_string(),
@@ -6449,7 +6942,12 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body(
+                "foreground-responsiveness-body",
+                body,
+                enabled,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -7201,7 +7699,7 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 ),
-                rule_card_collapse_indicator(collapsed),
+                rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
                 cx,
             );
@@ -7225,19 +7723,21 @@ impl PowerLeafApp {
                         ))))
                         .label(t!("common.remove").to_string())
                         .on_click(cx.listener({
-                            let card_target = card_target.clone();
                             move |app, _, _, cx| {
-                                if index < app.settings.foreground_responsiveness.rules.len() {
-                                    app.settings.foreground_responsiveness.rules.remove(index);
-                                }
-                                app.expanded_rule_cards.remove(&card_target);
-                                cx.notify();
+                                app.request_list_item_removal(
+                                    ListItemRemovalTarget::ResponsivenessRule(index),
+                                    cx,
+                                );
                             }
                         }))
                         .into_any_element(),
                     ));
             }
-            list = list.child(card);
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::ResponsivenessRule(index),
+                SharedString::from(format!("responsiveness-rule-{index}")),
+                card.into_any_element(),
+            ));
         }
         if self.settings.foreground_responsiveness.rules.is_empty() {
             list = list.child(text_muted(t!("responsiveness.no_rules").to_string()));
@@ -7255,46 +7755,40 @@ impl PowerLeafApp {
             .enumerate()
         {
             let process = rule.process_name.clone();
-            list = list.child(
-                compact_rule_row(cx)
-                    .child(rule_enable_checkbox(
-                        format!("responsiveness-exclusion-enabled-{index}"),
-                        rule.enabled,
-                        cx.listener(move |app, checked, _, cx| {
-                            if let Some(rule) = app
-                                .settings
-                                .foreground_responsiveness
-                                .auto_balance_exclusions
-                                .get_mut(index)
-                            {
-                                rule.enabled = *checked;
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(self.process_rule_title(&process, cx))
-                    .child(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-responsiveness-exclusion-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if index
-                                < app
-                                    .settings
-                                    .foreground_responsiveness
-                                    .auto_balance_exclusions
-                                    .len()
-                            {
-                                app.settings
-                                    .foreground_responsiveness
-                                    .auto_balance_exclusions
-                                    .remove(index);
-                            }
-                            cx.notify();
-                        })),
-                    ),
-            );
+            let row = compact_rule_row(cx)
+                .child(rule_enable_checkbox(
+                    format!("responsiveness-exclusion-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app
+                            .settings
+                            .foreground_responsiveness
+                            .auto_balance_exclusions
+                            .get_mut(index)
+                        {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-responsiveness-exclusion-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::ResponsivenessExclusion(index),
+                            cx,
+                        );
+                    })),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::ResponsivenessExclusion(index),
+                SharedString::from(format!("responsiveness-exclusion-{index}")),
+                row.into_any_element(),
+            ));
         }
         if self
             .settings
@@ -7419,7 +7913,7 @@ impl PowerLeafApp {
             )
             .child(self.render_io_priority_rules(window, cx));
 
-        page_shell(Page::IoPriority, cx)
+        self.page_shell(Page::IoPriority, cx)
             .child(feature_toggle_switch_with_help(
                 "io-priority-enabled",
                 t!("io_priority.enable").to_string(),
@@ -7430,7 +7924,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body("io-priority-body", body, enabled, cx))
             .into_any_element()
     }
 
@@ -7479,7 +7973,7 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 ),
-                rule_card_collapse_indicator(collapsed),
+                rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
                 cx,
             );
@@ -7503,19 +7997,21 @@ impl PowerLeafApp {
                         ))))
                         .label(t!("common.remove").to_string())
                         .on_click(cx.listener({
-                            let card_target = card_target.clone();
                             move |app, _, _, cx| {
-                                if index < app.settings.io_priority.rules.len() {
-                                    app.settings.io_priority.rules.remove(index);
-                                }
-                                app.expanded_rule_cards.remove(&card_target);
-                                cx.notify();
+                                app.request_list_item_removal(
+                                    ListItemRemovalTarget::IoPriorityRule(index),
+                                    cx,
+                                );
                             }
                         }))
                         .into_any_element(),
                     ));
             }
-            list = list.child(card);
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::IoPriorityRule(index),
+                SharedString::from(format!("io-priority-rule-{index}")),
+                card.into_any_element(),
+            ));
         }
         if self.settings.io_priority.rules.is_empty() {
             list = list.child(text_muted(t!("io_priority.no_rules").to_string()));
@@ -7643,7 +8139,7 @@ impl PowerLeafApp {
             )
             .child(self.render_memory_priority_rules(window, cx));
 
-        page_shell(Page::MemoryPriority, cx)
+        self.page_shell(Page::MemoryPriority, cx)
             .child(feature_toggle_switch_with_help(
                 "memory-priority-enabled",
                 t!("memory_priority.enable").to_string(),
@@ -7654,7 +8150,12 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body(
+                "memory-priority-body",
+                body,
+                enabled,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -7666,36 +8167,37 @@ impl PowerLeafApp {
         let mut list = rule_list();
         for (index, rule) in self.settings.memory_priority.rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            list = list.child(
-                compact_rule_row(cx)
-                    .child(rule_enable_checkbox(
-                        format!("memory-priority-rule-enabled-{index}"),
-                        rule.enabled,
-                        cx.listener(move |app, checked, _, cx| {
-                            if let Some(rule) = app.settings.memory_priority.rules.get_mut(index) {
-                                rule.enabled = *checked;
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(self.process_rule_title(&process, cx))
-                    .child(self.render_memory_priority_selector(index, rule.priority, window, cx))
-                    .child(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-memory-priority-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if index < app.settings.memory_priority.rules.len() {
-                                app.settings.memory_priority.rules.remove(index);
-                            }
-                            app.editing_rule_title = None;
-                            app.expanded_rule_cards.clear();
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                    ),
-            );
+            let row = compact_rule_row(cx)
+                .child(rule_enable_checkbox(
+                    format!("memory-priority-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.memory_priority.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(self.render_memory_priority_selector(index, rule.priority, window, cx))
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-memory-priority-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::MemoryPriorityRule(index),
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::MemoryPriorityRule(index),
+                SharedString::from(format!("memory-priority-rule-{index}")),
+                row.into_any_element(),
+            ));
         }
         if self.settings.memory_priority.rules.is_empty() {
             list = list.child(text_muted(t!("memory_priority.no_rules").to_string()));
@@ -8138,7 +8640,7 @@ impl PowerLeafApp {
                 .into_any_element()],
                 cx,
             ));
-        page_shell(Page::SmartTrim, cx)
+        self.page_shell(Page::SmartTrim, cx)
             .child(feature_toggle_switch_with_help(
                 "smart-trim-enabled",
                 t!("smart_trim.enable").to_string(),
@@ -8153,7 +8655,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body("smart-trim-body", body, enabled, cx))
             .into_any_element()
     }
 
@@ -8161,40 +8663,43 @@ impl PowerLeafApp {
         let mut list = v_flex().gap_2();
         for (index, rule) in self.settings.smart_trim.exclusions.iter().enumerate() {
             let process = rule.process_name.clone();
-            list = list.child(
-                compact_rule_row(cx)
-                    .child(rule_enable_checkbox(
-                        format!("smart-trim-exclusion-enabled-{index}"),
-                        rule.enabled,
-                        cx.listener(move |app, checked, _, cx| {
-                            if let Some(rule) = app.settings.smart_trim.exclusions.get_mut(index) {
-                                rule.enabled = *checked;
-                            }
-                            cx.notify();
-                        }),
-                    ))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(160.0))
-                            .text_size(px(RULE_TITLE_TEXT_SIZE))
-                            .line_height(px(RULE_TITLE_LINE_HEIGHT))
-                            .truncate()
-                            .child(process),
-                    )
-                    .child(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-smart-trim-exclusion-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if index < app.settings.smart_trim.exclusions.len() {
-                                app.settings.smart_trim.exclusions.remove(index);
-                            }
-                            cx.notify();
-                        })),
-                    ),
-            );
+            let row = compact_rule_row(cx)
+                .child(rule_enable_checkbox(
+                    format!("smart-trim-exclusion-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.smart_trim.exclusions.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(160.0))
+                        .text_size(px(RULE_TITLE_TEXT_SIZE))
+                        .line_height(px(RULE_TITLE_LINE_HEIGHT))
+                        .truncate()
+                        .child(process),
+                )
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-smart-trim-exclusion-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::SmartTrimExclusion(index),
+                            cx,
+                        );
+                    })),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::SmartTrimExclusion(index),
+                SharedString::from(format!("smart-trim-exclusion-{index}")),
+                row.into_any_element(),
+            ));
         }
         if self.settings.smart_trim.exclusions.is_empty() {
             list = list.child(text_muted(t!("smart_trim.no_exclusions").to_string()));
@@ -8264,7 +8769,7 @@ impl PowerLeafApp {
             t!("affinity.intro_3").to_string(),
         ]);
 
-        page_shell(Page::CpuAffinity, cx)
+        self.page_shell(Page::CpuAffinity, cx)
             .child(feature_toggle_switch_with_help(
                 "cpu-affinity-enabled",
                 t!("affinity.enable").to_string(),
@@ -8275,7 +8780,12 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body(body, enabled, cx))
+            .child(disabled_feature_body(
+                "cpu-affinity-body",
+                body,
+                enabled,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -8298,7 +8808,7 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 ),
-                rule_card_collapse_indicator(collapsed),
+                rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
                 cx,
             );
@@ -8331,19 +8841,21 @@ impl PowerLeafApp {
                             ))))
                             .label(t!("common.remove").to_string())
                             .on_click(cx.listener({
-                                let card_target = card_target.clone();
                                 move |app, _, _, cx| {
-                                    if index < app.settings.cpu_affinity.rules.len() {
-                                        app.settings.cpu_affinity.rules.remove(index);
-                                    }
-                                    app.expanded_rule_cards.remove(&card_target);
-                                    cx.notify();
+                                    app.request_list_item_removal(
+                                        ListItemRemovalTarget::CpuAffinityRule(index),
+                                        cx,
+                                    );
                                 }
                             }))
                             .into_any_element(),
                         ));
             }
-            list = list.child(card);
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::CpuAffinityRule(index),
+                SharedString::from(format!("affinity-rule-{index}")),
+                card.into_any_element(),
+            ));
         }
         if self.settings.cpu_affinity.rules.is_empty() {
             list = list.child(text_muted(t!("affinity.no_rules").to_string()));
@@ -8851,7 +9363,13 @@ impl PowerLeafApp {
                 picker_id.clone(),
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
+            .child(dropdown_popup_or_empty(
+                is_open,
+                SharedString::from(picker_id),
+                placement,
+                options,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -8928,6 +9446,47 @@ impl PowerLeafApp {
 
         setting_action_card("language-card", t!("common.language").to_string(), dropdown)
             .into_any_element()
+    }
+
+    fn render_animation_selector(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self.settings.general.animation_mode;
+        let dropdown = self.render_dropdown_select(
+            "animation-mode",
+            animation_mode_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            AnimationMode::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for mode in AnimationMode::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("animation-mode-option-{mode:?}")),
+                            animation_mode_label(mode),
+                            selected == mode,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.general.animation_mode = mode;
+                            app.active_power_plan_picker = None;
+                            UI_ANIMATIONS_ENABLED
+                                .store(resolve_animation_enabled(mode), Ordering::Relaxed);
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
+
+        setting_action_card(
+            "animation-mode-card",
+            t!("common.animation").to_string(),
+            dropdown,
+        )
+        .into_any_element()
     }
 
     fn render_accent_selector(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -9026,11 +9585,6 @@ impl PowerLeafApp {
             color_palette.into_any_element(),
         ));
         let header_toggle_target = accent_target;
-        let chevron_icon = if collapsed {
-            NavIcon::ChevronRight
-        } else {
-            NavIcon::ChevronDown
-        };
 
         let mut accent_card = v_flex()
             .id("accent-color-card")
@@ -9090,13 +9644,14 @@ impl PowerLeafApp {
                                     .text_color(rgb(dim_text_color()))
                                     .opacity(0.72)
                                     .hover(|style| style.opacity(1.0))
-                                    .child(Icon::new(chevron_icon).with_size(px(16.0))),
+                                    .child(collapsible_chevron_icon("accent-color", collapsed)),
                             ),
                     ),
             );
 
         if !collapsed {
-            accent_card = accent_card.child(
+            accent_card = accent_card.child(animated_expanded_child(
+                "accent-palette-subcard",
                 div()
                     .id("accent-palette-subcard")
                     .w_full()
@@ -9105,8 +9660,9 @@ impl PowerLeafApp {
                     .border_color(rgb(border_color()))
                     .py_3()
                     .px_4()
-                    .child(palette_content),
-            );
+                    .child(palette_content)
+                    .into_any_element(),
+            ));
         }
 
         accent_card.into_any_element()
@@ -9117,7 +9673,7 @@ impl PowerLeafApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        page_shell(Page::Settings, cx)
+        self.page_shell(Page::Settings, cx)
             .child(checkbox(
                 "general-enabled",
                 t!("settings.master_switch").to_string(),
@@ -9204,10 +9760,11 @@ impl PowerLeafApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        page_shell(Page::SettingsAppearance, cx)
+        self.page_shell(Page::SettingsAppearance, cx)
             .child(self.render_theme_selector(window, cx))
             .child(self.render_accent_selector(window, cx))
             .child(self.render_language_selector(window, cx))
+            .child(self.render_animation_selector(window, cx))
             .into_any_element()
     }
 
@@ -9279,7 +9836,7 @@ impl PowerLeafApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        page_shell(Page::Win32PrioritySeparation, cx)
+        self.page_shell(Page::Win32PrioritySeparation, cx)
             .child(self.render_win32_priority_separation_card(window, cx))
             .into_any_element()
     }
@@ -9496,7 +10053,13 @@ impl PowerLeafApp {
                 picker_id,
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
+            .child(dropdown_popup_or_empty(
+                is_open,
+                SharedString::from(picker_id),
+                placement,
+                options,
+                cx,
+            ))
             .into_any_element()
     }
     fn refresh_win32_priority_separation(&mut self) {
@@ -9629,7 +10192,7 @@ impl PowerLeafApp {
     }
 
     fn render_core_parking_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        page_shell(Page::CoreParking, cx)
+        self.page_shell(Page::CoreParking, cx)
             .child(self.render_processor_power_card(window, cx))
             .into_any_element()
     }
@@ -9994,7 +10557,13 @@ impl PowerLeafApp {
                 picker_id,
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
+            .child(dropdown_popup_or_empty(
+                is_open,
+                SharedString::from(picker_id),
+                placement,
+                options,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -10063,7 +10632,13 @@ impl PowerLeafApp {
                 id,
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(dropdown_popup_or_empty(is_open, placement, options, cx));
+            .child(dropdown_popup_or_empty(
+                is_open,
+                SharedString::from(id),
+                placement,
+                options,
+                cx,
+            ));
 
         let picker = v_flex().w_full().min_w(px(0.0)).relative().child(
             h_flex()
@@ -10107,7 +10682,7 @@ impl PowerLeafApp {
     }
 
     fn render_about_page(&self, cx: &mut Context<Self>) -> AnyElement {
-        page_shell(Page::About, cx)
+        self.page_shell(Page::About, cx)
             .child(section_header(
                 &t!("app.name"),
                 t!("app.description").to_string(),
@@ -10123,10 +10698,6 @@ impl PowerLeafApp {
     }
 
     fn render_action_log_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let help = tooltip_lines(vec![
-            t!("action_log.intro_1").to_string(),
-            t!("action_log.intro_2").to_string(),
-        ]);
         let mut visible_entries = Vec::new();
         for entry in self
             .action_log_entries
@@ -10154,7 +10725,7 @@ impl PowerLeafApp {
             }
         }
 
-        page_shell_with_help(Page::ActionLog, Some(help), cx)
+        self.page_shell(Page::ActionLog, cx)
             .child(
                 h_flex()
                     .w_full()
@@ -10307,7 +10878,13 @@ impl PowerLeafApp {
                 id.clone(),
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
-            .child(dropdown_popup_or_empty(is_open, placement, options, cx))
+            .child(dropdown_popup_or_empty(
+                is_open,
+                SharedString::from(id),
+                placement,
+                options,
+                cx,
+            ))
             .into_any_element()
     }
 
@@ -10645,32 +11222,48 @@ fn dropdown_popup_layer(placement: DropdownPlacement) -> gpui::Div {
 
 fn dropdown_popup_or_empty(
     is_open: bool,
+    id: SharedString,
     placement: DropdownPlacement,
     options: Scrollable<gpui::Div>,
     cx: &mut Context<PowerLeafApp>,
 ) -> AnyElement {
     if is_open {
-        deferred(
-            dropdown_popup_layer(placement)
-                .occlude()
-                .on_mouse_down_out(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
-                    let click_is_on_trigger = app
-                        .active_power_plan_picker
-                        .as_deref()
-                        .and_then(|id| app.dropdown_anchor_bounds.borrow().get(id).copied())
-                        .is_some_and(|bounds| bounds.contains(&event.position));
+        let popup = dropdown_popup_layer(placement)
+            .occlude()
+            .on_mouse_down_out(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
+                let click_is_on_trigger = app
+                    .active_power_plan_picker
+                    .as_deref()
+                    .and_then(|id| app.dropdown_anchor_bounds.borrow().get(id).copied())
+                    .is_some_and(|bounds| bounds.contains(&event.position));
 
-                    if click_is_on_trigger {
-                        return;
-                    }
+                if click_is_on_trigger {
+                    return;
+                }
 
-                    app.active_power_plan_picker = None;
-                    cx.notify();
-                }))
-                .child(options),
-        )
-        .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
-        .into_any_element()
+                app.active_power_plan_picker = None;
+                cx.notify();
+            }))
+            .child(options);
+        let popup = with_optional_motion(
+            popup,
+            SharedString::from(format!("dropdown-popup-{id}")),
+            MotionSpeed::Fast,
+            |popup| popup,
+            move |popup, delta| {
+                let offset = (1.0 - delta) * 6.0;
+                let popup = popup.opacity(0.18 + 0.82 * delta);
+                if placement.open_up {
+                    popup.bottom(px(DROPDOWN_MENU_OFFSET + offset))
+                } else {
+                    popup.top(px(DROPDOWN_MENU_OFFSET + offset))
+                }
+            },
+        );
+
+        deferred(popup)
+            .with_priority(PROCESS_PICKER_LAYER_PRIORITY)
+            .into_any_element()
     } else {
         Empty.into_any_element()
     }
@@ -10683,6 +11276,7 @@ fn dropdown_select_control(
     open: bool,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
     let label: SharedString = label.into();
     let border_color: Hsla = if enabled && open {
         cx.theme().accent
@@ -10696,7 +11290,7 @@ fn dropdown_select_control(
     };
 
     h_flex()
-        .id(id.into())
+        .id(id.clone())
         .h(px(DROPDOWN_CONTROL_HEIGHT))
         .w_full()
         .min_w(px(0.0))
@@ -10726,7 +11320,7 @@ fn dropdown_select_control(
             cx.stop_propagation();
         })
         .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
-        .child(dropdown_chevron(cx))
+        .child(dropdown_chevron(id, open, cx))
 }
 
 fn dropdown_surface(cx: &mut Context<PowerLeafApp>, max_height: Pixels) -> Scrollable<gpui::Div> {
@@ -10848,18 +11442,30 @@ fn dropdown_empty_row(message: String, cx: &mut Context<PowerLeafApp>) -> gpui::
         .child(message)
 }
 
-fn dropdown_chevron(cx: &mut Context<PowerLeafApp>) -> AnyElement {
+fn dropdown_chevron(id: SharedString, open: bool, cx: &mut Context<PowerLeafApp>) -> AnyElement {
+    let start_turns = if open { 0.0 } else { 180.0 / 360.0 };
+    let end_turns = if open { 180.0 / 360.0 } else { 0.0 };
+    let icon = Icon::new(NavIcon::ChevronDown)
+        .with_size(px(16.0))
+        .text_color(cx.theme().muted_foreground);
+    let icon = with_optional_motion(
+        icon,
+        SharedString::from(format!("dropdown-chevron-{id}-{open}")),
+        MotionSpeed::Fast,
+        move |icon| icon.rotate(percentage(end_turns)),
+        move |icon, delta| {
+            let turns = start_turns + (end_turns - start_turns) * delta;
+            icon.rotate(percentage(turns))
+        },
+    );
+
     div()
         .flex_none()
         .flex()
         .items_center()
         .justify_center()
         .size(px(18.0))
-        .child(
-            Icon::new(NavIcon::ChevronDown)
-                .with_size(px(16.0))
-                .text_color(cx.theme().muted_foreground),
-        )
+        .child(icon)
         .into_any_element()
 }
 
@@ -11224,6 +11830,10 @@ fn apply_appearance_settings(general: &config::GeneralSettings, window: &mut Win
         }
     }
     apply_accent_color(&general.accent, cx);
+    UI_ANIMATIONS_ENABLED.store(
+        resolve_animation_enabled(general.animation_mode),
+        Ordering::Relaxed,
+    );
     window.refresh();
 }
 
@@ -11368,6 +11978,33 @@ fn accent_color() -> u32 {
 
 fn ui_is_dark() -> bool {
     UI_DARK_MODE.load(Ordering::Relaxed)
+}
+
+fn resolve_animation_enabled(mode: AnimationMode) -> bool {
+    match mode {
+        AnimationMode::System => windows_client_area_animation_enabled().unwrap_or(true),
+        AnimationMode::On => true,
+        AnimationMode::Off => false,
+    }
+}
+
+fn windows_client_area_animation_enabled() -> Option<bool> {
+    let mut enabled = 0;
+
+    let result = unsafe {
+        SystemParametersInfoW(
+            SPI_GETCLIENTAREAANIMATION,
+            0,
+            (&mut enabled as *mut i32).cast(),
+            0,
+        )
+    };
+
+    (result != 0).then_some(enabled != 0)
+}
+
+fn ui_animations_enabled() -> bool {
+    UI_ANIMATIONS_ENABLED.load(Ordering::Relaxed)
 }
 
 fn settings_card_color() -> u32 {
@@ -11915,10 +12552,6 @@ fn breadcrumb_label_base(label: String) -> gpui::Div {
         .child(div().min_w(px(0.0)).truncate().child(label))
 }
 
-fn breadcrumb_current_label(label: String) -> gpui::Div {
-    breadcrumb_label_base(label)
-}
-
 fn breadcrumb_separator() -> gpui::Div {
     div()
         .text_size(px(TEXT_PAGE_CRUMB_SIZE))
@@ -11927,6 +12560,116 @@ fn breadcrumb_separator() -> gpui::Div {
         .text_color(rgb(dim_text_color()))
         .opacity(0.48)
         .child(Icon::new(NavIcon::ChevronRight).with_size(px(16.0)))
+}
+
+fn breadcrumb_trail(page: Page) -> Vec<BreadcrumbSegment> {
+    if page == Page::Dashboard {
+        return vec![BreadcrumbSegment {
+            page,
+            label: page.label(),
+        }];
+    }
+
+    let section_page = page.section_landing_page();
+    let mut trail = vec![BreadcrumbSegment {
+        page: Page::Dashboard,
+        label: Page::Dashboard.label(),
+    }];
+
+    if page != section_page {
+        trail.push(BreadcrumbSegment {
+            page: section_page,
+            label: page.section_label(),
+        });
+    }
+
+    trail.push(BreadcrumbSegment {
+        page,
+        label: page.label(),
+    });
+
+    trail
+}
+
+fn common_breadcrumb_prefix_len(
+    previous: &[BreadcrumbSegment],
+    current: &[BreadcrumbSegment],
+) -> usize {
+    previous
+        .iter()
+        .zip(current.iter())
+        .take_while(|(previous, current)| previous.page == current.page)
+        .count()
+}
+
+fn breadcrumb_starts_with(trail: &[BreadcrumbSegment], prefix: &[BreadcrumbSegment]) -> bool {
+    trail.len() >= prefix.len()
+        && trail
+            .iter()
+            .zip(prefix.iter())
+            .take(prefix.len())
+            .all(|(trail, prefix)| trail.page == prefix.page)
+}
+
+fn breadcrumb_plain_label(label: String, current: bool) -> gpui::Div {
+    breadcrumb_label_base(label).when(!current, |label| label.opacity(0.68))
+}
+
+fn breadcrumb_segment_element(
+    segment: &BreadcrumbSegment,
+    current: bool,
+    interactive: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> AnyElement {
+    if interactive && !current {
+        breadcrumb_button(
+            SharedString::from(format!("breadcrumb-link-{:?}", segment.page)),
+            segment.page,
+            segment.label.clone(),
+            cx,
+        )
+        .into_any_element()
+    } else {
+        breadcrumb_plain_label(segment.label.clone(), current).into_any_element()
+    }
+}
+
+fn breadcrumb_segment_group(
+    segment: &BreadcrumbSegment,
+    current: bool,
+    interactive: bool,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Div {
+    h_flex()
+        .items_center()
+        .gap_2()
+        .child(breadcrumb_separator())
+        .child(breadcrumb_segment_element(
+            segment,
+            current,
+            interactive,
+            cx,
+        ))
+}
+
+fn breadcrumb_transition_group(id: SharedString, entering: bool, group: gpui::Div) -> AnyElement {
+    if entering {
+        with_optional_motion(
+            group,
+            SharedString::from(format!("breadcrumb-enter-{id}")),
+            MotionSpeed::Fast,
+            |group| group,
+            |group, delta| group.opacity(delta),
+        )
+    } else {
+        with_optional_motion(
+            group,
+            SharedString::from(format!("breadcrumb-exit-{id}")),
+            MotionSpeed::Fast,
+            |group| group.opacity(0.0),
+            |group, delta| group.opacity(1.0 - delta),
+        )
+    }
 }
 
 fn dashboard_sections_in_nav_order() -> Vec<&'static ui::PageSection> {
@@ -12157,12 +12900,12 @@ fn nav_section_in_footer(page: Page) -> bool {
     matches!(page, Page::ActionLog | Page::AppHome)
 }
 
-fn page_shell(page: Page, cx: &mut Context<PowerLeafApp>) -> gpui::Div {
-    page_shell_with_help(page, None, cx)
+fn page_body_shell() -> gpui::Div {
+    v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
-fn search_results_page_shell(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
-    let header = h_flex()
+fn search_results_page_header(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
+    h_flex()
         .w_full()
         .min_h(px(PAGE_HEADER_HEIGHT))
         .flex_shrink_0()
@@ -12176,30 +12919,168 @@ fn search_results_page_shell(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .truncate()
                 .child(t!("dashboard.search_results").to_string()),
-        );
-
-    v_flex().w_full().min_w(px(0.0)).gap_2().child(header)
+        )
 }
 
-fn page_content_frame(page: AnyElement) -> gpui::Div {
+fn page_content_frame(
+    header: AnyElement,
+    body: AnyElement,
+    animation_key: SharedString,
+) -> gpui::Div {
+    let body = with_optional_motion(
+        div().w_full().min_w(px(0.0)).child(body),
+        SharedString::from(format!("page-content-{animation_key}")),
+        MotionSpeed::Standard,
+        |frame| frame,
+        |frame, delta| frame.opacity(0.24 + 0.76 * delta),
+    );
+    let content = v_flex()
+        .w_full()
+        .max_w(px(CONTENT_MAX_WIDTH))
+        .min_w(px(0.0))
+        .gap_2()
+        .child(header)
+        .child(body);
+
     h_flex()
         .w_full()
         .min_w(px(0.0))
         .justify_center()
         .px(px(24.0))
         .py(px(24.0))
-        .child(
-            div()
-                .w_full()
-                .max_w(px(CONTENT_MAX_WIDTH))
-                .min_w(px(0.0))
-                .child(page),
-        )
+        .child(content)
 }
 
-fn page_shell_with_help(
+#[derive(Clone, Copy)]
+enum MotionSpeed {
+    Fast,
+    Standard,
+}
+
+impl MotionSpeed {
+    fn animation(self) -> Animation {
+        match self {
+            Self::Fast => Animation::new(Duration::from_secs_f64(MOTION_FAST_SECONDS))
+                .with_easing(cubic_bezier(0.25, 1.0, 0.5, 1.0)),
+            Self::Standard => Animation::new(Duration::from_secs_f64(MOTION_STANDARD_SECONDS))
+                .with_easing(cubic_bezier(0.22, 1.0, 0.36, 1.0)),
+        }
+    }
+}
+
+fn with_optional_motion<E>(
+    element: E,
+    id: impl Into<SharedString>,
+    speed: MotionSpeed,
+    final_state: impl FnOnce(E) -> E,
+    animator: impl Fn(E, f32) -> E + 'static,
+) -> AnyElement
+where
+    E: IntoElement + 'static,
+{
+    if ui_animations_enabled() {
+        element
+            .with_animation(
+                gpui::ElementId::from(id.into()),
+                speed.animation(),
+                animator,
+            )
+            .into_any_element()
+    } else {
+        final_state(element).into_any_element()
+    }
+}
+
+fn collapsible_chevron_icon(id: impl Into<SharedString>, collapsed: bool) -> AnyElement {
+    let id = id.into();
+    let start_turns = if collapsed { 90.0 / 360.0 } else { 0.0 };
+    let end_turns = if collapsed { 0.0 } else { 90.0 / 360.0 };
+    let icon = Icon::new(NavIcon::ChevronRight).with_size(px(16.0));
+
+    with_optional_motion(
+        icon,
+        SharedString::from(format!("collapse-chevron-{id}-{collapsed}")),
+        MotionSpeed::Fast,
+        move |icon| icon.rotate(percentage(end_turns)),
+        move |icon, delta| {
+            let turns = start_turns + (end_turns - start_turns) * delta;
+            icon.rotate(percentage(turns))
+        },
+    )
+}
+
+fn animated_expanded_child(id: impl Into<SharedString>, child: AnyElement) -> AnyElement {
+    let id = id.into();
+    let container = div().w_full().min_w(px(0.0)).overflow_hidden().child(child);
+    with_optional_motion(
+        container,
+        SharedString::from(format!("expanded-child-{id}")),
+        MotionSpeed::Standard,
+        |container| container,
+        |container, delta| container.opacity(0.28 + 0.72 * delta),
+    )
+}
+
+fn animated_presence_child(id: impl Into<SharedString>, child: AnyElement) -> AnyElement {
+    let id = id.into();
+    let container = div().w_full().min_w(px(0.0)).overflow_hidden().child(child);
+    with_optional_motion(
+        container,
+        SharedString::from(format!("presence-{id}")),
+        MotionSpeed::Fast,
+        |container| container,
+        |container, delta| container.opacity(0.18 + 0.82 * delta),
+    )
+}
+
+fn animated_list_item_child(
+    id: impl Into<SharedString>,
+    child: AnyElement,
+    exiting: bool,
+) -> AnyElement {
+    let id = id.into();
+    let container = div()
+        .w_full()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .when(exiting, |container| {
+            container
+                .block_mouse_except_scroll()
+                .occlude()
+                .cursor_default()
+        })
+        .child(child);
+
+    if exiting {
+        with_optional_motion(
+            container,
+            SharedString::from(format!("presence-exit-{id}")),
+            MotionSpeed::Fast,
+            |container| container.opacity(0.0),
+            |container, delta| container.opacity(1.0 - delta),
+        )
+    } else {
+        with_optional_motion(
+            container,
+            SharedString::from(format!("presence-{id}")),
+            MotionSpeed::Fast,
+            |container| container,
+            |container, delta| container.opacity(0.18 + 0.82 * delta),
+        )
+    }
+}
+
+fn action_log_page_help() -> SharedString {
+    tooltip_lines(vec![
+        t!("action_log.intro_1").to_string(),
+        t!("action_log.intro_2").to_string(),
+    ])
+}
+
+fn page_header_with_help(
     page: Page,
     help: Option<SharedString>,
+    transition: Option<&BreadcrumbTransition>,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Div {
     let mut header = h_flex()
@@ -12210,31 +13091,61 @@ fn page_shell_with_help(
         .gap_2()
         .overflow_hidden();
 
-    if page == Page::Dashboard {
-        header = header.child(breadcrumb_current_label(page.label()));
-    } else {
-        let section_page = page.section_landing_page();
-        header = header
-            .child(breadcrumb_button(
-                SharedString::from(format!("breadcrumb-home-{page:?}")),
-                Page::Dashboard,
-                Page::Dashboard.label(),
-                cx,
-            ))
-            .child(breadcrumb_separator());
-
-        if page != section_page {
-            header = header
-                .child(breadcrumb_button(
-                    SharedString::from(format!("breadcrumb-section-{page:?}")),
-                    section_page,
-                    page.section_label(),
-                    cx,
-                ))
-                .child(breadcrumb_separator());
+    let current_trail = breadcrumb_trail(page);
+    let transition = transition.and_then(|transition| {
+        if transition.current == current_trail {
+            Some(transition)
+        } else {
+            None
         }
+    });
+    let entering_start = transition
+        .map(|transition| common_breadcrumb_prefix_len(&transition.previous, &current_trail))
+        .unwrap_or(current_trail.len());
 
-        header = header.child(breadcrumb_current_label(page.label()));
+    if let Some(first) = current_trail.first() {
+        header = header.child(breadcrumb_segment_element(
+            first,
+            current_trail.len() == 1,
+            true,
+            cx,
+        ));
+    }
+
+    for (index, segment) in current_trail.iter().enumerate().skip(1) {
+        let current = index + 1 == current_trail.len();
+        let group = breadcrumb_segment_group(segment, current, true, cx);
+
+        if transition.is_some() && index >= entering_start {
+            header = header.child(breadcrumb_transition_group(
+                SharedString::from(format!("breadcrumb-{:?}-{index}", segment.page)),
+                true,
+                group,
+            ));
+        } else {
+            header = header.child(group);
+        }
+    }
+
+    if let Some(transition) = transition {
+        if breadcrumb_starts_with(&transition.previous, &current_trail)
+            && transition.previous.len() > current_trail.len()
+        {
+            for (index, segment) in transition
+                .previous
+                .iter()
+                .enumerate()
+                .skip(current_trail.len())
+            {
+                let current = index + 1 == transition.previous.len();
+                let group = breadcrumb_segment_group(segment, current, false, cx);
+                header = header.child(breadcrumb_transition_group(
+                    SharedString::from(format!("breadcrumb-{:?}-{index}", segment.page)),
+                    false,
+                    group,
+                ));
+            }
+        }
     }
 
     if let Some(help) = help {
@@ -12244,7 +13155,7 @@ fn page_shell_with_help(
         ));
     }
 
-    v_flex().w_full().min_w(px(0.0)).gap_2().child(header)
+    header
 }
 
 fn tooltip_lines(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> SharedString {
@@ -12413,13 +13324,7 @@ fn rule_card_with_header_action(
         )
 }
 
-fn rule_card_collapse_indicator(collapsed: bool) -> AnyElement {
-    let icon = if collapsed {
-        NavIcon::ChevronRight
-    } else {
-        NavIcon::ChevronDown
-    };
-
+fn rule_card_collapse_indicator(card_target: RuleCardTarget, collapsed: bool) -> AnyElement {
     div()
         .w(px(28.0))
         .h(px(24.0))
@@ -12428,7 +13333,10 @@ fn rule_card_collapse_indicator(collapsed: bool) -> AnyElement {
         .justify_center()
         .text_color(rgb(dim_text_color()))
         .opacity(0.72)
-        .child(Icon::new(icon).with_size(px(16.0)))
+        .child(collapsible_chevron_icon(
+            SharedString::from(format!("rule-card-{card_target:?}")),
+            collapsed,
+        ))
         .into_any_element()
 }
 
@@ -12436,21 +13344,48 @@ fn rule_list() -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
-fn feature_body(enabled: bool) -> gpui::Div {
-    v_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .gap_2()
-        .relative()
-        .when(!enabled, |body| body.opacity(0.42).cursor_default())
+fn feature_body(_enabled: bool) -> gpui::Div {
+    v_flex().w_full().min_w(px(0.0)).gap_2().relative()
 }
 
 fn disabled_feature_body(
+    id: impl Into<SharedString>,
     body: gpui::Div,
     enabled: bool,
     cx: &mut Context<PowerLeafApp>,
-) -> gpui::Div {
-    body.when(!enabled, |body| body.child(disabled_interaction_shield(cx)))
+) -> AnyElement {
+    const DISABLED_FEATURE_DIM_OPACITY: f32 = 0.58;
+
+    let id = id.into();
+    let target_opacity = if enabled {
+        0.0
+    } else {
+        DISABLED_FEATURE_DIM_OPACITY
+    };
+    let start_opacity = if enabled {
+        DISABLED_FEATURE_DIM_OPACITY
+    } else {
+        0.0
+    };
+    let dim_layer = with_optional_motion(
+        div()
+            .absolute()
+            .inset_0()
+            .bg(cx.theme().background)
+            .cursor_default(),
+        SharedString::from(format!("feature-gray-layer-{id}-{enabled}")),
+        MotionSpeed::Standard,
+        move |layer| layer.opacity(target_opacity),
+        move |layer, delta| {
+            let opacity = start_opacity + (target_opacity - start_opacity) * delta;
+            layer.opacity(opacity)
+        },
+    );
+    let body = body.child(dim_layer).when(!enabled, |body| {
+        body.cursor_default().child(disabled_interaction_shield(cx))
+    });
+
+    body.into_any_element()
 }
 
 fn disabled_interaction_shield(cx: &mut Context<PowerLeafApp>) -> AnyElement {
@@ -12667,8 +13602,11 @@ fn setting_group_with_title_element(
                 ),
         );
     if !collapsed {
-        for row in rows {
-            group = group.child(row);
+        for (index, row) in rows.into_iter().enumerate() {
+            group = group.child(animated_expanded_child(
+                SharedString::from(format!("setting-group-{target:?}-row-{index}")),
+                row,
+            ));
         }
     }
     group
@@ -12679,12 +13617,6 @@ fn setting_group_collapse_button(
     collapsed: bool,
     _cx: &mut Context<PowerLeafApp>,
 ) -> AnyElement {
-    let icon = if collapsed {
-        NavIcon::ChevronRight
-    } else {
-        NavIcon::ChevronDown
-    };
-
     div()
         .id(SharedString::from(format!(
             "setting-group-chevron-{target:?}"
@@ -12699,7 +13631,10 @@ fn setting_group_collapse_button(
         .text_color(rgb(dim_text_color()))
         .opacity(0.72)
         .hover(|style| style.opacity(1.0))
-        .child(Icon::new(icon).with_size(px(16.0)))
+        .child(collapsible_chevron_icon(
+            SharedString::from(format!("setting-group-{target:?}")),
+            collapsed,
+        ))
         .into_any_element()
 }
 
@@ -13311,39 +14246,77 @@ fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui:
         )
 }
 
-fn io_stacked_history_bar(sample: IoUsageHistorySample, bar_height: f32) -> gpui::Div {
+fn animated_metric_history_bar(
+    id: impl Into<SharedString>,
+    target_height: f32,
+    color: Hsla,
+) -> AnyElement {
+    let target_height = target_height.max(8.0);
+    let bar = div().w_full().h(px(target_height)).bg(color);
+
+    with_optional_motion(
+        bar,
+        id,
+        MotionSpeed::Standard,
+        |bar| bar,
+        move |bar, delta| {
+            let height = 8.0 + (target_height - 8.0) * delta;
+            bar.h(px(height)).opacity(0.42 + 0.58 * delta)
+        },
+    )
+}
+
+fn io_stacked_history_bar(
+    id: impl Into<SharedString>,
+    sample: IoUsageHistorySample,
+    bar_height: f32,
+) -> AnyElement {
     let total = sample.total();
     if total <= 0.0 {
         return div()
             .w_full()
             .h(px(8.0))
             .bg(rgb(border_color()))
-            .opacity(0.35);
+            .opacity(0.35)
+            .into_any_element();
     }
 
     let read_height = bar_height * (sample.read_bytes_per_second / total);
     let write_height = (bar_height - read_height).max(0.0);
-    v_flex()
+    let bar = v_flex()
         .w_full()
         .h(px(bar_height))
         .overflow_hidden()
         .child(div().w_full().h(px(write_height)).bg(io_write_color()))
-        .child(div().w_full().h(px(read_height)).bg(io_read_color()))
+        .child(div().w_full().h(px(read_height)).bg(io_read_color()));
+
+    with_optional_motion(
+        bar,
+        id,
+        MotionSpeed::Standard,
+        |bar| bar,
+        |bar, delta| bar.opacity(0.42 + 0.58 * delta),
+    )
 }
 
-fn network_stacked_history_bar(sample: NetworkUsageHistorySample, bar_height: f32) -> gpui::Div {
+fn network_stacked_history_bar(
+    id: impl Into<SharedString>,
+    sample: NetworkUsageHistorySample,
+    bar_height: f32,
+) -> AnyElement {
     let total = sample.total();
     if total <= 0.0 {
         return div()
             .w_full()
             .h(px(8.0))
             .bg(rgb(border_color()))
-            .opacity(0.35);
+            .opacity(0.35)
+            .into_any_element();
     }
 
     let download_height = bar_height * (sample.download_bytes_per_second / total);
     let upload_height = (bar_height - download_height).max(0.0);
-    v_flex()
+    let bar = v_flex()
         .w_full()
         .h(px(bar_height))
         .overflow_hidden()
@@ -13358,7 +14331,15 @@ fn network_stacked_history_bar(sample: NetworkUsageHistorySample, bar_height: f3
                 .w_full()
                 .h(px(download_height))
                 .bg(network_download_color()),
-        )
+        );
+
+    with_optional_motion(
+        bar,
+        id,
+        MotionSpeed::Standard,
+        |bar| bar,
+        |bar, delta| bar.opacity(0.42 + 0.58 * delta),
+    )
 }
 
 fn io_read_color() -> Hsla {
@@ -13512,11 +14493,8 @@ fn action_log_header_row() -> gpui::Div {
 }
 
 fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful<gpui::Div> {
-    h_flex()
-        .id(SharedString::from(format!(
-            "action-log-entry-{}",
-            entry.sequence
-        )))
+    let row_id = SharedString::from(format!("action-log-entry-{}", entry.sequence));
+    let content = h_flex()
         .w_full()
         .min_w(px(0.0))
         .min_h(px(46.0))
@@ -13526,10 +14504,6 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
         .py_2()
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
-        .when(divided, |row| {
-            row.border_t_1().border_color(rgb(border_color()))
-        })
         .child(
             div()
                 .w(px(ACTION_LOG_SEQUENCE_WIDTH))
@@ -13572,7 +14546,18 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
                 .text_color(rgb(muted_text_color()))
                 .truncate()
                 .child(entry.reason.clone()),
-        )
+        );
+
+    h_flex()
+        .id(row_id.clone())
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(46.0))
+        .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .when(divided, |row| {
+            row.border_t_1().border_color(rgb(border_color()))
+        })
+        .child(animated_presence_child(row_id, content.into_any_element()))
 }
 
 fn action_log_result_tag(result: ActionLogResult) -> Tag {
@@ -13638,6 +14623,14 @@ fn theme_mode_label(mode: AppThemeMode) -> String {
         AppThemeMode::System => t!("theme.system").to_string(),
         AppThemeMode::Light => t!("theme.light").to_string(),
         AppThemeMode::Dark => t!("theme.dark").to_string(),
+    }
+}
+
+fn animation_mode_label(mode: AnimationMode) -> String {
+    match mode {
+        AnimationMode::System => t!("animation.system").to_string(),
+        AnimationMode::On => t!("animation.on").to_string(),
+        AnimationMode::Off => t!("animation.off").to_string(),
     }
 }
 
@@ -13953,6 +14946,24 @@ fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
         .into_any_element()
 }
 
+fn animated_checkmark(id: impl Into<SharedString>, check_color: u32) -> AnyElement {
+    let id = id.into();
+    let mark = div()
+        .text_size(px(TEXT_LABEL_SIZE))
+        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_color(rgb(check_color))
+        .child("\u{2713}");
+
+    with_optional_motion(
+        mark,
+        SharedString::from(format!("checkmark-{id}")),
+        MotionSpeed::Fast,
+        |mark| mark,
+        |mark, delta| mark.opacity(delta),
+    )
+}
+
 fn rule_enable_checkbox(
     id: impl Into<SharedString>,
     checked: bool,
@@ -13962,6 +14973,7 @@ fn rule_enable_checkbox(
     let accent = accent_color();
     let border_color = if checked { accent } else { border_color() };
     let check_color = accent_glyph_color(accent);
+    let mark_id = SharedString::from(format!("{id}-mark"));
 
     div()
         .id(id)
@@ -13984,14 +14996,7 @@ fn rule_enable_checkbox(
                 .border_color(rgb(border_color))
                 .when(checked, |this| this.bg(rgb(accent)))
                 .when(checked, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(TEXT_LABEL_SIZE))
-                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                            .font_weight(gpui::FontWeight::BOLD)
-                            .text_color(rgb(check_color))
-                            .child("✓"),
-                    )
+                    this.child(animated_checkmark(mark_id, check_color))
                 }),
         )
         .on_click(move |_, window, cx| {
@@ -14025,6 +15030,7 @@ fn checkbox(
     let handler = Rc::new(handler);
     let box_handler = handler.clone();
     let label_handler = handler;
+    let mark_id = SharedString::from(format!("{id}-mark"));
 
     h_flex()
         .w_full()
@@ -14054,14 +15060,7 @@ fn checkbox(
                         .border_color(rgb(border_color))
                         .when(checked, |this| this.bg(rgb(accent)))
                         .when(checked, |this| {
-                            this.child(
-                                div()
-                                    .text_size(px(TEXT_LABEL_SIZE))
-                                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(check_color))
-                                    .child("\u{2713}"),
-                            )
+                            this.child(animated_checkmark(mark_id, check_color))
                         })
                         .hover(|style| style.opacity(0.86))
                         .cursor_pointer()
@@ -14109,6 +15108,7 @@ fn checkbox_with_help(
     let handler = Rc::new(handler);
     let box_handler = handler.clone();
     let label_handler = handler;
+    let mark_id = SharedString::from(format!("{id}-mark"));
 
     h_flex()
         .w_full()
@@ -14138,14 +15138,7 @@ fn checkbox_with_help(
                         .border_color(rgb(border_color))
                         .when(checked, |this| this.bg(rgb(accent)))
                         .when(checked, |this| {
-                            this.child(
-                                div()
-                                    .text_size(px(TEXT_LABEL_SIZE))
-                                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                                    .font_weight(gpui::FontWeight::BOLD)
-                                    .text_color(rgb(check_color))
-                                    .child("\u{2713}"),
-                            )
+                            this.child(animated_checkmark(mark_id, check_color))
                         })
                         .hover(|style| style.opacity(0.86))
                         .cursor_pointer()
@@ -14320,11 +15313,6 @@ fn nav_row(
     } else {
         cx.theme().transparent
     };
-    let indicator = if selected {
-        rgb(accent_color()).into()
-    } else {
-        cx.theme().transparent
-    };
     let text_color = if selected {
         cx.theme().sidebar_foreground
     } else {
@@ -14349,7 +15337,7 @@ fn nav_row(
         .text_color(text_color)
         .hover(move |style| style.bg(hover_bg))
         .cursor_pointer()
-        .child(div().w(px(3.0)).h(px(20.0)).rounded_sm().bg(indicator))
+        .child(nav_selection_indicator(page, selected))
         .child(nav_icon(page, selected, cx))
         .child(
             div()
@@ -14366,6 +15354,27 @@ fn nav_row(
     } else {
         row
     }
+}
+
+fn nav_selection_indicator(page: Page, selected: bool) -> AnyElement {
+    let indicator = div()
+        .w(px(3.0))
+        .h(px(20.0))
+        .rounded_sm()
+        .bg(rgb(accent_color()))
+        .opacity(if selected { 1.0 } else { 0.0 });
+
+    with_optional_motion(
+        indicator,
+        SharedString::from(format!("nav-selection-indicator-{page:?}-{selected}")),
+        MotionSpeed::Fast,
+        |indicator| indicator,
+        move |indicator, delta| {
+            let progress = if selected { delta } else { 1.0 - delta };
+            let height = 4.0 + 16.0 * progress;
+            indicator.h(px(height)).opacity(progress)
+        },
+    )
 }
 
 fn nav_status_indicator(status: NavStatus) -> AnyElement {
@@ -14476,7 +15485,7 @@ fn nav_icon(page: Page, selected: bool, cx: &mut Context<PowerLeafApp>) -> AnyEl
         cx.theme().muted_foreground
     };
 
-    div()
+    let icon = div()
         .w(px(22.0))
         .h(px(22.0))
         .flex()
@@ -14487,8 +15496,19 @@ fn nav_icon(page: Page, selected: bool, cx: &mut Context<PowerLeafApp>) -> AnyEl
             Icon::new(nav_icon_name(page))
                 .with_size(px(18.0))
                 .text_color(color),
+        );
+
+    if selected {
+        with_optional_motion(
+            icon,
+            SharedString::from(format!("nav-icon-{page:?}-{selected}")),
+            MotionSpeed::Fast,
+            |icon| icon,
+            |icon, delta| icon.opacity(0.68 + 0.32 * delta),
         )
-        .into_any_element()
+    } else {
+        icon.into_any_element()
+    }
 }
 
 fn nav_icon_name(page: Page) -> NavIcon {
@@ -14690,10 +15710,11 @@ fn switch_toggle_action(
     enabled: bool,
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    let id = id.into();
     h_flex()
-        .id(id.into())
+        .id(id.clone())
         .items_center()
-        .child(switch_indicator(enabled))
+        .child(switch_indicator(id, enabled))
         .cursor_pointer()
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
@@ -14703,7 +15724,7 @@ fn switch_toggle_action(
         .into_any_element()
 }
 
-fn switch_indicator(enabled: bool) -> gpui::Div {
+fn switch_indicator(id: SharedString, enabled: bool) -> gpui::Div {
     let accent = switch_accent_color();
     let switch_bg = if enabled {
         accent
@@ -14719,6 +15740,24 @@ fn switch_indicator(enabled: bool) -> gpui::Div {
         0x5f5f5f
     };
     let state_label = if enabled { "On" } else { "Off" };
+    let knob_start = if enabled { 4.0 } else { 24.0 };
+    let knob_end = if enabled { 24.0 } else { 4.0 };
+    let knob = div()
+        .absolute()
+        .top(px(3.0))
+        .size(px(12.0))
+        .rounded_full()
+        .bg(rgb(knob_bg));
+    let knob = with_optional_motion(
+        knob,
+        SharedString::from(format!("switch-knob-{id}-{enabled}")),
+        MotionSpeed::Fast,
+        move |knob| knob.left(px(knob_end)),
+        move |knob, delta| {
+            let left = knob_start + (knob_end - knob_start) * delta;
+            knob.left(px(left))
+        },
+    );
 
     h_flex()
         .items_center()
@@ -14742,10 +15781,8 @@ fn switch_indicator(enabled: bool) -> gpui::Div {
                 .border_1()
                 .border_color(rgb(switch_border))
                 .bg(rgb(switch_bg))
-                .px(px(4.0))
-                .when(enabled, |track| track.justify_end())
-                .when(!enabled, |track| track.justify_start())
-                .child(div().size(px(12.0)).rounded_full().bg(rgb(knob_bg))),
+                .relative()
+                .child(knob),
         )
 }
 
