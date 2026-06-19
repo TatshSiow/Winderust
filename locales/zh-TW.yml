@@ -20,6 +20,7 @@ nav:
   app_suspension: "應用程式暫停"
   foreground_responsiveness: "自動平衡"
   io_priority: "I/O 優先順序"
+  gpu_priority: "GPU 優先順序"
   memory_priority: "記憶體優先順序"
   smart_trim: "SmartTrim"
   performance_mode: "執行中應用程式電源計畫"
@@ -28,6 +29,7 @@ nav:
   schedule: "時間規則"
   action_log: "記錄"
   settings: "設定"
+  timer_resolution: "計時器解析度"
   win32_priority_separation: "Win32PrioritySeparation"
   about: "關於"
 
@@ -507,6 +509,20 @@ io_priority:
   indicator_adjusted: "已調整"
   no_rules: "尚未設定 I/O 優先順序規則。"
 
+gpu_priority:
+  intro_1: "GPU 優先順序會變更選定程序的 Windows 圖形排程器優先順序類別。"
+  intro_2: "這會使用 WDDM D3DKMT 程序排程優先順序，並在規則不再符合時還原先前值。"
+  intro_3: "預設不提供 High 與 Realtime GPU 優先順序。"
+  enable: "啟用 GPU 優先順序規則"
+  exclude_foreground: "前景 App 偵測"
+  exclude_foreground_help: "讓目前前景 App 不受 GPU 優先順序變更影響。"
+  priority: "GPU 優先順序"
+  priority_above_normal: "高於標準"
+  priority_normal: "標準"
+  priority_below_normal: "低於標準"
+  priority_idle: "閒置"
+  no_rules: "尚未設定 GPU 優先順序規則。"
+
 memory_priority:
   intro_1: "記憶體優先順序會降低選定背景程序的分頁優先順序。"
   intro_2: "這會使用 Windows 原生程序記憶體優先順序提示，並在規則不再符合時還原先前值。"
@@ -516,6 +532,23 @@ memory_priority:
   priority: "記憶體優先順序"
   indicator_adjusted: "已調整"
   no_rules: "尚未設定記憶體優先順序規則。"
+
+timer_resolution:
+  intro_1: "計時器解析度會在符合規則的 App 位於前景時要求 Windows 系統計時器解析度。"
+  intro_2: "每個前景規則都可以使用自己的毫秒解析度值。"
+  intro_3: "沒有前景規則符合、停用此控制或結束 App 時，PowerLeaf 會釋放自己的要求。"
+  enable: "啟用計時器解析度控制"
+  warning: "較低的計時器值可能增加 CPU 喚醒與電池耗電。除非工作負載需要，否則建議保持關閉。"
+  current: "目前解析度"
+  requested: "PowerLeaf 要求"
+  foreground_rule: "前景規則"
+  no_active_request: "沒有作用中的要求"
+  no_matching_rule: "沒有符合的 App"
+  no_rules: "尚未設定計時器解析度前景規則。"
+  minimum: "支援的最小值"
+  minimum_help: "支援的最小間隔。數字越小代表計時器解析度越高。"
+  maximum: "支援的最大值"
+  maximum_help: "支援的最大間隔。數字越大代表計時器解析度越低。"
 
 smart_trim:
   intro_1: "SmartTrim 會在記憶體壓力高時修剪閒置高記憶體背景程序。"

@@ -55,6 +55,39 @@ power efficiency, foreground responsiveness, and conservative process control.
    - Add dedicated pages or integrate controls into existing process-control pages.
    - Add gaming/work/battery profile presets after the runtime systems are stable.
 
+7. GPU Priority Control
+   - Status: backend, automation worker, Action Log, Process Control UI page, navigation, search, and locale entries implemented.
+   - Add per-process GPU scheduling priority rules after the existing CPU, I/O, and memory priority paths are stable.
+   - Use a dedicated backend module such as `src/gpu_priority.rs` instead of folding this into CPU priority, CPU limiter, or EcoQoS.
+   - Use the WDDM D3DKMT process scheduling priority APIs:
+     - `D3DKMTGetProcessSchedulingPriorityClass`
+     - `D3DKMTSetProcessSchedulingPriorityClass`
+     - `D3DKMT_SCHEDULINGPRIORITYCLASS`
+   - Reference implementation/API sources:
+     - System Informer exposes wrappers in `phlib/include/phutil.h` and D3DKMT declarations in `plugins/ExtendedTools/d3dkmt/d3dkmthk.h`: https://github.com/winsiderss/systeminformer
+     - NtDoc WDDM API docs: https://ntdoc.m417z.com/d3dkmtsetprocessschedulingpriorityclass, https://ntdoc.m417z.com/d3dkmtgetprocessschedulingpriorityclass, https://ntdoc.m417z.com/d3dkmt_schedulingpriorityclass
+   - Start with manual per-process rules: Idle, Below Normal, Normal, and Above Normal.
+   - Do not expose High or Realtime by default. If they are ever added, gate them behind an explicit advanced warning and never apply them automatically.
+   - Store the previous GPU scheduling priority per PID and restore it on rule removal, disable, process exit, or app shutdown.
+   - Reuse existing process safety gates: skip PowerLeaf itself, system/protected processes, built-in exclusions, cross-session processes, and foreground apps when the setting says to exclude foreground apps.
+   - Add Action Log events for apply, restore, skip, and failure.
+   - UI placement: Process Policies as "GPU Priority", and expose a compact per-process toggle/selector in Process Rules after backend behavior is proven.
+
+8. Timer Resolution Control
+   - Status: backend, foreground-rule automation, Action Log, Advanced UI page, navigation, search, and locale entries implemented.
+   - Add a system-wide timer resolution page under Advanced, not under Process Policies. This is a global scheduler/power request, but PowerLeaf applies it only while a matching foreground rule is active.
+   - Use a dedicated backend module such as `src/timer_resolution.rs`.
+   - Use native timer resolution APIs:
+     - `NtQueryTimerResolution` to read maximum, minimum, and current timer resolution.
+     - `NtSetTimerResolution` to request or release a resolution from the PowerLeaf process.
+   - Reference API source: NtDoc timer docs at https://ntdoc.m417z.com/ntquerytimerresolution and https://ntdoc.m417z.com/ntsettimerresolution
+   - Display editable foreground-rule values in milliseconds while keeping internal values in 100-nanosecond units.
+   - Treat PowerLeaf's request as process-held state: release it on disable, app shutdown, failed setting apply, and when the foreground app no longer matches a rule.
+   - Show both the requested resolution and the actual current resolution because Windows may clamp the request.
+   - Default to off and require at least one foreground app rule before requesting a resolution.
+   - Add a warning in the UI that lower timer values can increase wakeups and battery drain.
+   - Add Action Log events for request, release, query failure, apply failure, and actual-resolution changes.
+
 ## Safety Constraints
 
 - Do not touch system processes.
@@ -62,3 +95,5 @@ power efficiency, foreground responsiveness, and conservative process control.
 - Restore all runtime changes on disable/drop when possible.
 - Treat access denied as skipped unless it indicates an implementation bug.
 - Prefer isolated first versions over a premature shared process-policy manager.
+- For GPU priority, apply the same priority safety posture as CPU priority unless a future explicit advanced mode says otherwise.
+- For timer resolution, always release PowerLeaf's active request before shutdown and whenever automation is disabled.

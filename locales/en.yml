@@ -24,6 +24,7 @@ nav:
   performance_mode: "By Running App"
   foreground_responsiveness: "Auto Balance"
   io_priority: "I/O Priority"
+  gpu_priority: "GPU Priority"
   memory_priority: "Memory Priority"
   smart_trim: "SmartTrim"
   cpu_affinity: "Core Steering"
@@ -31,6 +32,7 @@ nav:
   schedule: "By Time"
   action_log: "Log"
   settings: "Settings"
+  timer_resolution: "Timer Resolution"
   win32_priority_separation: "Win32PrioritySeparation"
   about: "About"
 
@@ -551,6 +553,20 @@ io_priority:
   indicator_adjusted: "Adjusted"
   no_rules: "No I/O priority rules are configured."
 
+gpu_priority:
+  intro_1: "GPU Priority changes the Windows graphics scheduler priority class for selected processes."
+  intro_2: "This uses WDDM D3DKMT process scheduling priority and restores the previous value when a rule stops matching."
+  intro_3: "High and Realtime GPU priority are intentionally not exposed."
+  enable: "Enable GPU Priority Rules"
+  exclude_foreground: "Focus App Detection"
+  exclude_foreground_help: "Leaves the current foreground app out of GPU priority changes."
+  priority: "GPU priority"
+  priority_above_normal: "Above Normal"
+  priority_normal: "Normal"
+  priority_below_normal: "Below Normal"
+  priority_idle: "Idle"
+  no_rules: "No GPU priority rules are configured."
+
 memory_priority:
   intro_1: "Memory Priority lowers selected background processes' page priority."
   intro_2: "This uses Windows native process memory priority hints and restores the previous value when a rule stops matching."
@@ -560,6 +576,23 @@ memory_priority:
   priority: "Memory priority"
   indicator_adjusted: "Adjusted"
   no_rules: "No memory priority rules are configured."
+
+timer_resolution:
+  intro_1: "Timer Resolution requests a Windows system timer resolution while a matching app is in the foreground."
+  intro_2: "Each foreground rule can use its own timer resolution value in milliseconds."
+  intro_3: "PowerLeaf releases its request when no foreground rule matches, this control is disabled, or the app exits."
+  enable: "Enable Timer Resolution Control"
+  warning: "Lower timer values can increase CPU wakeups and battery drain. Leave this off unless a workload needs it."
+  current: "Current resolution"
+  requested: "PowerLeaf request"
+  foreground_rule: "Foreground rule"
+  no_active_request: "No active request"
+  no_matching_rule: "No matching app"
+  no_rules: "No timer resolution foreground rules are configured."
+  minimum: "Minimum supported"
+  minimum_help: "The smallest supported interval. Smaller numbers mean higher timer resolution."
+  maximum: "Maximum supported"
+  maximum_help: "The largest supported interval. Larger numbers mean lower timer resolution."
 
 smart_trim:
   intro_1: "SmartTrim trims idle high-memory background processes when total memory pressure is high."

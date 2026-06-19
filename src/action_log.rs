@@ -30,8 +30,10 @@ pub enum ActionLogFeature {
     Watchdog,
     ForegroundResponsiveness,
     IoPriority,
+    GpuPriority,
     MemoryPriority,
     SmartTrim,
+    TimerResolution,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

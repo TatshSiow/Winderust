@@ -121,12 +121,13 @@ mod tests {
         EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode,
         EcoQosCpuRestrictionStrategy, EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
         ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GeneralSettings,
-        InputDetectionSettings, IoPriorityRule, IoPrioritySettings, ManualOverride,
-        MemoryPriorityRule, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
-        PerformanceModeSettings, PowerPlanSettings, PriorityRule, ProcessExclusionRule,
-        ProcessIoPriority, ProcessMemoryPriority, ProcessPriority, ScheduleModeSettings,
-        ScheduleRule, SmartTrimSettings, WatchdogAction, WatchdogRule, WatchdogSettings,
-        WeekdaySetting,
+        GpuPriorityRule, GpuPrioritySettings, InputDetectionSettings, IoPriorityRule,
+        IoPrioritySettings, ManualOverride, MemoryPriorityRule, MemoryPrioritySettings,
+        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
+        PriorityRule, ProcessExclusionRule, ProcessGpuPriority, ProcessIoPriority,
+        ProcessMemoryPriority, ProcessPriority, ScheduleModeSettings, ScheduleRule,
+        SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
+        WatchdogRule, WatchdogSettings, WeekdaySetting,
     };
 
     #[test]
@@ -390,6 +391,15 @@ mod tests {
                     priority: ProcessIoPriority::Low,
                 }],
             },
+            gpu_priority: GpuPrioritySettings {
+                enabled: true,
+                exclude_foreground_app: true,
+                rules: vec![GpuPriorityRule {
+                    enabled: true,
+                    process_name: "render.exe".to_owned(),
+                    priority: ProcessGpuPriority::BelowNormal,
+                }],
+            },
             memory_priority: MemoryPrioritySettings {
                 enabled: true,
                 exclude_foreground_app: true,
@@ -397,6 +407,15 @@ mod tests {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
                     priority: ProcessMemoryPriority::Low,
+                }],
+            },
+            timer_resolution: TimerResolutionSettings {
+                enabled: true,
+                desired_100ns: 10_000,
+                rules: vec![TimerResolutionRule {
+                    enabled: true,
+                    process_name: "game.exe".to_owned(),
+                    desired_100ns: 5_000,
                 }],
             },
             smart_trim: SmartTrimSettings {

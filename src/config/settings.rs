@@ -36,9 +36,13 @@ pub struct Settings {
     #[serde(default)]
     pub io_priority: IoPrioritySettings,
     #[serde(default)]
+    pub gpu_priority: GpuPrioritySettings,
+    #[serde(default)]
     pub memory_priority: MemoryPrioritySettings,
     #[serde(default)]
     pub smart_trim: SmartTrimSettings,
+    #[serde(default)]
+    pub timer_resolution: TimerResolutionSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -609,6 +613,18 @@ pub struct IoPrioritySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuPrioritySettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub exclude_foreground_app: bool,
+    #[serde(default)]
+    pub rules: Vec<GpuPriorityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPrioritySettings {
     pub enabled: bool,
     #[serde(
@@ -618,6 +634,15 @@ pub struct MemoryPrioritySettings {
     pub exclude_foreground_app: bool,
     #[serde(default)]
     pub rules: Vec<MemoryPriorityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimerResolutionSettings {
+    pub enabled: bool,
+    #[serde(default = "default_timer_resolution_100ns")]
+    pub desired_100ns: u32,
+    #[serde(default)]
+    pub rules: Vec<TimerResolutionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -663,11 +688,28 @@ pub struct IoPriorityRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GpuPriorityRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+    pub priority: ProcessGpuPriority,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPriorityRule {
     #[serde(default = "default_rule_enabled")]
     pub enabled: bool,
     pub process_name: String,
     pub priority: ProcessMemoryPriority,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimerResolutionRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+    #[serde(default = "default_timer_resolution_100ns")]
+    pub desired_100ns: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -681,6 +723,25 @@ pub enum ProcessIoPriority {
 
 impl ProcessIoPriority {
     pub const ALL: [Self; 3] = [Self::Normal, Self::Low, Self::VeryLow];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessGpuPriority {
+    AboveNormal,
+    Normal,
+    #[default]
+    BelowNormal,
+    Idle,
+}
+
+impl ProcessGpuPriority {
+    pub const ALL: [Self; 4] = [
+        Self::AboveNormal,
+        Self::Normal,
+        Self::BelowNormal,
+        Self::Idle,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -882,8 +943,10 @@ impl Default for Settings {
             watchdog: WatchdogSettings::default(),
             foreground_responsiveness: ForegroundResponsivenessSettings::default(),
             io_priority: IoPrioritySettings::default(),
+            gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
             smart_trim: SmartTrimSettings::default(),
+            timer_resolution: TimerResolutionSettings::default(),
         }
     }
 }
@@ -1076,6 +1139,10 @@ const fn default_smart_trim_purge_only_in_performance_mode() -> bool {
 
 const fn default_smart_trim_purge_free_ram_threshold_mb() -> u64 {
     1024
+}
+
+const fn default_timer_resolution_100ns() -> u32 {
+    10_000
 }
 
 const fn default_eco_qos_cpu_restriction_percent() -> u8 {
@@ -1307,11 +1374,31 @@ impl Default for IoPrioritySettings {
     }
 }
 
+impl Default for GpuPrioritySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            exclude_foreground_app: default_exclude_foreground_app(),
+            rules: Vec::new(),
+        }
+    }
+}
+
 impl Default for MemoryPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
             exclude_foreground_app: default_exclude_foreground_app(),
+            rules: Vec::new(),
+        }
+    }
+}
+
+impl Default for TimerResolutionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            desired_100ns: default_timer_resolution_100ns(),
             rules: Vec::new(),
         }
     }
@@ -1356,6 +1443,22 @@ impl IoPrioritySettings {
     }
 }
 
+impl GpuPrioritySettings {
+    pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessGpuPriority> {
+        self.rules
+            .iter()
+            .find(|rule| {
+                rule.enabled
+                    && !rule.process_name.trim().is_empty()
+                    && wildcard_match(
+                        &rule.process_name.trim().to_ascii_lowercase(),
+                        &process_name.trim().to_ascii_lowercase(),
+                    )
+            })
+            .map(|rule| rule.priority)
+    }
+}
+
 impl MemoryPrioritySettings {
     pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessMemoryPriority> {
         self.rules
@@ -1369,6 +1472,30 @@ impl MemoryPrioritySettings {
                     )
             })
             .map(|rule| rule.priority)
+    }
+}
+
+impl TimerResolutionSettings {
+    pub fn desired_resolution_for_foreground(&self, process_name: &str) -> Option<(String, u32)> {
+        self.rules
+            .iter()
+            .find(|rule| {
+                rule.enabled
+                    && !rule.process_name.trim().is_empty()
+                    && wildcard_match(
+                        &rule.process_name.trim().to_ascii_lowercase(),
+                        &process_name.trim().to_ascii_lowercase(),
+                    )
+            })
+            .map(|rule| (rule.process_name.clone(), rule.desired_100ns))
+    }
+
+    pub fn contains_rule_for(&self, process_name: &str) -> bool {
+        self.rules.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
     }
 }
 
@@ -1927,6 +2054,35 @@ mod tests {
         assert!(settings.auto_balance_exclusion_enabled_for("worker1.exe"));
         assert!(!settings.auto_balance_exclusion_enabled_for("worker12.exe"));
         assert!(!settings.auto_balance_exclusion_enabled_for("disabled.exe"));
+    }
+
+    #[test]
+    fn timer_resolution_rules_match_foreground_process_names() {
+        let settings = TimerResolutionSettings {
+            enabled: true,
+            desired_100ns: 10_000,
+            rules: vec![
+                TimerResolutionRule {
+                    enabled: true,
+                    process_name: "game*.exe".to_owned(),
+                    desired_100ns: 5_000,
+                },
+                TimerResolutionRule {
+                    enabled: false,
+                    process_name: "disabled.exe".to_owned(),
+                    desired_100ns: 10_000,
+                },
+            ],
+        };
+
+        assert_eq!(
+            settings.desired_resolution_for_foreground("GameClient.exe"),
+            Some(("game*.exe".to_owned(), 5_000))
+        );
+        assert_eq!(
+            settings.desired_resolution_for_foreground("disabled.exe"),
+            None
+        );
     }
 
     #[test]

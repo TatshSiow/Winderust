@@ -51,11 +51,12 @@ use crate::{
         CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, IoPriorityRule, IoPrioritySettings, MemoryPriorityRule,
-        MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
-        PriorityRule, ProcessExclusionRule, ProcessIoPriority, ProcessMemoryPriority,
-        ProcessPriority, ScheduleRule, Settings, SmartTrimSettings, WatchdogAction, WatchdogRule,
-        WatchdogSettings, WeekdaySetting,
+        ForegroundRules, GpuPriorityRule, GpuPrioritySettings, IoPriorityRule, IoPrioritySettings,
+        MemoryPriorityRule, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
+        PerformanceModeSettings, PriorityRule, ProcessExclusionRule, ProcessGpuPriority,
+        ProcessIoPriority, ProcessMemoryPriority, ProcessPriority, ScheduleRule, Settings,
+        SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
+        WatchdogRule, WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -65,6 +66,7 @@ use crate::{
     },
     ecoqos::{self, EcoQosSnapshot},
     foreground::{list_process_candidates, ForegroundDetector, ProcessCandidateInfo},
+    gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
     memory_priority::{self, MemoryPrioritySnapshot},
     performance_mode::{self, PerformanceModeSnapshot},
@@ -84,6 +86,7 @@ use crate::{
     smart_trim::{self, SmartTrimSnapshot},
     startup,
     suspension::{self, AppSuspensionSnapshot},
+    timer_resolution::{self, TimerResolutionSnapshot},
     tray::{self, TrayIcon},
     ui::{self, Page},
     watchdog::{self, WatchdogSnapshot},
@@ -150,6 +153,8 @@ const ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS: u64 = 60 * 60;
 const ACTIVITY_CHECK_INTERVAL_MIN_MS: u64 = 250;
 const ACTIVITY_CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
 const ACTIVITY_CHECK_INTERVAL_STEP_MS: u64 = 250;
+const TIMER_RESOLUTION_INPUT_MIN_MS: f64 = 0.1;
+const TIMER_RESOLUTION_INPUT_MAX_MS: f64 = 1000.0;
 const AUTO_BALANCE_THRESHOLD_MIN_PERCENT: u64 = 1;
 const AUTO_BALANCE_THRESHOLD_MAX_PERCENT: u64 = 100;
 const AUTO_BALANCE_SECONDS_MIN: u64 = 1;
@@ -314,8 +319,10 @@ pub struct PowerLeafApp {
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     io_priority_status: IoPrioritySnapshot,
+    gpu_priority_status: GpuPrioritySnapshot,
     memory_priority_status: MemoryPrioritySnapshot,
     smart_trim_status: SmartTrimSnapshot,
+    timer_resolution_status: TimerResolutionSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
     action_log_filter: ActionLogResultFilter,
     foreground_app: Option<String>,
@@ -482,7 +489,9 @@ enum ListItemRemovalTarget {
     ResponsivenessRule(usize),
     ResponsivenessExclusion(usize),
     IoPriorityRule(usize),
+    GpuPriorityRule(usize),
     MemoryPriorityRule(usize),
+    TimerResolutionRule(usize),
     SmartTrimExclusion(usize),
     CpuAffinityRule(usize),
 }
@@ -502,9 +511,11 @@ impl ListItemRemovalTarget {
             Self::ResponsivenessRule(_) => 9,
             Self::ResponsivenessExclusion(_) => 10,
             Self::IoPriorityRule(_) => 11,
-            Self::MemoryPriorityRule(_) => 12,
-            Self::SmartTrimExclusion(_) => 13,
-            Self::CpuAffinityRule(_) => 14,
+            Self::GpuPriorityRule(_) => 12,
+            Self::MemoryPriorityRule(_) => 13,
+            Self::TimerResolutionRule(_) => 14,
+            Self::SmartTrimExclusion(_) => 15,
+            Self::CpuAffinityRule(_) => 16,
         }
     }
 
@@ -522,7 +533,9 @@ impl ListItemRemovalTarget {
             | Self::ResponsivenessRule(index)
             | Self::ResponsivenessExclusion(index)
             | Self::IoPriorityRule(index)
+            | Self::GpuPriorityRule(index)
             | Self::MemoryPriorityRule(index)
+            | Self::TimerResolutionRule(index)
             | Self::SmartTrimExclusion(index)
             | Self::CpuAffinityRule(index) => index,
         }
@@ -542,7 +555,9 @@ impl ListItemRemovalTarget {
             Self::ResponsivenessRule(_) => Self::ResponsivenessRule(index),
             Self::ResponsivenessExclusion(_) => Self::ResponsivenessExclusion(index),
             Self::IoPriorityRule(_) => Self::IoPriorityRule(index),
+            Self::GpuPriorityRule(_) => Self::GpuPriorityRule(index),
             Self::MemoryPriorityRule(_) => Self::MemoryPriorityRule(index),
+            Self::TimerResolutionRule(_) => Self::TimerResolutionRule(index),
             Self::SmartTrimExclusion(_) => Self::SmartTrimExclusion(index),
             Self::CpuAffinityRule(_) => Self::CpuAffinityRule(index),
         }
@@ -576,7 +591,9 @@ struct UiInputs {
     affinity_process: Entity<InputState>,
     responsiveness_process: Entity<InputState>,
     io_priority_process: Entity<InputState>,
+    gpu_priority_process: Entity<InputState>,
     memory_priority_process: Entity<InputState>,
+    timer_resolution_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
     activity_idle_timeout: Entity<SliderState>,
     activity_check_interval: Entity<SliderState>,
@@ -778,7 +795,9 @@ impl UiInputs {
             affinity_process: make_input(window, cx, "", "Search running apps..."),
             responsiveness_process: make_input(window, cx, "", "Search running apps..."),
             io_priority_process: make_input(window, cx, "", "Search running apps..."),
+            gpu_priority_process: make_input(window, cx, "", "Search running apps..."),
             memory_priority_process: make_input(window, cx, "", "Search running apps..."),
+            timer_resolution_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
             activity_idle_timeout: make_range_slider(
                 cx,
@@ -979,6 +998,8 @@ impl PowerLeafApp {
             .map(normalize_win32_priority_separation_value)
             .unwrap_or(WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT);
         let win32_priority_separation_backup = read_win32_priority_separation_backup();
+        let initial_timer_resolution_status =
+            timer_resolution::query_snapshot(settings.timer_resolution.enabled);
 
         let mut app = Self {
             saved_settings: settings.clone(),
@@ -1009,8 +1030,10 @@ impl PowerLeafApp {
             watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
             io_priority_status: IoPrioritySnapshot::default(),
+            gpu_priority_status: GpuPrioritySnapshot::default(),
             memory_priority_status: MemoryPrioritySnapshot::default(),
             smart_trim_status: SmartTrimSnapshot::default(),
+            timer_resolution_status: initial_timer_resolution_status,
             action_log_entries: Vec::new(),
             action_log_filter: ActionLogResultFilter::All,
             foreground_app: None,
@@ -1375,12 +1398,22 @@ impl PowerLeafApp {
                     self.settings.io_priority.rules.remove(index);
                 }
             }
+            ListItemRemovalTarget::GpuPriorityRule(index) => {
+                if index < self.settings.gpu_priority.rules.len() {
+                    self.settings.gpu_priority.rules.remove(index);
+                }
+            }
             ListItemRemovalTarget::MemoryPriorityRule(index) => {
                 if index < self.settings.memory_priority.rules.len() {
                     self.settings.memory_priority.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
+            }
+            ListItemRemovalTarget::TimerResolutionRule(index) => {
+                if index < self.settings.timer_resolution.rules.len() {
+                    self.settings.timer_resolution.rules.remove(index);
+                }
             }
             ListItemRemovalTarget::SmartTrimExclusion(index) => {
                 if index < self.settings.smart_trim.exclusions.len() {
@@ -2323,6 +2356,11 @@ impl PowerLeafApp {
             changed = true;
         }
 
+        if self.gpu_priority_status != background_status.gpu_priority {
+            self.gpu_priority_status = background_status.gpu_priority;
+            changed = true;
+        }
+
         if self.memory_priority_status != background_status.memory_priority {
             self.memory_priority_status = background_status.memory_priority;
             changed = true;
@@ -2331,6 +2369,20 @@ impl PowerLeafApp {
         if self.smart_trim_status != background_status.smart_trim {
             self.smart_trim_status = background_status.smart_trim;
             changed = true;
+        }
+
+        if self.timer_resolution_status != background_status.timer_resolution {
+            self.timer_resolution_status = background_status.timer_resolution;
+            changed = true;
+        }
+
+        if self.page == Page::TimerResolution && !self.settings.timer_resolution.enabled {
+            let timer_resolution_status =
+                timer_resolution::query_snapshot(self.settings.timer_resolution.enabled);
+            if self.timer_resolution_status != timer_resolution_status {
+                self.timer_resolution_status = timer_resolution_status;
+                changed = true;
+            }
         }
 
         if self.action_log_entries != background_status.action_log_entries {
@@ -2411,7 +2463,9 @@ impl PowerLeafApp {
                 | Page::Watchdog
                 | Page::ForegroundResponsiveness
                 | Page::IoPriority
+                | Page::GpuPriority
                 | Page::MemoryPriority
+                | Page::TimerResolution
                 | Page::PerformanceMode
                 | Page::CpuAffinity
         )
@@ -3049,6 +3103,14 @@ impl PowerLeafApp {
                     rule.restart_delay_seconds = value;
                 }
             }
+            NumericField::TimerResolutionRule(index) => {
+                if let (Some(rule), Some(value)) = (
+                    self.settings.timer_resolution.rules.get_mut(index),
+                    parse_timer_resolution_input_100ns(&value),
+                ) {
+                    rule.desired_100ns = value;
+                }
+            }
             NumericField::NetworkThreshold(field) => {
                 let Ok(value) = value.parse::<f64>() else {
                     return;
@@ -3365,6 +3427,11 @@ impl PowerLeafApp {
                 self.io_priority_status.failed_processes,
                 self.io_priority_status.last_error.is_some(),
             )),
+            Page::GpuPriority => Some(process_nav_status(
+                settings.gpu_priority.enabled,
+                self.gpu_priority_status.failed_processes,
+                self.gpu_priority_status.last_error.is_some(),
+            )),
             Page::MemoryPriority => Some(process_nav_status(
                 settings.memory_priority.enabled,
                 self.memory_priority_status.failed_processes,
@@ -3384,6 +3451,12 @@ impl PowerLeafApp {
                 settings.schedule_mode.rules.len(),
             )),
             Page::ActionLog => None,
+            Page::TimerResolution => Some(process_rule_nav_status(
+                settings.timer_resolution.enabled,
+                settings.timer_resolution.rules.len(),
+                self.timer_resolution_status.failed_actions,
+                self.timer_resolution_status.last_error.is_some(),
+            )),
             Page::Settings
             | Page::SettingsAppearance
             | Page::Win32PrioritySeparation
@@ -3752,12 +3825,14 @@ impl PowerLeafApp {
                 self.render_foreground_responsiveness_page(window, cx)
             }
             Page::IoPriority => self.render_io_priority_page(window, cx),
+            Page::GpuPriority => self.render_gpu_priority_page(window, cx),
             Page::MemoryPriority => self.render_memory_priority_page(window, cx),
             Page::SmartTrim => self.render_smart_trim_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::ActionLog => self.render_action_log_page(window, cx),
             Page::Settings => self.render_powerleaf_behaviour_page(window, cx),
             Page::SettingsAppearance => self.render_settings_appearance_page(window, cx),
+            Page::TimerResolution => self.render_timer_resolution_page(window, cx),
             Page::Win32PrioritySeparation => self.render_win32_priority_separation_page(window, cx),
             Page::About => self.render_about_page(cx),
         }
@@ -8438,6 +8513,176 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
+    fn render_gpu_priority_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self
+            .inputs
+            .gpu_priority_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.gpu_priority.enabled;
+        let help = tooltip_lines(vec![
+            t!("gpu_priority.intro_1").to_string(),
+            t!("gpu_priority.intro_2").to_string(),
+            t!("gpu_priority.intro_3").to_string(),
+        ]);
+        let body = feature_body(enabled)
+            .child(setting_action_card_with_help(
+                "gpu-priority-exclude-foreground",
+                t!("gpu_priority.exclude_foreground").to_string(),
+                t!("gpu_priority.exclude_foreground_help").to_string(),
+                switch_toggle_action(
+                    "gpu-priority-exclude-foreground-toggle",
+                    self.settings.gpu_priority.exclude_foreground_app,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.gpu_priority.exclude_foreground_app = *checked;
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "gpu-priority-process-suggestion",
+                        &self.inputs.gpu_priority_process,
+                        SuggestionTarget::GpuPriority,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-gpu-priority-rule"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_gpu_priority_process(
+                                        &self.settings.gpu_priority,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.gpu_priority_process.read(cx).value().to_string();
+                                if can_add_gpu_priority_process(
+                                    &app.settings.gpu_priority,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .gpu_priority
+                                        .rules
+                                        .push(new_gpu_priority_rule(&process));
+                                    clear_input(&app.inputs.gpu_priority_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_gpu_priority_rules(window, cx));
+
+        self.page_shell(Page::GpuPriority, cx)
+            .child(feature_toggle_switch_with_help(
+                "gpu-priority-enabled",
+                t!("gpu_priority.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.gpu_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(disabled_feature_body(
+                "gpu-priority-body",
+                body,
+                enabled,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_gpu_priority_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.gpu_priority.rules.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let card = compact_rule_row(format!("gpu-priority-rule-row-{index}"))
+                .child(rule_enable_checkbox(
+                    format!("gpu-priority-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.gpu_priority.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(self.render_gpu_priority_selector(index, rule.priority, window, cx))
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-gpu-priority-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::GpuPriorityRule(index),
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::GpuPriorityRule(index),
+                SharedString::from(format!("gpu-priority-rule-{index}")),
+                card.into_any_element(),
+            ));
+        }
+        if self.settings.gpu_priority.rules.is_empty() {
+            list = list.child(text_muted(t!("gpu_priority.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_gpu_priority_selector(
+        &self,
+        index: usize,
+        selected_priority: ProcessGpuPriority,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let dropdown = self.render_dropdown_select(
+            format!("gpu-priority-{index}"),
+            process_gpu_priority_label(selected_priority),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessGpuPriority::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessGpuPriority::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("gpu-priority-{index}-option-{priority:?}")),
+                            process_gpu_priority_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.gpu_priority.rules.get_mut(index) {
+                                rule.priority = priority;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
+        dropdown
+    }
+
     fn render_memory_priority_page(
         &self,
         window: &mut Window,
@@ -10255,6 +10500,220 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
+    fn render_timer_resolution_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .timer_resolution_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.timer_resolution.enabled;
+        let help = tooltip_lines(vec![
+            t!("timer_resolution.intro_1").to_string(),
+            t!("timer_resolution.intro_2").to_string(),
+            t!("timer_resolution.intro_3").to_string(),
+        ]);
+        let body = feature_body(enabled)
+            .child(section_title_text(t!("common.rules").to_string()))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "timer-resolution-process-suggestion",
+                        &self.inputs.timer_resolution_process,
+                        SuggestionTarget::TimerResolution,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-timer-resolution-rule"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_timer_resolution_process(
+                                        &self.settings.timer_resolution,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process = app
+                                    .inputs
+                                    .timer_resolution_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_timer_resolution_process(
+                                    &app.settings.timer_resolution,
+                                    &process,
+                                ) {
+                                    let desired_100ns = app.settings.timer_resolution.desired_100ns;
+                                    app.settings
+                                        .timer_resolution
+                                        .rules
+                                        .push(new_timer_resolution_rule(&process, desired_100ns));
+                                    clear_input(&app.inputs.timer_resolution_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_timer_resolution_rules(cx))
+            .child(self.render_timer_resolution_status_card());
+
+        self.page_shell(Page::TimerResolution, cx)
+            .child(feature_toggle_switch_with_help(
+                "timer-resolution-enabled",
+                t!("timer_resolution.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.timer_resolution.enabled = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(text_muted(t!("timer_resolution.warning").to_string()))
+            .child(disabled_feature_body(
+                "timer-resolution-body",
+                body,
+                enabled,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_timer_resolution_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.timer_resolution.rules.iter().enumerate() {
+            let row = compact_rule_row(format!("timer-resolution-rule-row-{index}"))
+                .child(rule_enable_checkbox(
+                    format!("timer-resolution-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.timer_resolution.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&rule.process_name, cx))
+                .child(self.render_numeric_value(
+                    NumericField::TimerResolutionRule(index),
+                    timer_resolution::format_resolution_ms(rule.desired_100ns),
+                    timer_resolution_edit_value(rule.desired_100ns),
+                    cx,
+                ))
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-timer-resolution-rule-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::TimerResolutionRule(index),
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::TimerResolutionRule(index),
+                SharedString::from(format!("timer-resolution-rule-{index}")),
+                row.into_any_element(),
+            ));
+        }
+        if self.settings.timer_resolution.rules.is_empty() {
+            list = list.child(text_muted(t!("timer_resolution.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_timer_resolution_status_card(&self) -> AnyElement {
+        let status = &self.timer_resolution_status;
+        let requested = status
+            .requested_100ns
+            .map(timer_resolution::format_resolution_ms)
+            .unwrap_or_else(|| {
+                if self.settings.timer_resolution.enabled {
+                    t!("timer_resolution.no_active_request").to_string()
+                } else {
+                    t!("common.disabled").to_string()
+                }
+            });
+        let active_rule = status.active_rule_process.clone().unwrap_or_else(|| {
+            if self.settings.timer_resolution.enabled {
+                t!("timer_resolution.no_matching_rule").to_string()
+            } else {
+                t!("common.disabled").to_string()
+            }
+        });
+
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .rounded_sm()
+            .border_1()
+            .border_color(rgb(border_color()))
+            .bg(rgb(settings_card_color()))
+            .text_color(rgb(primary_text_color()))
+            .text_size(px(TEXT_BODY_SIZE))
+            .line_height(px(TEXT_BODY_LINE_HEIGHT))
+            .child(win32_priority_row(
+                "timer-resolution-current-row",
+                t!("timer_resolution.current").to_string(),
+                None,
+                value_pill(format_optional_timer_resolution(status.current_100ns))
+                    .into_any_element(),
+            ))
+            .child(win32_priority_row(
+                "timer-resolution-active-rule-row",
+                t!("timer_resolution.foreground_rule").to_string(),
+                None,
+                value_pill(active_rule).into_any_element(),
+            ))
+            .child(win32_priority_row(
+                "timer-resolution-requested-row",
+                t!("timer_resolution.requested").to_string(),
+                None,
+                value_pill(requested).into_any_element(),
+            ))
+            .child(win32_priority_row(
+                "timer-resolution-minimum-row",
+                t!("timer_resolution.minimum").to_string(),
+                Some(t!("timer_resolution.minimum_help").to_string()),
+                value_pill(format_optional_timer_resolution(status.minimum_100ns))
+                    .into_any_element(),
+            ))
+            .child(win32_priority_row(
+                "timer-resolution-maximum-row",
+                t!("timer_resolution.maximum").to_string(),
+                Some(t!("timer_resolution.maximum_help").to_string()),
+                value_pill(format_optional_timer_resolution(status.maximum_100ns))
+                    .into_any_element(),
+            ))
+            .child(win32_priority_row(
+                "timer-resolution-status-row",
+                t!("common.status").to_string(),
+                None,
+                value_pill(status.message.clone()).into_any_element(),
+            ))
+            .when_some(status.last_error.as_ref(), |card, error| {
+                card.child(win32_priority_row(
+                    "timer-resolution-error-row",
+                    t!("common.last_failure").to_string(),
+                    None,
+                    value_pill(error.clone()).into_any_element(),
+                ))
+            })
+            .into_any_element()
+    }
+
     fn render_win32_priority_separation_page(
         &self,
         window: &mut Window,
@@ -11550,8 +12009,14 @@ impl PowerLeafApp {
             SuggestionTarget::IoPriority => {
                 clear_input_to(&self.inputs.io_priority_process, process, window, cx);
             }
+            SuggestionTarget::GpuPriority => {
+                clear_input_to(&self.inputs.gpu_priority_process, process, window, cx);
+            }
             SuggestionTarget::MemoryPriority => {
                 clear_input_to(&self.inputs.memory_priority_process, process, window, cx);
+            }
+            SuggestionTarget::TimerResolution => {
+                clear_input_to(&self.inputs.timer_resolution_process, process, window, cx);
             }
             SuggestionTarget::Affinity => {
                 clear_input_to(&self.inputs.affinity_process, process, window, cx);
@@ -12071,7 +12536,9 @@ enum SuggestionTarget {
     PerformanceMode,
     Responsiveness,
     IoPriority,
+    GpuPriority,
     MemoryPriority,
+    TimerResolution,
     Affinity,
 }
 
@@ -12182,6 +12649,7 @@ enum NumericField {
     CpuLimiterCooldown(usize),
     CpuLimiterMaxProcessors(usize),
     WatchdogRestartDelay(usize),
+    TimerResolutionRule(usize),
     NetworkThreshold(ThresholdField),
 }
 
@@ -13446,6 +13914,12 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("io_priority.exclude_foreground_help").to_string(),
             "io i/o disk storage priority low very low background process foreground exclusion".to_string(),
         ],
+        Page::GpuPriority => vec![
+            t!("gpu_priority.intro_1").to_string(),
+            t!("gpu_priority.intro_2").to_string(),
+            t!("gpu_priority.exclude_foreground_help").to_string(),
+            "gpu graphics scheduling priority d3dkmt idle below normal above normal foreground exclusion".to_string(),
+        ],
         Page::MemoryPriority => vec![
             t!("memory_priority.intro_1").to_string(),
             t!("memory_priority.intro_2").to_string(),
@@ -13480,6 +13954,12 @@ fn dashboard_page_search_text(page: Page) -> String {
         ],
         Page::SettingsAppearance => vec![
             "language appearance theme dark light system accent color palette localization display ui".to_string(),
+        ],
+        Page::TimerResolution => vec![
+            t!("timer_resolution.intro_1").to_string(),
+            t!("timer_resolution.intro_2").to_string(),
+            t!("timer_resolution.warning").to_string(),
+            "timer resolution ntsettimerresolution scheduler latency wakeups battery high resolution timer foreground process rule".to_string(),
         ],
         Page::Win32PrioritySeparation => vec![
             t!("settings.win32_priority_separation_quantum_duration_help").to_string(),
@@ -15861,8 +16341,10 @@ fn action_log_feature_label(feature: ActionLogFeature) -> &'static str {
         ActionLogFeature::Watchdog => "Watchdog Rules",
         ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
         ActionLogFeature::IoPriority => "I/O Priority",
+        ActionLogFeature::GpuPriority => "GPU Priority",
         ActionLogFeature::MemoryPriority => "Memory Priority",
         ActionLogFeature::SmartTrim => "SmartTrim",
+        ActionLogFeature::TimerResolution => "Timer Resolution",
     }
 }
 
@@ -16846,6 +17328,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::PerformanceMode => NavIcon::Zap,
         Page::ForegroundResponsiveness => NavIcon::Zap,
         Page::IoPriority => NavIcon::Chip,
+        Page::GpuPriority => NavIcon::Chip,
         Page::MemoryPriority => NavIcon::Chip,
         Page::SmartTrim => NavIcon::Chip,
         Page::CpuAffinity => NavIcon::Chip,
@@ -16854,6 +17337,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::ActionLog => NavIcon::Info,
         Page::Settings => NavIcon::Settings,
         Page::SettingsAppearance => NavIcon::Palette,
+        Page::TimerResolution => NavIcon::Chip,
         Page::Win32PrioritySeparation => NavIcon::Chip,
         Page::About => NavIcon::Info,
     }
@@ -17141,7 +17625,8 @@ fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::CpuLimiterThreshold(_)
         | NumericField::CpuLimiterMaxProcessors(_) => 76.0,
         NumericField::SmartTrimCheckIntervalMinutes
-        | NumericField::SmartTrimPurgeFreeRamThreshold => 104.0,
+        | NumericField::SmartTrimPurgeFreeRamThreshold
+        | NumericField::TimerResolutionRule(_) => 104.0,
         NumericField::SmartTrimWorkingSetThreshold
         | NumericField::SmartTrimIdleSeconds
         | NumericField::SmartTrimCooldownSeconds => 112.0,
@@ -17965,6 +18450,26 @@ fn parse_u64_input(value: &str, min: u64, max: u64) -> Option<u64> {
     value.parse::<u64>().ok().map(|value| value.clamp(min, max))
 }
 
+fn parse_timer_resolution_input_100ns(value: &str) -> Option<u32> {
+    let value = value.trim();
+    let value = value
+        .strip_suffix("ms")
+        .or_else(|| value.strip_suffix("MS"))
+        .or_else(|| value.strip_suffix("Ms"))
+        .or_else(|| value.strip_suffix("mS"))
+        .unwrap_or(value)
+        .trim();
+    let milliseconds = value
+        .parse::<f64>()
+        .ok()?
+        .clamp(TIMER_RESOLUTION_INPUT_MIN_MS, TIMER_RESOLUTION_INPUT_MAX_MS);
+    Some(
+        (milliseconds * 10_000.0)
+            .round()
+            .clamp(1.0, u32::MAX as f64) as u32,
+    )
+}
+
 fn cpu_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
@@ -18137,8 +18642,14 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
             can_add_responsiveness_process(&settings.foreground_responsiveness, process)
         }
         SuggestionTarget::IoPriority => can_add_io_priority_process(&settings.io_priority, process),
+        SuggestionTarget::GpuPriority => {
+            can_add_gpu_priority_process(&settings.gpu_priority, process)
+        }
         SuggestionTarget::MemoryPriority => {
             can_add_memory_priority_process(&settings.memory_priority, process)
+        }
+        SuggestionTarget::TimerResolution => {
+            can_add_timer_resolution_process(&settings.timer_resolution, process)
         }
         SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
     }
@@ -18238,6 +18749,16 @@ fn can_add_io_priority_process(settings: &IoPrioritySettings, process: &str) -> 
             .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
 }
 
+fn can_add_gpu_priority_process(settings: &GpuPrioritySettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty()
+        && !gpu_priority::is_builtin_excluded(process)
+        && !settings
+            .rules
+            .iter()
+            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+}
+
 fn can_add_memory_priority_process(settings: &MemoryPrioritySettings, process: &str) -> bool {
     let process = process.trim();
     !process.is_empty()
@@ -18246,6 +18767,11 @@ fn can_add_memory_priority_process(settings: &MemoryPrioritySettings, process: &
             .rules
             .iter()
             .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+}
+
+fn can_add_timer_resolution_process(settings: &TimerResolutionSettings, process: &str) -> bool {
+    let process = process.trim();
+    !process.is_empty() && !settings.contains_rule_for(process)
 }
 
 fn can_add_responsiveness_exclusion(
@@ -18316,11 +18842,27 @@ fn new_io_priority_rule(process: &str) -> IoPriorityRule {
     }
 }
 
+fn new_gpu_priority_rule(process: &str) -> GpuPriorityRule {
+    GpuPriorityRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+        priority: ProcessGpuPriority::BelowNormal,
+    }
+}
+
 fn new_memory_priority_rule(process: &str) -> MemoryPriorityRule {
     MemoryPriorityRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
         priority: ProcessMemoryPriority::Low,
+    }
+}
+
+fn new_timer_resolution_rule(process: &str, desired_100ns: u32) -> TimerResolutionRule {
+    TimerResolutionRule {
+        enabled: true,
+        process_name: process.trim().to_ascii_lowercase(),
+        desired_100ns,
     }
 }
 
@@ -18543,6 +19085,27 @@ fn process_io_priority_label(priority: ProcessIoPriority) -> String {
         ProcessIoPriority::Low => t!("io_priority.priority_low").to_string(),
         ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low").to_string(),
     }
+}
+
+fn process_gpu_priority_label(priority: ProcessGpuPriority) -> String {
+    match priority {
+        ProcessGpuPriority::AboveNormal => t!("gpu_priority.priority_above_normal").to_string(),
+        ProcessGpuPriority::Normal => t!("gpu_priority.priority_normal").to_string(),
+        ProcessGpuPriority::BelowNormal => t!("gpu_priority.priority_below_normal").to_string(),
+        ProcessGpuPriority::Idle => t!("gpu_priority.priority_idle").to_string(),
+    }
+}
+
+fn timer_resolution_edit_value(value_100ns: u32) -> String {
+    let milliseconds = value_100ns as f64 / 10_000.0;
+    let value = format!("{milliseconds:.4}");
+    value.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+fn format_optional_timer_resolution(value_100ns: Option<u32>) -> String {
+    value_100ns
+        .map(timer_resolution::format_resolution_ms)
+        .unwrap_or_else(|| t!("common.unknown").to_string())
 }
 
 fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
@@ -19316,6 +19879,16 @@ mod tests {
         assert_eq!(csv_escape("two,parts"), "\"two,parts\"");
         assert_eq!(csv_escape("quoted \"value\""), "\"quoted \"\"value\"\"\"");
         assert_eq!(csv_escape("line\r\nbreak"), "\"line\r\nbreak\"");
+    }
+
+    #[test]
+    fn timer_resolution_input_accepts_decimal_milliseconds() {
+        assert_eq!(parse_timer_resolution_input_100ns("1"), Some(10_000));
+        assert_eq!(parse_timer_resolution_input_100ns("0.5 ms"), Some(5_000));
+        assert_eq!(
+            parse_timer_resolution_input_100ns("15.625 MS"),
+            Some(156_250)
+        );
     }
 
     #[test]

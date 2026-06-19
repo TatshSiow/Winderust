@@ -15,6 +15,7 @@ use crate::{
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
     foreground::{list_processes, top_level_window_process_ids, ForegroundDetector},
+    gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
     io_priority::{IoPriorityManager, IoPrioritySnapshot},
     memory_priority::{MemoryPriorityManager, MemoryPrioritySnapshot},
     performance_mode::{PerformanceModeManager, PerformanceModeSnapshot},
@@ -31,6 +32,7 @@ use crate::{
     scheduler::{CpuUsageScheduler, Scheduler},
     smart_trim::{SmartTrimManager, SmartTrimSnapshot},
     suspension::{AppSuspensionManager, AppSuspensionSnapshot},
+    timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
     tray,
     watchdog::{WatchdogManager, WatchdogSnapshot},
     windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
@@ -51,7 +53,9 @@ const FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL: Duration = Duration::from_secs
 const FOREGROUND_RESPONSIVENESS_FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const FOREGROUND_RESPONSIVENESS_FAST_REFRESH_WINDOW: Duration = Duration::from_secs(8);
 const IO_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const GPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -74,8 +78,10 @@ pub struct AutomationStatusSnapshot {
     pub watchdog: WatchdogSnapshot,
     pub foreground_responsiveness: ForegroundResponsivenessSnapshot,
     pub io_priority: IoPrioritySnapshot,
+    pub gpu_priority: GpuPrioritySnapshot,
     pub memory_priority: MemoryPrioritySnapshot,
     pub smart_trim: SmartTrimSnapshot,
+    pub timer_resolution: TimerResolutionSnapshot,
     pub action_log_entries: Vec<ActionLogEntry>,
 }
 
@@ -96,8 +102,10 @@ struct AutomationWorkerState {
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     io_priority_status: IoPrioritySnapshot,
+    gpu_priority_status: GpuPrioritySnapshot,
     memory_priority_status: MemoryPrioritySnapshot,
     smart_trim_status: SmartTrimSnapshot,
+    timer_resolution_status: TimerResolutionSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
     pending_auto_exclusions: PendingAutoExclusions,
     app_suspension_freeze_requests: Vec<String>,
@@ -152,8 +160,10 @@ impl BackgroundAutomation {
                 watchdog_status: WatchdogSnapshot::default(),
                 foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
                 io_priority_status: IoPrioritySnapshot::default(),
+                gpu_priority_status: GpuPrioritySnapshot::default(),
                 memory_priority_status: MemoryPrioritySnapshot::default(),
                 smart_trim_status: SmartTrimSnapshot::default(),
+                timer_resolution_status: TimerResolutionSnapshot::default(),
                 action_log_entries: Vec::new(),
                 pending_auto_exclusions: PendingAutoExclusions::default(),
                 app_suspension_freeze_requests: Vec::new(),
@@ -208,8 +218,10 @@ impl BackgroundAutomation {
                 watchdog: state.watchdog_status.clone(),
                 foreground_responsiveness: state.foreground_responsiveness_status.clone(),
                 io_priority: state.io_priority_status.clone(),
+                gpu_priority: state.gpu_priority_status.clone(),
                 memory_priority: state.memory_priority_status.clone(),
                 smart_trim: state.smart_trim_status.clone(),
+                timer_resolution: state.timer_resolution_status.clone(),
                 action_log_entries: state.action_log_entries.clone(),
             })
             .unwrap_or_default()
@@ -342,8 +354,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_watchdog_refresh = Instant::now();
     let mut next_foreground_responsiveness_refresh = Instant::now();
     let mut next_io_priority_refresh = Instant::now();
+    let mut next_gpu_priority_refresh = Instant::now();
     let mut next_memory_priority_refresh = Instant::now();
     let mut next_smart_trim_refresh = Instant::now();
+    let mut next_timer_resolution_refresh = Instant::now();
     let mut next_process_appearance_scan = Instant::now();
     let mut foreground_responsiveness_fast_until: Option<Instant> = None;
 
@@ -383,10 +397,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL);
         let io_priority_refresh_interval =
             automation_refresh_interval(hidden_to_tray, IO_PRIORITY_REFRESH_INTERVAL);
+        let gpu_priority_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, GPU_PRIORITY_REFRESH_INTERVAL);
         let memory_priority_refresh_interval =
             automation_refresh_interval(hidden_to_tray, MEMORY_PRIORITY_REFRESH_INTERVAL);
         let smart_trim_refresh_interval =
             automation_refresh_interval(hidden_to_tray, smart_trim_refresh_interval(&settings));
+        let timer_resolution_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, TIMER_RESOLUTION_REFRESH_INTERVAL);
         let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
         if settings_changed {
             next_check = Instant::now();
@@ -400,8 +418,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_watchdog_refresh = Instant::now();
             next_foreground_responsiveness_refresh = Instant::now();
             next_io_priority_refresh = Instant::now();
+            next_gpu_priority_refresh = Instant::now();
             next_memory_priority_refresh = Instant::now();
             next_smart_trim_refresh = Instant::now();
+            next_timer_resolution_refresh = Instant::now();
             next_process_appearance_scan = Instant::now();
             foreground_responsiveness_fast_until = None;
         }
@@ -413,8 +433,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_cpu_limiter_refresh = Instant::now();
             next_foreground_responsiveness_refresh = Instant::now();
             next_io_priority_refresh = Instant::now();
+            next_gpu_priority_refresh = Instant::now();
             next_memory_priority_refresh = Instant::now();
             next_smart_trim_refresh = Instant::now();
+            next_timer_resolution_refresh = Instant::now();
             next_app_suspension_foreground_release = Instant::now();
             foreground_responsiveness_fast_until =
                 foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
@@ -434,6 +456,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         }
         if wake_events.app_switch || wake_events.app_switch_mouse_click {
             next_app_suspension_foreground_release = Instant::now();
+            next_timer_resolution_refresh = Instant::now();
             if runner.app_suspension_manager.has_suspended_processes() {
                 let app_suspension_status = if wake_events.app_switch {
                     runner.run_app_suspension_app_switch_release()
@@ -468,11 +491,15 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || feature_refresh_required(&settings, settings.foreground_responsiveness.enabled);
         let io_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, io_priority_required(&settings));
+        let gpu_priority_refresh_required =
+            settings_changed || feature_refresh_required(&settings, settings.gpu_priority.enabled);
         let memory_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, memory_priority_required(&settings));
         let smart_trim_refresh_required = settings_changed
             || smart_trim_now_requested
             || feature_refresh_required(&settings, settings.smart_trim.enabled);
+        let timer_resolution_refresh_required = settings_changed
+            || feature_refresh_required(&settings, settings.timer_resolution.enabled);
         let app_resource_shadow_required = eco_qos_refresh_required
             || app_suspension_refresh_required
             || cpu_affinity_refresh_required
@@ -481,6 +508,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || watchdog_refresh_required
             || foreground_responsiveness_refresh_required
             || io_priority_refresh_required
+            || gpu_priority_refresh_required
             || memory_priority_refresh_required;
 
         if !app_suspension_freeze_requests.is_empty() {
@@ -513,6 +541,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_watchdog_refresh = Instant::now();
                 next_foreground_responsiveness_refresh = Instant::now();
                 next_io_priority_refresh = Instant::now();
+                next_gpu_priority_refresh = Instant::now();
                 next_memory_priority_refresh = Instant::now();
                 next_smart_trim_refresh = Instant::now();
                 foreground_responsiveness_fast_until =
@@ -564,6 +593,12 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             update_io_priority_status(&shared, io_priority_status);
             update_action_log_entries(&shared, runner.action_log.entries());
             next_io_priority_refresh = Instant::now() + io_priority_refresh_interval;
+        }
+        if gpu_priority_refresh_required && Instant::now() >= next_gpu_priority_refresh {
+            let gpu_priority_status = runner.run_gpu_priority_update(&settings);
+            update_gpu_priority_status(&shared, gpu_priority_status);
+            update_action_log_entries(&shared, runner.action_log.entries());
+            next_gpu_priority_refresh = Instant::now() + gpu_priority_refresh_interval;
         }
         if memory_priority_refresh_required && Instant::now() >= next_memory_priority_refresh {
             let memory_priority_status = runner.run_memory_priority_update(&settings);
@@ -623,6 +658,12 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             update_smart_trim_status(&shared, smart_trim_status);
             update_action_log_entries(&shared, runner.action_log.entries());
             next_smart_trim_refresh = Instant::now() + smart_trim_refresh_interval;
+        }
+        if timer_resolution_refresh_required && Instant::now() >= next_timer_resolution_refresh {
+            let timer_resolution_status = runner.run_timer_resolution_update(&settings);
+            update_timer_resolution_status(&shared, timer_resolution_status);
+            update_action_log_entries(&shared, runner.action_log.entries());
+            next_timer_resolution_refresh = Instant::now() + timer_resolution_refresh_interval;
         }
 
         let mut wait_for = if hidden_to_tray {
@@ -726,6 +767,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                     .min(io_priority_refresh_interval),
             ));
         }
+        if gpu_priority_refresh_required {
+            wait_for = Some(min_worker_wait(
+                wait_for,
+                next_gpu_priority_refresh
+                    .saturating_duration_since(Instant::now())
+                    .min(gpu_priority_refresh_interval),
+            ));
+        }
         if memory_priority_refresh_required {
             wait_for = Some(min_worker_wait(
                 wait_for,
@@ -740,6 +789,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_smart_trim_refresh
                     .saturating_duration_since(Instant::now())
                     .min(smart_trim_refresh_interval),
+            ));
+        }
+        if timer_resolution_refresh_required {
+            wait_for = Some(min_worker_wait(
+                wait_for,
+                next_timer_resolution_refresh
+                    .saturating_duration_since(Instant::now())
+                    .min(timer_resolution_refresh_interval),
             ));
         }
         if scan_process_appearance {
@@ -926,6 +983,12 @@ fn update_io_priority_status(shared: &SharedAutomationState, status: IoPriorityS
     }
 }
 
+fn update_gpu_priority_status(shared: &SharedAutomationState, status: GpuPrioritySnapshot) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.gpu_priority_status = status;
+    }
+}
+
 fn update_memory_priority_status(shared: &SharedAutomationState, status: MemoryPrioritySnapshot) {
     if let Ok(mut state) = shared.state.lock() {
         state.memory_priority_status = status;
@@ -935,6 +998,12 @@ fn update_memory_priority_status(shared: &SharedAutomationState, status: MemoryP
 fn update_smart_trim_status(shared: &SharedAutomationState, status: SmartTrimSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
         state.smart_trim_status = status;
+    }
+}
+
+fn update_timer_resolution_status(shared: &SharedAutomationState, status: TimerResolutionSnapshot) {
+    if let Ok(mut state) = shared.state.lock() {
+        state.timer_resolution_status = status;
     }
 }
 
@@ -995,6 +1064,10 @@ fn memory_priority_required(settings: &Settings) -> bool {
     settings.memory_priority.enabled
 }
 
+fn timer_resolution_required(settings: &Settings) -> bool {
+    settings.timer_resolution.enabled
+}
+
 fn effective_io_priority_settings(settings: &Settings) -> crate::config::IoPrioritySettings {
     let mut io_priority = settings.io_priority.clone();
     if settings.foreground_responsiveness.enabled
@@ -1031,6 +1104,7 @@ fn process_appearance_scan_required(settings: &Settings) -> bool {
             || settings.watchdog.enabled
             || settings.foreground_responsiveness.enabled
             || io_priority_required(settings)
+            || settings.gpu_priority.enabled
             || memory_priority_required(settings)
             || settings.smart_trim.enabled)
 }
@@ -1056,8 +1130,10 @@ fn automation_worker_required(settings: &Settings) -> bool {
             || settings.watchdog.enabled
             || settings.foreground_responsiveness.enabled
             || io_priority_required(settings)
+            || settings.gpu_priority.enabled
             || memory_priority_required(settings)
-            || settings.smart_trim.enabled)
+            || settings.smart_trim.enabled
+            || timer_resolution_required(settings))
 }
 
 fn windows_event_watcher_required(settings: &Settings) -> bool {
@@ -1285,8 +1361,10 @@ struct HiddenAutomationRunner {
     action_log: ActionLog,
     foreground_responsiveness_manager: ForegroundResponsivenessManager,
     io_priority_manager: IoPriorityManager,
+    gpu_priority_manager: GpuPriorityManager,
     memory_priority_manager: MemoryPriorityManager,
     smart_trim_manager: SmartTrimManager,
+    timer_resolution_manager: TimerResolutionManager,
     known_process_ids: BTreeSet<u32>,
     applied_action_store: AppliedActionStore,
     runtime_state: RuntimeState,
@@ -1498,6 +1576,15 @@ impl HiddenAutomationRunner {
         )
     }
 
+    fn run_gpu_priority_update(&mut self, settings: &Settings) -> GpuPrioritySnapshot {
+        self.gpu_priority_manager.update(
+            &settings.gpu_priority,
+            settings.general.enabled,
+            self.foreground_detector.process_id(),
+            &mut self.action_log,
+        )
+    }
+
     fn run_memory_priority_update(&mut self, settings: &Settings) -> MemoryPrioritySnapshot {
         let memory_priority_settings = effective_memory_priority_settings(settings);
         self.memory_priority_manager.update_rules(
@@ -1524,6 +1611,16 @@ impl HiddenAutomationRunner {
             settings.general.enabled,
             self.foreground_detector.process_id(),
             self.performance_mode_manager.is_active(),
+            &mut self.action_log,
+        )
+    }
+
+    fn run_timer_resolution_update(&mut self, settings: &Settings) -> TimerResolutionSnapshot {
+        let foreground_process_name = self.foreground_detector.process_name();
+        self.timer_resolution_manager.update(
+            &settings.timer_resolution,
+            settings.general.enabled,
+            foreground_process_name.as_deref(),
             &mut self.action_log,
         )
     }
