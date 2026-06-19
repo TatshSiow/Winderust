@@ -113,8 +113,19 @@ const DASHBOARD_GRAPH_BAR_GAP: f32 = 4.0;
 const DASHBOARD_IO_SPLIT_ITEM_WIDTH: f32 = 140.0;
 const DASHBOARD_IO_SPLIT_VALUE_WIDTH: f32 = 90.0;
 const CARD_ROW_HEIGHT: f32 = 58.0;
+const CORE_TILE_GRID_COLUMNS: usize = 8;
+const CORE_TILE_HEIGHT: f32 = 54.0;
+const CORE_TILE_GRID_GAP: f32 = 4.0;
+const EXPANDED_CHILD_MAX_ANIMATION_HEIGHT: f32 = 1800.0;
+const EXPANDED_CHILD_SLIDE_PX: f32 = 8.0;
+const MOTION_CONTROL_SECONDS: f64 = 0.18;
+const MOTION_CONTROL_MIN_SECONDS: f64 = 0.08;
+const MOTION_CONTROL_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const MOTION_FAST_SECONDS: f64 = 0.15;
 const MOTION_STANDARD_SECONDS: f64 = 0.22;
+const MOTION_EXPAND_SECONDS: f64 = 0.24;
+const MOTION_EXPAND_MIN_SECONDS: f64 = 0.1;
+const UNSAVED_POPUP_VANISH_SECONDS: f64 = 0.18;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TITLE_BAR_HEIGHT: f32 = 40.0;
 const PAGE_HEADER_HEIGHT: f32 = 48.0;
@@ -355,6 +366,8 @@ pub struct PowerLeafApp {
     expanded_rule_cards: HashSet<RuleCardTarget>,
     expanded_setting_groups: HashSet<SettingGroupTarget>,
     breadcrumb_transition: Option<BreadcrumbTransition>,
+    unsaved_popup_was_visible: bool,
+    unsaved_popup_vanish_started: Option<Instant>,
     pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     _rule_title_input_subscriptions: Vec<Subscription>,
@@ -397,9 +410,35 @@ struct CardHoverChange {
 static CARD_HOVER_STATE: LazyLock<Mutex<CardHoverState>> =
     LazyLock::new(|| Mutex::new(CardHoverState::default()));
 
+#[derive(Clone, Copy)]
+struct ExpandableTransition {
+    from_progress: f32,
+    to_progress: f32,
+    started: Instant,
+    duration: Duration,
+}
+
+#[derive(Default)]
+struct ExpandableMotionState {
+    transitions: HashMap<String, ExpandableTransition>,
+}
+
+static EXPANDABLE_MOTION_STATE: LazyLock<Mutex<ExpandableMotionState>> =
+    LazyLock::new(|| Mutex::new(ExpandableMotionState::default()));
+
+#[derive(Clone, Copy)]
+struct ControlTransition {
+    from_progress: f32,
+    to_progress: f32,
+    started: Instant,
+    duration: Duration,
+    generation: u64,
+}
+
 #[derive(Default)]
 struct ControlMotionState {
     values: HashMap<String, String>,
+    transitions: HashMap<String, ControlTransition>,
     generation: u64,
 }
 
@@ -1033,6 +1072,8 @@ impl PowerLeafApp {
             expanded_rule_cards: HashSet::new(),
             expanded_setting_groups: HashSet::new(),
             breadcrumb_transition: None,
+            unsaved_popup_was_visible: false,
+            unsaved_popup_vanish_started: None,
             pending_list_item_removals: HashMap::new(),
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             _rule_title_input_subscriptions: Vec::new(),
@@ -1994,7 +2035,7 @@ impl PowerLeafApp {
         }
     }
 
-    fn save_settings(&mut self) {
+    fn save_settings(&mut self) -> bool {
         match config::storage::save(&self.settings) {
             Ok(()) => {
                 self.saved_settings = self.settings.clone();
@@ -2011,8 +2052,12 @@ impl PowerLeafApp {
                     .to_string(),
                     Err(err) => t!("status.saved_settings_with_error", error = err).to_string(),
                 };
+                true
             }
-            Err(err) => self.status_message = err,
+            Err(err) => {
+                self.status_message = err;
+                false
+            }
         }
     }
 
@@ -2373,6 +2418,7 @@ impl PowerLeafApp {
     }
 
     fn cancel_settings_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let had_unsaved_changes = self.settings != self.saved_settings;
         self.settings = self.saved_settings.clone();
         apply_language(self.settings.general.language);
         apply_appearance_settings(&self.settings.general, window, cx);
@@ -2380,6 +2426,53 @@ impl PowerLeafApp {
         self.editing_rule_title = None;
         self.expanded_rule_cards.clear();
         self.rebuild_inputs(window, cx);
+        if had_unsaved_changes {
+            self.start_unsaved_popup_vanish();
+        }
+    }
+
+    fn start_unsaved_popup_vanish(&mut self) {
+        self.unsaved_popup_was_visible = false;
+        self.unsaved_popup_vanish_started = ui_animations_enabled().then_some(Instant::now());
+    }
+
+    fn unsaved_popup_vanish_progress(&mut self, unsaved: bool, window: &mut Window) -> Option<f32> {
+        if unsaved {
+            self.unsaved_popup_was_visible = true;
+            self.unsaved_popup_vanish_started = None;
+            return None;
+        }
+
+        if !ui_animations_enabled() {
+            self.unsaved_popup_was_visible = false;
+            self.unsaved_popup_vanish_started = None;
+            return None;
+        }
+
+        if self.unsaved_popup_vanish_started.is_none() {
+            if self.unsaved_popup_was_visible {
+                self.start_unsaved_popup_vanish();
+            } else {
+                return None;
+            }
+        } else {
+            self.unsaved_popup_was_visible = false;
+        }
+
+        let started = self.unsaved_popup_vanish_started?;
+        let duration = Duration::from_secs_f64(UNSAVED_POPUP_VANISH_SECONDS);
+        let elapsed = started.elapsed();
+        if elapsed >= duration {
+            self.unsaved_popup_was_visible = false;
+            self.unsaved_popup_vanish_started = None;
+            None
+        } else {
+            window.request_animation_frame();
+            Some(expandable_motion_ease(
+                (elapsed.as_secs_f32() / duration.as_secs_f32().max(f32::EPSILON)).clamp(0.0, 1.0),
+                false,
+            ))
+        }
     }
 
     fn rebuild_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2993,9 +3086,14 @@ impl PowerLeafApp {
     }
 
     fn toggle_rule_card(&mut self, target: RuleCardTarget, cx: &mut Context<Self>) {
-        if !self.expanded_rule_cards.remove(&target) {
+        let motion_id = rule_card_body_motion_id(&target);
+        let expanded = if self.expanded_rule_cards.remove(&target) {
+            false
+        } else {
             self.expanded_rule_cards.insert(target);
-        }
+            true
+        };
+        begin_expandable_motion(motion_id, expanded);
         cx.notify();
     }
 
@@ -3004,10 +3102,20 @@ impl PowerLeafApp {
     }
 
     fn toggle_setting_group(&mut self, target: SettingGroupTarget, cx: &mut Context<Self>) {
-        if !self.expanded_setting_groups.remove(&target) {
-            self.expanded_setting_groups.insert(target);
-        }
+        self.set_setting_group_expanded(target, self.is_setting_group_collapsed(target));
         cx.notify();
+    }
+
+    fn set_setting_group_expanded(&mut self, target: SettingGroupTarget, expanded: bool) {
+        let changed = if expanded {
+            self.expanded_setting_groups.insert(target)
+        } else {
+            self.expanded_setting_groups.remove(&target)
+        };
+
+        if changed {
+            begin_expandable_motion(format!("setting-group-{target:?}"), expanded);
+        }
     }
 
     fn dropdown_placement(
@@ -3314,6 +3422,8 @@ impl Render for PowerLeafApp {
             SharedString::from(format!("{:?}", self.page))
         };
         let unsaved = self.settings != self.saved_settings;
+        let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
+        let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
 
         div()
             .relative()
@@ -3390,8 +3500,9 @@ impl Render for PowerLeafApp {
                             .child(self.render_status_bar(cx)),
                     ),
             )
-            .child(if unsaved {
-                self.render_unsaved_popup(window, cx).into_any_element()
+            .child(if show_unsaved_popup {
+                self.render_unsaved_popup(unsaved_popup_vanish_progress, cx)
+                    .into_any_element()
             } else {
                 div().into_any_element()
             })
@@ -3530,7 +3641,11 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_unsaved_popup(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_unsaved_popup(
+        &self,
+        vanish_progress: Option<f32>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let popup = v_flex()
             .absolute()
             .right(px(24.0))
@@ -3575,11 +3690,24 @@ impl PowerLeafApp {
                             .label(t!("common.save").to_string())
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.sync_input_values(cx);
-                                app.save_settings();
+                                let had_unsaved_changes = app.settings != app.saved_settings;
+                                if app.save_settings() && had_unsaved_changes {
+                                    app.start_unsaved_popup_vanish();
+                                }
                                 cx.notify();
                             })),
                     ),
             );
+
+        if let Some(progress) = vanish_progress {
+            let progress = progress.clamp(0.0, 1.0);
+            return popup
+                .block_mouse_except_scroll()
+                .cursor_default()
+                .bottom(px(54.0 - 8.0 * progress))
+                .opacity(1.0 - progress)
+                .into_any_element();
+        }
 
         with_optional_motion(
             popup,
@@ -4684,9 +4812,10 @@ impl PowerLeafApp {
             ),
             rule_card_collapse_indicator(card_target.clone(), collapsed),
             card_target.clone(),
+            collapsed,
             cx,
         );
-        if !collapsed {
+        if rule_card_body_visible(&card_target, collapsed, window) {
             let mut condition_fields = vec![
                 rule_action_row(
                     format!("schedule-rule-days-{index}"),
@@ -4733,35 +4862,51 @@ impl PowerLeafApp {
                     .into_any_element(),
                 );
             }
+            let condition_row_count = condition_fields.len();
 
             card = card
-                .child(rule_card_body_row(condition_fields))
-                .child(rule_card_body_row(vec![rule_action_row(
-                    format!("schedule-rule-plan-{index}"),
-                    t!("schedule.target_power_plan").to_string(),
-                    self.render_inline_power_plan_picker(
+                .child(animated_rule_card_body_child(
+                    &card_target,
+                    0,
+                    condition_row_count,
+                    rule_card_body_row(condition_fields),
+                ))
+                .child(animated_rule_card_body_child(
+                    &card_target,
+                    1,
+                    1,
+                    rule_card_body_row(vec![rule_action_row(
                         format!("schedule-rule-plan-{index}"),
-                        rule.power_plan_guid.clone(),
-                        PowerPlanField::ScheduleRule(index),
-                        window,
-                        cx,
-                    ),
-                )
-                .into_any_element()]))
-                .child(rule_card_body_actions(vec![
-                    rename_rule_button(title_target, cx),
-                    danger_control_button(Button::new(SharedString::from(format!(
-                        "remove-schedule-rule-{index}"
-                    ))))
-                    .label(t!("common.remove").to_string())
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.request_list_item_removal(
-                            ListItemRemovalTarget::ScheduleRule(index),
+                        t!("schedule.target_power_plan").to_string(),
+                        self.render_inline_power_plan_picker(
+                            format!("schedule-rule-plan-{index}"),
+                            rule.power_plan_guid.clone(),
+                            PowerPlanField::ScheduleRule(index),
+                            window,
                             cx,
-                        );
-                    }))
-                    .into_any_element(),
-                ]));
+                        ),
+                    )
+                    .into_any_element()]),
+                ))
+                .child(animated_rule_card_body_child(
+                    &card_target,
+                    2,
+                    1,
+                    rule_card_body_actions(vec![
+                        rename_rule_button(title_target, cx),
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-schedule-rule-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.request_list_item_removal(
+                                ListItemRemovalTarget::ScheduleRule(index),
+                                cx,
+                            );
+                        }))
+                        .into_any_element(),
+                    ]),
+                ));
         }
         card.into_any_element()
     }
@@ -4910,9 +5055,10 @@ impl PowerLeafApp {
             ),
             rule_card_collapse_indicator(card_target.clone(), collapsed),
             card_target.clone(),
+            collapsed,
             cx,
         );
-        if !collapsed {
+        if rule_card_body_visible(&card_target, collapsed, window) {
             let mut condition_fields =
                 vec![
                     rule_action_row(
@@ -5054,24 +5200,41 @@ impl PowerLeafApp {
                     .into_any_element(),
                 );
             }
+            let condition_row_count = condition_fields.len();
+            let plan_row_count = plan_fields.len();
 
             card = card
-                .child(rule_card_body_row(condition_fields))
-                .child(rule_card_body_row(plan_fields))
-                .child(rule_card_body_actions(vec![
-                    rename_rule_button(title_target, cx),
-                    danger_control_button(Button::new(SharedString::from(format!(
-                        "remove-cpu-rule-{index}"
-                    ))))
-                    .label(t!("common.remove").to_string())
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.request_list_item_removal(
-                            ListItemRemovalTarget::CpuUsageRule(index),
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-                ]));
+                .child(animated_rule_card_body_child(
+                    &card_target,
+                    0,
+                    condition_row_count,
+                    rule_card_body_row(condition_fields),
+                ))
+                .child(animated_rule_card_body_child(
+                    &card_target,
+                    1,
+                    plan_row_count,
+                    rule_card_body_row(plan_fields),
+                ))
+                .child(animated_rule_card_body_child(
+                    &card_target,
+                    2,
+                    1,
+                    rule_card_body_actions(vec![
+                        rename_rule_button(title_target, cx),
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-cpu-rule-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.request_list_item_removal(
+                                ListItemRemovalTarget::CpuUsageRule(index),
+                                cx,
+                            );
+                        }))
+                        .into_any_element(),
+                    ]),
+                ));
         }
         card.into_any_element()
     }
@@ -5178,6 +5341,7 @@ impl PowerLeafApp {
             ),
             self.is_setting_group_collapsed(SettingGroupTarget::EfficiencyEnable),
             vec![self.render_efficiency_aggressiveness_selector(enabled, window, cx)],
+            window,
             cx,
         )
         .into_any_element()
@@ -5466,7 +5630,14 @@ impl PowerLeafApp {
             .into_any_element(),
         });
 
-        setting_group_with_title_element(
+        let body_animation_height = match selected_style {
+            EcoQosCpuRestrictionControlStyle::Percentage => {
+                CARD_ROW_HEIGHT * rows.len().max(1) as f32
+            }
+            EcoQosCpuRestrictionControlStyle::CoreToggle => setting_group_core_grid_body_height(3),
+        };
+
+        setting_group_with_title_element_with_body_height(
             SettingGroupTarget::EfficiencyCpuRestriction,
             h_flex()
                 .flex_1()
@@ -5508,6 +5679,8 @@ impl PowerLeafApp {
             ),
             collapsed,
             rows,
+            Some(body_animation_height),
+            window,
             cx,
         )
         .into_any_element()
@@ -5701,6 +5874,7 @@ impl PowerLeafApp {
                         }),
                     ),
                 ],
+                window,
                 cx,
             ))
             .child(setting_group(
@@ -5742,6 +5916,7 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 )],
+                window,
                 cx,
             ))
             .child(setting_group(
@@ -5783,6 +5958,7 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 )],
+                window,
                 cx,
             ))
             .child(section_header(
@@ -5915,76 +6091,92 @@ impl PowerLeafApp {
                 Some(freeze_action),
                 rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
+                collapsed,
                 cx,
             );
-            if !collapsed {
+            if rule_card_body_visible(&card_target, collapsed, window) {
                 card = card
-                    .child(rule_card_body_row(vec![
-                        rule_toggle_switch(
-                            format!("suspension-audio-rule-{index}"),
-                            t!("suspension.audio_detection").to_string(),
-                            rule.audio_wake_enabled,
-                            cx.listener(move |app, checked, _, cx| {
-                                if let Some(rule) =
-                                    app.settings.app_suspension.suspendable_apps.get_mut(index)
-                                {
-                                    rule.audio_wake_enabled = *checked;
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        0,
+                        2,
+                        rule_card_body_row(vec![
+                            rule_toggle_switch(
+                                format!("suspension-audio-rule-{index}"),
+                                t!("suspension.audio_detection").to_string(),
+                                rule.audio_wake_enabled,
+                                cx.listener(move |app, checked, _, cx| {
+                                    if let Some(rule) =
+                                        app.settings.app_suspension.suspendable_apps.get_mut(index)
+                                    {
+                                        rule.audio_wake_enabled = *checked;
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
+                            rule_toggle_switch(
+                                format!("suspension-network-rule-{index}"),
+                                t!("suspension.network_detection").to_string(),
+                                rule.network_wake_enabled,
+                                cx.listener(move |app, checked, _, cx| {
+                                    if let Some(rule) =
+                                        app.settings.app_suspension.suspendable_apps.get_mut(index)
+                                    {
+                                        rule.network_wake_enabled = *checked;
+                                    }
+                                    cx.notify();
+                                }),
+                            ),
+                        ]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        1,
+                        2,
+                        rule_card_body_row(vec![
+                            self.render_network_threshold(
+                                index,
+                                true,
+                                &t!("suspension.download_threshold"),
+                                rule.network_download_threshold_bytes,
+                                rule.network_download_threshold_unit,
+                                ThresholdField::Download(index),
+                                network_thresholds_enabled,
+                                window,
+                                cx,
+                            ),
+                            self.render_network_threshold(
+                                index,
+                                false,
+                                &t!("suspension.upload_threshold"),
+                                rule.network_upload_threshold_bytes,
+                                rule.network_upload_threshold_unit,
+                                ThresholdField::Upload(index),
+                                network_thresholds_enabled,
+                                window,
+                                cx,
+                            ),
+                        ]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        2,
+                        1,
+                        rule_card_body_action(
+                            danger_control_button(Button::new(SharedString::from(format!(
+                                "remove-suspension-{index}"
+                            ))))
+                            .label(t!("common.remove").to_string())
+                            .on_click(cx.listener({
+                                move |app, _, _, cx| {
+                                    app.request_list_item_removal(
+                                        ListItemRemovalTarget::AppSuspensionRule(index),
+                                        cx,
+                                    );
                                 }
-                                cx.notify();
-                            }),
+                            }))
+                            .into_any_element(),
                         ),
-                        rule_toggle_switch(
-                            format!("suspension-network-rule-{index}"),
-                            t!("suspension.network_detection").to_string(),
-                            rule.network_wake_enabled,
-                            cx.listener(move |app, checked, _, cx| {
-                                if let Some(rule) =
-                                    app.settings.app_suspension.suspendable_apps.get_mut(index)
-                                {
-                                    rule.network_wake_enabled = *checked;
-                                }
-                                cx.notify();
-                            }),
-                        ),
-                    ]))
-                    .child(rule_card_body_row(vec![
-                        self.render_network_threshold(
-                            index,
-                            true,
-                            &t!("suspension.download_threshold"),
-                            rule.network_download_threshold_bytes,
-                            rule.network_download_threshold_unit,
-                            ThresholdField::Download(index),
-                            network_thresholds_enabled,
-                            window,
-                            cx,
-                        ),
-                        self.render_network_threshold(
-                            index,
-                            false,
-                            &t!("suspension.upload_threshold"),
-                            rule.network_upload_threshold_bytes,
-                            rule.network_upload_threshold_unit,
-                            ThresholdField::Upload(index),
-                            network_thresholds_enabled,
-                            window,
-                            cx,
-                        ),
-                    ]))
-                    .child(rule_card_body_action(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-suspension-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener({
-                            move |app, _, _, cx| {
-                                app.request_list_item_removal(
-                                    ListItemRemovalTarget::AppSuspensionRule(index),
-                                    cx,
-                                );
-                            }
-                        }))
-                        .into_any_element(),
                     ));
             }
             list = list.child(self.animated_list_item(
@@ -6196,6 +6388,12 @@ impl PowerLeafApp {
             )
             .into_any_element(),
         });
+        let body_animation_height = match settings.control_style {
+            EcoQosCpuRestrictionControlStyle::Percentage => {
+                CARD_ROW_HEIGHT * rows.len().max(1) as f32
+            }
+            EcoQosCpuRestrictionControlStyle::CoreToggle => setting_group_core_grid_body_height(3),
+        };
 
         let body = feature_body(enabled)
             .child(feature_toggle_switch_with_help(
@@ -6210,7 +6408,7 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ))
-            .child(setting_group_with_title_element(
+            .child(setting_group_with_title_element_with_body_height(
                 SettingGroupTarget::BackgroundCpuRestriction,
                 div()
                     .min_w(px(0.0))
@@ -6231,6 +6429,8 @@ impl PowerLeafApp {
                 ),
                 self.is_setting_group_collapsed(SettingGroupTarget::BackgroundCpuRestriction),
                 rows,
+                Some(body_animation_height),
+                window,
                 cx,
             ))
             .child(stat_grid(vec![
@@ -6442,7 +6642,7 @@ impl PowerLeafApp {
                             })),
                     ),
             )
-            .child(self.render_cpu_limiter_rules(cx));
+            .child(self.render_cpu_limiter_rules(window, cx));
 
         let help = tooltip_lines(vec![
             t!("cpu_limiter.intro_1").to_string(),
@@ -6465,7 +6665,7 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_cpu_limiter_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_cpu_limiter_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list();
         for (index, rule) in self.settings.cpu_limiter.rules.iter().enumerate() {
             let process = rule.process_name.clone();
@@ -6486,66 +6686,87 @@ impl PowerLeafApp {
                 ),
                 rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
+                collapsed,
                 cx,
             );
-            if !collapsed {
+            if rule_card_body_visible(&card_target, collapsed, window) {
                 card = card
-                    .child(rule_card_body_row(vec![rule_action_row(
-                        format!("cpu-limiter-rule-status-{index}"),
-                        t!("common.status").to_string(),
-                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
-                    )
-                    .into_any_element()]))
-                    .child(rule_card_body_row(vec![
-                        self.render_cpu_limiter_numeric_row(
-                            index,
-                            NumericField::CpuLimiterThreshold(index),
-                            t!("cpu_limiter.threshold").to_string(),
-                            format!("{}%", rule.threshold_percent),
-                            rule.threshold_percent.to_string(),
-                            cx,
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        0,
+                        1,
+                        rule_card_body_row(vec![rule_action_row(
+                            format!("cpu-limiter-rule-status-{index}"),
+                            t!("common.status").to_string(),
+                            status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                        )
+                        .into_any_element()]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        1,
+                        2,
+                        rule_card_body_row(vec![
+                            self.render_cpu_limiter_numeric_row(
+                                index,
+                                NumericField::CpuLimiterThreshold(index),
+                                t!("cpu_limiter.threshold").to_string(),
+                                format!("{}%", rule.threshold_percent),
+                                rule.threshold_percent.to_string(),
+                                cx,
+                            ),
+                            self.render_cpu_limiter_numeric_row(
+                                index,
+                                NumericField::CpuLimiterMaxProcessors(index),
+                                t!("cpu_limiter.max_processors").to_string(),
+                                rule.max_logical_processors.to_string(),
+                                rule.max_logical_processors.to_string(),
+                                cx,
+                            ),
+                        ]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        2,
+                        2,
+                        rule_card_body_row(vec![
+                            self.render_cpu_limiter_numeric_row(
+                                index,
+                                NumericField::CpuLimiterSustain(index),
+                                t!("cpu_limiter.sustain").to_string(),
+                                format!("{} sec", rule.sustain_seconds),
+                                rule.sustain_seconds.to_string(),
+                                cx,
+                            ),
+                            self.render_cpu_limiter_numeric_row(
+                                index,
+                                NumericField::CpuLimiterCooldown(index),
+                                t!("cpu_limiter.cooldown").to_string(),
+                                format!("{} sec", rule.cooldown_seconds),
+                                rule.cooldown_seconds.to_string(),
+                                cx,
+                            ),
+                        ]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        3,
+                        1,
+                        rule_card_body_action(
+                            danger_control_button(Button::new(SharedString::from(format!(
+                                "remove-cpu-limiter-{index}"
+                            ))))
+                            .label(t!("common.remove").to_string())
+                            .on_click(cx.listener({
+                                move |app, _, _, cx| {
+                                    app.request_list_item_removal(
+                                        ListItemRemovalTarget::CpuLimiterRule(index),
+                                        cx,
+                                    );
+                                }
+                            }))
+                            .into_any_element(),
                         ),
-                        self.render_cpu_limiter_numeric_row(
-                            index,
-                            NumericField::CpuLimiterMaxProcessors(index),
-                            t!("cpu_limiter.max_processors").to_string(),
-                            rule.max_logical_processors.to_string(),
-                            rule.max_logical_processors.to_string(),
-                            cx,
-                        ),
-                    ]))
-                    .child(rule_card_body_row(vec![
-                        self.render_cpu_limiter_numeric_row(
-                            index,
-                            NumericField::CpuLimiterSustain(index),
-                            t!("cpu_limiter.sustain").to_string(),
-                            format!("{} sec", rule.sustain_seconds),
-                            rule.sustain_seconds.to_string(),
-                            cx,
-                        ),
-                        self.render_cpu_limiter_numeric_row(
-                            index,
-                            NumericField::CpuLimiterCooldown(index),
-                            t!("cpu_limiter.cooldown").to_string(),
-                            format!("{} sec", rule.cooldown_seconds),
-                            rule.cooldown_seconds.to_string(),
-                            cx,
-                        ),
-                    ]))
-                    .child(rule_card_body_action(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-cpu-limiter-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener({
-                            move |app, _, _, cx| {
-                                app.request_list_item_removal(
-                                    ListItemRemovalTarget::CpuLimiterRule(index),
-                                    cx,
-                                );
-                            }
-                        }))
-                        .into_any_element(),
                     ));
             }
             list = list.child(self.animated_list_item(
@@ -6677,78 +6898,112 @@ impl PowerLeafApp {
                 ),
                 rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
+                collapsed,
                 cx,
             );
-            if !collapsed {
+            if rule_card_body_visible(&card_target, collapsed, window) {
                 card = card
-                    .child(rule_card_body_row(vec![rule_action_row(
-                        format!("watchdog-rule-status-{index}"),
-                        t!("common.status").to_string(),
-                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
-                    )
-                    .into_any_element()]))
-                    .child(rule_card_body_row(vec![self
-                        .render_watchdog_action_selector(
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        0,
+                        1,
+                        rule_card_body_row(vec![rule_action_row(
+                            format!("watchdog-rule-status-{index}"),
+                            t!("common.status").to_string(),
+                            status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                        )
+                        .into_any_element()]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        1,
+                        1,
+                        rule_card_body_row(vec![self.render_watchdog_action_selector(
                             index,
                             rule.action,
                             window,
                             cx,
-                        )]));
+                        )]),
+                    ));
 
+                let mut body_index = 2;
                 if rule.action == WatchdogAction::RestartIfExited {
                     if let Some(input) = self.inputs.watchdog_launch_paths.get(index) {
-                        card = card.child(rule_card_body_row(vec![rule_action_row(
-                            format!("watchdog-launch-path-{index}"),
-                            t!("watchdog.launch_path").to_string(),
-                            app_input(
-                                input,
-                                input.read(cx).focus_handle(cx).is_focused(window),
-                                cx,
+                        card = card.child(animated_rule_card_body_child(
+                            &card_target,
+                            body_index,
+                            1,
+                            rule_card_body_row(vec![rule_action_row(
+                                format!("watchdog-launch-path-{index}"),
+                                t!("watchdog.launch_path").to_string(),
+                                app_input(
+                                    input,
+                                    input.read(cx).focus_handle(cx).is_focused(window),
+                                    cx,
+                                )
+                                .into_any_element(),
                             )
-                            .into_any_element(),
-                        )
-                        .into_any_element()]));
+                            .into_any_element()]),
+                        ));
+                        body_index += 1;
                     }
                     if let Some(input) = self.inputs.watchdog_launch_args.get(index) {
-                        card = card.child(rule_card_body_row(vec![rule_action_row(
-                            format!("watchdog-launch-args-{index}"),
-                            t!("watchdog.launch_args").to_string(),
-                            app_input(
-                                input,
-                                input.read(cx).focus_handle(cx).is_focused(window),
-                                cx,
+                        card = card.child(animated_rule_card_body_child(
+                            &card_target,
+                            body_index,
+                            1,
+                            rule_card_body_row(vec![rule_action_row(
+                                format!("watchdog-launch-args-{index}"),
+                                t!("watchdog.launch_args").to_string(),
+                                app_input(
+                                    input,
+                                    input.read(cx).focus_handle(cx).is_focused(window),
+                                    cx,
+                                )
+                                .into_any_element(),
                             )
-                            .into_any_element(),
-                        )
-                        .into_any_element()]));
+                            .into_any_element()]),
+                        ));
+                        body_index += 1;
                     }
-                    card = card.child(rule_card_body_row(vec![rule_action_row(
-                        format!("watchdog-restart-delay-{index}"),
-                        t!("watchdog.restart_delay").to_string(),
-                        self.render_numeric_value(
-                            NumericField::WatchdogRestartDelay(index),
-                            format!("{} sec", rule.restart_delay_seconds),
-                            rule.restart_delay_seconds.to_string(),
-                            cx,
-                        ),
-                    )
-                    .into_any_element()]));
+                    card = card.child(animated_rule_card_body_child(
+                        &card_target,
+                        body_index,
+                        1,
+                        rule_card_body_row(vec![rule_action_row(
+                            format!("watchdog-restart-delay-{index}"),
+                            t!("watchdog.restart_delay").to_string(),
+                            self.render_numeric_value(
+                                NumericField::WatchdogRestartDelay(index),
+                                format!("{} sec", rule.restart_delay_seconds),
+                                rule.restart_delay_seconds.to_string(),
+                                cx,
+                            ),
+                        )
+                        .into_any_element()]),
+                    ));
+                    body_index += 1;
                 }
 
-                card = card.child(rule_card_body_action(
-                    danger_control_button(Button::new(SharedString::from(format!(
-                        "remove-watchdog-{index}"
-                    ))))
-                    .label(t!("common.remove").to_string())
-                    .on_click(cx.listener({
-                        move |app, _, _, cx| {
-                            app.request_list_item_removal(
-                                ListItemRemovalTarget::WatchdogRule(index),
-                                cx,
-                            );
-                        }
-                    }))
-                    .into_any_element(),
+                card = card.child(animated_rule_card_body_child(
+                    &card_target,
+                    body_index,
+                    1,
+                    rule_card_body_action(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-watchdog-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener({
+                            move |app, _, _, cx| {
+                                app.request_list_item_removal(
+                                    ListItemRemovalTarget::WatchdogRule(index),
+                                    cx,
+                                );
+                            }
+                        }))
+                        .into_any_element(),
+                    ),
                 ));
             }
             list = list.child(self.animated_list_item(
@@ -6954,26 +7209,46 @@ impl PowerLeafApp {
             .value()
             .to_string();
         let enabled = self.settings.foreground_responsiveness.enabled;
-        let body = feature_body(enabled)
+        let advanced_enabled = self
+            .settings
+            .foreground_responsiveness
+            .auto_balance_advanced_settings_enabled;
+        let advanced_section_motion_id = "expanded-child-auto-balance-advanced-section";
+        let advanced_cards_motion_id = "expanded-child-auto-balance-advanced-cards";
+        let advanced_section_progress = expandable_motion_progress(advanced_section_motion_id);
+        let advanced_cards_progress = expandable_motion_progress(advanced_cards_motion_id);
+        if advanced_section_progress.is_some() || advanced_cards_progress.is_some() {
+            window.request_animation_frame();
+        }
+        let mut body = feature_body(enabled)
             .child(self.render_auto_balance_preset_selector(window, cx))
-            .child(self.render_auto_balance_advanced_settings_toggle(cx))
-            .when(
-                self.settings
-                    .foreground_responsiveness
-                    .auto_balance_advanced_settings_enabled,
-                |body| {
-                    body.child(section_header(
-                        &t!("responsiveness.auto_balance_advanced"),
-                        t!("responsiveness.auto_balance_advanced_help").to_string(),
-                    ))
-                    .child(self.render_auto_balance_advanced_cards(
-                        window,
-                        cx,
-                        &input_value,
-                        enabled,
-                    ))
-                },
-            );
+            .child(self.render_auto_balance_advanced_settings_toggle(cx));
+
+        if advanced_enabled || advanced_section_progress.is_some() {
+            let section = section_header(
+                &t!("responsiveness.auto_balance_advanced"),
+                t!("responsiveness.auto_balance_advanced_help").to_string(),
+            )
+            .into_any_element();
+            body = body.child(if let Some(progress) = advanced_section_progress {
+                expanded_child_at_progress(section, None, progress)
+            } else {
+                animated_expanded_child("auto-balance-advanced-section", section)
+            });
+        } else {
+            remember_expanded_child_hidden("auto-balance-advanced-section");
+        }
+
+        if advanced_enabled || advanced_cards_progress.is_some() {
+            let cards = self.render_auto_balance_advanced_cards(window, cx, &input_value, enabled);
+            body = body.child(if let Some(progress) = advanced_cards_progress {
+                expanded_child_at_progress(cards, None, progress)
+            } else {
+                animated_expanded_child("auto-balance-advanced-cards", cards)
+            });
+        } else {
+            remember_expanded_child_hidden("auto-balance-advanced-cards");
+        }
 
         let help = tooltip_lines(vec![
             t!("responsiveness.intro_1").to_string(),
@@ -7084,6 +7359,11 @@ impl PowerLeafApp {
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
+                            begin_auto_balance_preset_control_motions(
+                                &app.settings.foreground_responsiveness,
+                                behavior,
+                                cx,
+                            );
                             apply_auto_balance_behavior(
                                 &mut app.settings.foreground_responsiveness,
                                 behavior,
@@ -7117,6 +7397,11 @@ impl PowerLeafApp {
                     .foreground_responsiveness
                     .auto_balance_advanced_settings_enabled,
                 cx.listener(|app, checked, _, cx| {
+                    begin_expandable_motion(
+                        "expanded-child-auto-balance-advanced-section",
+                        *checked,
+                    );
+                    begin_expandable_motion("expanded-child-auto-balance-advanced-cards", *checked);
                     app.settings
                         .foreground_responsiveness
                         .auto_balance_advanced_settings_enabled = *checked;
@@ -7170,6 +7455,7 @@ impl PowerLeafApp {
                     .into_any_element(),
                     self.render_foreground_boost_selector(window, cx),
                 ],
+                window,
                 cx,
             )
             .into_any_element(),
@@ -7195,6 +7481,7 @@ impl PowerLeafApp {
                     true,
                 )
                 .into_any_element()],
+                window,
                 cx,
             )
             .into_any_element(),
@@ -7266,6 +7553,7 @@ impl PowerLeafApp {
                         }),
                     ),
                 ],
+                window,
                 cx,
             )
             .into_any_element(),
@@ -7291,6 +7579,7 @@ impl PowerLeafApp {
                     true,
                 )
                 .into_any_element()],
+                window,
                 cx,
             )
             .into_any_element(),
@@ -7464,6 +7753,7 @@ impl PowerLeafApp {
                         }),
                     ),
                 ],
+                window,
                 cx,
             )
             .into_any_element(),
@@ -7516,13 +7806,15 @@ impl PowerLeafApp {
             )
             .child(self.render_responsiveness_exclusions(cx));
         rows.push(
-            setting_group_with_help(
+            setting_group_with_help_body_height(
                 SettingGroupTarget::AutoBalanceExclusions,
                 t!("responsiveness.auto_balance_exclusions").to_string(),
                 t!("responsiveness.auto_balance_exclusions_help").to_string(),
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceExclusions),
                 vec![exclusion_editor.into_any_element()],
+                auto_balance_exclusions_body_height(settings.auto_balance_exclusions.len()),
+                window,
                 cx,
             )
             .into_any_element(),
@@ -7751,36 +8043,52 @@ impl PowerLeafApp {
                 ),
                 rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
+                collapsed,
                 cx,
             );
-            if !collapsed {
+            if rule_card_body_visible(&card_target, collapsed, window) {
                 card = card
-                    .child(rule_card_body_row(vec![rule_action_row(
-                        format!("responsiveness-rule-status-{index}"),
-                        t!("common.status").to_string(),
-                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
-                    )
-                    .into_any_element()]))
-                    .child(rule_card_body_row(vec![self.render_priority_selector(
-                        index,
-                        rule.priority,
-                        window,
-                        cx,
-                    )]))
-                    .child(rule_card_body_action(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-responsiveness-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener({
-                            move |app, _, _, cx| {
-                                app.request_list_item_removal(
-                                    ListItemRemovalTarget::ResponsivenessRule(index),
-                                    cx,
-                                );
-                            }
-                        }))
-                        .into_any_element(),
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        0,
+                        1,
+                        rule_card_body_row(vec![rule_action_row(
+                            format!("responsiveness-rule-status-{index}"),
+                            t!("common.status").to_string(),
+                            status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                        )
+                        .into_any_element()]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        1,
+                        1,
+                        rule_card_body_row(vec![self.render_priority_selector(
+                            index,
+                            rule.priority,
+                            window,
+                            cx,
+                        )]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        2,
+                        1,
+                        rule_card_body_action(
+                            danger_control_button(Button::new(SharedString::from(format!(
+                                "remove-responsiveness-{index}"
+                            ))))
+                            .label(t!("common.remove").to_string())
+                            .on_click(cx.listener({
+                                move |app, _, _, cx| {
+                                    app.request_list_item_removal(
+                                        ListItemRemovalTarget::ResponsivenessRule(index),
+                                        cx,
+                                    );
+                                }
+                            }))
+                            .into_any_element(),
+                        ),
                     ));
             }
             list = list.child(self.animated_list_item(
@@ -8025,36 +8333,52 @@ impl PowerLeafApp {
                 ),
                 rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
+                collapsed,
                 cx,
             );
-            if !collapsed {
+            if rule_card_body_visible(&card_target, collapsed, window) {
                 card = card
-                    .child(rule_card_body_row(vec![rule_action_row(
-                        format!("io-priority-rule-status-{index}"),
-                        t!("common.status").to_string(),
-                        status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
-                    )
-                    .into_any_element()]))
-                    .child(rule_card_body_row(vec![self.render_io_priority_selector(
-                        index,
-                        rule.priority,
-                        window,
-                        cx,
-                    )]))
-                    .child(rule_card_body_action(
-                        danger_control_button(Button::new(SharedString::from(format!(
-                            "remove-io-priority-{index}"
-                        ))))
-                        .label(t!("common.remove").to_string())
-                        .on_click(cx.listener({
-                            move |app, _, _, cx| {
-                                app.request_list_item_removal(
-                                    ListItemRemovalTarget::IoPriorityRule(index),
-                                    cx,
-                                );
-                            }
-                        }))
-                        .into_any_element(),
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        0,
+                        1,
+                        rule_card_body_row(vec![rule_action_row(
+                            format!("io-priority-rule-status-{index}"),
+                            t!("common.status").to_string(),
+                            status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
+                        )
+                        .into_any_element()]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        1,
+                        1,
+                        rule_card_body_row(vec![self.render_io_priority_selector(
+                            index,
+                            rule.priority,
+                            window,
+                            cx,
+                        )]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        2,
+                        1,
+                        rule_card_body_action(
+                            danger_control_button(Button::new(SharedString::from(format!(
+                                "remove-io-priority-{index}"
+                            ))))
+                            .label(t!("common.remove").to_string())
+                            .on_click(cx.listener({
+                                move |app, _, _, cx| {
+                                    app.request_list_item_removal(
+                                        ListItemRemovalTarget::IoPriorityRule(index),
+                                        cx,
+                                    );
+                                }
+                            }))
+                            .into_any_element(),
+                        ),
                     ));
             }
             list = list.child(self.animated_list_item(
@@ -8386,6 +8710,7 @@ impl PowerLeafApp {
                     )
                     .into_any_element(),
                 ],
+                window,
                 cx,
             ))
             .child(setting_group_with_help(
@@ -8444,6 +8769,7 @@ impl PowerLeafApp {
                     )
                     .into_any_element(),
                 ],
+                window,
                 cx,
             ))
             .child(setting_group_with_help(
@@ -8518,6 +8844,7 @@ impl PowerLeafApp {
                     )
                     .into_any_element(),
                 ],
+                window,
                 cx,
             ))
             .child(setting_group_with_help(
@@ -8616,6 +8943,7 @@ impl PowerLeafApp {
                         .into_any_element(),
                     self.render_smart_trim_exclusions(cx),
                 ],
+                window,
                 cx,
             ))
             .child(setting_group_with_help(
@@ -8688,6 +9016,7 @@ impl PowerLeafApp {
                     ),
                 ])
                 .into_any_element()],
+                window,
                 cx,
             ));
         self.page_shell(Page::SmartTrim, cx)
@@ -8860,46 +9189,73 @@ impl PowerLeafApp {
                 ),
                 rule_card_collapse_indicator(card_target.clone(), collapsed),
                 card_target.clone(),
+                collapsed,
                 cx,
             );
-            if !collapsed {
-                card =
-                    card.child(rule_card_body_row(vec![rule_action_row(
-                        format!("affinity-rule-status-{index}"),
-                        t!("common.status").to_string(),
-                        h_flex()
-                            .items_center()
-                            .justify_end()
-                            .gap_2()
-                            .min_w(px(0.0))
-                            .flex_wrap()
-                            .child(status_pill(indicator.label, indicator.bg, indicator.fg))
-                            .child(text_muted(indicator.hover))
-                            .into_any_element(),
-                    )
-                    .into_any_element()]))
-                        .child(rule_card_body_row(vec![
+            if rule_card_body_visible(&card_target, collapsed, window) {
+                card = card
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        0,
+                        1,
+                        rule_card_body_row(vec![rule_action_row(
+                            format!("affinity-rule-status-{index}"),
+                            t!("common.status").to_string(),
+                            h_flex()
+                                .items_center()
+                                .justify_end()
+                                .gap_2()
+                                .min_w(px(0.0))
+                                .flex_wrap()
+                                .child(status_pill(indicator.label, indicator.bg, indicator.fg))
+                                .child(text_muted(indicator.hover))
+                                .into_any_element(),
+                        )
+                        .into_any_element()]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        1,
+                        1,
+                        rule_card_body_row(vec![
                             self.render_affinity_mode_selector(index, rule.mode, window, cx)
-                        ]))
-                        .when(rule.mode != CpuAffinityMode::EfficiencyOff, |card| {
-                            card.child(rule_card_body_row(vec![self
-                                .render_affinity_core_selector(index, rule.core_mask, window, cx)]))
-                        })
-                        .child(rule_card_body_action(
-                            danger_control_button(Button::new(SharedString::from(format!(
-                                "remove-affinity-{index}"
-                            ))))
-                            .label(t!("common.remove").to_string())
-                            .on_click(cx.listener({
-                                move |app, _, _, cx| {
-                                    app.request_list_item_removal(
-                                        ListItemRemovalTarget::CpuAffinityRule(index),
-                                        cx,
-                                    );
-                                }
-                            }))
-                            .into_any_element(),
-                        ));
+                        ]),
+                    ));
+                let mut body_index = 2;
+                if rule.mode != CpuAffinityMode::EfficiencyOff {
+                    card = card.child(animated_rule_card_body_child_with_height(
+                        &card_target,
+                        body_index,
+                        affinity_core_selector_body_height(),
+                        rule_card_body_row(vec![self.render_affinity_core_selector(
+                            index,
+                            rule.core_mask,
+                            window,
+                            cx,
+                        )]),
+                    ));
+                    body_index += 1;
+                }
+                card = card.child(animated_rule_card_body_child(
+                    &card_target,
+                    body_index,
+                    1,
+                    rule_card_body_action(
+                        danger_control_button(Button::new(SharedString::from(format!(
+                            "remove-affinity-{index}"
+                        ))))
+                        .label(t!("common.remove").to_string())
+                        .on_click(cx.listener({
+                            move |app, _, _, cx| {
+                                app.request_list_item_removal(
+                                    ListItemRemovalTarget::CpuAffinityRule(index),
+                                    cx,
+                                );
+                            }
+                        }))
+                        .into_any_element(),
+                    ),
+                ));
             }
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::CpuAffinityRule(index),
@@ -9078,8 +9434,6 @@ impl PowerLeafApp {
         action: CoreTileGridAction,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        const CORE_GRID_COLUMNS: usize = 8;
-
         if processors.is_empty() {
             return text_muted(t!("affinity.no_logical_cpus").to_string()).into_any_element();
         }
@@ -9137,7 +9491,7 @@ impl PowerLeafApp {
                         .rounded(px(4.0))
                         .w_full()
                         .min_w(px(0.0))
-                        .h(px(54.0))
+                        .h(px(CORE_TILE_HEIGHT))
                         .disabled(!enabled)
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match action {
@@ -9189,7 +9543,7 @@ impl PowerLeafApp {
                 ),
             );
             cells_in_row += 1;
-            if cells_in_row == CORE_GRID_COLUMNS {
+            if cells_in_row == CORE_TILE_GRID_COLUMNS {
                 grid = grid.child(current_row);
                 current_row = h_flex().w_full().min_w(px(0.0)).gap_1();
                 cells_in_row = 0;
@@ -9197,7 +9551,7 @@ impl PowerLeafApp {
         }
 
         if cells_in_row > 0 {
-            for _ in cells_in_row..CORE_GRID_COLUMNS {
+            for _ in cells_in_row..CORE_TILE_GRID_COLUMNS {
                 current_row = current_row.child(div().flex_1().min_w(px(0.0)));
             }
             grid = grid.child(current_row);
@@ -9543,6 +9897,11 @@ impl PowerLeafApp {
         let selected_source = self.settings.general.accent.source;
         let accent_target = SettingGroupTarget::AccentColor;
         let collapsed = self.is_setting_group_collapsed(accent_target);
+        let accent_motion_id = format!("setting-group-{accent_target:?}");
+        let accent_motion_progress = expandable_motion_progress(&accent_motion_id);
+        if accent_motion_progress.is_some() {
+            window.request_animation_frame();
+        }
         let source_dropdown = self.render_dropdown_select(
             "accent-source",
             accent_source_label(selected_source),
@@ -9565,11 +9924,15 @@ impl PowerLeafApp {
                             move |app, _, window, cx| {
                                 app.settings.general.accent.source = source;
                                 if source == AccentColorSource::Custom {
-                                    app.expanded_setting_groups
-                                        .insert(SettingGroupTarget::AccentColor);
+                                    app.set_setting_group_expanded(
+                                        SettingGroupTarget::AccentColor,
+                                        true,
+                                    );
                                 } else {
-                                    app.expanded_setting_groups
-                                        .remove(&SettingGroupTarget::AccentColor);
+                                    app.set_setting_group_expanded(
+                                        SettingGroupTarget::AccentColor,
+                                        false,
+                                    );
                                 }
                                 app.active_power_plan_picker = None;
                                 apply_appearance_settings(&app.settings.general, window, cx);
@@ -9589,8 +9952,7 @@ impl PowerLeafApp {
                 cx.listener(move |app, _, window, cx| {
                     app.settings.general.accent.source = AccentColorSource::Custom;
                     app.settings.general.accent.custom_color = color;
-                    app.expanded_setting_groups
-                        .insert(SettingGroupTarget::AccentColor);
+                    app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
                     apply_appearance_settings(&app.settings.general, window, cx);
                     cx.notify();
                 }),
@@ -9615,8 +9977,7 @@ impl PowerLeafApp {
                 cx.listener(move |app, _, window, cx| {
                     app.settings.general.accent.source = AccentColorSource::Custom;
                     app.settings.general.accent.custom_color = color;
-                    app.expanded_setting_groups
-                        .insert(SettingGroupTarget::AccentColor);
+                    app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
                     apply_appearance_settings(&app.settings.general, window, cx);
                     cx.notify();
                 }),
@@ -9708,20 +10069,22 @@ impl PowerLeafApp {
                     ),
             );
 
-        if !collapsed {
-            accent_card = accent_card.child(animated_expanded_child(
-                "accent-palette-subcard",
-                div()
-                    .id("accent-palette-subcard")
-                    .w_full()
-                    .min_w(px(0.0))
-                    .border_t_1()
-                    .border_color(rgb(border_color()))
-                    .py_3()
-                    .px_4()
-                    .child(palette_content)
-                    .into_any_element(),
-            ));
+        if !collapsed || accent_motion_progress.is_some() {
+            let palette = div()
+                .id("accent-palette-subcard")
+                .w_full()
+                .min_w(px(0.0))
+                .border_t_1()
+                .border_color(rgb(border_color()))
+                .py_3()
+                .px_4()
+                .child(palette_content)
+                .into_any_element();
+            accent_card = accent_card.child(if let Some(progress) = accent_motion_progress {
+                expanded_child_at_progress(palette, None, progress)
+            } else {
+                animated_expanded_child("accent-palette-subcard", palette)
+            });
         } else {
             remember_expanded_child_hidden("accent-palette-subcard");
         }
@@ -12314,6 +12677,21 @@ fn accent_glyph_color(accent: u32) -> u32 {
     }
 }
 
+fn lerp_rgb(from: u32, to: u32, delta: f32) -> u32 {
+    let delta = delta.clamp(0.0, 1.0);
+    let from_r = ((from >> 16) & 0xff) as f32;
+    let from_g = ((from >> 8) & 0xff) as f32;
+    let from_b = (from & 0xff) as f32;
+    let to_r = ((to >> 16) & 0xff) as f32;
+    let to_g = ((to >> 8) & 0xff) as f32;
+    let to_b = (to & 0xff) as f32;
+    let r = (from_r + (to_r - from_r) * delta).round() as u32;
+    let g = (from_g + (to_g - from_g) * delta).round() as u32;
+    let b = (from_b + (to_b - from_b) * delta).round() as u32;
+
+    (r << 16) | (g << 8) | b
+}
+
 fn switch_accent_color() -> u32 {
     accent_color()
 }
@@ -13183,6 +13561,7 @@ fn page_content_frame(
 enum MotionSpeed {
     Fast,
     Standard,
+    Expand,
 }
 
 impl MotionSpeed {
@@ -13192,6 +13571,8 @@ impl MotionSpeed {
                 .with_easing(cubic_bezier(0.25, 1.0, 0.5, 1.0)),
             Self::Standard => Animation::new(Duration::from_secs_f64(MOTION_STANDARD_SECONDS))
                 .with_easing(cubic_bezier(0.22, 1.0, 0.36, 1.0)),
+            Self::Expand => Animation::new(Duration::from_secs_f64(MOTION_EXPAND_SECONDS))
+                .with_easing(cubic_bezier(0.16, 1.0, 0.3, 1.0)),
         }
     }
 }
@@ -13216,6 +13597,241 @@ where
             .into_any_element()
     } else {
         final_state(element).into_any_element()
+    }
+}
+
+fn begin_expandable_motion(id: impl Into<String>, expanded: bool) {
+    if !ui_animations_enabled() {
+        return;
+    }
+
+    let id = id.into();
+    let started = Instant::now();
+    let to_progress = if expanded { 1.0 } else { 0.0 };
+    if let Ok(mut state) = EXPANDABLE_MOTION_STATE.lock() {
+        let from_progress = state
+            .transitions
+            .get(&id)
+            .map(|transition| expandable_transition_progress(*transition, started))
+            .unwrap_or(if expanded { 0.0 } else { 1.0 });
+        let distance = (to_progress - from_progress).abs();
+
+        if distance <= 0.001 {
+            state.transitions.remove(&id);
+            return;
+        }
+
+        let duration = Duration::from_secs_f64(
+            (MOTION_EXPAND_SECONDS * distance as f64)
+                .clamp(MOTION_EXPAND_MIN_SECONDS, MOTION_EXPAND_SECONDS),
+        );
+        state.transitions.insert(
+            id.clone(),
+            ExpandableTransition {
+                from_progress,
+                to_progress,
+                started,
+                duration,
+            },
+        );
+    }
+}
+
+fn expandable_motion_progress(id: &str) -> Option<f32> {
+    let Ok(mut state) = EXPANDABLE_MOTION_STATE.lock() else {
+        return None;
+    };
+
+    let now = Instant::now();
+    let transition = state.transitions.get(id).copied()?;
+    if now.saturating_duration_since(transition.started) >= transition.duration {
+        state.transitions.remove(id);
+        Some(transition.to_progress)
+    } else {
+        Some(expandable_transition_progress(transition, now))
+    }
+}
+
+fn expandable_motion_progress_snapshot(id: &str) -> Option<f32> {
+    let Ok(state) = EXPANDABLE_MOTION_STATE.lock() else {
+        return None;
+    };
+
+    let now = Instant::now();
+    let transition = state.transitions.get(id).copied()?;
+    if now.saturating_duration_since(transition.started) >= transition.duration {
+        Some(transition.to_progress)
+    } else {
+        Some(expandable_transition_progress(transition, now))
+    }
+}
+
+fn expandable_motion_active(id: &str) -> bool {
+    let Ok(mut state) = EXPANDABLE_MOTION_STATE.lock() else {
+        return false;
+    };
+
+    let Some(transition) = state.transitions.get(id).copied() else {
+        return false;
+    };
+
+    if Instant::now().saturating_duration_since(transition.started) >= transition.duration {
+        state.transitions.remove(id);
+        transition.to_progress > 0.001
+    } else {
+        true
+    }
+}
+
+fn expandable_transition_progress(transition: ExpandableTransition, now: Instant) -> f32 {
+    let duration = transition.duration.as_secs_f32().max(f32::EPSILON);
+    let raw = now
+        .saturating_duration_since(transition.started)
+        .as_secs_f32()
+        / duration;
+    let expanding = transition.to_progress >= transition.from_progress;
+    let eased = expandable_motion_ease(raw.clamp(0.0, 1.0), expanding);
+    (transition.from_progress + (transition.to_progress - transition.from_progress) * eased)
+        .clamp(0.0, 1.0)
+}
+
+fn expandable_motion_ease(delta: f32, expanding: bool) -> f32 {
+    if expanding {
+        1.0 - (1.0 - delta).powi(3)
+    } else {
+        delta * delta * (3.0 - 2.0 * delta)
+    }
+}
+
+fn begin_control_motion(id: impl Into<String>, target_on: bool, cx: &mut App) {
+    let id = id.into();
+    let started = Instant::now();
+    let target_state = if target_on { "true" } else { "false" };
+    let to_progress = if target_on { 1.0 } else { 0.0 };
+    let mut generation = None;
+
+    if let Ok(mut state) = CONTROL_MOTION_STATE.lock() {
+        let from_progress = state
+            .transitions
+            .get(&id)
+            .map(|transition| control_transition_progress(*transition, started))
+            .unwrap_or_else(|| {
+                state
+                    .values
+                    .get(&id)
+                    .map(|state| control_state_progress(state))
+                    .unwrap_or(if target_on { 0.0 } else { 1.0 })
+            });
+
+        state.values.insert(id.clone(), target_state.to_owned());
+
+        if !ui_animations_enabled() {
+            state.transitions.remove(&id);
+            cx.refresh_windows();
+            return;
+        }
+
+        let distance = (to_progress - from_progress).abs();
+        if distance <= 0.001 {
+            state.transitions.remove(&id);
+            cx.refresh_windows();
+            return;
+        }
+
+        state.generation = state.generation.wrapping_add(1);
+        let transition_generation = state.generation;
+        let duration = Duration::from_secs_f64(
+            (MOTION_CONTROL_SECONDS * distance as f64)
+                .clamp(MOTION_CONTROL_MIN_SECONDS, MOTION_CONTROL_SECONDS),
+        );
+
+        state.transitions.insert(
+            id.clone(),
+            ControlTransition {
+                from_progress,
+                to_progress,
+                started,
+                duration,
+                generation: transition_generation,
+            },
+        );
+        generation = Some(transition_generation);
+    }
+
+    cx.refresh_windows();
+
+    let Some(generation) = generation else {
+        return;
+    };
+
+    cx.spawn(async move |cx| loop {
+        Timer::after(MOTION_CONTROL_FRAME_INTERVAL).await;
+        let active = control_motion_active(&id, generation);
+        let _ = cx.update(|cx| cx.refresh_windows());
+
+        if !active {
+            break;
+        }
+    })
+    .detach();
+}
+
+fn control_motion_progress(id: &str, target_on: bool) -> f32 {
+    let target_progress = if target_on { 1.0 } else { 0.0 };
+    let Ok(mut state) = CONTROL_MOTION_STATE.lock() else {
+        return target_progress;
+    };
+
+    let now = Instant::now();
+    let Some(transition) = state.transitions.get(id).copied() else {
+        return target_progress;
+    };
+
+    if now.saturating_duration_since(transition.started) >= transition.duration {
+        state.transitions.remove(id);
+        transition.to_progress
+    } else {
+        control_transition_progress(transition, now)
+    }
+}
+
+fn control_motion_active(id: &str, generation: u64) -> bool {
+    let Ok(mut state) = CONTROL_MOTION_STATE.lock() else {
+        return false;
+    };
+
+    let Some(transition) = state.transitions.get(id).copied() else {
+        return false;
+    };
+
+    if transition.generation != generation {
+        return false;
+    }
+
+    if Instant::now().saturating_duration_since(transition.started) >= transition.duration {
+        state.transitions.remove(id);
+        false
+    } else {
+        true
+    }
+}
+
+fn control_transition_progress(transition: ControlTransition, now: Instant) -> f32 {
+    let duration = transition.duration.as_secs_f32().max(f32::EPSILON);
+    let raw = now
+        .saturating_duration_since(transition.started)
+        .as_secs_f32()
+        / duration;
+    let expanding = transition.to_progress >= transition.from_progress;
+    let eased = expandable_motion_ease(raw.clamp(0.0, 1.0), expanding);
+    (transition.from_progress + (transition.to_progress - transition.from_progress) * eased)
+        .clamp(0.0, 1.0)
+}
+
+fn control_state_progress(state: &str) -> f32 {
+    match state {
+        "true" | "checked" | "enabled" | "visible" => 1.0,
+        _ => 0.0,
     }
 }
 
@@ -13357,9 +13973,45 @@ fn animated_expanded_child(id: impl Into<SharedString>, child: AnyElement) -> An
         with_optional_motion(
             container,
             SharedString::from(format!("{motion_id}-{generation}")),
-            MotionSpeed::Standard,
+            MotionSpeed::Expand,
             |container| container,
-            |container, delta| container.opacity(0.28 + 0.72 * delta),
+            |container, delta| {
+                container
+                    .max_h(px(EXPANDED_CHILD_MAX_ANIMATION_HEIGHT * delta))
+                    .opacity(0.04 + 0.96 * delta)
+            },
+        )
+    } else {
+        container.into_any_element()
+    }
+}
+
+fn animated_expanded_child_with_height(
+    id: impl Into<SharedString>,
+    target_height: f32,
+    child: impl IntoElement + 'static,
+) -> AnyElement {
+    let id = id.into();
+    let motion_id = format!("expanded-child-{id}");
+    let animation_generation = control_motion_generation(&motion_id, "visible");
+    let target_height = target_height.max(1.0);
+    let container = div()
+        .w_full()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .child(child.into_any_element());
+
+    if let Some(generation) = animation_generation {
+        with_optional_motion(
+            container,
+            SharedString::from(format!("{motion_id}-{generation}")),
+            MotionSpeed::Expand,
+            |container| container,
+            move |container, delta| {
+                container
+                    .h(px(target_height * delta))
+                    .opacity(0.04 + 0.96 * delta)
+            },
         )
     } else {
         container.into_any_element()
@@ -13369,6 +14021,102 @@ fn animated_expanded_child(id: impl Into<SharedString>, child: AnyElement) -> An
 fn remember_expanded_child_hidden(id: impl Into<SharedString>) {
     let id = id.into();
     let _ = control_motion_generation(&format!("expanded-child-{id}"), "hidden");
+}
+
+fn animated_rule_card_body_child(
+    card_target: &RuleCardTarget,
+    index: usize,
+    row_count: usize,
+    child: impl IntoElement + 'static,
+) -> AnyElement {
+    animated_rule_card_body_child_with_height(
+        card_target,
+        index,
+        rule_card_body_height(row_count),
+        child,
+    )
+}
+
+fn animated_rule_card_body_child_with_height(
+    card_target: &RuleCardTarget,
+    index: usize,
+    target_height: f32,
+    child: impl IntoElement + 'static,
+) -> AnyElement {
+    let row_id = SharedString::from(format!("rule-card-{card_target:?}-body-{index}"));
+    let child = div()
+        .id(row_id)
+        .w_full()
+        .min_w(px(0.0))
+        .child(child.into_any_element())
+        .into_any_element();
+    let target_height = target_height.max(1.0);
+    if let Some(progress) =
+        expandable_motion_progress_snapshot(&rule_card_body_motion_id(card_target))
+    {
+        expanded_child_at_progress(child, Some(target_height), progress)
+    } else {
+        div()
+            .w_full()
+            .min_w(px(0.0))
+            .h(px(target_height))
+            .overflow_hidden()
+            .child(child)
+            .into_any_element()
+    }
+}
+
+fn rule_card_body_height(row_count: usize) -> f32 {
+    CARD_ROW_HEIGHT * row_count.max(1) as f32
+}
+
+fn affinity_core_selector_body_height() -> f32 {
+    rule_card_body_height(1)
+        + px_spacing(3) * 2.0
+        + TEXT_BODY_LINE_HEIGHT
+        + px_spacing(2)
+        + core_tile_grid_height()
+}
+
+fn setting_group_core_grid_body_height(fixed_row_count: usize) -> f32 {
+    CARD_ROW_HEIGHT * fixed_row_count.max(1) as f32
+        + px_spacing(3) * 2.0
+        + TEXT_BODY_LINE_HEIGHT
+        + px_spacing(2)
+        + core_tile_grid_height()
+}
+
+fn core_tile_grid_height() -> f32 {
+    let processor_count = affinity::logical_processors().len();
+    let grid_rows =
+        processor_count.saturating_add(CORE_TILE_GRID_COLUMNS - 1) / CORE_TILE_GRID_COLUMNS;
+    if grid_rows == 0 {
+        TEXT_BODY_LINE_HEIGHT
+    } else {
+        let row_gaps = grid_rows.saturating_sub(1) as f32 * CORE_TILE_GRID_GAP;
+        grid_rows as f32 * CORE_TILE_HEIGHT + row_gaps
+    }
+}
+
+fn px_spacing(slot: usize) -> f32 {
+    slot as f32 * 4.0
+}
+
+fn rule_card_body_motion_id(card_target: &RuleCardTarget) -> String {
+    format!("rule-card-{card_target:?}-body")
+}
+
+fn rule_card_body_visible(
+    card_target: &RuleCardTarget,
+    collapsed: bool,
+    window: &mut Window,
+) -> bool {
+    let motion_active = expandable_motion_active(&rule_card_body_motion_id(card_target));
+    if motion_active {
+        window.request_animation_frame();
+    }
+
+    !collapsed || motion_active
 }
 
 fn animated_presence_child(id: impl Into<SharedString>, child: AnyElement) -> AnyElement {
@@ -13586,9 +14334,18 @@ fn rule_card(
     leading: AnyElement,
     collapse_indicator: AnyElement,
     card_target: RuleCardTarget,
+    collapsed: bool,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
-    rule_card_with_header_action(title, leading, None, collapse_indicator, card_target, cx)
+    rule_card_with_header_action(
+        title,
+        leading,
+        None,
+        collapse_indicator,
+        card_target,
+        collapsed,
+        cx,
+    )
 }
 
 fn rule_card_with_header_action(
@@ -13597,6 +14354,7 @@ fn rule_card_with_header_action(
     header_action: Option<AnyElement>,
     collapse_indicator: AnyElement,
     card_target: RuleCardTarget,
+    _collapsed: bool,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let header_padding = if header_action.is_some() {
@@ -13859,6 +14617,7 @@ fn setting_group(
     action: AnyElement,
     collapsed: bool,
     rows: Vec<AnyElement>,
+    window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let title: SharedString = title.into();
@@ -13873,6 +14632,7 @@ fn setting_group(
         action,
         collapsed,
         rows,
+        window,
         cx,
     )
 }
@@ -13884,6 +14644,7 @@ fn setting_group_with_help(
     action: AnyElement,
     collapsed: bool,
     rows: Vec<AnyElement>,
+    window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let title: SharedString = title.into();
@@ -13903,6 +14664,41 @@ fn setting_group_with_help(
         action,
         collapsed,
         rows,
+        window,
+        cx,
+    )
+}
+
+fn setting_group_with_help_body_height(
+    target: SettingGroupTarget,
+    title: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    action: AnyElement,
+    collapsed: bool,
+    rows: Vec<AnyElement>,
+    body_animation_height: f32,
+    window: &mut Window,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let title: SharedString = title.into();
+    setting_group_with_title_element_with_body_height(
+        target,
+        h_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .gap_1()
+            .items_center()
+            .child(div().truncate().child(title))
+            .child(title_info_button(
+                SharedString::from(format!("setting-group-info-{target:?}")),
+                help,
+            ))
+            .into_any_element(),
+        action,
+        collapsed,
+        rows,
+        Some(body_animation_height),
+        window,
         cx,
     )
 }
@@ -13913,10 +14709,31 @@ fn setting_group_with_title_element(
     action: AnyElement,
     collapsed: bool,
     rows: Vec<AnyElement>,
+    window: &mut Window,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    setting_group_with_title_element_with_body_height(
+        target, title, action, collapsed, rows, None, window, cx,
+    )
+}
+
+fn setting_group_with_title_element_with_body_height(
+    target: SettingGroupTarget,
+    title: AnyElement,
+    action: AnyElement,
+    collapsed: bool,
+    rows: Vec<AnyElement>,
+    body_animation_height: Option<f32>,
+    window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let chevron_target = target;
     let hover_id = format!("setting-group-hover-{target:?}");
+    let motion_id = format!("setting-group-{target:?}");
+    let motion_progress = expandable_motion_progress(&motion_id);
+    if motion_progress.is_some() {
+        window.request_animation_frame();
+    }
     let mut group = v_flex()
         .id(SharedString::from(format!("setting-group-{target:?}")))
         .w_full()
@@ -13977,21 +14794,81 @@ fn setting_group_with_title_element(
                         .child(setting_group_collapse_button(chevron_target, collapsed, cx)),
                 ),
         );
-    if collapsed {
-        for index in 0..rows.len() {
-            remember_expanded_child_hidden(SharedString::from(format!(
-                "setting-group-{target:?}-row-{index}"
-            )));
+    if !collapsed || motion_progress.is_some() {
+        let row_count = rows.len();
+        let mut body = v_flex().w_full().min_w(px(0.0));
+        for row in rows {
+            body = body.child(row);
         }
-    } else {
-        for (index, row) in rows.into_iter().enumerate() {
-            group = group.child(animated_expanded_child(
-                SharedString::from(format!("setting-group-{target:?}-row-{index}")),
-                row,
-            ));
-        }
+        let body_animation_height = body_animation_height
+            .or_else(|| setting_group_body_animation_height(target, row_count));
+        group = group.child(if let Some(progress) = motion_progress {
+            expanded_child_at_progress(body.into_any_element(), body_animation_height, progress)
+        } else if let Some(height) = body_animation_height {
+            animated_expanded_child_with_height(
+                SharedString::from(format!("setting-group-{target:?}-body")),
+                height,
+                body,
+            )
+        } else {
+            animated_expanded_child(
+                SharedString::from(format!("setting-group-{target:?}-body")),
+                body.into_any_element(),
+            )
+        });
     }
     group
+}
+
+fn expanded_child_at_progress(
+    child: AnyElement,
+    target_height: Option<f32>,
+    progress: f32,
+) -> AnyElement {
+    let progress = progress.clamp(0.0, 1.0);
+    let mut body = div()
+        .w_full()
+        .min_w(px(0.0))
+        .child(child)
+        .mt(px(-EXPANDED_CHILD_SLIDE_PX * (1.0 - progress)))
+        .opacity(0.08 + 0.92 * progress);
+    let container = div().w_full().min_w(px(0.0)).overflow_hidden();
+
+    if let Some(target_height) = target_height {
+        body = body.h(px(target_height.max(1.0)));
+        container
+            .h(px(target_height.max(1.0) * progress))
+            .child(body)
+    } else {
+        container
+            .max_h(px(EXPANDED_CHILD_MAX_ANIMATION_HEIGHT * progress))
+            .child(body)
+    }
+    .into_any_element()
+}
+
+fn setting_group_body_animation_height(
+    target: SettingGroupTarget,
+    row_count: usize,
+) -> Option<f32> {
+    match target {
+        SettingGroupTarget::AccentColor
+        | SettingGroupTarget::AutoBalanceExclusions
+        | SettingGroupTarget::EfficiencyCpuRestriction
+        | SettingGroupTarget::BackgroundCpuRestriction => None,
+        _ => Some(CARD_ROW_HEIGHT * row_count.max(1) as f32),
+    }
+}
+
+fn auto_balance_exclusions_body_height(exclusion_count: usize) -> f32 {
+    let list_height = if exclusion_count == 0 {
+        TEXT_BODY_LINE_HEIGHT
+    } else {
+        CARD_ROW_HEIGHT * exclusion_count as f32
+            + px_spacing(2) * exclusion_count.saturating_sub(1) as f32
+    };
+
+    DROPDOWN_CONTROL_HEIGHT + px_spacing(2) + list_height
 }
 
 fn setting_group_collapse_button(
@@ -15348,30 +16225,53 @@ fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
         .into_any_element()
 }
 
-fn animated_checkmark(
-    id: impl Into<SharedString>,
-    check_color: u32,
-    animation_generation: Option<u64>,
-) -> AnyElement {
+fn animated_checkmark(id: impl Into<SharedString>, check_color: u32, progress: f32) -> AnyElement {
     let id = id.into();
-    let mark = div()
+    let progress = progress.clamp(0.0, 1.0);
+    div()
+        .id(id)
         .text_size(px(TEXT_LABEL_SIZE))
         .line_height(px(TEXT_LABEL_LINE_HEIGHT))
         .font_weight(gpui::FontWeight::BOLD)
         .text_color(rgb(check_color))
-        .child("\u{2713}");
+        .opacity(progress)
+        .mt(px(-3.0 * (1.0 - progress)))
+        .child("\u{2713}")
+        .into_any_element()
+}
 
-    if let Some(generation) = animation_generation {
-        with_optional_motion(
-            mark,
-            SharedString::from(format!("checkmark-{id}-{generation}")),
-            MotionSpeed::Fast,
-            |mark| mark,
-            |mark, delta| mark.opacity(delta),
-        )
-    } else {
-        mark.into_any_element()
+fn checkbox_box(
+    id: impl Into<SharedString>,
+    size: f32,
+    mark_id: SharedString,
+    check_color: u32,
+    progress: f32,
+) -> AnyElement {
+    let id = id.into();
+    let progress = progress.clamp(0.0, 1.0);
+    let accent = accent_color();
+    let unchecked_border = border_color();
+    let unchecked_bg = settings_card_color();
+    let checked_bg = accent;
+    let border = lerp_rgb(unchecked_border, accent, progress);
+    let bg = lerp_rgb(unchecked_bg, checked_bg, progress);
+    let mut box_el = div()
+        .id(id.clone())
+        .size(px(size))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .rounded_sm()
+        .border_1()
+        .border_color(rgb(border))
+        .bg(rgb(bg));
+
+    if progress > 0.001 {
+        box_el = box_el.child(animated_checkmark(mark_id, check_color, progress));
     }
+
+    box_el.into_any_element()
 }
 
 fn rule_enable_checkbox(
@@ -15381,17 +16281,13 @@ fn rule_enable_checkbox(
 ) -> AnyElement {
     let id: SharedString = id.into();
     let accent = accent_color();
-    let border_color = if checked { accent } else { border_color() };
     let check_color = accent_glyph_color(accent);
     let mark_id = SharedString::from(format!("{id}-mark"));
-    let mark_motion_id = format!("checkmark-{mark_id}");
-    let mark_animation_generation = control_motion_generation(
-        &mark_motion_id,
-        if checked { "checked" } else { "unchecked" },
-    );
+    let motion_id = format!("checkbox-{id}");
+    let progress = control_motion_progress(&motion_id, checked);
 
     div()
-        .id(id)
+        .id(id.clone())
         .size(px(24.0))
         .flex()
         .items_center()
@@ -15400,27 +16296,17 @@ fn rule_enable_checkbox(
         .rounded_sm()
         .hover(|style| style.opacity(0.86))
         .cursor_pointer()
-        .child(
-            div()
-                .size(px(16.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_sm()
-                .border_1()
-                .border_color(rgb(border_color))
-                .when(checked, |this| this.bg(rgb(accent)))
-                .when(checked, |this| {
-                    this.child(animated_checkmark(
-                        mark_id,
-                        check_color,
-                        mark_animation_generation,
-                    ))
-                }),
-        )
+        .child(checkbox_box(
+            SharedString::from(format!("{id}-box")),
+            16.0,
+            mark_id,
+            check_color,
+            progress,
+        ))
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
             let next = !checked;
+            begin_control_motion(motion_id.clone(), next, cx);
             handler(&next, window, cx);
         })
         .into_any_element()
@@ -15439,7 +16325,6 @@ fn checkbox(
     let id: SharedString = id.into();
     let label = label.into();
     let accent = accent_color();
-    let border_color = if checked { accent } else { border_color() };
     let text_color = if checked {
         primary_text_color()
     } else {
@@ -15450,11 +16335,10 @@ fn checkbox(
     let box_handler = handler.clone();
     let label_handler = handler;
     let mark_id = SharedString::from(format!("{id}-mark"));
-    let mark_motion_id = format!("checkmark-{mark_id}");
-    let mark_animation_generation = control_motion_generation(
-        &mark_motion_id,
-        if checked { "checked" } else { "unchecked" },
-    );
+    let motion_id = format!("checkbox-{id}");
+    let progress = control_motion_progress(&motion_id, checked);
+    let box_motion_id = motion_id.clone();
+    let label_motion_id = motion_id;
 
     h_flex()
         .w_full()
@@ -15473,28 +16357,20 @@ fn checkbox(
                 .line_height(px(TEXT_BODY_LINE_HEIGHT))
                 .child(
                     div()
-                        .id(SharedString::from(format!("{id}-box")))
-                        .size(px(16.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .flex_shrink_0()
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(rgb(border_color))
-                        .when(checked, |this| this.bg(rgb(accent)))
-                        .when(checked, |this| {
-                            this.child(animated_checkmark(
-                                mark_id,
-                                check_color,
-                                mark_animation_generation,
-                            ))
-                        })
+                        .id(SharedString::from(format!("{id}-box-hitbox")))
                         .hover(|style| style.opacity(0.86))
                         .cursor_pointer()
+                        .child(checkbox_box(
+                            SharedString::from(format!("{id}-box")),
+                            16.0,
+                            mark_id,
+                            check_color,
+                            progress,
+                        ))
                         .on_click(move |_, window, cx| {
                             cx.stop_propagation();
                             let next = !checked;
+                            begin_control_motion(box_motion_id.clone(), next, cx);
                             box_handler(&next, window, cx);
                         }),
                 )
@@ -15507,6 +16383,7 @@ fn checkbox(
                         .on_click(move |_, window, cx| {
                             cx.stop_propagation();
                             let next = !checked;
+                            begin_control_motion(label_motion_id.clone(), next, cx);
                             label_handler(&next, window, cx);
                         }),
                 ),
@@ -15526,7 +16403,6 @@ fn checkbox_with_help(
     let label: SharedString = label.into();
     let help: SharedString = help.into();
     let accent = accent_color();
-    let border_color = if checked { accent } else { border_color() };
     let text_color = if checked {
         primary_text_color()
     } else {
@@ -15537,11 +16413,10 @@ fn checkbox_with_help(
     let box_handler = handler.clone();
     let label_handler = handler;
     let mark_id = SharedString::from(format!("{id}-mark"));
-    let mark_motion_id = format!("checkmark-{mark_id}");
-    let mark_animation_generation = control_motion_generation(
-        &mark_motion_id,
-        if checked { "checked" } else { "unchecked" },
-    );
+    let motion_id = format!("checkbox-{id}");
+    let progress = control_motion_progress(&motion_id, checked);
+    let box_motion_id = motion_id.clone();
+    let label_motion_id = motion_id;
 
     h_flex()
         .w_full()
@@ -15560,28 +16435,20 @@ fn checkbox_with_help(
                 .line_height(px(TEXT_BODY_LINE_HEIGHT))
                 .child(
                     div()
-                        .id(SharedString::from(format!("{id}-box")))
-                        .size(px(16.0))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .flex_shrink_0()
-                        .rounded_sm()
-                        .border_1()
-                        .border_color(rgb(border_color))
-                        .when(checked, |this| this.bg(rgb(accent)))
-                        .when(checked, |this| {
-                            this.child(animated_checkmark(
-                                mark_id,
-                                check_color,
-                                mark_animation_generation,
-                            ))
-                        })
+                        .id(SharedString::from(format!("{id}-box-hitbox")))
                         .hover(|style| style.opacity(0.86))
                         .cursor_pointer()
+                        .child(checkbox_box(
+                            SharedString::from(format!("{id}-box")),
+                            16.0,
+                            mark_id,
+                            check_color,
+                            progress,
+                        ))
                         .on_click(move |_, window, cx| {
                             cx.stop_propagation();
                             let next = !checked;
+                            begin_control_motion(box_motion_id.clone(), next, cx);
                             box_handler(&next, window, cx);
                         }),
                 )
@@ -15599,6 +16466,7 @@ fn checkbox_with_help(
                                 .on_click(move |_, window, cx| {
                                     cx.stop_propagation();
                                     let next = !checked;
+                                    begin_control_motion(label_motion_id.clone(), next, cx);
                                     label_handler(&next, window, cx);
                                 }),
                         )
@@ -16167,6 +17035,7 @@ fn switch_toggle_action(
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id = id.into();
+    let motion_id = format!("switch-{id}");
     h_flex()
         .id(id.clone())
         .items_center()
@@ -16175,6 +17044,7 @@ fn switch_toggle_action(
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
             let next = !enabled;
+            begin_control_motion(motion_id.clone(), next, cx);
             handler(&next, window, cx);
         })
         .into_any_element()
@@ -16182,39 +17052,37 @@ fn switch_toggle_action(
 
 fn switch_indicator(id: SharedString, enabled: bool) -> gpui::Div {
     let accent = switch_accent_color();
-    let switch_bg = if enabled {
-        accent
-    } else {
-        settings_card_color()
-    };
-    let switch_border = if enabled { accent } else { border_color() };
-    let knob_bg = if enabled {
-        accent_glyph_color(accent)
-    } else if ui_is_dark() {
-        0xd0d0d0
-    } else {
-        0x5f5f5f
-    };
+    let switch_on_bg = accent;
+    let switch_off_bg = settings_card_color();
+    let switch_on_border = accent;
+    let switch_off_border = border_color();
+    let knob_on_bg = accent_glyph_color(accent);
+    let knob_off_bg = if ui_is_dark() { 0xd0d0d0 } else { 0x5f5f5f };
     let state_label = if enabled { "On" } else { "Off" };
-    let knob_start = if enabled { 4.0 } else { 24.0 };
-    let knob_end = if enabled { 24.0 } else { 4.0 };
+    let progress = control_motion_progress(&format!("switch-{id}"), enabled);
+    let switch_bg = lerp_rgb(switch_off_bg, switch_on_bg, progress);
+    let switch_border = lerp_rgb(switch_off_border, switch_on_border, progress);
+    let knob_bg = lerp_rgb(knob_off_bg, knob_on_bg, progress);
+    let knob_left = 4.0 + (24.0 - 4.0) * progress;
     let knob = div()
         .absolute()
         .top(px(3.0))
+        .left(px(knob_left))
         .size(px(12.0))
         .rounded_full()
-        .bg(rgb(knob_bg));
-    let knob = with_state_change_motion(
-        knob,
-        SharedString::from(format!("switch-knob-{id}")),
-        SharedString::from(enabled.to_string()),
-        MotionSpeed::Fast,
-        move |knob| knob.left(px(knob_end)),
-        move |knob, delta| {
-            let left = knob_start + (knob_end - knob_start) * delta;
-            knob.left(px(left))
-        },
-    );
+        .bg(rgb(knob_bg))
+        .into_any_element();
+    let track = h_flex()
+        .w(px(40.0))
+        .h(px(20.0))
+        .items_center()
+        .flex_shrink_0()
+        .rounded_full()
+        .border_1()
+        .border_color(rgb(switch_border))
+        .bg(rgb(switch_bg))
+        .relative()
+        .child(knob);
 
     h_flex()
         .items_center()
@@ -16228,19 +17096,7 @@ fn switch_indicator(id: SharedString, enabled: bool) -> gpui::Div {
                 .text_color(rgb(primary_text_color()))
                 .child(state_label),
         )
-        .child(
-            h_flex()
-                .w(px(40.0))
-                .h(px(20.0))
-                .items_center()
-                .flex_shrink_0()
-                .rounded_full()
-                .border_1()
-                .border_color(rgb(switch_border))
-                .bg(rgb(switch_bg))
-                .relative()
-                .child(knob),
-        )
+        .child(track)
 }
 
 fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
@@ -17738,6 +18594,54 @@ fn apply_auto_balance_behavior(
             settings.auto_balance_enabled = true;
             apply_auto_balance_preset(settings, preset);
         }
+    }
+}
+
+fn begin_auto_balance_preset_control_motions(
+    settings: &ForegroundResponsivenessSettings,
+    behavior: AutoBalanceBehavior,
+    cx: &mut App,
+) {
+    match behavior {
+        AutoBalanceBehavior::Preset(preset) => {
+            let values = auto_balance_preset_values(preset);
+            begin_control_motion_if_changed(
+                "switch-responsiveness-lower-background-toggle",
+                settings.lower_background_apps,
+                values.lower_background_apps,
+                cx,
+            );
+            begin_control_motion_if_changed(
+                "switch-responsiveness-lower-background-io-toggle",
+                settings.lower_background_io_priority_enabled,
+                values.lower_background_io_priority_enabled,
+                cx,
+            );
+            begin_control_motion_if_changed(
+                "switch-responsiveness-auto-affinity-escalation-switch",
+                settings.auto_balance_affinity_escalation_enabled,
+                values.auto_balance_affinity_escalation_enabled,
+                cx,
+            );
+            begin_control_motion_if_changed(
+                "switch-responsiveness-auto-cpu-share-mode-switch",
+                settings.lower_background_auto_cpu_percent,
+                values.lower_background_auto_cpu_percent,
+                cx,
+            );
+            begin_control_motion_if_changed(
+                "switch-responsiveness-auto-memory-priority-switch",
+                settings.auto_balance_memory_priority_enabled,
+                values.auto_balance_memory_priority_enabled,
+                cx,
+            );
+        }
+    }
+}
+
+fn begin_control_motion_if_changed(id: &'static str, current: bool, next: bool, cx: &mut App) {
+    if current != next {
+        begin_control_motion(id, next, cx);
     }
 }
 

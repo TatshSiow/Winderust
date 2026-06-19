@@ -292,3 +292,95 @@ The backend is already partially organized. Use these rules before creating new 
 - Stop and split the migration if a single diff touches more than one navigation section plus shared widgets.
 - Stop and add tests before moving a helper that changes rule creation, registry writes, process matching, process priority, affinity, suspension, or file dialog behavior.
 - Stop and reassess if moving code requires making broad internal state public. Prefer `pub(super)` methods or small state accessors over exposing the whole app state.
+
+## 12. Animation Implementation Notes
+
+These notes capture the current UI animation direction so future agents do not repeat failed approaches.
+
+### 12.1 General Rules
+
+- Keep animations subtle, short, and utility-focused. PowerLeaf should feel responsive, not playful.
+- Always preserve stable dimensions for controls, rows, cards, and popups. Animation must not cause text, rows, or adjacent controls to jump.
+- Respect the app animation setting and Windows client-area animation preference through the existing animation gate before starting any motion.
+- Prefer one shared animation helper per control family. Do not patch individual settings unless the interaction is truly page-specific.
+- If an animation can be interrupted, start the next transition from the current visual progress instead of snapping from the old logical state.
+- Use `cx.spawn` with `Timer::after(MOTION_CONTROL_FRAME_INTERVAL)` and `cx.notify()` or `cx.refresh_windows()` for frame-driven animation when a normal GPUI mount animation does not repaint on state changes.
+- Run `cargo fmt`, `cargo check`, and `git diff --check` after implementation changes.
+
+### 12.2 GPUI Pattern That Works
+
+Use explicit transition state for controls whose value changes while the element remains mounted:
+
+- Store the last logical value and any active transition in a global `LazyLock<Mutex<...>>` motion state.
+- When the target changes, compute `from_progress` from the active transition if one exists; otherwise derive it from the previous value.
+- Store `to_progress`, `started`, `duration`, and a generation number.
+- Spawn a frame loop that wakes every `MOTION_CONTROL_FRAME_INTERVAL`, checks that the same generation is still active, and notifies the UI.
+- In render helpers, convert progress into colors, opacity, size, margin, or inset values.
+- On interruption, replace the transition using the current computed progress as the new starting point.
+
+This pattern is appropriate for checkboxes, switches, expandable content, save-dialog vanish, and selected-row fills.
+
+### 12.3 GPUI Pattern To Avoid
+
+Do not rely on `with_animation` alone for state changes where the same element remains mounted with a new value. It can work for appearance/disappearance or explicitly remounted elements, but it may show no visible effect for controls such as dropdown selected labels.
+
+If `with_animation` produces no visible motion:
+
+- Do not keep stacking wrappers around the element.
+- Switch to explicit progress state and a frame loop.
+- Keep the render output deterministic from the current progress.
+
+### 12.4 Expandable Cards
+
+Use the Auto Balance expandable card behavior as the reference design.
+
+Implementation guidance:
+
+- Animate height and opacity together.
+- Measure or compute the expanded body height deterministically; avoid starting from a large guessed height that flicks down to the real size.
+- Keep the body clipped with `overflow_hidden`.
+- Use a small vertical slide for content reveal, but avoid large movement.
+- For hide/collapse, continue rendering the body while progress is above zero so the closing animation can finish smoothly.
+- When toggled mid-animation, compute the new transition from the current progress.
+- Remove any earlier unused animation wrappers once the explicit progress path is active.
+
+### 12.5 Checkbox And Toggle Switches
+
+Checkboxes and switches should animate from explicit control progress, not from remount animation.
+
+Implementation guidance:
+
+- Begin the control motion before mutating the setting when the change comes from direct user interaction.
+- For programmatic changes, such as preset application or reverting to a saved state, start control motion for every affected control before applying the new settings.
+- Interpolate switch track color, border color, knob color, and knob position from progress.
+- Interpolate checkbox border/background and checkmark opacity/offset from progress.
+- The clickable row area should stay consistent with the existing interaction rule: checkbox rows toggle only from the checkbox control or visible label text where specified.
+
+### 12.6 Save Dialog / Unsaved Popup
+
+The unsaved-changes popup should animate both appearance and disappearance.
+
+Implementation guidance:
+
+- Track whether the popup was visible in the previous render.
+- When the app returns to the saved state, start a vanish transition instead of removing the popup immediately.
+- During vanish, keep rendering the popup with decreasing opacity and a small positional offset.
+- Save and discard actions, direct toggle reverts, and any setting change that restores the saved state should all use the same vanish path.
+
+### 12.7 Dropdown Selects
+
+Keep the original closed select state for selected-value changes. The previous attempt to animate the selected label and option state was not preferred by the user.
+
+Current guidance:
+
+- Keep dropdown popup open/close animation if it exists and feels stable.
+- Do not animate the collapsed selected label by default.
+- Do not animate the selected option background by default.
+- If a future request explicitly asks for dropdown selection animation again, use a very subtle explicit-progress implementation:
+  - Smoothstep easing, not the expandable-card ease-out curve.
+  - Around 180-220 ms duration.
+  - 1-2 px maximum label movement.
+  - Mostly opacity, minimal position change.
+  - No bounce or spring-like motion.
+  - Stable control width and height at all times.
+- Before changing dropdowns, verify whether the request is about popup open/close motion or the selected value changing. These are different animations.
