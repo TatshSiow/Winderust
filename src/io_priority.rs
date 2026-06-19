@@ -96,18 +96,20 @@ impl IoPriorityManager {
         }
 
         if !settings.enabled {
-            let failures = self.clear_all(action_log, "I/O priority rules disabled");
+            let failures = self.clear_all(action_log, "I/O priority defaults disabled");
             self.failure_suppression.clear();
             return IoPrioritySnapshot {
                 enabled: false,
                 failed_processes: failures.count,
-                message: "I/O priority rules disabled.".to_owned(),
+                message: "I/O priority defaults disabled.".to_owned(),
                 last_error: failures.last_error,
                 ..Default::default()
             };
         }
 
-        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+        let foreground_sensitive = settings.foreground_detection_enabled
+            && settings.foreground_priority != settings.background_priority;
+        if foreground_sensitive && foreground_process_id.is_none() {
             let failures = self.clear_all(action_log, "foreground app is unknown");
             return IoPrioritySnapshot {
                 enabled: true,
@@ -149,7 +151,7 @@ impl IoPriorityManager {
             .iter()
             .map(|process| (process.id, process.name.clone()))
             .collect::<BTreeMap<_, _>>();
-        let foreground_process_name = if settings.exclude_foreground_app {
+        let foreground_process_name = if foreground_sensitive {
             foreground_process_id.and_then(|id| {
                 processes
                     .iter()
@@ -165,19 +167,24 @@ impl IoPriorityManager {
             if process.id == 0
                 || process.id == current_process_id
                 || process_session_id(process.id) != Some(current_session_id)
-                || should_ignore_foreground_process(
-                    settings,
-                    process.id,
-                    &process.name,
-                    foreground_process_id,
-                    foreground_process_name.as_deref(),
-                )
+                || settings.exclusion_enabled_for(&process.name)
                 || is_builtin_excluded(&process.name)
             {
                 continue;
             }
 
-            if let Some(priority) = settings.priority_enabled_for(&process.name) {
+            let priority = if settings.foreground_detection_enabled
+                && is_foreground_process(
+                    process.id,
+                    &process.name,
+                    foreground_process_id,
+                    foreground_process_name.as_deref(),
+                ) {
+                settings.foreground_priority
+            } else {
+                settings.background_priority
+            };
+            if let Some(priority) = priority.priority() {
                 target_processes.insert(process.id, (process.name, priority));
             }
         }
@@ -194,7 +201,7 @@ impl IoPriorityManager {
             &target_ids,
             &current_process_names,
             action_log,
-            "process no longer matches an I/O priority rule",
+            "process is excluded or no longer matches I/O priority defaults",
         );
         let mut skipped_processes = 0;
 
@@ -241,7 +248,7 @@ impl IoPriorityManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
-            message: "I/O priority rules active.".to_owned(),
+            message: "I/O priority defaults active.".to_owned(),
             last_error: failures.last_error,
         }
     }
@@ -573,18 +580,15 @@ fn process_session_id(process_id: u32) -> Option<u32> {
     (ok != 0).then_some(session_id)
 }
 
-fn should_ignore_foreground_process(
-    settings: &IoPrioritySettings,
+fn is_foreground_process(
     process_id: u32,
     process_name: &str,
     foreground_process_id: Option<u32>,
     foreground_process_name: Option<&str>,
 ) -> bool {
-    settings.exclude_foreground_app
-        && (Some(process_id) == foreground_process_id
-            || foreground_process_name.is_some_and(|foreground| {
-                foreground.trim().eq_ignore_ascii_case(process_name.trim())
-            }))
+    Some(process_id) == foreground_process_id
+        || foreground_process_name
+            .is_some_and(|foreground| foreground.trim().eq_ignore_ascii_case(process_name.trim()))
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {

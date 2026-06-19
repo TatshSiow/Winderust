@@ -2,11 +2,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
-    System::Threading::{
-        GetProcessInformation, OpenProcess, ProcessMemoryPriority as ProcessMemoryPriorityClass,
-        SetProcessInformation, MEMORY_PRIORITY_BELOW_NORMAL, MEMORY_PRIORITY_INFORMATION,
-        MEMORY_PRIORITY_LOW, MEMORY_PRIORITY_MEDIUM, MEMORY_PRIORITY_NORMAL,
-        MEMORY_PRIORITY_VERY_LOW, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+    System::{
+        RemoteDesktop::ProcessIdToSessionId,
+        Threading::{
+            GetCurrentProcessId, GetProcessInformation, OpenProcess,
+            ProcessMemoryPriority as ProcessMemoryPriorityClass, SetProcessInformation,
+            MEMORY_PRIORITY_BELOW_NORMAL, MEMORY_PRIORITY_INFORMATION, MEMORY_PRIORITY_LOW,
+            MEMORY_PRIORITY_MEDIUM, MEMORY_PRIORITY_NORMAL, MEMORY_PRIORITY_VERY_LOW,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        },
     },
 };
 
@@ -77,22 +81,65 @@ impl MemoryPriorityManager {
         action_log: &mut ActionLog,
     ) -> MemoryPrioritySnapshot {
         if !automation_enabled {
-            return self.update(
-                Vec::new(),
-                false,
+            let failures = self.clear_all(
                 ActionLogFeature::MemoryPriority,
                 action_log,
+                "automation disabled",
             );
+            self.failure_suppression.clear();
+            return MemoryPrioritySnapshot {
+                enabled: false,
+                failed_processes: failures.count,
+                last_error: failures.last_error,
+                ..Default::default()
+            };
         }
 
         if !settings.enabled {
-            return self.update(
-                Vec::new(),
-                true,
+            let failures = self.clear_all(
                 ActionLogFeature::MemoryPriority,
                 action_log,
+                "memory priority defaults disabled",
             );
+            self.failure_suppression.clear();
+            return MemoryPrioritySnapshot {
+                enabled: false,
+                failed_processes: failures.count,
+                last_error: failures.last_error,
+                ..Default::default()
+            };
         }
+
+        let foreground_sensitive = settings.foreground_detection_enabled
+            && settings.foreground_priority != settings.background_priority;
+        if foreground_sensitive && foreground_process_id.is_none() {
+            let failures = self.clear_all(
+                ActionLogFeature::MemoryPriority,
+                action_log,
+                "foreground app is unknown",
+            );
+            return MemoryPrioritySnapshot {
+                enabled: true,
+                failed_processes: failures.count,
+                last_error: failures.last_error,
+                ..Default::default()
+            };
+        }
+
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let Some(current_session_id) = process_session_id(current_process_id) else {
+            let failures = self.clear_all(
+                ActionLogFeature::MemoryPriority,
+                action_log,
+                "current Windows session is unknown",
+            );
+            return MemoryPrioritySnapshot {
+                enabled: true,
+                failed_processes: failures.count,
+                last_error: failures.last_error,
+                ..Default::default()
+            };
+        };
 
         let processes = match list_processes() {
             Ok(processes) => processes,
@@ -111,24 +158,47 @@ impl MemoryPriorityManager {
             }
         };
 
+        let foreground_process_name = if foreground_sensitive {
+            foreground_process_id.and_then(|id| {
+                processes
+                    .iter()
+                    .find(|process| process.id == id)
+                    .map(|process| process.name.clone())
+            })
+        } else {
+            None
+        };
+
         let targets = processes
             .into_iter()
-            .filter(|process| {
-                !should_skip_process(
+            .filter_map(|process| {
+                if should_skip_process(
                     process.id,
                     &process.name,
-                    foreground_process_id,
-                    settings.exclude_foreground_app,
-                )
-            })
-            .filter_map(|process| {
-                settings
-                    .priority_enabled_for(&process.name)
-                    .map(|priority| MemoryPriorityTarget {
-                        process_id: process.id,
-                        process_name: process.name,
-                        priority,
-                    })
+                    current_process_id,
+                    current_session_id,
+                    settings,
+                ) {
+                    return None;
+                }
+
+                let priority = if settings.foreground_detection_enabled
+                    && is_foreground_process(
+                        process.id,
+                        &process.name,
+                        foreground_process_id,
+                        foreground_process_name.as_deref(),
+                    ) {
+                    settings.foreground_priority
+                } else {
+                    settings.background_priority
+                };
+
+                priority.priority().map(|priority| MemoryPriorityTarget {
+                    process_id: process.id,
+                    process_name: process.name,
+                    priority,
+                })
             })
             .collect();
 
@@ -584,12 +654,32 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 fn should_skip_process(
     process_id: u32,
     process_name: &str,
-    foreground_process_id: Option<u32>,
-    exclude_foreground_app: bool,
+    current_process_id: u32,
+    current_session_id: u32,
+    settings: &MemoryPrioritySettings,
 ) -> bool {
     process_id == 0
+        || process_id == current_process_id
+        || process_session_id(process_id) != Some(current_session_id)
         || is_builtin_excluded(process_name)
-        || (exclude_foreground_app && Some(process_id) == foreground_process_id)
+        || settings.exclusion_enabled_for(process_name)
+}
+
+fn process_session_id(process_id: u32) -> Option<u32> {
+    let mut session_id = 0;
+    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
+    (ok != 0).then_some(session_id)
+}
+
+fn is_foreground_process(
+    process_id: u32,
+    process_name: &str,
+    foreground_process_id: Option<u32>,
+    foreground_process_name: Option<&str>,
+) -> bool {
+    Some(process_id) == foreground_process_id
+        || foreground_process_name
+            .is_some_and(|foreground| foreground.trim().eq_ignore_ascii_case(process_name.trim()))
 }
 
 fn memory_priority_error_message(error: MemoryPriorityError) -> String {

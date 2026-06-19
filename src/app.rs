@@ -51,12 +51,12 @@ use crate::{
         CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, GpuPriorityRule, GpuPrioritySettings, IoPriorityRule, IoPrioritySettings,
-        MemoryPriorityRule, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
-        PerformanceModeSettings, PriorityRule, ProcessExclusionRule, ProcessGpuPriority,
-        ProcessIoPriority, ProcessMemoryPriority, ProcessPriority, ScheduleRule, Settings,
-        SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
-        WatchdogRule, WatchdogSettings, WeekdaySetting,
+        ForegroundRules, GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings,
+        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PriorityRule,
+        ProcessExclusionRule, ProcessGpuPrioritySetting, ProcessIoPriority,
+        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
+        ProcessPriority, ScheduleRule, Settings, SmartTrimSettings, TimerResolutionRule,
+        TimerResolutionSettings, WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -488,9 +488,9 @@ enum ListItemRemovalTarget {
     PerformanceModeRule(usize),
     ResponsivenessRule(usize),
     ResponsivenessExclusion(usize),
-    IoPriorityRule(usize),
-    GpuPriorityRule(usize),
-    MemoryPriorityRule(usize),
+    IoPriorityExclusion(usize),
+    GpuPriorityExclusion(usize),
+    MemoryPriorityExclusion(usize),
     TimerResolutionRule(usize),
     SmartTrimExclusion(usize),
     CpuAffinityRule(usize),
@@ -510,9 +510,9 @@ impl ListItemRemovalTarget {
             Self::PerformanceModeRule(_) => 8,
             Self::ResponsivenessRule(_) => 9,
             Self::ResponsivenessExclusion(_) => 10,
-            Self::IoPriorityRule(_) => 11,
-            Self::GpuPriorityRule(_) => 12,
-            Self::MemoryPriorityRule(_) => 13,
+            Self::IoPriorityExclusion(_) => 11,
+            Self::GpuPriorityExclusion(_) => 12,
+            Self::MemoryPriorityExclusion(_) => 13,
             Self::TimerResolutionRule(_) => 14,
             Self::SmartTrimExclusion(_) => 15,
             Self::CpuAffinityRule(_) => 16,
@@ -532,9 +532,9 @@ impl ListItemRemovalTarget {
             | Self::PerformanceModeRule(index)
             | Self::ResponsivenessRule(index)
             | Self::ResponsivenessExclusion(index)
-            | Self::IoPriorityRule(index)
-            | Self::GpuPriorityRule(index)
-            | Self::MemoryPriorityRule(index)
+            | Self::IoPriorityExclusion(index)
+            | Self::GpuPriorityExclusion(index)
+            | Self::MemoryPriorityExclusion(index)
             | Self::TimerResolutionRule(index)
             | Self::SmartTrimExclusion(index)
             | Self::CpuAffinityRule(index) => index,
@@ -554,9 +554,9 @@ impl ListItemRemovalTarget {
             Self::PerformanceModeRule(_) => Self::PerformanceModeRule(index),
             Self::ResponsivenessRule(_) => Self::ResponsivenessRule(index),
             Self::ResponsivenessExclusion(_) => Self::ResponsivenessExclusion(index),
-            Self::IoPriorityRule(_) => Self::IoPriorityRule(index),
-            Self::GpuPriorityRule(_) => Self::GpuPriorityRule(index),
-            Self::MemoryPriorityRule(_) => Self::MemoryPriorityRule(index),
+            Self::IoPriorityExclusion(_) => Self::IoPriorityExclusion(index),
+            Self::GpuPriorityExclusion(_) => Self::GpuPriorityExclusion(index),
+            Self::MemoryPriorityExclusion(_) => Self::MemoryPriorityExclusion(index),
             Self::TimerResolutionRule(_) => Self::TimerResolutionRule(index),
             Self::SmartTrimExclusion(_) => Self::SmartTrimExclusion(index),
             Self::CpuAffinityRule(_) => Self::CpuAffinityRule(index),
@@ -1389,26 +1389,20 @@ impl PowerLeafApp {
                         .remove(index);
                 }
             }
-            ListItemRemovalTarget::IoPriorityRule(index) => {
-                if let Some(rule) = self.settings.io_priority.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::IoPriority(rule.process_name.clone()));
-                }
-                if index < self.settings.io_priority.rules.len() {
-                    self.settings.io_priority.rules.remove(index);
+            ListItemRemovalTarget::IoPriorityExclusion(index) => {
+                if index < self.settings.io_priority.exclusions.len() {
+                    self.settings.io_priority.exclusions.remove(index);
                 }
             }
-            ListItemRemovalTarget::GpuPriorityRule(index) => {
-                if index < self.settings.gpu_priority.rules.len() {
-                    self.settings.gpu_priority.rules.remove(index);
+            ListItemRemovalTarget::GpuPriorityExclusion(index) => {
+                if index < self.settings.gpu_priority.exclusions.len() {
+                    self.settings.gpu_priority.exclusions.remove(index);
                 }
             }
-            ListItemRemovalTarget::MemoryPriorityRule(index) => {
-                if index < self.settings.memory_priority.rules.len() {
-                    self.settings.memory_priority.rules.remove(index);
+            ListItemRemovalTarget::MemoryPriorityExclusion(index) => {
+                if index < self.settings.memory_priority.exclusions.len() {
+                    self.settings.memory_priority.exclusions.remove(index);
                 }
-                self.editing_rule_title = None;
-                self.expanded_rule_cards.clear();
             }
             ListItemRemovalTarget::TimerResolutionRule(index) => {
                 if index < self.settings.timer_resolution.rules.len() {
@@ -8293,19 +8287,68 @@ impl PowerLeafApp {
             t!("io_priority.intro_1").to_string(),
             t!("io_priority.intro_2").to_string(),
         ]);
+        let master_card = setting_group_with_help(
+            SettingGroupTarget::IoPriorityMaster,
+            t!("io_priority.enable").to_string(),
+            help,
+            setting_group_switch_action(
+                "io-priority-enabled-toggle",
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.io_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::IoPriorityMaster),
+            vec![setting_group_action_row(
+                "io-priority-background-default-row",
+                t!("io_priority.background_default").to_string(),
+                self.render_io_priority_default_selector(
+                    IoPriorityDefaultTarget::Background,
+                    self.settings.io_priority.background_priority,
+                    enabled,
+                    window,
+                    cx,
+                ),
+                false,
+            )
+            .into_any_element()],
+            window,
+            cx,
+        );
         let body = feature_body(enabled)
-            .child(setting_action_card_with_help(
-                "io-priority-exclude-foreground",
-                t!("io_priority.exclude_foreground").to_string(),
-                t!("io_priority.exclude_foreground_help").to_string(),
-                switch_toggle_action(
-                    "io-priority-exclude-foreground-toggle",
-                    self.settings.io_priority.exclude_foreground_app,
+            .child(setting_group_with_help(
+                SettingGroupTarget::IoPriorityForegroundDetection,
+                t!("io_priority.foreground_detection").to_string(),
+                t!("io_priority.foreground_detection_help").to_string(),
+                setting_group_switch_action(
+                    "io-priority-foreground-detection-toggle",
+                    self.settings.io_priority.foreground_detection_enabled,
                     cx.listener(|app, checked, _, cx| {
-                        app.settings.io_priority.exclude_foreground_app = *checked;
+                        app.settings.io_priority.foreground_detection_enabled = *checked;
                         cx.notify();
                     }),
                 ),
+                self.is_setting_group_collapsed(SettingGroupTarget::IoPriorityForegroundDetection),
+                vec![setting_group_action_row(
+                    "io-priority-foreground-default-row",
+                    t!("io_priority.foreground_default").to_string(),
+                    self.render_io_priority_default_selector(
+                        IoPriorityDefaultTarget::Foreground,
+                        self.settings.io_priority.foreground_priority,
+                        self.settings.io_priority.foreground_detection_enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element()],
+                window,
+                cx,
+            ))
+            .child(section_header(
+                &t!("io_priority.exclusions"),
+                t!("io_priority.exclusions_help").to_string(),
             ))
             .child(
                 h_flex()
@@ -8320,11 +8363,11 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        primary_control_button(Button::new("add-io-priority-rule"), cx)
+                        primary_control_button(Button::new("add-io-priority-exclusion"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
-                                    || !can_add_io_priority_process(
+                                    || !can_add_io_priority_exclusion(
                                         &self.settings.io_priority,
                                         &input_value,
                                     ),
@@ -8332,170 +8375,107 @@ impl PowerLeafApp {
                             .on_click(cx.listener(|app, _, window, cx| {
                                 let process =
                                     app.inputs.io_priority_process.read(cx).value().to_string();
-                                if can_add_io_priority_process(&app.settings.io_priority, &process)
-                                {
+                                if can_add_io_priority_exclusion(
+                                    &app.settings.io_priority,
+                                    &process,
+                                ) {
                                     app.settings
                                         .io_priority
-                                        .rules
-                                        .push(new_io_priority_rule(&process));
+                                        .exclusions
+                                        .push(new_process_exclusion_rule(&process));
                                     clear_input(&app.inputs.io_priority_process, window, cx);
                                 }
                                 cx.notify();
                             })),
                     ),
             )
-            .child(self.render_io_priority_rules(window, cx));
+            .child(self.render_io_priority_exclusions(cx));
 
         self.page_shell(Page::IoPriority, cx)
-            .child(feature_toggle_switch_with_help(
-                "io-priority-enabled",
-                t!("io_priority.enable").to_string(),
-                help,
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.io_priority.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
+            .child(master_card)
             .child(disabled_feature_body("io-priority-body", body, enabled, cx))
             .into_any_element()
     }
 
-    fn render_io_priority_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_io_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list();
-        for (index, rule) in self.settings.io_priority.rules.iter().enumerate() {
+        for (index, rule) in self.settings.io_priority.exclusions.iter().enumerate() {
             let process = rule.process_name.clone();
-            let adjusted =
-                io_priority_contains_process(&self.io_priority_status.adjusted_apps, &process);
-            let indicator = if io_priority::is_builtin_excluded(&process) {
-                (
-                    t!("affinity.indicator.protected").to_string(),
-                    settings_card_hover_color(),
-                    accent_color(),
-                )
-            } else if adjusted {
-                (
-                    t!("io_priority.indicator_adjusted").to_string(),
-                    success_bg_color(),
-                    success_text_color(),
-                )
-            } else if self.io_priority_status.enabled {
-                (
-                    t!("affinity.indicator.ready").to_string(),
-                    panel_active_color(),
-                    muted_text_color(),
-                )
-            } else {
-                (
-                    t!("affinity.indicator.off").to_string(),
-                    panel_active_color(),
-                    dim_text_color(),
-                )
-            };
-            let card_target = RuleCardTarget::IoPriority(process.clone());
-            let collapsed = self.is_rule_card_collapsed(&card_target);
-            let mut card = rule_card(
-                self.process_rule_title(&process, cx),
-                rule_enable_checkbox(
-                    format!("io-priority-rule-enabled-{index}"),
+            let card = compact_rule_row(format!("io-priority-exclusion-row-{index}"))
+                .child(rule_enable_checkbox(
+                    format!("io-priority-exclusion-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.io_priority.rules.get_mut(index) {
+                        if let Some(rule) = app.settings.io_priority.exclusions.get_mut(index) {
                             rule.enabled = *checked;
                         }
                         cx.notify();
                     }),
-                ),
-                rule_card_collapse_indicator(card_target.clone(), collapsed),
-                card_target.clone(),
-                collapsed,
-                cx,
-            );
-            if rule_card_body_visible(&card_target, collapsed, window) {
-                card = card
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        0,
-                        1,
-                        rule_card_body_row(vec![rule_action_row(
-                            format!("io-priority-rule-status-{index}"),
-                            t!("common.status").to_string(),
-                            status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
-                        )
-                        .into_any_element()]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        1,
-                        1,
-                        rule_card_body_row(vec![self.render_io_priority_selector(
-                            index,
-                            rule.priority,
-                            window,
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-io-priority-exclusion-{index}"
+                    ))))
+                    .label(t!("common.remove").to_string())
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::IoPriorityExclusion(index),
                             cx,
-                        )]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        2,
-                        1,
-                        rule_card_body_action(
-                            danger_control_button(Button::new(SharedString::from(format!(
-                                "remove-io-priority-{index}"
-                            ))))
-                            .label(t!("common.remove").to_string())
-                            .on_click(cx.listener({
-                                move |app, _, _, cx| {
-                                    app.request_list_item_removal(
-                                        ListItemRemovalTarget::IoPriorityRule(index),
-                                        cx,
-                                    );
-                                }
-                            }))
-                            .into_any_element(),
-                        ),
-                    ));
-            }
+                        );
+                    }))
+                    .into_any_element(),
+                );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::IoPriorityRule(index),
-                SharedString::from(format!("io-priority-rule-{index}")),
+                ListItemRemovalTarget::IoPriorityExclusion(index),
+                SharedString::from(format!("io-priority-exclusion-{index}")),
                 card.into_any_element(),
             ));
         }
-        if self.settings.io_priority.rules.is_empty() {
-            list = list.child(text_muted(t!("io_priority.no_rules").to_string()));
+        if self.settings.io_priority.exclusions.is_empty() {
+            list = list.child(text_muted(t!("io_priority.no_exclusions").to_string()));
         }
         list.into_any_element()
     }
 
-    fn render_io_priority_selector(
+    fn render_io_priority_default_selector(
         &self,
-        index: usize,
-        selected_priority: ProcessIoPriority,
+        target: IoPriorityDefaultTarget,
+        selected_priority: ProcessIoPrioritySetting,
+        enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let id = match target {
+            IoPriorityDefaultTarget::Background => "io-priority-background-default",
+            IoPriorityDefaultTarget::Foreground => "io-priority-foreground-default",
+        };
         let dropdown = self.render_dropdown_select(
-            format!("io-priority-{index}"),
-            process_io_priority_label(selected_priority),
-            true,
+            id,
+            process_io_priority_setting_label(selected_priority),
+            enabled,
             DropdownSelectWidth::Standard,
-            ProcessIoPriority::ALL.len(),
+            ProcessIoPrioritySetting::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessIoPriority::ALL {
+                for priority in ProcessIoPrioritySetting::ALL {
                     options = options.child(
                         dropdown_option_row(
-                            SharedString::from(format!("io-priority-{index}-option-{priority:?}")),
-                            process_io_priority_label(priority),
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_io_priority_setting_label(priority),
                             selected_priority == priority,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.io_priority.rules.get_mut(index) {
-                                rule.priority = priority;
+                            match target {
+                                IoPriorityDefaultTarget::Background => {
+                                    app.settings.io_priority.background_priority = priority;
+                                }
+                                IoPriorityDefaultTarget::Foreground => {
+                                    app.settings.io_priority.foreground_priority = priority;
+                                }
                             }
                             app.active_power_plan_picker = None;
                             cx.notify();
@@ -8505,12 +8485,7 @@ impl PowerLeafApp {
                 options
             },
         );
-        rule_action_row(
-            format!("io-priority-row-{index}"),
-            t!("io_priority.priority").to_string(),
-            dropdown,
-        )
-        .into_any_element()
+        dropdown
     }
 
     fn render_gpu_priority_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -8526,19 +8501,68 @@ impl PowerLeafApp {
             t!("gpu_priority.intro_2").to_string(),
             t!("gpu_priority.intro_3").to_string(),
         ]);
+        let master_card = setting_group_with_help(
+            SettingGroupTarget::GpuPriorityMaster,
+            t!("gpu_priority.enable").to_string(),
+            help,
+            setting_group_switch_action(
+                "gpu-priority-enabled-toggle",
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.gpu_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::GpuPriorityMaster),
+            vec![setting_group_action_row(
+                "gpu-priority-background-default-row",
+                t!("gpu_priority.background_default").to_string(),
+                self.render_gpu_priority_default_selector(
+                    GpuPriorityDefaultTarget::Background,
+                    self.settings.gpu_priority.background_priority,
+                    enabled,
+                    window,
+                    cx,
+                ),
+                false,
+            )
+            .into_any_element()],
+            window,
+            cx,
+        );
         let body = feature_body(enabled)
-            .child(setting_action_card_with_help(
-                "gpu-priority-exclude-foreground",
-                t!("gpu_priority.exclude_foreground").to_string(),
-                t!("gpu_priority.exclude_foreground_help").to_string(),
-                switch_toggle_action(
-                    "gpu-priority-exclude-foreground-toggle",
-                    self.settings.gpu_priority.exclude_foreground_app,
+            .child(setting_group_with_help(
+                SettingGroupTarget::GpuPriorityForegroundDetection,
+                t!("gpu_priority.foreground_detection").to_string(),
+                t!("gpu_priority.foreground_detection_help").to_string(),
+                setting_group_switch_action(
+                    "gpu-priority-foreground-detection-toggle",
+                    self.settings.gpu_priority.foreground_detection_enabled,
                     cx.listener(|app, checked, _, cx| {
-                        app.settings.gpu_priority.exclude_foreground_app = *checked;
+                        app.settings.gpu_priority.foreground_detection_enabled = *checked;
                         cx.notify();
                     }),
                 ),
+                self.is_setting_group_collapsed(SettingGroupTarget::GpuPriorityForegroundDetection),
+                vec![setting_group_action_row(
+                    "gpu-priority-foreground-default-row",
+                    t!("gpu_priority.foreground_default").to_string(),
+                    self.render_gpu_priority_default_selector(
+                        GpuPriorityDefaultTarget::Foreground,
+                        self.settings.gpu_priority.foreground_priority,
+                        self.settings.gpu_priority.foreground_detection_enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element()],
+                window,
+                cx,
+            ))
+            .child(section_header(
+                &t!("gpu_priority.exclusions"),
+                t!("gpu_priority.exclusions_help").to_string(),
             ))
             .child(
                 h_flex()
@@ -8557,7 +8581,7 @@ impl PowerLeafApp {
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
-                                    || !can_add_gpu_priority_process(
+                                    || !can_add_gpu_priority_exclusion(
                                         &self.settings.gpu_priority,
                                         &input_value,
                                     ),
@@ -8565,33 +8589,24 @@ impl PowerLeafApp {
                             .on_click(cx.listener(|app, _, window, cx| {
                                 let process =
                                     app.inputs.gpu_priority_process.read(cx).value().to_string();
-                                if can_add_gpu_priority_process(
+                                if can_add_gpu_priority_exclusion(
                                     &app.settings.gpu_priority,
                                     &process,
                                 ) {
                                     app.settings
                                         .gpu_priority
-                                        .rules
-                                        .push(new_gpu_priority_rule(&process));
+                                        .exclusions
+                                        .push(new_process_exclusion_rule(&process));
                                     clear_input(&app.inputs.gpu_priority_process, window, cx);
                                 }
                                 cx.notify();
                             })),
                     ),
             )
-            .child(self.render_gpu_priority_rules(window, cx));
+            .child(self.render_gpu_priority_exclusions(cx));
 
         self.page_shell(Page::GpuPriority, cx)
-            .child(feature_toggle_switch_with_help(
-                "gpu-priority-enabled",
-                t!("gpu_priority.enable").to_string(),
-                help,
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.gpu_priority.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
+            .child(master_card)
             .child(disabled_feature_body(
                 "gpu-priority-body",
                 body,
@@ -8601,76 +8616,85 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_gpu_priority_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_gpu_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list();
-        for (index, rule) in self.settings.gpu_priority.rules.iter().enumerate() {
+        for (index, rule) in self.settings.gpu_priority.exclusions.iter().enumerate() {
             let process = rule.process_name.clone();
-            let card = compact_rule_row(format!("gpu-priority-rule-row-{index}"))
+            let card = compact_rule_row(format!("gpu-priority-exclusion-row-{index}"))
                 .child(rule_enable_checkbox(
-                    format!("gpu-priority-rule-enabled-{index}"),
+                    format!("gpu-priority-exclusion-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.gpu_priority.rules.get_mut(index) {
+                        if let Some(rule) = app.settings.gpu_priority.exclusions.get_mut(index) {
                             rule.enabled = *checked;
                         }
                         cx.notify();
                     }),
                 ))
                 .child(self.process_rule_title(&process, cx))
-                .child(self.render_gpu_priority_selector(index, rule.priority, window, cx))
                 .child(
                     danger_control_button(Button::new(SharedString::from(format!(
-                        "remove-gpu-priority-{index}"
+                        "remove-gpu-priority-exclusion-{index}"
                     ))))
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::GpuPriorityRule(index),
+                            ListItemRemovalTarget::GpuPriorityExclusion(index),
                             cx,
                         );
                     }))
                     .into_any_element(),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::GpuPriorityRule(index),
-                SharedString::from(format!("gpu-priority-rule-{index}")),
+                ListItemRemovalTarget::GpuPriorityExclusion(index),
+                SharedString::from(format!("gpu-priority-exclusion-{index}")),
                 card.into_any_element(),
             ));
         }
-        if self.settings.gpu_priority.rules.is_empty() {
-            list = list.child(text_muted(t!("gpu_priority.no_rules").to_string()));
+        if self.settings.gpu_priority.exclusions.is_empty() {
+            list = list.child(text_muted(t!("gpu_priority.no_exclusions").to_string()));
         }
         list.into_any_element()
     }
 
-    fn render_gpu_priority_selector(
+    fn render_gpu_priority_default_selector(
         &self,
-        index: usize,
-        selected_priority: ProcessGpuPriority,
+        target: GpuPriorityDefaultTarget,
+        selected_priority: ProcessGpuPrioritySetting,
+        enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let id = match target {
+            GpuPriorityDefaultTarget::Background => "gpu-priority-background-default",
+            GpuPriorityDefaultTarget::Foreground => "gpu-priority-foreground-default",
+        };
         let dropdown = self.render_dropdown_select(
-            format!("gpu-priority-{index}"),
-            process_gpu_priority_label(selected_priority),
-            true,
+            id,
+            process_gpu_priority_setting_label(selected_priority),
+            enabled,
             DropdownSelectWidth::Standard,
-            ProcessGpuPriority::ALL.len(),
+            ProcessGpuPrioritySetting::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessGpuPriority::ALL {
+                for priority in ProcessGpuPrioritySetting::ALL {
                     options = options.child(
                         dropdown_option_row(
-                            SharedString::from(format!("gpu-priority-{index}-option-{priority:?}")),
-                            process_gpu_priority_label(priority),
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_gpu_priority_setting_label(priority),
                             selected_priority == priority,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.gpu_priority.rules.get_mut(index) {
-                                rule.priority = priority;
+                            match target {
+                                GpuPriorityDefaultTarget::Background => {
+                                    app.settings.gpu_priority.background_priority = priority;
+                                }
+                                GpuPriorityDefaultTarget::Foreground => {
+                                    app.settings.gpu_priority.foreground_priority = priority;
+                                }
                             }
                             app.active_power_plan_picker = None;
                             cx.notify();
@@ -8699,19 +8723,70 @@ impl PowerLeafApp {
             t!("memory_priority.intro_1").to_string(),
             t!("memory_priority.intro_2").to_string(),
         ]);
+        let master_card = setting_group_with_help(
+            SettingGroupTarget::MemoryPriorityMaster,
+            t!("memory_priority.enable").to_string(),
+            help,
+            setting_group_switch_action(
+                "memory-priority-enabled-toggle",
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.memory_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::MemoryPriorityMaster),
+            vec![setting_group_action_row(
+                "memory-priority-background-default-row",
+                t!("memory_priority.background_default").to_string(),
+                self.render_memory_priority_default_selector(
+                    MemoryPriorityDefaultTarget::Background,
+                    self.settings.memory_priority.background_priority,
+                    enabled,
+                    window,
+                    cx,
+                ),
+                false,
+            )
+            .into_any_element()],
+            window,
+            cx,
+        );
         let body = feature_body(enabled)
-            .child(setting_action_card_with_help(
-                "memory-priority-exclude-foreground",
-                t!("memory_priority.exclude_foreground").to_string(),
-                t!("memory_priority.exclude_foreground_help").to_string(),
-                switch_toggle_action(
-                    "memory-priority-exclude-foreground-toggle",
-                    self.settings.memory_priority.exclude_foreground_app,
+            .child(setting_group_with_help(
+                SettingGroupTarget::MemoryPriorityForegroundDetection,
+                t!("memory_priority.foreground_detection").to_string(),
+                t!("memory_priority.foreground_detection_help").to_string(),
+                setting_group_switch_action(
+                    "memory-priority-foreground-detection-toggle",
+                    self.settings.memory_priority.foreground_detection_enabled,
                     cx.listener(|app, checked, _, cx| {
-                        app.settings.memory_priority.exclude_foreground_app = *checked;
+                        app.settings.memory_priority.foreground_detection_enabled = *checked;
                         cx.notify();
                     }),
                 ),
+                self.is_setting_group_collapsed(
+                    SettingGroupTarget::MemoryPriorityForegroundDetection,
+                ),
+                vec![setting_group_action_row(
+                    "memory-priority-foreground-default-row",
+                    t!("memory_priority.foreground_default").to_string(),
+                    self.render_memory_priority_default_selector(
+                        MemoryPriorityDefaultTarget::Foreground,
+                        self.settings.memory_priority.foreground_priority,
+                        self.settings.memory_priority.foreground_detection_enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element()],
+                window,
+                cx,
+            ))
+            .child(section_header(
+                &t!("memory_priority.exclusions"),
+                t!("memory_priority.exclusions_help").to_string(),
             ))
             .child(
                 h_flex()
@@ -8726,11 +8801,11 @@ impl PowerLeafApp {
                         cx,
                     ))
                     .child(
-                        primary_control_button(Button::new("add-memory-priority-rule"), cx)
+                        primary_control_button(Button::new("add-memory-priority-exclusion"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
-                                    || !can_add_memory_priority_process(
+                                    || !can_add_memory_priority_exclusion(
                                         &self.settings.memory_priority,
                                         &input_value,
                                     ),
@@ -8742,33 +8817,24 @@ impl PowerLeafApp {
                                     .read(cx)
                                     .value()
                                     .to_string();
-                                if can_add_memory_priority_process(
+                                if can_add_memory_priority_exclusion(
                                     &app.settings.memory_priority,
                                     &process,
                                 ) {
                                     app.settings
                                         .memory_priority
-                                        .rules
-                                        .push(new_memory_priority_rule(&process));
+                                        .exclusions
+                                        .push(new_process_exclusion_rule(&process));
                                     clear_input(&app.inputs.memory_priority_process, window, cx);
                                 }
                                 cx.notify();
                             })),
                     ),
             )
-            .child(self.render_memory_priority_rules(window, cx));
+            .child(self.render_memory_priority_exclusions(cx));
 
         self.page_shell(Page::MemoryPriority, cx)
-            .child(feature_toggle_switch_with_help(
-                "memory-priority-enabled",
-                t!("memory_priority.enable").to_string(),
-                help,
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.memory_priority.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
+            .child(master_card)
             .child(disabled_feature_body(
                 "memory-priority-body",
                 body,
@@ -8778,82 +8844,85 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_memory_priority_rules(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_memory_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list();
-        for (index, rule) in self.settings.memory_priority.rules.iter().enumerate() {
+        for (index, rule) in self.settings.memory_priority.exclusions.iter().enumerate() {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(format!("memory-priority-rule-row-{index}"))
+            let row = compact_rule_row(format!("memory-priority-exclusion-row-{index}"))
                 .child(rule_enable_checkbox(
-                    format!("memory-priority-rule-enabled-{index}"),
+                    format!("memory-priority-exclusion-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.memory_priority.rules.get_mut(index) {
+                        if let Some(rule) = app.settings.memory_priority.exclusions.get_mut(index) {
                             rule.enabled = *checked;
                         }
                         cx.notify();
                     }),
                 ))
                 .child(self.process_rule_title(&process, cx))
-                .child(self.render_memory_priority_selector(index, rule.priority, window, cx))
                 .child(
                     danger_control_button(Button::new(SharedString::from(format!(
-                        "remove-memory-priority-{index}"
+                        "remove-memory-priority-exclusion-{index}"
                     ))))
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::MemoryPriorityRule(index),
+                            ListItemRemovalTarget::MemoryPriorityExclusion(index),
                             cx,
                         );
                     }))
                     .into_any_element(),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::MemoryPriorityRule(index),
-                SharedString::from(format!("memory-priority-rule-{index}")),
+                ListItemRemovalTarget::MemoryPriorityExclusion(index),
+                SharedString::from(format!("memory-priority-exclusion-{index}")),
                 row.into_any_element(),
             ));
         }
-        if self.settings.memory_priority.rules.is_empty() {
-            list = list.child(text_muted(t!("memory_priority.no_rules").to_string()));
+        if self.settings.memory_priority.exclusions.is_empty() {
+            list = list.child(text_muted(t!("memory_priority.no_exclusions").to_string()));
         }
         list.into_any_element()
     }
 
-    fn render_memory_priority_selector(
+    fn render_memory_priority_default_selector(
         &self,
-        index: usize,
-        selected_priority: ProcessMemoryPriority,
+        target: MemoryPriorityDefaultTarget,
+        selected_priority: ProcessMemoryPrioritySetting,
+        enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let id = match target {
+            MemoryPriorityDefaultTarget::Background => "memory-priority-background-default",
+            MemoryPriorityDefaultTarget::Foreground => "memory-priority-foreground-default",
+        };
         let dropdown = self.render_dropdown_select(
-            format!("memory-priority-{index}"),
-            process_memory_priority_label(selected_priority),
-            true,
+            id,
+            process_memory_priority_setting_label(selected_priority),
+            enabled,
             DropdownSelectWidth::Standard,
-            ProcessMemoryPriority::ALL.len(),
+            ProcessMemoryPrioritySetting::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessMemoryPriority::ALL {
+                for priority in ProcessMemoryPrioritySetting::ALL {
                     options = options.child(
                         dropdown_option_row(
-                            SharedString::from(format!(
-                                "memory-priority-{index}-option-{priority:?}"
-                            )),
-                            process_memory_priority_label(priority),
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_memory_priority_setting_label(priority),
                             selected_priority == priority,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.memory_priority.rules.get_mut(index) {
-                                rule.priority = priority;
+                            match target {
+                                MemoryPriorityDefaultTarget::Background => {
+                                    app.settings.memory_priority.background_priority = priority;
+                                }
+                                MemoryPriorityDefaultTarget::Foreground => {
+                                    app.settings.memory_priority.foreground_priority = priority;
+                                }
                             }
                             app.active_power_plan_picker = None;
                             cx.notify();
@@ -12032,6 +12101,24 @@ enum PowerPlanKind {
 }
 
 #[derive(Debug, Clone, Copy)]
+enum IoPriorityDefaultTarget {
+    Background,
+    Foreground,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GpuPriorityDefaultTarget {
+    Background,
+    Foreground,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MemoryPriorityDefaultTarget {
+    Background,
+    Foreground,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum PowerPlanField {
     ActivityKind(PowerPlanKind),
     ForegroundRule(usize),
@@ -12557,7 +12644,6 @@ enum RuleCardTarget {
     Watchdog(String),
     #[allow(dead_code)]
     Responsiveness(String),
-    IoPriority(String),
     Affinity(String),
 }
 
@@ -12570,9 +12656,15 @@ enum SettingGroupTarget {
     AutoBalanceExclusions,
     AutoBalanceIoPriority,
     AutoBalanceMemoryPriority,
+    IoPriorityMaster,
+    IoPriorityForegroundDetection,
     EfficiencyEnable,
     EfficiencyCpuRestriction,
     BackgroundCpuRestriction,
+    GpuPriorityMaster,
+    GpuPriorityForegroundDetection,
+    MemoryPriorityMaster,
+    MemoryPriorityForegroundDetection,
     SmartTrimBehaviour,
     SmartTrimMonitoring,
     SmartTrimSafety,
@@ -13911,20 +14003,32 @@ fn dashboard_page_search_text(page: Page) -> String {
         Page::IoPriority => vec![
             t!("io_priority.intro_1").to_string(),
             t!("io_priority.intro_2").to_string(),
-            t!("io_priority.exclude_foreground_help").to_string(),
-            "io i/o disk storage priority low very low background process foreground exclusion".to_string(),
+            t!("io_priority.enable").to_string(),
+            t!("io_priority.foreground_detection").to_string(),
+            t!("io_priority.background_default").to_string(),
+            t!("io_priority.foreground_default").to_string(),
+            t!("io_priority.exclusions_help").to_string(),
+            "io i/o disk storage priority low very low background foreground detection default exclusion".to_string(),
         ],
         Page::GpuPriority => vec![
             t!("gpu_priority.intro_1").to_string(),
             t!("gpu_priority.intro_2").to_string(),
-            t!("gpu_priority.exclude_foreground_help").to_string(),
-            "gpu graphics scheduling priority d3dkmt idle below normal above normal foreground exclusion".to_string(),
+            t!("gpu_priority.enable").to_string(),
+            t!("gpu_priority.foreground_detection").to_string(),
+            t!("gpu_priority.background_default").to_string(),
+            t!("gpu_priority.foreground_default").to_string(),
+            t!("gpu_priority.exclusions_help").to_string(),
+            "gpu graphics scheduling priority d3dkmt idle below normal above normal foreground detection background default exclusion".to_string(),
         ],
         Page::MemoryPriority => vec![
             t!("memory_priority.intro_1").to_string(),
             t!("memory_priority.intro_2").to_string(),
-            t!("memory_priority.exclude_foreground_help").to_string(),
-            "memory priority page priority ram paging working set very low low medium background process foreground exclusion".to_string(),
+            t!("memory_priority.enable").to_string(),
+            t!("memory_priority.foreground_detection").to_string(),
+            t!("memory_priority.background_default").to_string(),
+            t!("memory_priority.foreground_default").to_string(),
+            t!("memory_priority.exclusions_help").to_string(),
+            "memory priority page priority ram paging working set very low low medium background foreground detection default exclusion".to_string(),
         ],
         Page::SmartTrim => vec![
             t!("smart_trim.intro_1").to_string(),
@@ -18641,12 +18745,14 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::Responsiveness => {
             can_add_responsiveness_process(&settings.foreground_responsiveness, process)
         }
-        SuggestionTarget::IoPriority => can_add_io_priority_process(&settings.io_priority, process),
+        SuggestionTarget::IoPriority => {
+            can_add_io_priority_exclusion(&settings.io_priority, process)
+        }
         SuggestionTarget::GpuPriority => {
-            can_add_gpu_priority_process(&settings.gpu_priority, process)
+            can_add_gpu_priority_exclusion(&settings.gpu_priority, process)
         }
         SuggestionTarget::MemoryPriority => {
-            can_add_memory_priority_process(&settings.memory_priority, process)
+            can_add_memory_priority_exclusion(&settings.memory_priority, process)
         }
         SuggestionTarget::TimerResolution => {
             can_add_timer_resolution_process(&settings.timer_resolution, process)
@@ -18740,33 +18846,25 @@ fn can_add_responsiveness_process(
         && !responsiveness::is_builtin_excluded(process)
 }
 
-fn can_add_io_priority_process(settings: &IoPrioritySettings, process: &str) -> bool {
+fn can_add_io_priority_exclusion(settings: &IoPrioritySettings, process: &str) -> bool {
     let process = process.trim();
     !process.is_empty()
-        && !settings
-            .rules
-            .iter()
-            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+        && !io_priority::is_builtin_excluded(process)
+        && !settings.contains_exclusion(process)
 }
 
-fn can_add_gpu_priority_process(settings: &GpuPrioritySettings, process: &str) -> bool {
+fn can_add_gpu_priority_exclusion(settings: &GpuPrioritySettings, process: &str) -> bool {
     let process = process.trim();
     !process.is_empty()
         && !gpu_priority::is_builtin_excluded(process)
-        && !settings
-            .rules
-            .iter()
-            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+        && !settings.contains_exclusion(process)
 }
 
-fn can_add_memory_priority_process(settings: &MemoryPrioritySettings, process: &str) -> bool {
+fn can_add_memory_priority_exclusion(settings: &MemoryPrioritySettings, process: &str) -> bool {
     let process = process.trim();
     !process.is_empty()
         && !memory_priority::is_builtin_excluded(process)
-        && !settings
-            .rules
-            .iter()
-            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+        && !settings.contains_exclusion(process)
 }
 
 fn can_add_timer_resolution_process(settings: &TimerResolutionSettings, process: &str) -> bool {
@@ -18831,30 +18929,6 @@ fn new_affinity_rule(process: &str) -> CpuAffinityRule {
         mode: CpuAffinityMode::Soft,
         process_name: process.trim().to_ascii_lowercase(),
         core_mask: default_affinity_mask(),
-    }
-}
-
-fn new_io_priority_rule(process: &str) -> IoPriorityRule {
-    IoPriorityRule {
-        enabled: true,
-        process_name: process.trim().to_ascii_lowercase(),
-        priority: ProcessIoPriority::VeryLow,
-    }
-}
-
-fn new_gpu_priority_rule(process: &str) -> GpuPriorityRule {
-    GpuPriorityRule {
-        enabled: true,
-        process_name: process.trim().to_ascii_lowercase(),
-        priority: ProcessGpuPriority::BelowNormal,
-    }
-}
-
-fn new_memory_priority_rule(process: &str) -> MemoryPriorityRule {
-    MemoryPriorityRule {
-        enabled: true,
-        process_name: process.trim().to_ascii_lowercase(),
-        priority: ProcessMemoryPriority::Low,
     }
 }
 
@@ -19087,12 +19161,26 @@ fn process_io_priority_label(priority: ProcessIoPriority) -> String {
     }
 }
 
-fn process_gpu_priority_label(priority: ProcessGpuPriority) -> String {
+fn process_io_priority_setting_label(priority: ProcessIoPrioritySetting) -> String {
     match priority {
-        ProcessGpuPriority::AboveNormal => t!("gpu_priority.priority_above_normal").to_string(),
-        ProcessGpuPriority::Normal => t!("gpu_priority.priority_normal").to_string(),
-        ProcessGpuPriority::BelowNormal => t!("gpu_priority.priority_below_normal").to_string(),
-        ProcessGpuPriority::Idle => t!("gpu_priority.priority_idle").to_string(),
+        ProcessIoPrioritySetting::Default => t!("io_priority.priority_default").to_string(),
+        ProcessIoPrioritySetting::Normal => t!("io_priority.priority_normal").to_string(),
+        ProcessIoPrioritySetting::Low => t!("io_priority.priority_low").to_string(),
+        ProcessIoPrioritySetting::VeryLow => t!("io_priority.priority_very_low").to_string(),
+    }
+}
+
+fn process_gpu_priority_setting_label(priority: ProcessGpuPrioritySetting) -> String {
+    match priority {
+        ProcessGpuPrioritySetting::Default => t!("gpu_priority.priority_default").to_string(),
+        ProcessGpuPrioritySetting::AboveNormal => {
+            t!("gpu_priority.priority_above_normal").to_string()
+        }
+        ProcessGpuPrioritySetting::Normal => t!("gpu_priority.priority_normal").to_string(),
+        ProcessGpuPrioritySetting::BelowNormal => {
+            t!("gpu_priority.priority_below_normal").to_string()
+        }
+        ProcessGpuPrioritySetting::Idle => t!("gpu_priority.priority_idle").to_string(),
     }
 }
 
@@ -19120,18 +19208,27 @@ fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
     }
 }
 
+fn process_memory_priority_setting_label(priority: ProcessMemoryPrioritySetting) -> String {
+    match priority {
+        ProcessMemoryPrioritySetting::Default => t!("memory_priority.priority_default").to_string(),
+        ProcessMemoryPrioritySetting::VeryLow => {
+            t!("memory_priority.priority_very_low").to_string()
+        }
+        ProcessMemoryPrioritySetting::Low => t!("memory_priority.priority_low").to_string(),
+        ProcessMemoryPrioritySetting::Medium => t!("memory_priority.priority_medium").to_string(),
+        ProcessMemoryPrioritySetting::BelowNormal => {
+            t!("memory_priority.priority_below_normal").to_string()
+        }
+        ProcessMemoryPrioritySetting::Normal => t!("memory_priority.priority_normal").to_string(),
+    }
+}
+
 fn cpu_affinity_mode_label(mode: CpuAffinityMode) -> String {
     match mode {
         CpuAffinityMode::Hard => t!("affinity.mode_hard").to_string(),
         CpuAffinityMode::Soft => t!("affinity.mode_soft").to_string(),
         CpuAffinityMode::EfficiencyOff => t!("affinity.mode_efficiency_off").to_string(),
     }
-}
-
-fn io_priority_contains_process(processes: &[String], process: &str) -> bool {
-    processes
-        .iter()
-        .any(|name| name.trim().eq_ignore_ascii_case(process.trim()))
 }
 
 fn auto_balance_preset_label(preset: AutoBalancePreset) -> String {

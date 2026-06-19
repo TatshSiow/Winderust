@@ -121,11 +121,11 @@ mod tests {
         EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode,
         EcoQosCpuRestrictionStrategy, EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
         ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GeneralSettings,
-        GpuPriorityRule, GpuPrioritySettings, InputDetectionSettings, IoPriorityRule,
-        IoPrioritySettings, ManualOverride, MemoryPriorityRule, MemoryPrioritySettings,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
-        PriorityRule, ProcessExclusionRule, ProcessGpuPriority, ProcessIoPriority,
-        ProcessMemoryPriority, ProcessPriority, ScheduleModeSettings, ScheduleRule,
+        GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, ManualOverride,
+        MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
+        PowerPlanSettings, PriorityRule, ProcessExclusionRule, ProcessGpuPrioritySetting,
+        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
+        ProcessMemoryPrioritySetting, ProcessPriority, ScheduleModeSettings, ScheduleRule,
         SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
         WatchdogRule, WatchdogSettings, WeekdaySetting,
     };
@@ -384,29 +384,32 @@ mod tests {
             },
             io_priority: IoPrioritySettings {
                 enabled: true,
-                exclude_foreground_app: true,
-                rules: vec![IoPriorityRule {
+                foreground_detection_enabled: true,
+                foreground_priority: ProcessIoPrioritySetting::Normal,
+                background_priority: ProcessIoPrioritySetting::VeryLow,
+                exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
-                    priority: ProcessIoPriority::Low,
                 }],
             },
             gpu_priority: GpuPrioritySettings {
                 enabled: true,
-                exclude_foreground_app: true,
-                rules: vec![GpuPriorityRule {
+                foreground_detection_enabled: true,
+                foreground_priority: ProcessGpuPrioritySetting::AboveNormal,
+                background_priority: ProcessGpuPrioritySetting::BelowNormal,
+                exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "render.exe".to_owned(),
-                    priority: ProcessGpuPriority::BelowNormal,
                 }],
             },
             memory_priority: MemoryPrioritySettings {
                 enabled: true,
-                exclude_foreground_app: true,
-                rules: vec![MemoryPriorityRule {
+                foreground_detection_enabled: true,
+                foreground_priority: ProcessMemoryPrioritySetting::Default,
+                background_priority: ProcessMemoryPrioritySetting::Low,
+                exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
-                    priority: ProcessMemoryPriority::Low,
                 }],
             },
             timer_resolution: TimerResolutionSettings {
@@ -443,6 +446,36 @@ mod tests {
         let parsed = toml_to_settings(&raw).expect("TOML should parse");
 
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn priority_default_selections_round_trip() {
+        let mut settings = Settings::default();
+        settings.io_priority.enabled = true;
+        settings.io_priority.background_priority = ProcessIoPrioritySetting::Default;
+        settings.gpu_priority.enabled = true;
+        settings.gpu_priority.foreground_priority = ProcessGpuPrioritySetting::Default;
+        settings.memory_priority.enabled = true;
+        settings.memory_priority.foreground_priority = ProcessMemoryPrioritySetting::Default;
+
+        let raw = settings_to_toml(&settings).expect("settings should serialize");
+        assert!(raw.contains("background_priority = \"default\""));
+        assert!(raw.contains("foreground_priority = \"default\""));
+
+        let parsed = toml_to_settings(&raw).expect("TOML should parse");
+
+        assert_eq!(
+            parsed.io_priority.background_priority,
+            ProcessIoPrioritySetting::Default
+        );
+        assert_eq!(
+            parsed.gpu_priority.foreground_priority,
+            ProcessGpuPrioritySetting::Default
+        );
+        assert_eq!(
+            parsed.memory_priority.foreground_priority,
+            ProcessMemoryPrioritySetting::Default
+        );
     }
 
     #[test]
@@ -526,6 +559,174 @@ suspendable_apps = ["CHAT.EXE", "browser.exe"]
                     network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn legacy_io_priority_rules_migrate_to_exclusions() {
+        let raw = r#"
+[general]
+enabled = true
+startup_with_windows = false
+start_minimized = false
+hide_to_tray = false
+pause_power_plan_switching_while_plugged_in = false
+check_interval_ms = 1000
+manual_override = "None"
+
+[power_plans]
+
+[activity_mode]
+enabled = false
+idle_timeout_seconds = 300
+switch_to_performance_on_resume = true
+
+[foreground_rules]
+enabled = true
+
+[schedule_mode]
+enabled = false
+rules = []
+
+[io_priority]
+enabled = true
+exclude_foreground_app = true
+
+[[io_priority.rules]]
+enabled = true
+process_name = "BACKUP.EXE"
+priority = "low"
+"#;
+
+        let settings = toml_to_settings(raw).expect("legacy I/O priority settings should parse");
+
+        assert_eq!(
+            settings.io_priority.foreground_priority,
+            ProcessIoPrioritySetting::Normal
+        );
+        assert!(settings.io_priority.foreground_detection_enabled);
+        assert_eq!(
+            settings.io_priority.background_priority,
+            ProcessIoPrioritySetting::VeryLow
+        );
+        assert_eq!(
+            settings.io_priority.exclusions,
+            vec![ProcessExclusionRule {
+                enabled: true,
+                process_name: "backup.exe".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn legacy_gpu_priority_rules_migrate_to_exclusions() {
+        let raw = r#"
+[general]
+enabled = true
+startup_with_windows = false
+start_minimized = false
+hide_to_tray = false
+pause_power_plan_switching_while_plugged_in = false
+check_interval_ms = 1000
+manual_override = "None"
+
+[power_plans]
+
+[activity_mode]
+enabled = false
+idle_timeout_seconds = 300
+switch_to_performance_on_resume = true
+
+[foreground_rules]
+enabled = true
+
+[schedule_mode]
+enabled = false
+rules = []
+
+[gpu_priority]
+enabled = true
+exclude_foreground_app = true
+
+[[gpu_priority.rules]]
+enabled = true
+process_name = "RENDER.EXE"
+priority = "below_normal"
+"#;
+
+        let settings = toml_to_settings(raw).expect("legacy GPU priority settings should parse");
+
+        assert_eq!(
+            settings.gpu_priority.foreground_priority,
+            ProcessGpuPrioritySetting::AboveNormal
+        );
+        assert!(settings.gpu_priority.foreground_detection_enabled);
+        assert_eq!(
+            settings.gpu_priority.background_priority,
+            ProcessGpuPrioritySetting::BelowNormal
+        );
+        assert_eq!(
+            settings.gpu_priority.exclusions,
+            vec![ProcessExclusionRule {
+                enabled: true,
+                process_name: "render.exe".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn legacy_memory_priority_rules_migrate_to_exclusions() {
+        let raw = r#"
+[general]
+enabled = true
+startup_with_windows = false
+start_minimized = false
+hide_to_tray = false
+pause_power_plan_switching_while_plugged_in = false
+check_interval_ms = 1000
+manual_override = "None"
+
+[power_plans]
+
+[activity_mode]
+enabled = false
+idle_timeout_seconds = 300
+switch_to_performance_on_resume = true
+
+[foreground_rules]
+enabled = true
+
+[schedule_mode]
+enabled = false
+rules = []
+
+[memory_priority]
+enabled = true
+exclude_foreground_app = true
+
+[[memory_priority.rules]]
+enabled = true
+process_name = "BACKUP.EXE"
+priority = "low"
+"#;
+
+        let settings = toml_to_settings(raw).expect("legacy memory priority settings should parse");
+
+        assert_eq!(
+            settings.memory_priority.foreground_priority,
+            ProcessMemoryPrioritySetting::Default
+        );
+        assert!(settings.memory_priority.foreground_detection_enabled);
+        assert_eq!(
+            settings.memory_priority.background_priority,
+            ProcessMemoryPrioritySetting::Low
+        );
+        assert_eq!(
+            settings.memory_priority.exclusions,
+            vec![ProcessExclusionRule {
+                enabled: true,
+                process_name: "backup.exe".to_owned(),
+            }]
         );
     }
 

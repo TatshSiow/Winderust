@@ -10,7 +10,7 @@ use crate::{
     activity::{input_hook, input_tracker, IdleDetector, InputHookEvents},
     affinity::{CpuAffinityManager, CpuAffinitySnapshot},
     background_cpu::BackgroundCpuRestrictionManager,
-    config::{IoPriorityRule, PowerPlanSettings, Settings},
+    config::{PowerPlanSettings, ProcessIoPriority, Settings},
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
@@ -1076,14 +1076,12 @@ fn effective_io_priority_settings(settings: &Settings) -> crate::config::IoPrior
             .lower_background_io_priority_enabled
     {
         io_priority.enabled = true;
-        io_priority.exclude_foreground_app = true;
-        io_priority.rules.push(IoPriorityRule {
-            enabled: true,
-            process_name: "*".to_owned(),
-            priority: settings
-                .foreground_responsiveness
-                .lower_background_io_priority,
-        });
+        io_priority.foreground_detection_enabled = true;
+        io_priority.foreground_priority = ProcessIoPriority::Normal.into();
+        io_priority.background_priority = settings
+            .foreground_responsiveness
+            .lower_background_io_priority
+            .into();
     }
     io_priority
 }

@@ -57,7 +57,7 @@ power efficiency, foreground responsiveness, and conservative process control.
 
 7. GPU Priority Control
    - Status: backend, automation worker, Action Log, Process Control UI page, navigation, search, and locale entries implemented.
-   - Add per-process GPU scheduling priority rules after the existing CPU, I/O, and memory priority paths are stable.
+   - Use a two-layer design: a master/background GPU priority default plus an optional Foreground Detection layer with its own foreground default.
    - Use a dedicated backend module such as `src/gpu_priority.rs` instead of folding this into CPU priority, CPU limiter, or EcoQoS.
    - Use the WDDM D3DKMT process scheduling priority APIs:
      - `D3DKMTGetProcessSchedulingPriorityClass`
@@ -66,12 +66,12 @@ power efficiency, foreground responsiveness, and conservative process control.
    - Reference implementation/API sources:
      - System Informer exposes wrappers in `phlib/include/phutil.h` and D3DKMT declarations in `plugins/ExtendedTools/d3dkmt/d3dkmthk.h`: https://github.com/winsiderss/systeminformer
      - NtDoc WDDM API docs: https://ntdoc.m417z.com/d3dkmtsetprocessschedulingpriorityclass, https://ntdoc.m417z.com/d3dkmtgetprocessschedulingpriorityclass, https://ntdoc.m417z.com/d3dkmt_schedulingpriorityclass
-   - Start with manual per-process rules: Idle, Below Normal, Normal, and Above Normal.
+   - Start with exposed default levels: Idle, Below Normal, Normal, and Above Normal.
    - Do not expose High or Realtime by default. If they are ever added, gate them behind an explicit advanced warning and never apply them automatically.
-   - Store the previous GPU scheduling priority per PID and restore it on rule removal, disable, process exit, or app shutdown.
-   - Reuse existing process safety gates: skip PowerLeaf itself, system/protected processes, built-in exclusions, cross-session processes, and foreground apps when the setting says to exclude foreground apps.
+   - Store the previous GPU scheduling priority per PID and restore it on exclusion match, disable, process exit, or app shutdown.
+   - Reuse existing process safety gates: skip PowerLeaf itself, system/protected processes, built-in exclusions, configured exclusions, and cross-session processes.
    - Add Action Log events for apply, restore, skip, and failure.
-   - UI placement: Process Policies as "GPU Priority", and expose a compact per-process toggle/selector in Process Rules after backend behavior is proven.
+   - UI placement: Process Policies as "GPU Priority", with a compact Enable GPU Priority card containing the background default, plus Foreground Detection and exclusion-list cards.
 
 8. Timer Resolution Control
    - Status: backend, foreground-rule automation, Action Log, Advanced UI page, navigation, search, and locale entries implemented.

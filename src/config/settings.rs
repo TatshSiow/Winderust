@@ -604,36 +604,63 @@ pub struct ForegroundResponsivenessSettings {
 pub struct IoPrioritySettings {
     pub enabled: bool,
     #[serde(
-        default = "default_exclude_foreground_app",
+        default = "default_io_priority_foreground_detection_enabled",
+        alias = "exclude_foreground_app",
         alias = "ignore_foreground_app"
     )]
-    pub exclude_foreground_app: bool,
-    #[serde(default)]
-    pub rules: Vec<IoPriorityRule>,
+    pub foreground_detection_enabled: bool,
+    #[serde(default = "default_io_priority_foreground")]
+    pub foreground_priority: ProcessIoPrioritySetting,
+    #[serde(default = "default_io_priority_background")]
+    pub background_priority: ProcessIoPrioritySetting,
+    #[serde(
+        default,
+        alias = "rules",
+        deserialize_with = "deserialize_process_exclusion_rules"
+    )]
+    pub exclusions: Vec<ProcessExclusionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuPrioritySettings {
     pub enabled: bool,
     #[serde(
-        default = "default_exclude_foreground_app",
+        default = "default_gpu_priority_foreground_detection_enabled",
+        alias = "exclude_foreground_app",
         alias = "ignore_foreground_app"
     )]
-    pub exclude_foreground_app: bool,
-    #[serde(default)]
-    pub rules: Vec<GpuPriorityRule>,
+    pub foreground_detection_enabled: bool,
+    #[serde(default = "default_gpu_priority_foreground")]
+    pub foreground_priority: ProcessGpuPrioritySetting,
+    #[serde(default = "default_gpu_priority_background")]
+    pub background_priority: ProcessGpuPrioritySetting,
+    #[serde(
+        default,
+        alias = "rules",
+        deserialize_with = "deserialize_process_exclusion_rules"
+    )]
+    pub exclusions: Vec<ProcessExclusionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPrioritySettings {
     pub enabled: bool,
     #[serde(
-        default = "default_exclude_foreground_app",
+        default = "default_memory_priority_foreground_detection_enabled",
+        alias = "exclude_foreground_app",
         alias = "ignore_foreground_app"
     )]
-    pub exclude_foreground_app: bool,
-    #[serde(default)]
-    pub rules: Vec<MemoryPriorityRule>,
+    pub foreground_detection_enabled: bool,
+    #[serde(default = "default_memory_priority_foreground")]
+    pub foreground_priority: ProcessMemoryPrioritySetting,
+    #[serde(default = "default_memory_priority_background")]
+    pub background_priority: ProcessMemoryPrioritySetting,
+    #[serde(
+        default,
+        alias = "rules",
+        deserialize_with = "deserialize_process_exclusion_rules"
+    )]
+    pub exclusions: Vec<ProcessExclusionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -680,30 +707,6 @@ pub struct SmartTrimSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IoPriorityRule {
-    #[serde(default = "default_rule_enabled")]
-    pub enabled: bool,
-    pub process_name: String,
-    pub priority: ProcessIoPriority,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GpuPriorityRule {
-    #[serde(default = "default_rule_enabled")]
-    pub enabled: bool,
-    pub process_name: String,
-    pub priority: ProcessGpuPriority,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryPriorityRule {
-    #[serde(default = "default_rule_enabled")]
-    pub enabled: bool,
-    pub process_name: String,
-    pub priority: ProcessMemoryPriority,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerResolutionRule {
     #[serde(default = "default_rule_enabled")]
     pub enabled: bool,
@@ -727,6 +730,39 @@ impl ProcessIoPriority {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ProcessIoPrioritySetting {
+    #[default]
+    Default,
+    Normal,
+    Low,
+    VeryLow,
+}
+
+impl ProcessIoPrioritySetting {
+    pub const ALL: [Self; 4] = [Self::Default, Self::Normal, Self::Low, Self::VeryLow];
+
+    pub const fn priority(self) -> Option<ProcessIoPriority> {
+        match self {
+            Self::Default => None,
+            Self::Normal => Some(ProcessIoPriority::Normal),
+            Self::Low => Some(ProcessIoPriority::Low),
+            Self::VeryLow => Some(ProcessIoPriority::VeryLow),
+        }
+    }
+}
+
+impl From<ProcessIoPriority> for ProcessIoPrioritySetting {
+    fn from(priority: ProcessIoPriority) -> Self {
+        match priority {
+            ProcessIoPriority::Normal => Self::Normal,
+            ProcessIoPriority::Low => Self::Low,
+            ProcessIoPriority::VeryLow => Self::VeryLow,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProcessGpuPriority {
     AboveNormal,
     Normal,
@@ -735,13 +771,46 @@ pub enum ProcessGpuPriority {
     Idle,
 }
 
-impl ProcessGpuPriority {
-    pub const ALL: [Self; 4] = [
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessGpuPrioritySetting {
+    #[default]
+    Default,
+    AboveNormal,
+    Normal,
+    BelowNormal,
+    Idle,
+}
+
+impl ProcessGpuPrioritySetting {
+    pub const ALL: [Self; 5] = [
+        Self::Default,
         Self::AboveNormal,
         Self::Normal,
         Self::BelowNormal,
         Self::Idle,
     ];
+
+    pub const fn priority(self) -> Option<ProcessGpuPriority> {
+        match self {
+            Self::Default => None,
+            Self::AboveNormal => Some(ProcessGpuPriority::AboveNormal),
+            Self::Normal => Some(ProcessGpuPriority::Normal),
+            Self::BelowNormal => Some(ProcessGpuPriority::BelowNormal),
+            Self::Idle => Some(ProcessGpuPriority::Idle),
+        }
+    }
+}
+
+impl From<ProcessGpuPriority> for ProcessGpuPrioritySetting {
+    fn from(priority: ProcessGpuPriority) -> Self {
+        match priority {
+            ProcessGpuPriority::AboveNormal => Self::AboveNormal,
+            ProcessGpuPriority::Normal => Self::Normal,
+            ProcessGpuPriority::BelowNormal => Self::BelowNormal,
+            ProcessGpuPriority::Idle => Self::Idle,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -763,6 +832,52 @@ impl ProcessMemoryPriority {
         Self::BelowNormal,
         Self::Normal,
     ];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessMemoryPrioritySetting {
+    #[default]
+    Default,
+    VeryLow,
+    Low,
+    Medium,
+    BelowNormal,
+    Normal,
+}
+
+impl ProcessMemoryPrioritySetting {
+    pub const ALL: [Self; 6] = [
+        Self::Default,
+        Self::VeryLow,
+        Self::Low,
+        Self::Medium,
+        Self::BelowNormal,
+        Self::Normal,
+    ];
+
+    pub const fn priority(self) -> Option<ProcessMemoryPriority> {
+        match self {
+            Self::Default => None,
+            Self::VeryLow => Some(ProcessMemoryPriority::VeryLow),
+            Self::Low => Some(ProcessMemoryPriority::Low),
+            Self::Medium => Some(ProcessMemoryPriority::Medium),
+            Self::BelowNormal => Some(ProcessMemoryPriority::BelowNormal),
+            Self::Normal => Some(ProcessMemoryPriority::Normal),
+        }
+    }
+}
+
+impl From<ProcessMemoryPriority> for ProcessMemoryPrioritySetting {
+    fn from(priority: ProcessMemoryPriority) -> Self {
+        match priority {
+            ProcessMemoryPriority::VeryLow => Self::VeryLow,
+            ProcessMemoryPriority::Low => Self::Low,
+            ProcessMemoryPriority::Medium => Self::Medium,
+            ProcessMemoryPriority::BelowNormal => Self::BelowNormal,
+            ProcessMemoryPriority::Normal => Self::Normal,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1047,6 +1162,42 @@ const fn default_exclude_foreground_app() -> bool {
 
 const fn default_rule_enabled() -> bool {
     true
+}
+
+const fn default_io_priority_foreground_detection_enabled() -> bool {
+    true
+}
+
+const fn default_io_priority_foreground() -> ProcessIoPrioritySetting {
+    ProcessIoPrioritySetting::Normal
+}
+
+const fn default_io_priority_background() -> ProcessIoPrioritySetting {
+    ProcessIoPrioritySetting::VeryLow
+}
+
+const fn default_gpu_priority_foreground_detection_enabled() -> bool {
+    true
+}
+
+const fn default_gpu_priority_foreground() -> ProcessGpuPrioritySetting {
+    ProcessGpuPrioritySetting::AboveNormal
+}
+
+const fn default_gpu_priority_background() -> ProcessGpuPrioritySetting {
+    ProcessGpuPrioritySetting::BelowNormal
+}
+
+const fn default_memory_priority_foreground_detection_enabled() -> bool {
+    true
+}
+
+const fn default_memory_priority_foreground() -> ProcessMemoryPrioritySetting {
+    ProcessMemoryPrioritySetting::Default
+}
+
+const fn default_memory_priority_background() -> ProcessMemoryPrioritySetting {
+    ProcessMemoryPrioritySetting::Low
 }
 
 const fn default_lower_background_apps() -> bool {
@@ -1368,8 +1519,10 @@ impl Default for IoPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_exclude_foreground_app(),
-            rules: Vec::new(),
+            foreground_detection_enabled: default_io_priority_foreground_detection_enabled(),
+            foreground_priority: default_io_priority_foreground(),
+            background_priority: default_io_priority_background(),
+            exclusions: Vec::new(),
         }
     }
 }
@@ -1378,8 +1531,10 @@ impl Default for GpuPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_exclude_foreground_app(),
-            rules: Vec::new(),
+            foreground_detection_enabled: default_gpu_priority_foreground_detection_enabled(),
+            foreground_priority: default_gpu_priority_foreground(),
+            background_priority: default_gpu_priority_background(),
+            exclusions: Vec::new(),
         }
     }
 }
@@ -1388,8 +1543,10 @@ impl Default for MemoryPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_exclude_foreground_app(),
-            rules: Vec::new(),
+            foreground_detection_enabled: default_memory_priority_foreground_detection_enabled(),
+            foreground_priority: default_memory_priority_foreground(),
+            background_priority: default_memory_priority_background(),
+            exclusions: Vec::new(),
         }
     }
 }
@@ -1428,50 +1585,50 @@ impl Default for SmartTrimSettings {
 }
 
 impl IoPrioritySettings {
-    pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessIoPriority> {
-        self.rules
-            .iter()
-            .find(|rule| {
-                rule.enabled
-                    && !rule.process_name.trim().is_empty()
-                    && wildcard_match(
-                        &rule.process_name.trim().to_ascii_lowercase(),
-                        &process_name.trim().to_ascii_lowercase(),
-                    )
-            })
-            .map(|rule| rule.priority)
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+
+    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+        })
     }
 }
 
 impl GpuPrioritySettings {
-    pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessGpuPriority> {
-        self.rules
-            .iter()
-            .find(|rule| {
-                rule.enabled
-                    && !rule.process_name.trim().is_empty()
-                    && wildcard_match(
-                        &rule.process_name.trim().to_ascii_lowercase(),
-                        &process_name.trim().to_ascii_lowercase(),
-                    )
-            })
-            .map(|rule| rule.priority)
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+
+    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+        })
     }
 }
 
 impl MemoryPrioritySettings {
-    pub fn priority_enabled_for(&self, process_name: &str) -> Option<ProcessMemoryPriority> {
-        self.rules
-            .iter()
-            .find(|rule| {
-                rule.enabled
-                    && !rule.process_name.trim().is_empty()
-                    && wildcard_match(
-                        &rule.process_name.trim().to_ascii_lowercase(),
-                        &process_name.trim().to_ascii_lowercase(),
-                    )
-            })
-            .map(|rule| rule.priority)
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.process_name
+                .trim()
+                .eq_ignore_ascii_case(process_name.trim())
+        })
+    }
+
+    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+        })
     }
 }
 
