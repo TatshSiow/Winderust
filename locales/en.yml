@@ -278,7 +278,7 @@ processor_power:
   applied_custom: "Applied custom processor tuning to %{plan}."
 
 activity:
-  intro_1: "By Activity switches power plans from keyboard and mouse activity."
+  intro_1: "By Activity switches power plans from keyboard, mouse, and controller activity."
   intro_2: "Idle and active plans are selected below; input detection controls when the app changes state."
   enable: "Enable By Activity"
   current_active_plan: "Current active plan: %{plan}"
@@ -286,6 +286,7 @@ activity:
   active_plan: "Active Plan"
   keyboard_input: "Keyboard input detection"
   mouse_input: "Mouse input detection"
+  controller_input: "Controller input detection"
   idle_timeout: "Idle Timeout"
   check_interval: "Check Interval"
 

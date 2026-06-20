@@ -7,7 +7,10 @@ use std::{
 
 use crate::{
     action_log::{ActionLog, ActionLogEntry},
-    activity::{input_hook, input_tracker, IdleDetector, InputHookEvents},
+    activity::{
+        input_hook, input_tracker, merge_activity_snapshot, ControllerActivityDetector,
+        IdleDetector, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
+    },
     affinity::{CpuAffinityManager, CpuAffinitySnapshot},
     background_cpu::BackgroundCpuRestrictionManager,
     config::{PowerPlanSettings, ProcessIoPriority, Settings},
@@ -359,6 +362,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_smart_trim_refresh = Instant::now();
     let mut next_timer_resolution_refresh = Instant::now();
     let mut next_process_appearance_scan = Instant::now();
+    let mut next_controller_activity_poll = Instant::now();
     let mut foreground_responsiveness_fast_until: Option<Instant> = None;
 
     loop {
@@ -423,6 +427,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_smart_trim_refresh = Instant::now();
             next_timer_resolution_refresh = Instant::now();
             next_process_appearance_scan = Instant::now();
+            next_controller_activity_poll = Instant::now();
             foreground_responsiveness_fast_until = None;
         }
         if wake_events.foreground_changed || wake_events.session_changed {
@@ -453,6 +458,17 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         }
         if wake_events.input_activity {
             next_check = Instant::now();
+        }
+        let controller_poll_required =
+            hidden_to_tray && controller_activity_poll_required(&settings);
+        if controller_poll_required && Instant::now() >= next_controller_activity_poll {
+            if runner.poll_controller_activity(Instant::now()) {
+                next_check = Instant::now();
+            }
+            next_controller_activity_poll = Instant::now() + CONTROLLER_ACTIVITY_POLL_INTERVAL;
+        } else if !controller_poll_required {
+            runner.clear_controller_activity();
+            next_controller_activity_poll = Instant::now();
         }
         if wake_events.app_switch || wake_events.app_switch_mouse_click {
             next_app_suspension_foreground_release = Instant::now();
@@ -805,6 +821,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_process_appearance_scan
                     .saturating_duration_since(Instant::now())
                     .min(PROCESS_APPEARANCE_SCAN_INTERVAL),
+            ));
+        }
+        if controller_poll_required {
+            wait_for = Some(min_worker_wait(
+                wait_for,
+                next_controller_activity_poll
+                    .saturating_duration_since(Instant::now())
+                    .min(CONTROLLER_ACTIVITY_POLL_INTERVAL),
             ));
         }
         if runner.app_suspension_manager.has_suspended_processes() {
@@ -1168,6 +1192,14 @@ fn activity_power_plan_required(settings: &Settings) -> bool {
                 && has_active_plan(&settings.activity_mode.power_plans, settings)))
 }
 
+fn controller_activity_poll_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && settings.activity_mode.enabled
+        && settings.activity_mode.input_detection.controller
+        && (has_idle_plan(&settings.activity_mode.power_plans, settings)
+            || has_active_plan(&settings.activity_mode.power_plans, settings))
+}
+
 fn foreground_rules_required(settings: &Settings) -> bool {
     settings.foreground_rules.enabled
         && (settings
@@ -1345,6 +1377,7 @@ struct HiddenAutomationRunner {
     next_cpu_usage_refresh: Option<Instant>,
     cpu_monitor: CpuUsageMonitor,
     idle_detector: IdleDetector,
+    controller_activity_detector: ControllerActivityDetector,
     foreground_detector: ForegroundDetector,
     scheduler: Scheduler,
     cpu_usage_scheduler: CpuUsageScheduler,
@@ -1395,6 +1428,31 @@ impl HiddenAutomationRunner {
             .collect::<BTreeSet<_>>();
 
         process_ids_have_new_entries(&mut self.known_process_ids, current_ids)
+    }
+
+    fn poll_controller_activity(&mut self, now: Instant) -> bool {
+        self.controller_activity_detector.poll(now)
+    }
+
+    fn clear_controller_activity(&mut self) {
+        self.controller_activity_detector.clear();
+    }
+
+    fn activity_snapshot(
+        &self,
+        settings: &Settings,
+        now: Instant,
+    ) -> crate::activity::ActivitySnapshot {
+        let idle_timeout = Duration::from_secs(settings.activity_mode.idle_timeout_seconds);
+        let snapshot = self.idle_detector.snapshot(idle_timeout);
+        let controller_idle_for = settings
+            .activity_mode
+            .input_detection
+            .controller
+            .then(|| self.controller_activity_detector.idle_for(now))
+            .flatten();
+
+        merge_activity_snapshot(snapshot, controller_idle_for, idle_timeout)
     }
 
     fn run_eco_qos_update(&mut self, settings: &Settings) -> EcoQosSnapshot {
@@ -1652,9 +1710,7 @@ impl HiddenAutomationRunner {
             self.refresh_active_plan();
         }
 
-        let activity = self.idle_detector.snapshot(Duration::from_secs(
-            settings.activity_mode.idle_timeout_seconds,
-        ));
+        let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
         let foreground_process_id = self.foreground_detector.process_id();
         let foreground_app = self.foreground_detector.process_name();

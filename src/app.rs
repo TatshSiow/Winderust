@@ -42,7 +42,10 @@ use gpui_component::{
 
 use crate::{
     action_log::{ActionLogAction, ActionLogEntry, ActionLogFeature, ActionLogResult},
-    activity::{ActivitySnapshot, ActivityState, IdleDetector, InputHook, InputHookConfig},
+    activity::{
+        merge_activity_snapshot, ActivitySnapshot, ActivityState, ControllerActivityDetector,
+        IdleDetector, InputHook, InputHookConfig,
+    },
     affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     automation::BackgroundAutomation,
     config::{
@@ -378,6 +381,7 @@ pub struct PowerLeafApp {
     io_monitor: IoUsageMonitor,
     network_monitor: NetworkUsageMonitor,
     idle_detector: IdleDetector,
+    controller_activity_detector: ControllerActivityDetector,
     input_hook: Option<InputHook>,
     foreground_detector: ForegroundDetector,
     scheduler: Scheduler,
@@ -1102,6 +1106,7 @@ impl PowerLeafApp {
             io_monitor: IoUsageMonitor::default(),
             network_monitor: NetworkUsageMonitor::default(),
             idle_detector: IdleDetector,
+            controller_activity_detector: ControllerActivityDetector::default(),
             input_hook: None,
             foreground_detector: ForegroundDetector,
             scheduler: Scheduler,
@@ -1903,9 +1908,7 @@ impl PowerLeafApp {
         }
 
         let decision_settings = self.runtime_settings();
-        self.activity = self.idle_detector.snapshot(Duration::from_secs(
-            decision_settings.activity_mode.idle_timeout_seconds,
-        ));
+        self.activity = self.activity_snapshot(&decision_settings);
         self.refresh_dashboard_resource_samples();
         self.foreground_app = self.foreground_detector.process_name();
         let schedule = self
@@ -1965,6 +1968,21 @@ impl PowerLeafApp {
             || self.plans != plans
             || self.current_plan != current_plan
             || self.status_message != status_message
+    }
+
+    fn activity_snapshot(&mut self, settings: &Settings) -> ActivitySnapshot {
+        let idle_timeout = Duration::from_secs(settings.activity_mode.idle_timeout_seconds);
+        let now = Instant::now();
+        let snapshot = self.idle_detector.snapshot(idle_timeout);
+        let controller_idle_for = if settings.activity_mode.input_detection.controller {
+            self.controller_activity_detector.poll(now);
+            self.controller_activity_detector.idle_for(now)
+        } else {
+            self.controller_activity_detector.clear();
+            None
+        };
+
+        merge_activity_snapshot(snapshot, controller_idle_for, idle_timeout)
     }
 
     fn refresh_dashboard_resource_samples(&mut self) -> bool {
@@ -4457,7 +4475,10 @@ impl PowerLeafApp {
                 t!("activity.keyboard_input").to_string(),
                 self.settings.activity_mode.input_detection.keyboard,
                 cx.listener(|app, checked: &bool, _, cx| {
-                    if !*checked && !app.settings.activity_mode.input_detection.mouse {
+                    if !*checked
+                        && !app.settings.activity_mode.input_detection.mouse
+                        && !app.settings.activity_mode.input_detection.controller
+                    {
                         return;
                     }
                     app.settings.activity_mode.input_detection.keyboard = *checked;
@@ -4475,10 +4496,34 @@ impl PowerLeafApp {
                 t!("activity.mouse_input").to_string(),
                 self.settings.activity_mode.input_detection.mouse,
                 cx.listener(|app, checked: &bool, _, cx| {
-                    if !*checked && !app.settings.activity_mode.input_detection.keyboard {
+                    if !*checked
+                        && !app.settings.activity_mode.input_detection.keyboard
+                        && !app.settings.activity_mode.input_detection.controller
+                    {
                         return;
                     }
                     app.settings.activity_mode.input_detection.mouse = *checked;
+                    app.settings
+                        .activity_mode
+                        .input_detection
+                        .ensure_any_enabled();
+                    app.settings.activity_mode.switch_to_performance_on_resume =
+                        app.settings.activity_mode.input_detection.any_enabled();
+                    cx.notify();
+                }),
+            ))
+            .child(feature_toggle_switch(
+                "controller-input",
+                t!("activity.controller_input").to_string(),
+                self.settings.activity_mode.input_detection.controller,
+                cx.listener(|app, checked: &bool, _, cx| {
+                    if !*checked
+                        && !app.settings.activity_mode.input_detection.keyboard
+                        && !app.settings.activity_mode.input_detection.mouse
+                    {
+                        return;
+                    }
+                    app.settings.activity_mode.input_detection.controller = *checked;
                     app.settings
                         .activity_mode
                         .input_detection
@@ -14398,7 +14443,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("activity.intro_1").to_string(),
             t!("activity.intro_2").to_string(),
             t!("activity.enable").to_string(),
-            "idle active input keyboard mouse activity power plan battery plugged".to_string(),
+            "idle active input keyboard mouse controller gamepad activity power plan battery plugged".to_string(),
         ],
         Page::ForegroundRules => vec![
             t!("foreground.intro_1").to_string(),
@@ -19293,7 +19338,10 @@ fn input_hook_config(settings: &Settings) -> InputHookConfig {
 fn activity_input_hook_required(settings: &Settings) -> bool {
     settings.activity_mode.enabled
         && settings.activity_mode.switch_to_performance_on_resume
-        && settings.activity_mode.input_detection.any_enabled()
+        && settings
+            .activity_mode
+            .input_detection
+            .keyboard_or_mouse_enabled()
         && (settings
             .activity_mode
             .power_plans
@@ -20747,6 +20795,12 @@ mod tests {
         settings.activity_mode.switch_to_performance_on_resume = false;
         assert!(!input_hook_required(&settings));
 
+        settings.activity_mode.switch_to_performance_on_resume = true;
+        settings.activity_mode.input_detection.keyboard = false;
+        settings.activity_mode.input_detection.mouse = false;
+        settings.activity_mode.input_detection.controller = true;
+        assert!(!input_hook_required(&settings));
+
         settings.app_suspension.enabled = true;
         assert!(input_hook_required(&settings));
 
@@ -20775,6 +20829,17 @@ mod tests {
             InputHookConfig {
                 keyboard: false,
                 mouse: true,
+            }
+        );
+
+        settings.activity_mode.input_detection.keyboard = false;
+        settings.activity_mode.input_detection.mouse = false;
+        settings.activity_mode.input_detection.controller = true;
+        assert_eq!(
+            input_hook_config(&settings),
+            InputHookConfig {
+                keyboard: false,
+                mouse: false,
             }
         );
 

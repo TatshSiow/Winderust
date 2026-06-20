@@ -162,6 +162,7 @@ mod tests {
                 input_detection: InputDetectionSettings {
                     keyboard: true,
                     mouse: false,
+                    controller: true,
                 },
                 power_plans: PowerPlanSettings {
                     power_save_guid: Some("activity-idle-guid".to_owned()),

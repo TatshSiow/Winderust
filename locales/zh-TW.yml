@@ -257,7 +257,7 @@ processor_power:
   applied_custom: "已將自訂處理器調校套用到 %{plan}。"
 
 activity:
-  intro_1: "操作狀態排程會根據鍵盤與滑鼠活動切換電源計畫。"
+  intro_1: "操作狀態排程會根據鍵盤、滑鼠與控制器活動切換電源計畫。"
   intro_2: "可在下方選擇閒置與活動時的電源計畫；輸入偵測會控制應用程式何時切換狀態。"
   enable: "啟用操作狀態排程"
   current_active_plan: "目前作用中的電源計畫：%{plan}"
@@ -265,6 +265,7 @@ activity:
   active_plan: "活動電源計畫"
   keyboard_input: "鍵盤輸入偵測"
   mouse_input: "滑鼠輸入偵測"
+  controller_input: "控制器輸入偵測"
   idle_timeout: "閒置逾時"
   check_interval: "檢查間隔"
 

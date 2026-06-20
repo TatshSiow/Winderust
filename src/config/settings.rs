@@ -214,8 +214,12 @@ pub struct ActivityModeSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputDetectionSettings {
+    #[serde(default = "default_input_detection_enabled")]
     pub keyboard: bool,
+    #[serde(default = "default_input_detection_enabled")]
     pub mouse: bool,
+    #[serde(default = "default_input_detection_enabled")]
+    pub controller: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1142,8 +1146,13 @@ impl Default for InputDetectionSettings {
         Self {
             keyboard: true,
             mouse: true,
+            controller: true,
         }
     }
+}
+
+const fn default_input_detection_enabled() -> bool {
+    true
 }
 
 impl Default for ForegroundRules {
@@ -2010,6 +2019,10 @@ where
 
 impl InputDetectionSettings {
     pub const fn any_enabled(&self) -> bool {
+        self.keyboard || self.mouse || self.controller
+    }
+
+    pub const fn keyboard_or_mouse_enabled(&self) -> bool {
         self.keyboard || self.mouse
     }
 
