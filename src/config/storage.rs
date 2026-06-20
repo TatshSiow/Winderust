@@ -121,9 +121,10 @@ mod tests {
         EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode,
         EcoQosCpuRestrictionStrategy, EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
         ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GeneralSettings,
-        GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, ManualOverride,
-        MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
-        PowerPlanSettings, PriorityRule, ProcessExclusionRule, ProcessGpuPrioritySetting,
+        GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, LaunchPriorityRule,
+        LaunchPrioritySettings, ManualOverride, MemoryPrioritySettings, NetworkThresholdUnit,
+        PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings, PriorityRule,
+        ProcessCpuPrioritySetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
         ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
         ProcessMemoryPrioritySetting, ProcessPriority, ScheduleModeSettings, ScheduleRule,
         SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
@@ -410,6 +411,16 @@ mod tests {
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
+                }],
+            },
+            launch_priority: LaunchPrioritySettings {
+                enabled: true,
+                rules: vec![LaunchPriorityRule {
+                    enabled: true,
+                    process_name: "game.exe".to_owned(),
+                    cpu_priority: ProcessCpuPrioritySetting::AboveNormal,
+                    io_priority: ProcessIoPrioritySetting::Default,
+                    memory_priority: ProcessMemoryPrioritySetting::Low,
                 }],
             },
             timer_resolution: TimerResolutionSettings {

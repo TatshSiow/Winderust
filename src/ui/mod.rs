@@ -22,6 +22,7 @@ pub enum Page {
     IoPriority,
     GpuPriority,
     MemoryPriority,
+    LaunchPriority,
     SmartTrim,
     CpuAffinity,
     ForegroundRules,
@@ -53,10 +54,11 @@ const CPU_CONTROL_PAGES: [Page; 4] = [
     Page::BackgroundCpuRestriction,
     Page::CpuAffinity,
 ];
-const PROCESS_POLICY_PAGES: [Page; 4] = [
+const PROCESS_POLICY_PAGES: [Page; 5] = [
     Page::EfficiencyMode,
     Page::IoPriority,
     Page::GpuPriority,
+    Page::LaunchPriority,
     Page::Watchdog,
 ];
 const AUTO_BALANCE_PAGES: [Page; 1] = [Page::ForegroundResponsiveness];
@@ -130,6 +132,7 @@ impl Page {
             Self::IoPriority => t!("nav.io_priority"),
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
+            Self::LaunchPriority => t!("nav.launch_priority"),
             Self::SmartTrim => t!("nav.smart_trim"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
@@ -164,9 +167,11 @@ impl Page {
             | Self::CpuAffinity => {
                 t!("nav.processor_controls")
             }
-            Self::EfficiencyMode | Self::IoPriority | Self::GpuPriority | Self::Watchdog => {
-                t!("nav.process_policies")
-            }
+            Self::EfficiencyMode
+            | Self::IoPriority
+            | Self::GpuPriority
+            | Self::LaunchPriority
+            | Self::Watchdog => t!("nav.process_policies"),
             Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
             Self::MemoryPriority | Self::SmartTrim => t!("nav.memory_control"),
             Self::ActionLog => t!("nav.action_log"),
@@ -196,6 +201,7 @@ impl Page {
             | Self::EfficiencyMode
             | Self::IoPriority
             | Self::GpuPriority
+            | Self::LaunchPriority
             | Self::Watchdog => Self::ProcessPolicies,
             Self::ForegroundResponsiveness => Self::ForegroundResponsiveness,
             Self::MemoryControl | Self::MemoryPriority | Self::SmartTrim => Self::MemoryControl,

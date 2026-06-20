@@ -51,12 +51,13 @@ use crate::{
         CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PriorityRule,
-        ProcessExclusionRule, ProcessGpuPrioritySetting, ProcessIoPriority,
-        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
-        ProcessPriority, ScheduleRule, Settings, SmartTrimSettings, TimerResolutionRule,
-        TimerResolutionSettings, WatchdogAction, WatchdogRule, WatchdogSettings, WeekdaySetting,
+        ForegroundRules, GpuPrioritySettings, IoPrioritySettings, LaunchPriorityRule,
+        LaunchPrioritySettings, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
+        PerformanceModeSettings, PriorityRule, ProcessCpuPrioritySetting, ProcessExclusionRule,
+        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
+        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority, ScheduleRule,
+        Settings, SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
+        WatchdogRule, WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -68,6 +69,7 @@ use crate::{
     foreground::{list_process_candidates, ForegroundDetector, ProcessCandidateInfo},
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
+    launch_priority::{self, LaunchPrioritySnapshot},
     memory_priority::{self, MemoryPrioritySnapshot},
     performance_mode::{self, PerformanceModeSnapshot},
     power::{
@@ -321,6 +323,7 @@ pub struct PowerLeafApp {
     io_priority_status: IoPrioritySnapshot,
     gpu_priority_status: GpuPrioritySnapshot,
     memory_priority_status: MemoryPrioritySnapshot,
+    launch_priority_status: LaunchPrioritySnapshot,
     smart_trim_status: SmartTrimSnapshot,
     timer_resolution_status: TimerResolutionSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
@@ -491,6 +494,7 @@ enum ListItemRemovalTarget {
     IoPriorityExclusion(usize),
     GpuPriorityExclusion(usize),
     MemoryPriorityExclusion(usize),
+    LaunchPriorityRule(usize),
     TimerResolutionRule(usize),
     SmartTrimExclusion(usize),
     CpuAffinityRule(usize),
@@ -513,9 +517,10 @@ impl ListItemRemovalTarget {
             Self::IoPriorityExclusion(_) => 11,
             Self::GpuPriorityExclusion(_) => 12,
             Self::MemoryPriorityExclusion(_) => 13,
-            Self::TimerResolutionRule(_) => 14,
-            Self::SmartTrimExclusion(_) => 15,
-            Self::CpuAffinityRule(_) => 16,
+            Self::LaunchPriorityRule(_) => 14,
+            Self::TimerResolutionRule(_) => 15,
+            Self::SmartTrimExclusion(_) => 16,
+            Self::CpuAffinityRule(_) => 17,
         }
     }
 
@@ -535,6 +540,7 @@ impl ListItemRemovalTarget {
             | Self::IoPriorityExclusion(index)
             | Self::GpuPriorityExclusion(index)
             | Self::MemoryPriorityExclusion(index)
+            | Self::LaunchPriorityRule(index)
             | Self::TimerResolutionRule(index)
             | Self::SmartTrimExclusion(index)
             | Self::CpuAffinityRule(index) => index,
@@ -557,6 +563,7 @@ impl ListItemRemovalTarget {
             Self::IoPriorityExclusion(_) => Self::IoPriorityExclusion(index),
             Self::GpuPriorityExclusion(_) => Self::GpuPriorityExclusion(index),
             Self::MemoryPriorityExclusion(_) => Self::MemoryPriorityExclusion(index),
+            Self::LaunchPriorityRule(_) => Self::LaunchPriorityRule(index),
             Self::TimerResolutionRule(_) => Self::TimerResolutionRule(index),
             Self::SmartTrimExclusion(_) => Self::SmartTrimExclusion(index),
             Self::CpuAffinityRule(_) => Self::CpuAffinityRule(index),
@@ -593,6 +600,7 @@ struct UiInputs {
     io_priority_process: Entity<InputState>,
     gpu_priority_process: Entity<InputState>,
     memory_priority_process: Entity<InputState>,
+    launch_priority_process: Entity<InputState>,
     timer_resolution_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
     activity_idle_timeout: Entity<SliderState>,
@@ -797,6 +805,7 @@ impl UiInputs {
             io_priority_process: make_input(window, cx, "", "Search running apps..."),
             gpu_priority_process: make_input(window, cx, "", "Search running apps..."),
             memory_priority_process: make_input(window, cx, "", "Search running apps..."),
+            launch_priority_process: make_input(window, cx, "", "Search running apps..."),
             timer_resolution_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
             activity_idle_timeout: make_range_slider(
@@ -1032,6 +1041,7 @@ impl PowerLeafApp {
             io_priority_status: IoPrioritySnapshot::default(),
             gpu_priority_status: GpuPrioritySnapshot::default(),
             memory_priority_status: MemoryPrioritySnapshot::default(),
+            launch_priority_status: LaunchPrioritySnapshot::default(),
             smart_trim_status: SmartTrimSnapshot::default(),
             timer_resolution_status: initial_timer_resolution_status,
             action_log_entries: Vec::new(),
@@ -1402,6 +1412,15 @@ impl PowerLeafApp {
             ListItemRemovalTarget::MemoryPriorityExclusion(index) => {
                 if index < self.settings.memory_priority.exclusions.len() {
                     self.settings.memory_priority.exclusions.remove(index);
+                }
+            }
+            ListItemRemovalTarget::LaunchPriorityRule(index) => {
+                if let Some(rule) = self.settings.launch_priority.rules.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::LaunchPriority(rule.process_name.clone()));
+                }
+                if index < self.settings.launch_priority.rules.len() {
+                    self.settings.launch_priority.rules.remove(index);
                 }
             }
             ListItemRemovalTarget::TimerResolutionRule(index) => {
@@ -2459,6 +2478,7 @@ impl PowerLeafApp {
                 | Page::IoPriority
                 | Page::GpuPriority
                 | Page::MemoryPriority
+                | Page::LaunchPriority
                 | Page::TimerResolution
                 | Page::PerformanceMode
                 | Page::CpuAffinity
@@ -3431,6 +3451,12 @@ impl PowerLeafApp {
                 self.memory_priority_status.failed_processes,
                 self.memory_priority_status.last_error.is_some(),
             )),
+            Page::LaunchPriority => Some(process_rule_nav_status(
+                settings.launch_priority.enabled,
+                settings.launch_priority.rules.len(),
+                self.launch_priority_status.failed_actions,
+                self.launch_priority_status.last_error.is_some(),
+            )),
             Page::SmartTrim => Some(process_nav_status(
                 settings.smart_trim.enabled,
                 self.smart_trim_status.failed_processes,
@@ -3821,6 +3847,7 @@ impl PowerLeafApp {
             Page::IoPriority => self.render_io_priority_page(window, cx),
             Page::GpuPriority => self.render_gpu_priority_page(window, cx),
             Page::MemoryPriority => self.render_memory_priority_page(window, cx),
+            Page::LaunchPriority => self.render_launch_priority_page(window, cx),
             Page::SmartTrim => self.render_smart_trim_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::ActionLog => self.render_action_log_page(window, cx),
@@ -4091,6 +4118,12 @@ impl PowerLeafApp {
                     "{} adjusted",
                     self.memory_priority_status.adjusted_processes
                 ),
+            ));
+        }
+        if settings.launch_priority.enabled {
+            items.push((
+                t!("nav.launch_priority").to_string(),
+                rule_count_label(settings.launch_priority.rules.len()),
             ));
         }
         if settings.smart_trim.enabled {
@@ -8560,6 +8593,7 @@ impl PowerLeafApp {
                 window,
                 cx,
             ))
+            .child(self.render_gpu_priority_status_card())
             .child(section_header(
                 &t!("gpu_priority.exclusions"),
                 t!("gpu_priority.exclusions_help").to_string(),
@@ -8655,6 +8689,50 @@ impl PowerLeafApp {
             list = list.child(text_muted(t!("gpu_priority.no_exclusions").to_string()));
         }
         list.into_any_element()
+    }
+
+    fn render_gpu_priority_status_card(&self) -> GroupBox {
+        let status = &self.gpu_priority_status;
+        let message = if status.message.is_empty() {
+            t!("gpu_priority.not_checked").to_string()
+        } else {
+            status.message.clone()
+        };
+        let mut rows = vec![
+            (t!("common.status").to_string(), message),
+            (
+                t!("gpu_priority.adjusted_processes").to_string(),
+                status.adjusted_processes.to_string(),
+            ),
+            (
+                t!("gpu_priority.pending_processes").to_string(),
+                status.pending_processes.to_string(),
+            ),
+            (
+                t!("gpu_priority.denied_processes").to_string(),
+                status.denied_processes.to_string(),
+            ),
+            (
+                t!("gpu_priority.suppressed_processes").to_string(),
+                status.suppressed_processes.to_string(),
+            ),
+            (
+                t!("gpu_priority.scanned_processes").to_string(),
+                status.scanned_processes.to_string(),
+            ),
+            (
+                t!("gpu_priority.skipped_processes").to_string(),
+                status.skipped_processes.to_string(),
+            ),
+            (
+                t!("gpu_priority.failed_actions").to_string(),
+                status.failed_processes.to_string(),
+            ),
+        ];
+        if let Some(error) = &status.last_error {
+            rows.push((t!("common.last_failure").to_string(), error.clone()));
+        }
+        stat_grid(rows)
     }
 
     fn render_gpu_priority_default_selector(
@@ -8933,6 +9011,384 @@ impl PowerLeafApp {
             },
         );
         dropdown
+    }
+
+    fn render_launch_priority_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .launch_priority_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.launch_priority.enabled;
+        let help = tooltip_lines(vec![
+            t!("launch_priority.intro_1").to_string(),
+            t!("launch_priority.intro_2").to_string(),
+            t!("launch_priority.intro_3").to_string(),
+        ]);
+        let master_card = setting_group_with_help(
+            SettingGroupTarget::LaunchPriorityMaster,
+            t!("launch_priority.enable").to_string(),
+            help,
+            setting_group_switch_action(
+                "launch-priority-enabled-toggle",
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.launch_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::LaunchPriorityMaster),
+            vec![
+                setting_group_action_row(
+                    "launch-priority-exact-name-help",
+                    t!("launch_priority.exact_name").to_string(),
+                    value_pill(t!("launch_priority.exact_name_value").to_string())
+                        .into_any_element(),
+                    false,
+                )
+                .into_any_element(),
+                setting_group_action_row(
+                    "launch-priority-apply-row",
+                    t!("launch_priority.registry_rules").to_string(),
+                    primary_control_button(Button::new("apply-launch-priority-rules"), cx)
+                        .label(t!("launch_priority.apply").to_string())
+                        .on_click(cx.listener(|app, _, _, cx| {
+                            app.apply_launch_priority_rules(cx);
+                        }))
+                        .into_any_element(),
+                    true,
+                )
+                .into_any_element(),
+            ],
+            window,
+            cx,
+        );
+        let body = feature_body(enabled)
+            .child(section_header(
+                &t!("launch_priority.rules"),
+                t!("launch_priority.rules_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "launch-priority-process-suggestion",
+                        &self.inputs.launch_priority_process,
+                        SuggestionTarget::LaunchPriority,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-launch-priority-rule"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_launch_priority_process(
+                                        &self.settings.launch_priority,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process = app
+                                    .inputs
+                                    .launch_priority_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_launch_priority_process(
+                                    &app.settings.launch_priority,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .launch_priority
+                                        .rules
+                                        .push(new_launch_priority_rule(&process));
+                                    clear_input(&app.inputs.launch_priority_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_launch_priority_rules(window, cx))
+            .child(self.render_launch_priority_status_card());
+
+        self.page_shell(Page::LaunchPriority, cx)
+            .child(master_card)
+            .child(disabled_feature_body(
+                "launch-priority-body",
+                body,
+                enabled,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_launch_priority_rules(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.launch_priority.rules.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let card_target = RuleCardTarget::LaunchPriority(process.clone());
+            let collapsed = self.is_rule_card_collapsed(&card_target);
+            let mut card = rule_card(
+                self.process_rule_title(&process, cx),
+                rule_enable_checkbox(
+                    format!("launch-priority-rule-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.launch_priority.rules.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ),
+                rule_card_collapse_indicator(card_target.clone(), collapsed),
+                card_target.clone(),
+                collapsed,
+                cx,
+            );
+            if rule_card_body_visible(&card_target, collapsed, window) {
+                card = card
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        0,
+                        1,
+                        rule_card_body_row(vec![self.render_launch_priority_cpu_selector(
+                            index,
+                            rule.cpu_priority,
+                            window,
+                            cx,
+                        )]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        1,
+                        1,
+                        rule_card_body_row(vec![self.render_launch_priority_io_selector(
+                            index,
+                            rule.io_priority,
+                            window,
+                            cx,
+                        )]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        2,
+                        1,
+                        rule_card_body_row(vec![self.render_launch_priority_memory_selector(
+                            index,
+                            rule.memory_priority,
+                            window,
+                            cx,
+                        )]),
+                    ))
+                    .child(animated_rule_card_body_child(
+                        &card_target,
+                        3,
+                        1,
+                        rule_card_body_action(
+                            danger_control_button(Button::new(SharedString::from(format!(
+                                "remove-launch-priority-rule-{index}"
+                            ))))
+                            .label(t!("common.remove").to_string())
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                app.request_list_item_removal(
+                                    ListItemRemovalTarget::LaunchPriorityRule(index),
+                                    cx,
+                                );
+                            }))
+                            .into_any_element(),
+                        ),
+                    ));
+            }
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::LaunchPriorityRule(index),
+                SharedString::from(format!("launch-priority-rule-{index}")),
+                card.into_any_element(),
+            ));
+        }
+        if self.settings.launch_priority.rules.is_empty() {
+            list = list.child(text_muted(t!("launch_priority.no_rules").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_launch_priority_cpu_selector(
+        &self,
+        index: usize,
+        selected_priority: ProcessCpuPrioritySetting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = format!("launch-priority-cpu-{index}");
+        self.render_dropdown_select(
+            id.clone(),
+            process_cpu_priority_setting_label(selected_priority),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessCpuPrioritySetting::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessCpuPrioritySetting::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_cpu_priority_setting_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.launch_priority.rules.get_mut(index) {
+                                rule.cpu_priority = priority;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_launch_priority_io_selector(
+        &self,
+        index: usize,
+        selected_priority: ProcessIoPrioritySetting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = format!("launch-priority-io-{index}");
+        self.render_dropdown_select(
+            id.clone(),
+            process_io_priority_setting_label(selected_priority),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessIoPrioritySetting::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessIoPrioritySetting::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_io_priority_setting_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.launch_priority.rules.get_mut(index) {
+                                rule.io_priority = priority;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_launch_priority_memory_selector(
+        &self,
+        index: usize,
+        selected_priority: ProcessMemoryPrioritySetting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = format!("launch-priority-memory-{index}");
+        self.render_dropdown_select(
+            id.clone(),
+            process_memory_priority_setting_label(selected_priority),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessMemoryPrioritySetting::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessMemoryPrioritySetting::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_memory_priority_setting_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if let Some(rule) = app.settings.launch_priority.rules.get_mut(index) {
+                                rule.memory_priority = priority;
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_launch_priority_status_card(&self) -> GroupBox {
+        let status_message = if self.launch_priority_status.message.is_empty() {
+            t!("launch_priority.not_applied").to_string()
+        } else {
+            self.launch_priority_status.message.clone()
+        };
+        let mut rows = vec![
+            (t!("common.status").to_string(), status_message),
+            (
+                t!("launch_priority.configured_rules").to_string(),
+                self.launch_priority_status.configured_rules.to_string(),
+            ),
+            (
+                t!("launch_priority.applied_rules").to_string(),
+                self.launch_priority_status.applied_rules.to_string(),
+            ),
+            (
+                t!("launch_priority.cleared_rules").to_string(),
+                self.launch_priority_status.cleared_rules.to_string(),
+            ),
+            (
+                t!("launch_priority.failed_actions").to_string(),
+                self.launch_priority_status.failed_actions.to_string(),
+            ),
+        ];
+        if let Some(error) = &self.launch_priority_status.last_error {
+            rows.push((t!("common.last_failure").to_string(), error.clone()));
+        }
+        stat_grid(rows)
+    }
+
+    fn apply_launch_priority_rules(&mut self, cx: &mut Context<Self>) {
+        let snapshot =
+            launch_priority::apply_launch_priority_settings(&self.settings.launch_priority);
+        self.status_message = if let Some(error) = &snapshot.last_error {
+            t!("launch_priority.apply_failed", error = error).to_string()
+        } else {
+            t!(
+                "launch_priority.applied",
+                applied = snapshot.applied_rules,
+                cleared = snapshot.cleared_rules
+            )
+            .to_string()
+        };
+        self.launch_priority_status = snapshot;
+        cx.notify();
     }
 
     fn render_smart_trim_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -12084,6 +12540,9 @@ impl PowerLeafApp {
             SuggestionTarget::MemoryPriority => {
                 clear_input_to(&self.inputs.memory_priority_process, process, window, cx);
             }
+            SuggestionTarget::LaunchPriority => {
+                clear_input_to(&self.inputs.launch_priority_process, process, window, cx);
+            }
             SuggestionTarget::TimerResolution => {
                 clear_input_to(&self.inputs.timer_resolution_process, process, window, cx);
             }
@@ -12625,6 +13084,7 @@ enum SuggestionTarget {
     IoPriority,
     GpuPriority,
     MemoryPriority,
+    LaunchPriority,
     TimerResolution,
     Affinity,
 }
@@ -12644,6 +13104,7 @@ enum RuleCardTarget {
     Watchdog(String),
     #[allow(dead_code)]
     Responsiveness(String),
+    LaunchPriority(String),
     Affinity(String),
 }
 
@@ -12665,6 +13126,7 @@ enum SettingGroupTarget {
     GpuPriorityForegroundDetection,
     MemoryPriorityMaster,
     MemoryPriorityForegroundDetection,
+    LaunchPriorityMaster,
     SmartTrimBehaviour,
     SmartTrimMonitoring,
     SmartTrimSafety,
@@ -13899,7 +14361,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             "processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores".to_string(),
         ],
         Page::ProcessPolicies => vec![
-            "process policies efficiency mode io priority watchdog terminate restart background foreground".to_string(),
+            "process policies efficiency mode io priority launch registry ifeo watchdog terminate restart background foreground".to_string(),
         ],
         Page::MemoryControl => vec![
             "memory control memory priority smarttrim ram trim working set standby list file cache paging background process".to_string(),
@@ -14029,6 +14491,14 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("memory_priority.foreground_default").to_string(),
             t!("memory_priority.exclusions_help").to_string(),
             "memory priority page priority ram paging working set very low low medium background foreground detection default exclusion".to_string(),
+        ],
+        Page::LaunchPriority => vec![
+            t!("launch_priority.intro_1").to_string(),
+            t!("launch_priority.intro_2").to_string(),
+            t!("launch_priority.intro_3").to_string(),
+            t!("launch_priority.enable").to_string(),
+            t!("launch_priority.rules_help").to_string(),
+            "launch priority ifeo registry perfoptions cpu io memory page priority executable startup process".to_string(),
         ],
         Page::SmartTrim => vec![
             t!("smart_trim.intro_1").to_string(),
@@ -17434,6 +17904,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::IoPriority => NavIcon::Chip,
         Page::GpuPriority => NavIcon::Chip,
         Page::MemoryPriority => NavIcon::Chip,
+        Page::LaunchPriority => NavIcon::Frame,
         Page::SmartTrim => NavIcon::Chip,
         Page::CpuAffinity => NavIcon::Chip,
         Page::ForegroundRules => NavIcon::Frame,
@@ -18754,6 +19225,9 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::MemoryPriority => {
             can_add_memory_priority_exclusion(&settings.memory_priority, process)
         }
+        SuggestionTarget::LaunchPriority => {
+            can_add_launch_priority_process(&settings.launch_priority, process)
+        }
         SuggestionTarget::TimerResolution => {
             can_add_timer_resolution_process(&settings.timer_resolution, process)
         }
@@ -18867,6 +19341,16 @@ fn can_add_memory_priority_exclusion(settings: &MemoryPrioritySettings, process:
         && !settings.contains_exclusion(process)
 }
 
+fn can_add_launch_priority_process(settings: &LaunchPrioritySettings, process: &str) -> bool {
+    let Some(process) = launch_priority::normalize_process_image_name(process) else {
+        return false;
+    };
+    !settings
+        .rules
+        .iter()
+        .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(&process))
+}
+
 fn can_add_timer_resolution_process(settings: &TimerResolutionSettings, process: &str) -> bool {
     let process = process.trim();
     !process.is_empty() && !settings.contains_rule_for(process)
@@ -18937,6 +19421,17 @@ fn new_timer_resolution_rule(process: &str, desired_100ns: u32) -> TimerResoluti
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
         desired_100ns,
+    }
+}
+
+fn new_launch_priority_rule(process: &str) -> LaunchPriorityRule {
+    LaunchPriorityRule {
+        enabled: true,
+        process_name: launch_priority::normalize_process_image_name(process)
+            .unwrap_or_else(|| process.trim().to_ascii_lowercase()),
+        cpu_priority: ProcessCpuPrioritySetting::Default,
+        io_priority: ProcessIoPrioritySetting::Default,
+        memory_priority: ProcessMemoryPrioritySetting::Low,
     }
 }
 
@@ -19150,6 +19645,21 @@ fn process_priority_label(priority: ProcessPriority) -> String {
         ProcessPriority::Normal => t!("responsiveness.priority_normal").to_string(),
         ProcessPriority::BelowNormal => t!("responsiveness.priority_below_normal").to_string(),
         ProcessPriority::Idle => t!("responsiveness.priority_idle").to_string(),
+    }
+}
+
+fn process_cpu_priority_setting_label(priority: ProcessCpuPrioritySetting) -> String {
+    match priority {
+        ProcessCpuPrioritySetting::Default => t!("launch_priority.priority_default").to_string(),
+        ProcessCpuPrioritySetting::High => t!("launch_priority.priority_high").to_string(),
+        ProcessCpuPrioritySetting::AboveNormal => {
+            t!("launch_priority.priority_above_normal").to_string()
+        }
+        ProcessCpuPrioritySetting::Normal => t!("launch_priority.priority_normal").to_string(),
+        ProcessCpuPrioritySetting::BelowNormal => {
+            t!("launch_priority.priority_below_normal").to_string()
+        }
+        ProcessCpuPrioritySetting::Idle => t!("launch_priority.priority_idle").to_string(),
     }
 }
 

@@ -18,6 +18,7 @@ mod ecoqos;
 mod foreground;
 mod gpu_priority;
 mod io_priority;
+mod launch_priority;
 mod memory_priority;
 mod performance_mode;
 mod power;

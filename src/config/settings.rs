@@ -40,6 +40,8 @@ pub struct Settings {
     #[serde(default)]
     pub memory_priority: MemoryPrioritySettings,
     #[serde(default)]
+    pub launch_priority: LaunchPrioritySettings,
+    #[serde(default)]
     pub smart_trim: SmartTrimSettings,
     #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
@@ -664,6 +666,26 @@ pub struct MemoryPrioritySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchPrioritySettings {
+    pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<LaunchPriorityRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchPriorityRule {
+    #[serde(default = "default_rule_enabled")]
+    pub enabled: bool,
+    pub process_name: String,
+    #[serde(default)]
+    pub cpu_priority: ProcessCpuPrioritySetting,
+    #[serde(default)]
+    pub io_priority: ProcessIoPrioritySetting,
+    #[serde(default)]
+    pub memory_priority: ProcessMemoryPrioritySetting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerResolutionSettings {
     pub enabled: bool,
     #[serde(default = "default_timer_resolution_100ns")]
@@ -880,6 +902,40 @@ impl From<ProcessMemoryPriority> for ProcessMemoryPrioritySetting {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessCpuPrioritySetting {
+    #[default]
+    Default,
+    High,
+    AboveNormal,
+    Normal,
+    BelowNormal,
+    Idle,
+}
+
+impl ProcessCpuPrioritySetting {
+    pub const ALL: [Self; 6] = [
+        Self::Default,
+        Self::High,
+        Self::AboveNormal,
+        Self::Normal,
+        Self::BelowNormal,
+        Self::Idle,
+    ];
+
+    pub const fn registry_value(self) -> Option<u32> {
+        match self {
+            Self::Default => None,
+            Self::Idle => Some(1),
+            Self::Normal => Some(2),
+            Self::High => Some(3),
+            Self::BelowNormal => Some(5),
+            Self::AboveNormal => Some(6),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PriorityRule {
     #[serde(default = "default_rule_enabled")]
@@ -1060,6 +1116,7 @@ impl Default for Settings {
             io_priority: IoPrioritySettings::default(),
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
+            launch_priority: LaunchPrioritySettings::default(),
             smart_trim: SmartTrimSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
         }
@@ -1547,6 +1604,15 @@ impl Default for MemoryPrioritySettings {
             foreground_priority: default_memory_priority_foreground(),
             background_priority: default_memory_priority_background(),
             exclusions: Vec::new(),
+        }
+    }
+}
+
+impl Default for LaunchPrioritySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rules: Vec::new(),
         }
     }
 }
