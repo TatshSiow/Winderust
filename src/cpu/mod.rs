@@ -30,6 +30,7 @@ use windows_sys::{
 pub struct CpuUsageSnapshot {
     pub percent: Option<f32>,
     pub frequency_mhz: Option<u32>,
+    pub base_frequency_mhz: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -71,16 +72,34 @@ struct CpuFrequencyCounter {
     performance_counter: Option<PDH_HCOUNTER>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CpuFrequencySample {
+    frequency_mhz: u32,
+    nominal_frequency_mhz: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessorPowerFrequencySample {
+    current_mhz: u32,
+    base_mhz: Option<u32>,
+}
+
 impl CpuUsageMonitor {
     pub fn sample(&mut self) -> CpuUsageSnapshot {
-        let frequency_mhz = self
-            .sample_live_cpu_frequency_mhz()
-            .or_else(read_processor_power_frequency_mhz);
+        let live_frequency = self.sample_live_cpu_frequency();
+        let processor_power_frequency = read_processor_power_frequency();
+        let frequency_mhz = live_frequency
+            .map(|sample| sample.frequency_mhz)
+            .or_else(|| processor_power_frequency.map(|sample| sample.current_mhz));
+        let base_frequency_mhz = live_frequency
+            .and_then(|sample| sample.nominal_frequency_mhz)
+            .or_else(|| processor_power_frequency.and_then(|sample| sample.base_mhz));
 
         let Some(current) = read_system_cpu_times() else {
             return CpuUsageSnapshot {
                 percent: None,
                 frequency_mhz,
+                base_frequency_mhz,
             };
         };
 
@@ -102,10 +121,11 @@ impl CpuUsageMonitor {
         CpuUsageSnapshot {
             percent,
             frequency_mhz,
+            base_frequency_mhz,
         }
     }
 
-    fn sample_live_cpu_frequency_mhz(&mut self) -> Option<u32> {
+    fn sample_live_cpu_frequency(&mut self) -> Option<CpuFrequencySample> {
         if self.frequency_counter.is_none() && !self.frequency_counter_unavailable {
             self.frequency_counter = CpuFrequencyCounter::open();
             self.frequency_counter_unavailable = self.frequency_counter.is_none();
@@ -162,21 +182,27 @@ impl CpuFrequencyCounter {
         })
     }
 
-    fn sample(&self) -> Option<u32> {
+    fn sample(&self) -> Option<CpuFrequencySample> {
         let status = unsafe { PdhCollectQueryData(self.query) };
         if status != 0 {
             return None;
         }
 
         let nominal_frequency_mhz = read_pdh_counter_double(self.frequency_counter);
+        let nominal_frequency_mhz_u32 = nominal_frequency_mhz.and_then(frequency_mhz_to_u32);
         let performance_percent = self.performance_counter.and_then(read_pdh_counter_double);
 
-        performance_percent
+        let frequency_mhz = performance_percent
             .zip(nominal_frequency_mhz)
             .and_then(|(performance_percent, nominal_frequency_mhz)| {
                 effective_frequency_mhz(nominal_frequency_mhz, performance_percent)
             })
-            .or_else(|| nominal_frequency_mhz.and_then(frequency_mhz_to_u32))
+            .or(nominal_frequency_mhz_u32)?;
+
+        Some(CpuFrequencySample {
+            frequency_mhz,
+            nominal_frequency_mhz: nominal_frequency_mhz_u32,
+        })
     }
 }
 
@@ -279,7 +305,7 @@ fn read_processor_cpu_times() -> Option<Vec<ProcessorCpuTimes>> {
     )
 }
 
-fn read_processor_power_frequency_mhz() -> Option<u32> {
+fn read_processor_power_frequency() -> Option<ProcessorPowerFrequencySample> {
     let processor_count = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1)
@@ -302,7 +328,7 @@ fn read_processor_power_frequency_mhz() -> Option<u32> {
         return None;
     }
 
-    average_current_processor_mhz(&records)
+    average_processor_power_frequency(&records)
 }
 
 fn read_pdh_counter_double(counter: PDH_HCOUNTER) -> Option<f64> {
@@ -342,19 +368,29 @@ fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(once(0)).collect()
 }
 
-fn average_current_processor_mhz(records: &[PROCESSOR_POWER_INFORMATION]) -> Option<u32> {
+fn average_processor_power_frequency(
+    records: &[PROCESSOR_POWER_INFORMATION],
+) -> Option<ProcessorPowerFrequencySample> {
     let mut total = 0u64;
     let mut count = 0u64;
+    let mut max_total = 0u64;
+    let mut max_count = 0u64;
 
     for record in records {
-        if record.CurrentMhz == 0 {
-            continue;
+        if record.CurrentMhz != 0 {
+            total = total.saturating_add(u64::from(record.CurrentMhz));
+            count += 1;
         }
-        total = total.saturating_add(u64::from(record.CurrentMhz));
-        count += 1;
+        if record.MaxMhz != 0 {
+            max_total = max_total.saturating_add(u64::from(record.MaxMhz));
+            max_count += 1;
+        }
     }
 
-    (count > 0).then_some((total / count) as u32)
+    (count > 0).then_some(ProcessorPowerFrequencySample {
+        current_mhz: (total / count) as u32,
+        base_mhz: (max_count > 0).then_some((max_total / max_count) as u32),
+    })
 }
 
 fn processor_usage_percent(previous: ProcessorCpuTimes, current: ProcessorCpuTimes) -> f32 {
@@ -410,19 +446,28 @@ mod tests {
         let records = [
             PROCESSOR_POWER_INFORMATION {
                 CurrentMhz: 3200,
+                MaxMhz: 5000,
                 ..Default::default()
             },
             PROCESSOR_POWER_INFORMATION {
                 CurrentMhz: 0,
+                MaxMhz: 0,
                 ..Default::default()
             },
             PROCESSOR_POWER_INFORMATION {
                 CurrentMhz: 3400,
+                MaxMhz: 5200,
                 ..Default::default()
             },
         ];
 
-        assert_eq!(average_current_processor_mhz(&records), Some(3300));
+        assert_eq!(
+            average_processor_power_frequency(&records),
+            Some(ProcessorPowerFrequencySample {
+                current_mhz: 3300,
+                base_mhz: Some(5100),
+            })
+        );
     }
 
     #[test]

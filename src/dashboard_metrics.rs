@@ -8,6 +8,7 @@ use windows_sys::Win32::{
         Ndis::{IfOperStatusUp, MediaConnectStateConnected},
     },
     System::{
+        ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION},
         SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
         Threading::{
             GetProcessIoCounters, OpenProcess, IO_COUNTERS, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -20,6 +21,7 @@ pub struct MemoryUsageSnapshot {
     pub percent: Option<f32>,
     pub used_physical_bytes: Option<u64>,
     pub total_physical_bytes: Option<u64>,
+    pub cached_physical_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -76,6 +78,7 @@ impl MemoryUsageMonitor {
             percent: Some(status.dwMemoryLoad.min(100) as f32),
             used_physical_bytes: Some(used_physical_bytes),
             total_physical_bytes: Some(total_physical_bytes),
+            cached_physical_bytes: system_cache_bytes(),
         }
     }
 }
@@ -170,6 +173,23 @@ fn system_memory_status() -> Option<MEMORYSTATUSEX> {
     (ok != 0).then_some(status)
 }
 
+fn system_cache_bytes() -> Option<u64> {
+    let mut info = PERFORMANCE_INFORMATION {
+        cb: std::mem::size_of::<PERFORMANCE_INFORMATION>() as u32,
+        ..Default::default()
+    };
+    let ok = unsafe { GetPerformanceInfo(&mut info, info.cb) };
+    if ok == 0 {
+        return None;
+    }
+
+    Some(cache_bytes_from_pages(info.SystemCache, info.PageSize))
+}
+
+fn cache_bytes_from_pages(page_count: usize, page_size: usize) -> u64 {
+    (page_count as u64).saturating_mul(page_size as u64)
+}
+
 fn read_system_io_counters() -> Option<IoCounterSample> {
     let mut read_bytes = 0u64;
     let mut write_bytes = 0u64;
@@ -254,4 +274,14 @@ fn network_counters_from_table(table: *const MIB_IF_TABLE2) -> Option<NetworkCou
         upload_bytes,
         sampled_at: Instant::now(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_bytes_from_pages_uses_page_size() {
+        assert_eq!(cache_bytes_from_pages(4, 4096), 16_384);
+    }
 }

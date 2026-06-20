@@ -118,8 +118,9 @@ const CPU_USAGE_HISTORY_LEN: usize = 30;
 const DASHBOARD_SUMMARY_CARD_HEIGHT: f32 = 196.0;
 const DASHBOARD_LINE_CHART_HEIGHT: f32 = 112.0;
 const DASHBOARD_LINE_CHART_TICK_MARGIN: usize = CPU_USAGE_HISTORY_LEN + 1;
-const DASHBOARD_IO_SPLIT_ITEM_WIDTH: f32 = 140.0;
-const DASHBOARD_IO_SPLIT_VALUE_WIDTH: f32 = 90.0;
+const DASHBOARD_PERCENT_CHART_MAX: f64 = 100.0;
+const DASHBOARD_SPLIT_ITEM_WIDTH: f32 = 140.0;
+const DASHBOARD_SPLIT_VALUE_WIDTH: f32 = 90.0;
 const CARD_ROW_HEIGHT: f32 = 58.0;
 const CORE_TILE_GRID_COLUMNS: usize = 8;
 const CORE_TILE_HEIGHT: f32 = 54.0;
@@ -303,6 +304,18 @@ impl PartialEq for ProcessCandidate {
 impl Eq for ProcessCandidate {}
 
 #[derive(Clone, Copy, Debug, Default)]
+struct CpuUsageHistorySample {
+    percent: f32,
+    frequency_mhz: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MemoryUsageHistorySample {
+    usage_percent: f32,
+    cache_percent: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 struct IoUsageHistorySample {
     read_bytes_per_second: f32,
     write_bytes_per_second: f32,
@@ -312,11 +325,6 @@ struct IoUsageHistorySample {
 struct NetworkUsageHistorySample {
     download_bytes_per_second: f32,
     upload_bytes_per_second: f32,
-}
-
-struct DashboardLinePoint {
-    tick: String,
-    value: f64,
 }
 
 struct DashboardDualLinePoint {
@@ -341,9 +349,9 @@ pub struct PowerLeafApp {
     current_plan: Option<PowerPlan>,
     activity: ActivitySnapshot,
     cpu_usage: CpuUsageSnapshot,
-    cpu_usage_history: VecDeque<f32>,
+    cpu_usage_history: VecDeque<CpuUsageHistorySample>,
     memory_usage: MemoryUsageSnapshot,
-    memory_usage_history: VecDeque<f32>,
+    memory_usage_history: VecDeque<MemoryUsageHistorySample>,
     io_usage: IoUsageSnapshot,
     io_usage_history: VecDeque<IoUsageHistorySample>,
     network_usage: NetworkUsageSnapshot,
@@ -2002,7 +2010,10 @@ impl PowerLeafApp {
             if self.cpu_usage_history.len() == CPU_USAGE_HISTORY_LEN {
                 self.cpu_usage_history.pop_front();
             }
-            self.cpu_usage_history.push_back(percent.clamp(0.0, 100.0));
+            self.cpu_usage_history.push_back(CpuUsageHistorySample {
+                percent: percent.clamp(0.0, 100.0),
+                frequency_mhz: self.cpu_usage.frequency_mhz,
+            });
             changed = true;
         }
         if let Some(percent) = self.memory_usage.percent {
@@ -2010,7 +2021,10 @@ impl PowerLeafApp {
                 self.memory_usage_history.pop_front();
             }
             self.memory_usage_history
-                .push_back(percent.clamp(0.0, 100.0));
+                .push_back(MemoryUsageHistorySample {
+                    usage_percent: percent.clamp(0.0, 100.0),
+                    cache_percent: memory_cache_percent(self.memory_usage).unwrap_or(0.0),
+                });
             changed = true;
         }
         if self.io_usage.bytes_per_second.is_some() {
@@ -4189,28 +4203,70 @@ impl PowerLeafApp {
     }
 
     fn render_cpu_usage_summary(&self) -> gpui::Div {
-        self.render_metric_summary(
-            "cpu",
+        let graph = self.render_cpu_history_graph("cpu", &self.cpu_usage_history);
+        let body = v_flex()
+            .w_full()
+            .h_full()
+            .min_w(px(0.0))
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .justify_end()
+            .child(dashboard_split_value_row([
+                dashboard_split_value(
+                    t!("dashboard.cpu_load").to_string(),
+                    cpu_usage_label(self.cpu_usage.percent),
+                    cpu_usage_color(),
+                ),
+                dashboard_split_value(
+                    t!("dashboard.cpu_frequency").to_string(),
+                    cpu_frequency_label(self.cpu_usage.frequency_mhz),
+                    cpu_frequency_color(),
+                ),
+            ]))
+            .child(graph);
+
+        dashboard_summary_card(
             t!("dashboard.cpu_usage").to_string(),
-            cpu_usage_label(self.cpu_usage.percent),
             Some(
-                dashboard_metric_detail_value(cpu_frequency_label(self.cpu_usage.frequency_mhz))
+                dashboard_summary_header_value(cpu_usage_label(self.cpu_usage.percent))
                     .into_any_element(),
             ),
-            &self.cpu_usage_history,
+            body.into_any_element(),
         )
     }
 
     fn render_memory_usage_summary(&self) -> gpui::Div {
-        self.render_metric_summary(
-            "memory",
+        let graph = self.render_memory_history_graph("memory", &self.memory_usage_history);
+        let body = v_flex()
+            .w_full()
+            .h_full()
+            .min_w(px(0.0))
+            .flex_1()
+            .min_h(px(0.0))
+            .gap_2()
+            .justify_end()
+            .child(dashboard_split_value_row([
+                dashboard_split_value(
+                    t!("dashboard.memory_used").to_string(),
+                    memory_usage_value_label(self.memory_usage),
+                    memory_usage_color(),
+                ),
+                dashboard_split_value(
+                    t!("dashboard.memory_cache").to_string(),
+                    memory_cache_value_label(self.memory_usage),
+                    memory_cache_color(),
+                ),
+            ]))
+            .child(graph);
+
+        dashboard_summary_card(
             t!("dashboard.memory_usage").to_string(),
-            memory_usage_label(self.memory_usage.percent),
             Some(
-                dashboard_metric_detail_value(memory_usage_value_label(self.memory_usage))
+                dashboard_summary_header_value(memory_usage_label(self.memory_usage.percent))
                     .into_any_element(),
             ),
-            &self.memory_usage_history,
+            body.into_any_element(),
         )
     }
 
@@ -4231,25 +4287,18 @@ impl PowerLeafApp {
                 .min_h(px(0.0))
                 .gap_2()
                 .justify_end()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .min_w(px(0.0))
-                        .items_center()
-                        .justify_center()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(io_usage_split_value(
-                            t!("dashboard.io_read").to_string(),
-                            self.io_usage.read_bytes_per_second,
-                            io_read_color(),
-                        ))
-                        .child(io_usage_split_value(
-                            t!("dashboard.io_write").to_string(),
-                            self.io_usage.write_bytes_per_second,
-                            io_write_color(),
-                        )),
-                )
+                .child(dashboard_split_value_row([
+                    io_usage_split_value(
+                        t!("dashboard.io_read").to_string(),
+                        self.io_usage.read_bytes_per_second,
+                        io_read_color(),
+                    ),
+                    io_usage_split_value(
+                        t!("dashboard.io_write").to_string(),
+                        self.io_usage.write_bytes_per_second,
+                        io_write_color(),
+                    ),
+                ]))
                 .child(graph)
                 .into_any_element(),
         )
@@ -4272,68 +4321,52 @@ impl PowerLeafApp {
                 .min_h(px(0.0))
                 .gap_2()
                 .justify_end()
-                .child(
-                    h_flex()
-                        .w_full()
-                        .min_w(px(0.0))
-                        .items_center()
-                        .justify_center()
-                        .gap_2()
-                        .flex_wrap()
-                        .child(io_usage_split_value(
-                            t!("dashboard.network_download").to_string(),
-                            self.network_usage.download_bytes_per_second,
-                            network_download_color(),
-                        ))
-                        .child(io_usage_split_value(
-                            t!("dashboard.network_upload").to_string(),
-                            self.network_usage.upload_bytes_per_second,
-                            network_upload_color(),
-                        )),
-                )
+                .child(dashboard_split_value_row([
+                    io_usage_split_value(
+                        t!("dashboard.network_download").to_string(),
+                        self.network_usage.download_bytes_per_second,
+                        network_download_color(),
+                    ),
+                    io_usage_split_value(
+                        t!("dashboard.network_upload").to_string(),
+                        self.network_usage.upload_bytes_per_second,
+                        network_upload_color(),
+                    ),
+                ]))
                 .child(graph)
                 .into_any_element(),
         )
     }
 
-    fn render_metric_summary(
+    fn render_cpu_history_graph(
         &self,
         graph_id: &'static str,
-        title: String,
-        label: String,
-        detail: Option<AnyElement>,
-        history: &VecDeque<f32>,
+        history: &VecDeque<CpuUsageHistorySample>,
     ) -> gpui::Div {
-        let graph = self.render_metric_history_graph(graph_id, history);
-        let mut body = v_flex()
-            .w_full()
-            .h_full()
-            .min_w(px(0.0))
-            .flex_1()
-            .min_h(px(0.0))
-            .gap_2()
-            .justify_end();
-        if let Some(detail) = detail {
-            body = body.child(detail);
-        }
-        body = body.child(graph);
-
-        dashboard_summary_card(
-            title,
-            Some(dashboard_summary_header_value(label).into_any_element()),
-            body.into_any_element(),
+        self.render_dual_line_history_graph(
+            graph_id,
+            dashboard_cpu_dual_line_points(history, self.cpu_usage.base_frequency_mhz),
+            cpu_usage_color(),
+            cpu_frequency_color(),
+            Some(DASHBOARD_PERCENT_CHART_MAX),
         )
     }
 
-    fn render_metric_history_graph(
+    fn render_memory_history_graph(
         &self,
         graph_id: &'static str,
-        history: &VecDeque<f32>,
+        history: &VecDeque<MemoryUsageHistorySample>,
     ) -> gpui::Div {
-        self.render_line_history_graph(
+        self.render_dual_line_history_graph(
             graph_id,
-            dashboard_line_points(history.iter().copied()),
-            rgb(accent_color()).into(),
+            dashboard_dual_line_points(
+                history
+                    .iter()
+                    .map(|sample| (sample.usage_percent, sample.cache_percent)),
+            ),
+            memory_usage_color(),
+            memory_cache_color(),
+            Some(DASHBOARD_PERCENT_CHART_MAX),
         )
     }
 
@@ -4351,6 +4384,7 @@ impl PowerLeafApp {
             ),
             io_read_color(),
             io_write_color(),
+            None,
         )
     }
 
@@ -4369,30 +4403,8 @@ impl PowerLeafApp {
             })),
             network_download_color(),
             network_upload_color(),
+            None,
         )
-    }
-
-    fn render_line_history_graph(
-        &self,
-        _graph_id: &'static str,
-        data: Vec<DashboardLinePoint>,
-        stroke: Hsla,
-    ) -> gpui::Div {
-        div()
-            .w_full()
-            .h(px(DASHBOARD_LINE_CHART_HEIGHT))
-            .min_w(px(0.0))
-            .px_1()
-            .py_1()
-            .child(
-                AreaChart::new(data)
-                    .x(|point: &DashboardLinePoint| point.tick.clone())
-                    .y(|point: &DashboardLinePoint| point.value)
-                    .stroke(stroke)
-                    .fill(gpui::transparent_black())
-                    .linear()
-                    .tick_margin(DASHBOARD_LINE_CHART_TICK_MARGIN),
-            )
     }
 
     fn render_dual_line_history_graph(
@@ -4401,26 +4413,34 @@ impl PowerLeafApp {
         data: Vec<DashboardDualLinePoint>,
         first_stroke: Hsla,
         second_stroke: Hsla,
+        scale_max: Option<f64>,
     ) -> gpui::Div {
+        let mut chart = AreaChart::new(data)
+            .x(|point: &DashboardDualLinePoint| point.tick.clone())
+            .y(|point: &DashboardDualLinePoint| point.first_value)
+            .stroke(first_stroke)
+            .fill(gpui::transparent_black())
+            .linear()
+            .y(|point: &DashboardDualLinePoint| point.second_value)
+            .stroke(second_stroke)
+            .fill(gpui::transparent_black())
+            .linear();
+
+        if let Some(scale_max) = scale_max {
+            chart = chart
+                .y(move |_point: &DashboardDualLinePoint| scale_max)
+                .stroke(gpui::transparent_black())
+                .fill(gpui::transparent_black())
+                .linear();
+        }
+
         div()
             .w_full()
             .h(px(DASHBOARD_LINE_CHART_HEIGHT))
             .min_w(px(0.0))
             .px_1()
             .py_1()
-            .child(
-                AreaChart::new(data)
-                    .x(|point: &DashboardDualLinePoint| point.tick.clone())
-                    .y(|point: &DashboardDualLinePoint| point.first_value)
-                    .stroke(first_stroke)
-                    .fill(gpui::transparent_black())
-                    .linear()
-                    .y(|point: &DashboardDualLinePoint| point.second_value)
-                    .stroke(second_stroke)
-                    .fill(gpui::transparent_black())
-                    .linear()
-                    .tick_margin(DASHBOARD_LINE_CHART_TICK_MARGIN),
-            )
+            .child(chart.tick_margin(DASHBOARD_LINE_CHART_TICK_MARGIN))
     }
 
     fn render_activity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -16711,28 +16731,22 @@ fn dashboard_summary_header_value(value: impl Into<SharedString>) -> gpui::Div {
         .child(value.into())
 }
 
-fn dashboard_metric_detail_value(value: impl Into<SharedString>) -> gpui::Div {
-    h_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .items_center()
-        .justify_center()
-        .text_size(px(TEXT_CAPTION_SIZE))
-        .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
-        .text_color(rgb(muted_text_color()))
-        .child(
-            h_flex()
-                .min_w(px(128.0))
-                .justify_center()
-                .child(value.into()),
-        )
+fn dashboard_split_value_row(items: [gpui::Div; 2]) -> gpui::Div {
+    items.into_iter().fold(
+        h_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .flex_wrap(),
+        |row, item| row.child(item),
+    )
 }
 
-fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui::Div {
-    let value = io_usage_label(value);
-
+fn dashboard_split_value(label: String, value: impl Into<SharedString>, color: Hsla) -> gpui::Div {
     h_flex()
-        .w(px(DASHBOARD_IO_SPLIT_ITEM_WIDTH))
+        .w(px(DASHBOARD_SPLIT_ITEM_WIDTH))
         .flex_shrink_0()
         .items_center()
         .justify_center()
@@ -16744,34 +16758,79 @@ fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui:
         .child(div().flex_shrink_0().whitespace_nowrap().child(label))
         .child(
             div()
-                .w(px(DASHBOARD_IO_SPLIT_VALUE_WIDTH))
+                .w(px(DASHBOARD_SPLIT_VALUE_WIDTH))
                 .flex_shrink_0()
                 .truncate()
                 .whitespace_nowrap()
-                .child(value),
+                .child(value.into()),
         )
 }
 
-fn dashboard_line_points(values: impl IntoIterator<Item = f32>) -> Vec<DashboardLinePoint> {
-    let values = values.into_iter().collect::<Vec<_>>();
+fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui::Div {
+    dashboard_split_value(label, io_usage_label(value), color)
+}
+
+fn dashboard_cpu_dual_line_points(
+    values: &VecDeque<CpuUsageHistorySample>,
+    base_frequency_mhz: Option<u32>,
+) -> Vec<DashboardDualLinePoint> {
     let sample_count = values.len().min(CPU_USAGE_HISTORY_LEN);
     let missing_samples = CPU_USAGE_HISTORY_LEN - sample_count;
     let start_index = values.len().saturating_sub(sample_count);
+    let visible_samples = values.iter().skip(start_index).collect::<Vec<_>>();
+    let base_frequency_mhz = base_frequency_mhz
+        .or_else(|| {
+            visible_samples
+                .iter()
+                .filter_map(|sample| sample.frequency_mhz)
+                .min()
+        })
+        .unwrap_or(0);
+    let peak_frequency_mhz = visible_samples
+        .iter()
+        .filter_map(|sample| sample.frequency_mhz)
+        .max()
+        .filter(|peak| *peak > base_frequency_mhz);
 
     (0..CPU_USAGE_HISTORY_LEN)
         .map(|index| {
-            let value = if index < missing_samples {
-                0.0
+            let sample = if index < missing_samples {
+                None
             } else {
-                values[start_index + index - missing_samples]
+                Some(values[start_index + index - missing_samples])
             };
 
-            DashboardLinePoint {
+            DashboardDualLinePoint {
                 tick: format!("sample-{index:02}"),
-                value: f64::from(value.max(0.0)),
+                first_value: f64::from(sample.map_or(0.0, |sample| sample.percent.max(0.0))),
+                second_value: f64::from(normalize_cpu_frequency_percent(
+                    sample.and_then(|sample| sample.frequency_mhz),
+                    base_frequency_mhz,
+                    peak_frequency_mhz,
+                )),
             }
         })
         .collect()
+}
+
+fn normalize_cpu_frequency_percent(
+    frequency_mhz: Option<u32>,
+    base_frequency_mhz: u32,
+    peak_frequency_mhz: Option<u32>,
+) -> f32 {
+    let Some(frequency_mhz) = frequency_mhz else {
+        return 0.0;
+    };
+    let Some(peak_frequency_mhz) = peak_frequency_mhz else {
+        return 0.0;
+    };
+    let range = peak_frequency_mhz.saturating_sub(base_frequency_mhz);
+    if range == 0 || frequency_mhz <= base_frequency_mhz {
+        return 0.0;
+    }
+
+    ((frequency_mhz.saturating_sub(base_frequency_mhz) as f32 / range as f32) * 100.0)
+        .clamp(0.0, 100.0)
 }
 
 fn dashboard_dual_line_points(
@@ -16799,19 +16858,43 @@ fn dashboard_dual_line_points(
         .collect()
 }
 
+fn cpu_usage_color() -> Hsla {
+    dashboard_primary_series_color()
+}
+
+fn cpu_frequency_color() -> Hsla {
+    dashboard_secondary_series_color()
+}
+
+fn memory_usage_color() -> Hsla {
+    dashboard_primary_series_color()
+}
+
+fn memory_cache_color() -> Hsla {
+    dashboard_secondary_series_color()
+}
+
 fn io_read_color() -> Hsla {
-    Hsla::from(rgb(accent_color())).lighten(0.16)
+    dashboard_primary_series_color()
 }
 
 fn io_write_color() -> Hsla {
-    Hsla::from(rgb(accent_color())).darken(0.18)
+    dashboard_secondary_series_color()
 }
 
 fn network_download_color() -> Hsla {
-    Hsla::from(rgb(accent_color())).lighten(0.16)
+    dashboard_primary_series_color()
 }
 
 fn network_upload_color() -> Hsla {
+    dashboard_secondary_series_color()
+}
+
+fn dashboard_primary_series_color() -> Hsla {
+    Hsla::from(rgb(accent_color())).lighten(0.16)
+}
+
+fn dashboard_secondary_series_color() -> Hsla {
     Hsla::from(rgb(accent_color())).darken(0.18)
 }
 
@@ -19338,6 +19421,30 @@ fn memory_usage_value_label(snapshot: MemoryUsageSnapshot) -> String {
     }
 }
 
+fn memory_cache_value_label(snapshot: MemoryUsageSnapshot) -> String {
+    snapshot
+        .cached_physical_bytes
+        .map(format_memory_capacity)
+        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+}
+
+fn memory_cache_percent(snapshot: MemoryUsageSnapshot) -> Option<f32> {
+    memory_bytes_percent(
+        snapshot.cached_physical_bytes,
+        snapshot.total_physical_bytes,
+    )
+}
+
+fn memory_bytes_percent(bytes: Option<u64>, total_bytes: Option<u64>) -> Option<f32> {
+    let bytes = bytes?;
+    let total_bytes = total_bytes?;
+    if total_bytes == 0 {
+        return None;
+    }
+
+    Some(((bytes as f64 / total_bytes as f64) * 100.0).clamp(0.0, 100.0) as f32)
+}
+
 fn io_usage_label(bytes_per_second: Option<f64>) -> String {
     bytes_per_second
         .map(format_bytes_per_second)
@@ -20713,6 +20820,38 @@ fn wide_nulls(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpu_frequency_graph_uses_base_clock_as_floor() {
+        assert_eq!(
+            normalize_cpu_frequency_percent(Some(3_000), 3_000, Some(5_000)),
+            0.0
+        );
+        assert_eq!(
+            normalize_cpu_frequency_percent(Some(4_000), 3_000, Some(5_000)),
+            50.0
+        );
+        assert_eq!(
+            normalize_cpu_frequency_percent(Some(5_500), 3_000, Some(5_000)),
+            100.0
+        );
+        assert_eq!(
+            normalize_cpu_frequency_percent(None, 3_000, Some(5_000)),
+            0.0
+        );
+        assert_eq!(
+            normalize_cpu_frequency_percent(Some(4_000), 3_000, None),
+            0.0
+        );
+    }
+
+    #[test]
+    fn memory_cache_percent_uses_total_memory_scale() {
+        assert_eq!(memory_bytes_percent(Some(4), Some(16)), Some(25.0));
+        assert_eq!(memory_bytes_percent(Some(32), Some(16)), Some(100.0));
+        assert_eq!(memory_bytes_percent(Some(4), Some(0)), None);
+        assert_eq!(memory_bytes_percent(None, Some(16)), None);
+    }
 
     #[test]
     fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
