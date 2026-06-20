@@ -27,6 +27,7 @@ use gpui::{
 use gpui_component::{
     animation::cubic_bezier,
     button::{Button, ButtonCustomVariant, ButtonVariants},
+    chart::AreaChart,
     description_list::DescriptionList,
     group_box::{GroupBox, GroupBoxVariants},
     h_flex,
@@ -112,9 +113,8 @@ const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_HISTORY_LEN: usize = 30;
 const DASHBOARD_SUMMARY_CARD_HEIGHT: f32 = 196.0;
-const DASHBOARD_CPU_GRAPH_HEIGHT: f32 = 112.0;
-const DASHBOARD_GRAPH_BAR_WIDTH: f32 = 5.0;
-const DASHBOARD_GRAPH_BAR_GAP: f32 = 4.0;
+const DASHBOARD_LINE_CHART_HEIGHT: f32 = 112.0;
+const DASHBOARD_LINE_CHART_TICK_MARGIN: usize = CPU_USAGE_HISTORY_LEN + 1;
 const DASHBOARD_IO_SPLIT_ITEM_WIDTH: f32 = 140.0;
 const DASHBOARD_IO_SPLIT_VALUE_WIDTH: f32 = 90.0;
 const CARD_ROW_HEIGHT: f32 = 58.0;
@@ -305,22 +305,21 @@ struct IoUsageHistorySample {
     write_bytes_per_second: f32,
 }
 
-impl IoUsageHistorySample {
-    fn total(self) -> f32 {
-        self.read_bytes_per_second + self.write_bytes_per_second
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
 struct NetworkUsageHistorySample {
     download_bytes_per_second: f32,
     upload_bytes_per_second: f32,
 }
 
-impl NetworkUsageHistorySample {
-    fn total(self) -> f32 {
-        self.download_bytes_per_second + self.upload_bytes_per_second
-    }
+struct DashboardLinePoint {
+    tick: String,
+    value: f64,
+}
+
+struct DashboardDualLinePoint {
+    tick: String,
+    first_value: f64,
+    second_value: f64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4194,7 +4193,6 @@ impl PowerLeafApp {
                     .into_any_element(),
             ),
             &self.cpu_usage_history,
-            100.0,
         )
     }
 
@@ -4208,18 +4206,11 @@ impl PowerLeafApp {
                     .into_any_element(),
             ),
             &self.memory_usage_history,
-            100.0,
         )
     }
 
     fn render_io_usage_summary(&self) -> gpui::Div {
-        let max_value = self
-            .io_usage_history
-            .iter()
-            .map(|sample| sample.total())
-            .fold(0.0_f32, f32::max)
-            .max(1.0);
-        let graph = self.render_io_history_graph("io", &self.io_usage_history, max_value);
+        let graph = self.render_io_history_graph("io", &self.io_usage_history);
 
         dashboard_summary_card(
             t!("dashboard.io_usage").to_string(),
@@ -4260,14 +4251,7 @@ impl PowerLeafApp {
     }
 
     fn render_network_usage_summary(&self) -> gpui::Div {
-        let max_value = self
-            .network_usage_history
-            .iter()
-            .map(|sample| sample.total())
-            .fold(0.0_f32, f32::max)
-            .max(1.0);
-        let graph =
-            self.render_network_history_graph("network", &self.network_usage_history, max_value);
+        let graph = self.render_network_history_graph("network", &self.network_usage_history);
 
         dashboard_summary_card(
             t!("dashboard.network_usage").to_string(),
@@ -4314,9 +4298,8 @@ impl PowerLeafApp {
         label: String,
         detail: Option<AnyElement>,
         history: &VecDeque<f32>,
-        max_value: f32,
     ) -> gpui::Div {
-        let graph = self.render_metric_history_graph(graph_id, history, max_value);
+        let graph = self.render_metric_history_graph(graph_id, history);
         let mut body = v_flex()
             .w_full()
             .h_full()
@@ -4341,161 +4324,98 @@ impl PowerLeafApp {
         &self,
         graph_id: &'static str,
         history: &VecDeque<f32>,
-        max_value: f32,
     ) -> gpui::Div {
-        let mut graph = h_flex()
-            .w_full()
-            .h(px(DASHBOARD_CPU_GRAPH_HEIGHT))
-            .items_center()
-            .justify_center()
-            .gap(px(DASHBOARD_GRAPH_BAR_GAP))
-            .px_2()
-            .py_2();
-
-        let missing_samples = CPU_USAGE_HISTORY_LEN.saturating_sub(history.len());
-        for _ in 0..missing_samples {
-            graph = graph.child(
-                v_flex()
-                    .h_full()
-                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
-                    .flex_shrink_0()
-                    .justify_end()
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(8.0))
-                            .bg(rgb(border_color()))
-                            .opacity(0.35),
-                    ),
-            );
-        }
-
-        let max_value = max_value.max(1.0);
-        for (index, value) in history.iter().enumerate() {
-            let bar_height = 8.0 + (value.clamp(0.0, max_value) / max_value) * 88.0;
-            graph = graph.child(
-                v_flex()
-                    .h_full()
-                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
-                    .flex_shrink_0()
-                    .justify_end()
-                    .child(animated_metric_history_bar(
-                        format!("dashboard-{graph_id}-bar-{index}"),
-                        bar_height,
-                        rgb(accent_color()).into(),
-                    )),
-            );
-        }
-
-        graph
+        self.render_line_history_graph(
+            graph_id,
+            dashboard_line_points(history.iter().copied()),
+            rgb(accent_color()).into(),
+        )
     }
 
     fn render_io_history_graph(
         &self,
         graph_id: &'static str,
         history: &VecDeque<IoUsageHistorySample>,
-        max_value: f32,
     ) -> gpui::Div {
-        let mut graph = h_flex()
-            .w_full()
-            .h(px(DASHBOARD_CPU_GRAPH_HEIGHT))
-            .items_center()
-            .justify_center()
-            .gap(px(DASHBOARD_GRAPH_BAR_GAP))
-            .px_2()
-            .py_2();
-
-        let missing_samples = CPU_USAGE_HISTORY_LEN.saturating_sub(history.len());
-        for _ in 0..missing_samples {
-            graph = graph.child(
-                v_flex()
-                    .h_full()
-                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
-                    .flex_shrink_0()
-                    .justify_end()
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(8.0))
-                            .bg(rgb(border_color()))
-                            .opacity(0.35),
-                    ),
-            );
-        }
-
-        let max_value = max_value.max(1.0);
-        for (index, sample) in history.iter().enumerate() {
-            let total = sample.total();
-            let bar_height = 8.0 + (total.clamp(0.0, max_value) / max_value) * 88.0;
-            graph = graph.child(
-                v_flex()
-                    .h_full()
-                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
-                    .flex_shrink_0()
-                    .justify_end()
-                    .child(io_stacked_history_bar(
-                        format!("dashboard-{graph_id}-bar-{index}"),
-                        *sample,
-                        bar_height,
-                    )),
-            );
-        }
-
-        graph
+        self.render_dual_line_history_graph(
+            graph_id,
+            dashboard_dual_line_points(
+                history
+                    .iter()
+                    .map(|sample| (sample.read_bytes_per_second, sample.write_bytes_per_second)),
+            ),
+            io_read_color(),
+            io_write_color(),
+        )
     }
 
     fn render_network_history_graph(
         &self,
         graph_id: &'static str,
         history: &VecDeque<NetworkUsageHistorySample>,
-        max_value: f32,
     ) -> gpui::Div {
-        let mut graph = h_flex()
+        self.render_dual_line_history_graph(
+            graph_id,
+            dashboard_dual_line_points(history.iter().map(|sample| {
+                (
+                    sample.download_bytes_per_second,
+                    sample.upload_bytes_per_second,
+                )
+            })),
+            network_download_color(),
+            network_upload_color(),
+        )
+    }
+
+    fn render_line_history_graph(
+        &self,
+        _graph_id: &'static str,
+        data: Vec<DashboardLinePoint>,
+        stroke: Hsla,
+    ) -> gpui::Div {
+        div()
             .w_full()
-            .h(px(DASHBOARD_CPU_GRAPH_HEIGHT))
-            .items_center()
-            .justify_center()
-            .gap(px(DASHBOARD_GRAPH_BAR_GAP))
-            .px_2()
-            .py_2();
+            .h(px(DASHBOARD_LINE_CHART_HEIGHT))
+            .min_w(px(0.0))
+            .px_1()
+            .py_1()
+            .child(
+                AreaChart::new(data)
+                    .x(|point: &DashboardLinePoint| point.tick.clone())
+                    .y(|point: &DashboardLinePoint| point.value)
+                    .stroke(stroke)
+                    .fill(gpui::transparent_black())
+                    .linear()
+                    .tick_margin(DASHBOARD_LINE_CHART_TICK_MARGIN),
+            )
+    }
 
-        let missing_samples = CPU_USAGE_HISTORY_LEN.saturating_sub(history.len());
-        for _ in 0..missing_samples {
-            graph = graph.child(
-                v_flex()
-                    .h_full()
-                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
-                    .flex_shrink_0()
-                    .justify_end()
-                    .child(
-                        div()
-                            .w_full()
-                            .h(px(8.0))
-                            .bg(rgb(border_color()))
-                            .opacity(0.35),
-                    ),
-            );
-        }
-
-        let max_value = max_value.max(1.0);
-        for (index, sample) in history.iter().enumerate() {
-            let total = sample.total();
-            let bar_height = 8.0 + (total.clamp(0.0, max_value) / max_value) * 88.0;
-            graph = graph.child(
-                v_flex()
-                    .h_full()
-                    .w(px(DASHBOARD_GRAPH_BAR_WIDTH))
-                    .flex_shrink_0()
-                    .justify_end()
-                    .child(network_stacked_history_bar(
-                        format!("dashboard-{graph_id}-bar-{index}"),
-                        *sample,
-                        bar_height,
-                    )),
-            );
-        }
-
-        graph
+    fn render_dual_line_history_graph(
+        &self,
+        _graph_id: &'static str,
+        data: Vec<DashboardDualLinePoint>,
+        first_stroke: Hsla,
+        second_stroke: Hsla,
+    ) -> gpui::Div {
+        div()
+            .w_full()
+            .h(px(DASHBOARD_LINE_CHART_HEIGHT))
+            .min_w(px(0.0))
+            .px_1()
+            .py_1()
+            .child(
+                AreaChart::new(data)
+                    .x(|point: &DashboardDualLinePoint| point.tick.clone())
+                    .y(|point: &DashboardDualLinePoint| point.first_value)
+                    .stroke(first_stroke)
+                    .fill(gpui::transparent_black())
+                    .linear()
+                    .y(|point: &DashboardDualLinePoint| point.second_value)
+                    .stroke(second_stroke)
+                    .fill(gpui::transparent_black())
+                    .linear()
+                    .tick_margin(DASHBOARD_LINE_CHART_TICK_MARGIN),
+            )
     }
 
     fn render_activity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -16668,100 +16588,51 @@ fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui:
         )
 }
 
-fn animated_metric_history_bar(
-    id: impl Into<SharedString>,
-    target_height: f32,
-    color: Hsla,
-) -> AnyElement {
-    let target_height = target_height.max(8.0);
-    let bar = div().w_full().h(px(target_height)).bg(color);
+fn dashboard_line_points(values: impl IntoIterator<Item = f32>) -> Vec<DashboardLinePoint> {
+    let values = values.into_iter().collect::<Vec<_>>();
+    let sample_count = values.len().min(CPU_USAGE_HISTORY_LEN);
+    let missing_samples = CPU_USAGE_HISTORY_LEN - sample_count;
+    let start_index = values.len().saturating_sub(sample_count);
 
-    with_optional_motion(
-        bar,
-        id,
-        MotionSpeed::Standard,
-        |bar| bar,
-        move |bar, delta| {
-            let height = 8.0 + (target_height - 8.0) * delta;
-            bar.h(px(height)).opacity(0.42 + 0.58 * delta)
-        },
-    )
+    (0..CPU_USAGE_HISTORY_LEN)
+        .map(|index| {
+            let value = if index < missing_samples {
+                0.0
+            } else {
+                values[start_index + index - missing_samples]
+            };
+
+            DashboardLinePoint {
+                tick: format!("sample-{index:02}"),
+                value: f64::from(value.max(0.0)),
+            }
+        })
+        .collect()
 }
 
-fn io_stacked_history_bar(
-    id: impl Into<SharedString>,
-    sample: IoUsageHistorySample,
-    bar_height: f32,
-) -> AnyElement {
-    let total = sample.total();
-    if total <= 0.0 {
-        return div()
-            .w_full()
-            .h(px(8.0))
-            .bg(rgb(border_color()))
-            .opacity(0.35)
-            .into_any_element();
-    }
+fn dashboard_dual_line_points(
+    values: impl IntoIterator<Item = (f32, f32)>,
+) -> Vec<DashboardDualLinePoint> {
+    let values = values.into_iter().collect::<Vec<_>>();
+    let sample_count = values.len().min(CPU_USAGE_HISTORY_LEN);
+    let missing_samples = CPU_USAGE_HISTORY_LEN - sample_count;
+    let start_index = values.len().saturating_sub(sample_count);
 
-    let read_height = bar_height * (sample.read_bytes_per_second / total);
-    let write_height = (bar_height - read_height).max(0.0);
-    let bar = v_flex()
-        .w_full()
-        .h(px(bar_height))
-        .overflow_hidden()
-        .child(div().w_full().h(px(write_height)).bg(io_write_color()))
-        .child(div().w_full().h(px(read_height)).bg(io_read_color()));
+    (0..CPU_USAGE_HISTORY_LEN)
+        .map(|index| {
+            let (first_value, second_value) = if index < missing_samples {
+                (0.0, 0.0)
+            } else {
+                values[start_index + index - missing_samples]
+            };
 
-    with_optional_motion(
-        bar,
-        id,
-        MotionSpeed::Standard,
-        |bar| bar,
-        |bar, delta| bar.opacity(0.42 + 0.58 * delta),
-    )
-}
-
-fn network_stacked_history_bar(
-    id: impl Into<SharedString>,
-    sample: NetworkUsageHistorySample,
-    bar_height: f32,
-) -> AnyElement {
-    let total = sample.total();
-    if total <= 0.0 {
-        return div()
-            .w_full()
-            .h(px(8.0))
-            .bg(rgb(border_color()))
-            .opacity(0.35)
-            .into_any_element();
-    }
-
-    let download_height = bar_height * (sample.download_bytes_per_second / total);
-    let upload_height = (bar_height - download_height).max(0.0);
-    let bar = v_flex()
-        .w_full()
-        .h(px(bar_height))
-        .overflow_hidden()
-        .child(
-            div()
-                .w_full()
-                .h(px(upload_height))
-                .bg(network_upload_color()),
-        )
-        .child(
-            div()
-                .w_full()
-                .h(px(download_height))
-                .bg(network_download_color()),
-        );
-
-    with_optional_motion(
-        bar,
-        id,
-        MotionSpeed::Standard,
-        |bar| bar,
-        |bar, delta| bar.opacity(0.42 + 0.58 * delta),
-    )
+            DashboardDualLinePoint {
+                tick: format!("sample-{index:02}"),
+                first_value: f64::from(first_value.max(0.0)),
+                second_value: f64::from(second_value.max(0.0)),
+            }
+        })
+        .collect()
 }
 
 fn io_read_color() -> Hsla {
