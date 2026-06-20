@@ -7,22 +7,22 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
-    System::{
-        RemoteDesktop::ProcessIdToSessionId,
-        Threading::{
-            GetCurrentProcessId, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_TERMINATE,
-        },
+    System::Threading::{
+        GetCurrentProcessId, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_TERMINATE,
     },
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{WatchdogAction, WatchdogRule, WatchdogSettings},
-    foreground::{list_processes, ProcessInfo},
+    foreground::{
+        is_process_exited_message, list_processes, process_name_key, process_session_id,
+        ProcessInfo,
+    },
     rules::{
         execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AppLifecycleActionBackend, AppMatcher, ExecutionFailureState,
+        AppLifecycleActionBackend, AppMatcher, ExecutionFailureTracker,
     },
 };
 
@@ -74,7 +74,7 @@ pub struct WatchdogSnapshot {
 pub struct WatchdogManager {
     restart_state: BTreeMap<String, RestartRuleState>,
     terminated_process_ids: BTreeSet<u32>,
-    failure_suppression: BTreeMap<String, WatchdogFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
 }
 
 #[derive(Default)]
@@ -82,8 +82,6 @@ struct RestartRuleState {
     seen_running: bool,
     missing_since: Option<Instant>,
 }
-
-type WatchdogFailureSuppression = ExecutionFailureState;
 
 #[derive(Default)]
 struct WatchdogFailures {
@@ -172,8 +170,7 @@ impl WatchdogManager {
             .filter(|rule| rule.enabled)
             .map(watchdog_rule_key)
             .collect::<BTreeSet<_>>();
-        self.failure_suppression
-            .retain(|key, _| active_rule_keys.contains(key));
+        self.failure_suppression.retain_keys(&active_rule_keys);
 
         let now = Instant::now();
         let mut matched_processes = 0;
@@ -358,14 +355,12 @@ impl WatchdogManager {
         skipped_processes: &mut usize,
         action_log: &mut ActionLog,
     ) -> bool {
-        let Some(suppression) = self.failure_suppression.get_mut(key) else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
+        let suppression = self.failure_suppression.key_suppression(key);
+        if !suppression.suppressed {
             return false;
         }
 
-        if suppression.mark_suppression_logged() {
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::Watchdog,
                 None,
@@ -384,12 +379,11 @@ impl WatchdogManager {
     }
 
     fn record_rule_failure(&mut self, key: &str) {
-        let suppression = self.failure_suppression.entry(key.to_owned()).or_default();
-        suppression.record_failure();
+        self.failure_suppression.record_key_failure(key);
     }
 
     fn clear_rule_failure(&mut self, key: &str) {
-        self.failure_suppression.remove(key);
+        self.failure_suppression.clear_key_failure(key);
     }
 }
 
@@ -581,17 +575,10 @@ fn terminate_process(process_id: u32) -> Result<(), WatchdogError> {
     }
 }
 
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
-}
-
 fn watchdog_rule_key(rule: &WatchdogRule) -> String {
     format!(
         "{}\0{}\0{}",
-        watchdog_rule_process_name(rule)
-            .unwrap_or_else(|_| rule.process_name.trim().to_ascii_lowercase()),
+        watchdog_rule_process_name(rule).unwrap_or_else(|_| process_name_key(&rule.process_name)),
         watchdog_launch_path_key(rule),
         rule.launch_args.join("\0")
     )
@@ -619,7 +606,7 @@ fn watchdog_rule_process_name(rule: &WatchdogRule) -> Result<String, String> {
         ));
     }
 
-    Ok(process_name.to_ascii_lowercase())
+    Ok(process_name_key(process_name))
 }
 
 fn normalize_watchdog_launch_path(value: &str) -> String {
@@ -673,16 +660,17 @@ impl ProcessHandle {
                 process_id,
             )
         };
-        if handle.is_null() && last_error() == ERROR_ACCESS_DENIED {
-            if crate::privilege::enable_debug_privilege() {
-                handle = unsafe {
-                    OpenProcess(
-                        PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-                        0,
-                        process_id,
-                    )
-                };
-            }
+        if handle.is_null()
+            && last_error() == ERROR_ACCESS_DENIED
+            && crate::privilege::enable_debug_privilege()
+        {
+            handle = unsafe {
+                OpenProcess(
+                    PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
+                    0,
+                    process_id,
+                )
+            };
         }
         if !handle.is_null() {
             Ok(Self(handle))
@@ -716,13 +704,6 @@ fn watchdog_error_message(error: &WatchdogError) -> String {
         WatchdogError::ProcessExited => "Process exited.".to_owned(),
         WatchdogError::Failed(message) => message.clone(),
     }
-}
-
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
 }
 
 fn last_error() -> u32 {

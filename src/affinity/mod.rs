@@ -9,7 +9,6 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
     System::{
-        RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::{
             GetLogicalProcessorInformationEx, GetSystemCpuSetInformation, RelationProcessorCore,
             GROUP_AFFINITY, LOGICAL_PROCESSOR_RELATIONSHIP, PROCESSOR_RELATIONSHIP,
@@ -29,10 +28,14 @@ use windows_sys::Win32::{
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings},
-    foreground::list_processes,
+    foreground::{
+        is_process_exited_message, list_processes, process_failure_key, process_id_matches_name,
+        process_names_by_id, process_session_id, should_ignore_foreground_process,
+        unique_app_names,
+    },
     rules::{
         execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AffinityPolicy, AppMatcher, AppResourceActionBackend, ExecutionFailureState,
+        AffinityPolicy, AppMatcher, AppResourceActionBackend, ExecutionFailureTracker,
         ExecutionSuppression,
     },
 };
@@ -110,7 +113,7 @@ struct CpuSetInformationHeader {
 
 pub struct CpuAffinityManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
-    failure_suppression: BTreeMap<String, CpuAffinityFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
     action_log_feature: ActionLogFeature,
 }
 
@@ -119,8 +122,6 @@ struct AdjustedProcess {
     process_name: String,
     adjustment: AffinityAdjustment,
 }
-
-type CpuAffinityFailureSuppression = ExecutionFailureState;
 
 #[derive(Clone)]
 enum AffinityAdjustment {
@@ -141,7 +142,7 @@ impl CpuAffinityManager {
     pub fn with_action_log_feature(action_log_feature: ActionLogFeature) -> Self {
         Self {
             adjusted: BTreeMap::new(),
-            failure_suppression: BTreeMap::new(),
+            failure_suppression: ExecutionFailureTracker::default(),
             action_log_feature,
         }
     }
@@ -214,10 +215,7 @@ impl CpuAffinityManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = processes
-            .iter()
-            .map(|process| (process.id, process.name.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if settings.exclude_foreground_app {
             foreground_process_id.and_then(|id| {
                 processes
@@ -233,7 +231,7 @@ impl CpuAffinityManager {
             if process.id == 0
                 || process.id == current_process_id
                 || should_ignore_foreground_process(
-                    settings,
+                    settings.exclude_foreground_app,
                     process.id,
                     &process.name,
                     foreground_process_id,
@@ -263,8 +261,7 @@ impl CpuAffinityManager {
             .values()
             .map(|(name, _)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
-        self.failure_suppression
-            .retain(|name, _| active_target_names.contains(name));
+        self.failure_suppression.retain_keys(&active_target_names);
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut failed_processes = self.release_non_targets(
@@ -431,12 +428,11 @@ impl CpuAffinityManager {
             if let Some(process) = self.adjusted.remove(process_id) {
                 let process_name = process.process_name.clone();
                 let adjustment = process.adjustment.clone();
-                let still_same_process = current_process_names.map_or(true, |names| {
-                    names
-                        .get(process_id)
-                        .is_some_and(|name| name.eq_ignore_ascii_case(&process.process_name))
-                });
-                if still_same_process {
+                if process_id_matches_name(
+                    current_process_names,
+                    *process_id,
+                    &process.process_name,
+                ) {
                     if let Err(err) = restore_affinity(*process_id, process) {
                         if matches!(&err, AffinityError::ProcessExited) {
                             continue;
@@ -472,18 +468,8 @@ impl CpuAffinityManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> ProcessSuppression {
-        let Some(suppression) = self
-            .failure_suppression
-            .get_mut(&process_failure_key(process_name))
-        else {
-            return ProcessSuppression::default();
-        };
-        if !suppression.is_suppressed() {
-            return ProcessSuppression::default();
-        }
-
-        let newly_suppressed = suppression.mark_suppression_logged();
-        if newly_suppressed {
+        let suppression = self.failure_suppression.process_suppression(process_name);
+        if suppression.newly_suppressed {
             action_log.record(
                 self.action_log_feature,
                 Some(process_id),
@@ -498,7 +484,7 @@ impl CpuAffinityManager {
             );
         }
 
-        ProcessSuppression::active(newly_suppressed)
+        suppression
     }
 
     #[cfg(test)]
@@ -513,16 +499,12 @@ impl CpuAffinityManager {
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
-        let suppression = self
-            .failure_suppression
-            .entry(process_failure_key(process_name))
-            .or_default();
-        suppression.record_failure();
+        self.failure_suppression
+            .record_process_failure(process_name);
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .remove(&process_failure_key(process_name));
+        self.failure_suppression.clear_process_failure(process_name);
     }
 
     fn feature_label(&self) -> &'static str {
@@ -549,7 +531,7 @@ impl Default for CpuAffinityManager {
     fn default() -> Self {
         Self {
             adjusted: BTreeMap::new(),
-            failure_suppression: BTreeMap::new(),
+            failure_suppression: ExecutionFailureTracker::default(),
             action_log_feature: ActionLogFeature::CoreSteering,
         }
     }
@@ -867,23 +849,6 @@ fn processor_kind(
     }
 }
 
-fn should_ignore_foreground_process(
-    settings: &CpuAffinitySettings,
-    process_id: u32,
-    process_name: &str,
-    foreground_process_id: Option<u32>,
-    foreground_process_name: Option<&str>,
-) -> bool {
-    settings.exclude_foreground_app
-        && (foreground_process_id.is_some_and(|id| id == process_id)
-            || foreground_process_name
-                .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
-}
-
-fn process_failure_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
-}
-
 fn matching_rule<'a>(
     settings: &'a CpuAffinitySettings,
     process_name: &str,
@@ -900,12 +865,6 @@ fn matching_rule<'a>(
 
 fn rule_has_target(rule: &CpuAffinityRule) -> bool {
     rule.mode == CpuAffinityMode::EfficiencyOff || rule.core_mask != 0
-}
-
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
 }
 
 enum AffinityError {
@@ -1181,13 +1140,6 @@ fn affinity_error_message(error: AffinityError) -> String {
     }
 }
 
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
-}
-
 fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
     PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
@@ -1280,15 +1232,6 @@ fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
     }
 
     ids
-}
-
-fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    names
-        .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| !name.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }
 
 struct ProcessHandle(HANDLE);
@@ -1651,25 +1594,27 @@ mod tests {
 
     #[test]
     fn foreground_skip_matches_pid_or_name() {
-        let mut settings = CpuAffinitySettings::default();
-        settings.exclude_foreground_app = true;
+        let mut settings = CpuAffinitySettings {
+            exclude_foreground_app: true,
+            ..Default::default()
+        };
 
         assert!(should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             42,
             "helper.exe",
             Some(42),
             Some("app.exe"),
         ));
         assert!(should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             99,
             "APP.EXE",
             Some(42),
             Some("app.exe"),
         ));
         assert!(!should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             99,
             "other.exe",
             Some(42),
@@ -1678,7 +1623,7 @@ mod tests {
 
         settings.exclude_foreground_app = false;
         assert!(!should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             42,
             "app.exe",
             Some(42),

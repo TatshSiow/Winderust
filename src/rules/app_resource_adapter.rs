@@ -7,6 +7,7 @@ use crate::{
         ForegroundBoostPriority, ForegroundResponsivenessSettings,
         ProcessPriority as ConfigPriority, Settings, WatchdogAction, WatchdogSettings,
     },
+    foreground::process_name_key,
     rules::{
         Action, AffinityPolicy, AppMatcher, Rule, RuleId, RuleProcessPriority, Trigger,
         PRIORITY_FOREGROUND_RESPONSIVENESS, PRIORITY_WATCHDOG,
@@ -53,8 +54,9 @@ pub fn cpu_limiter_rules(settings: &CpuLimiterSettings) -> Vec<Rule> {
                 return None;
             }
 
+            let process_key = process_name_key(process_name);
             Some(Rule {
-                id: RuleId(format!("cpu-limiter.{}", process_name.to_ascii_lowercase())),
+                id: RuleId(format!("cpu-limiter.{process_key}")),
                 name: format!("CPU limiter: {process_name}"),
                 enabled: true,
                 priority: crate::rules::PRIORITY_BACKGROUND_APP,
@@ -63,7 +65,7 @@ pub fn cpu_limiter_rules(settings: &CpuLimiterSettings) -> Vec<Rule> {
                     duration_secs: rule.sustain_seconds,
                 },
                 actions: vec![Action::SetAppCpuLimit {
-                    app: AppMatcher::ProcessName(process_name.to_ascii_lowercase()),
+                    app: AppMatcher::ProcessName(process_key),
                     logical_processor_percent: rule.max_logical_processors.min(100),
                 }],
                 restore_actions: Vec::new(),
@@ -92,7 +94,7 @@ pub fn eco_qos_rules(settings: &EcoQosSettings) -> Vec<Rule> {
                 .efficiency_whitelist
                 .iter()
                 .filter(|rule| rule.enabled)
-                .map(|rule| AppMatcher::ProcessName(rule.process_name.trim().to_ascii_lowercase()))
+                .map(|rule| AppMatcher::ProcessName(process_name_key(&rule.process_name)))
                 .collect(),
             prefer_efficiency_cores: settings.prefer_efficiency_cores,
             logical_processor_percent: (settings.cpu_restriction_percent < 100)
@@ -120,17 +122,15 @@ pub fn cpu_affinity_rules(settings: &CpuAffinitySettings) -> Vec<Rule> {
                 return None;
             }
 
-            let app = AppMatcher::ProcessName(process_name.to_ascii_lowercase());
+            let process_key = process_name_key(process_name);
+            let app = AppMatcher::ProcessName(process_key.clone());
             let affinity = match rule.mode {
                 CpuAffinityMode::Hard => AffinityPolicy::CustomMask(rule.core_mask),
                 CpuAffinityMode::Soft => AffinityPolicy::CpuSetMask(rule.core_mask),
                 CpuAffinityMode::EfficiencyOff => AffinityPolicy::DisableEfficiencyMode,
             };
             Some(Rule {
-                id: RuleId(format!(
-                    "cpu-affinity.{}",
-                    process_name.to_ascii_lowercase()
-                )),
+                id: RuleId(format!("cpu-affinity.{process_key}")),
                 name: format!("CPU affinity: {process_name}"),
                 enabled: true,
                 priority: crate::rules::PRIORITY_BACKGROUND_APP,
@@ -181,12 +181,10 @@ pub fn app_suspension_rules(settings: &AppSuspensionSettings) -> Vec<Rule> {
                 return None;
             }
 
-            let app = AppMatcher::ProcessName(process_name.to_ascii_lowercase());
+            let process_key = process_name_key(process_name);
+            let app = AppMatcher::ProcessName(process_key.clone());
             Some(Rule {
-                id: RuleId(format!(
-                    "app-suspension.{}",
-                    process_name.to_ascii_lowercase()
-                )),
+                id: RuleId(format!("app-suspension.{process_key}")),
                 name: format!("App suspension: {process_name}"),
                 enabled: true,
                 priority: crate::rules::PRIORITY_BACKGROUND_APP,
@@ -217,7 +215,8 @@ pub fn watchdog_rules(settings: &WatchdogSettings) -> Vec<Rule> {
                 return None;
             }
 
-            let app = AppMatcher::ProcessName(process_name.to_ascii_lowercase());
+            let process_key = process_name_key(process_name);
+            let app = AppMatcher::ProcessName(process_key.clone());
             let (trigger, actions) = match rule.action {
                 WatchdogAction::TerminateOnLaunch => (
                     Trigger::ProcessStarted { app: app.clone() },
@@ -237,7 +236,7 @@ pub fn watchdog_rules(settings: &WatchdogSettings) -> Vec<Rule> {
             };
 
             Some(Rule {
-                id: RuleId(format!("watchdog.{}", process_name.to_ascii_lowercase())),
+                id: RuleId(format!("watchdog.{process_key}")),
                 name: if rule.name.trim().is_empty() {
                     format!("Watchdog: {process_name}")
                 } else {
@@ -271,7 +270,7 @@ pub fn foreground_responsiveness_rules(
         if smart_efficiency_should_run(settings, total_cpu_usage_percent) {
             actions.push(Action::ConfigureBackgroundEfficiencyPolicy {
                 exclusions: foreground_app
-                    .map(|app| AppMatcher::ProcessName(app.trim().to_ascii_lowercase()))
+                    .map(|app| AppMatcher::ProcessName(process_name_key(app)))
                     .into_iter()
                     .collect(),
                 prefer_efficiency_cores: true,
@@ -286,7 +285,7 @@ pub fn foreground_responsiveness_rules(
                 .filter_map(|rule| {
                     let process_name = rule.process_name.trim();
                     (!process_name.is_empty()).then(|| Action::SetAppPriority {
-                        app: AppMatcher::ProcessName(process_name.to_ascii_lowercase()),
+                        app: AppMatcher::ProcessName(process_name_key(process_name)),
                         priority: map_process_priority(rule.priority),
                     })
                 }),
@@ -310,19 +309,17 @@ pub fn foreground_responsiveness_rules(
 
     if settings.boost_foreground_app {
         if let Some(app) = foreground_app.map(str::trim).filter(|app| !app.is_empty()) {
+            let app_key = process_name_key(app);
             rules.push(Rule {
-                id: RuleId(format!(
-                    "foreground-responsiveness.boost.{}",
-                    app.to_ascii_lowercase()
-                )),
+                id: RuleId(format!("foreground-responsiveness.boost.{app_key}")),
                 name: format!("Foreground Responsiveness boost: {app}"),
                 enabled: true,
                 priority: PRIORITY_FOREGROUND_RESPONSIVENESS,
                 trigger: Trigger::AppFocused {
-                    app: AppMatcher::ProcessName(app.to_ascii_lowercase()),
+                    app: AppMatcher::ProcessName(app_key.clone()),
                 },
                 actions: vec![Action::BoostForegroundPriority {
-                    app: AppMatcher::ProcessName(app.to_ascii_lowercase()),
+                    app: AppMatcher::ProcessName(app_key),
                     priority: map_foreground_boost_priority(
                         settings.foreground_boost,
                         total_cpu_usage_percent,
@@ -348,7 +345,7 @@ pub fn foreground_responsiveness_rules(
                 priority: PRIORITY_FOREGROUND_RESPONSIVENESS,
                 trigger: Trigger::ForegroundCpuPressure {
                     foreground: foreground_app
-                        .map(|app| AppMatcher::ProcessName(app.trim().to_ascii_lowercase()))
+                        .map(|app| AppMatcher::ProcessName(process_name_key(app)))
                         .unwrap_or_else(|| AppMatcher::Pattern("*".to_owned())),
                     total_cpu_above_percent: settings.auto_balance_total_threshold_percent.min(100),
                     background_process_above_percent: settings
@@ -719,34 +716,36 @@ mod tests {
 
     #[test]
     fn combined_app_resource_rules_include_migrated_feature_actions() {
-        let mut settings = Settings::default();
-        settings.foreground_responsiveness = ForegroundResponsivenessSettings {
-            enabled: true,
-            boost_foreground_app: true,
-            foreground_boost: ForegroundBoostPriority::AboveNormal,
+        let settings = Settings {
+            foreground_responsiveness: ForegroundResponsivenessSettings {
+                enabled: true,
+                boost_foreground_app: true,
+                foreground_boost: ForegroundBoostPriority::AboveNormal,
+                ..Default::default()
+            },
+            watchdog: WatchdogSettings {
+                enabled: true,
+                rules: vec![WatchdogRule {
+                    enabled: true,
+                    name: "Block".to_owned(),
+                    process_name: "tool.exe".to_owned(),
+                    action: WatchdogAction::TerminateOnLaunch,
+                    launch_path: String::new(),
+                    launch_args: Vec::new(),
+                    restart_delay_seconds: 5,
+                }],
+            },
+            cpu_affinity: CpuAffinitySettings {
+                enabled: true,
+                exclude_foreground_app: true,
+                rules: vec![CpuAffinityRule {
+                    enabled: true,
+                    mode: CpuAffinityMode::Hard,
+                    process_name: "worker.exe".to_owned(),
+                    core_mask: 0b11,
+                }],
+            },
             ..Default::default()
-        };
-        settings.watchdog = WatchdogSettings {
-            enabled: true,
-            rules: vec![WatchdogRule {
-                enabled: true,
-                name: "Block".to_owned(),
-                process_name: "tool.exe".to_owned(),
-                action: WatchdogAction::TerminateOnLaunch,
-                launch_path: String::new(),
-                launch_args: Vec::new(),
-                restart_delay_seconds: 5,
-            }],
-        };
-        settings.cpu_affinity = CpuAffinitySettings {
-            enabled: true,
-            exclude_foreground_app: true,
-            rules: vec![CpuAffinityRule {
-                enabled: true,
-                mode: CpuAffinityMode::Hard,
-                process_name: "worker.exe".to_owned(),
-                core_mask: 0b11,
-            }],
         };
 
         let rules = active_app_resource_rules_for_settings(&settings, Some("game.exe"), Some(90.0));
@@ -765,17 +764,19 @@ mod tests {
 
     #[test]
     fn combined_app_resource_rules_resolve_per_app_priority_conflicts() {
-        let mut settings = Settings::default();
-        settings.foreground_responsiveness = ForegroundResponsivenessSettings {
-            enabled: true,
-            lower_background_apps: true,
-            boost_foreground_app: true,
-            foreground_boost: ForegroundBoostPriority::AboveNormal,
-            rules: vec![PriorityRule {
+        let settings = Settings {
+            foreground_responsiveness: ForegroundResponsivenessSettings {
                 enabled: true,
-                process_name: "game.exe".to_owned(),
-                priority: ConfigPriority::BelowNormal,
-            }],
+                lower_background_apps: true,
+                boost_foreground_app: true,
+                foreground_boost: ForegroundBoostPriority::AboveNormal,
+                rules: vec![PriorityRule {
+                    enabled: true,
+                    process_name: "game.exe".to_owned(),
+                    priority: ConfigPriority::BelowNormal,
+                }],
+                ..Default::default()
+            },
             ..Default::default()
         };
 

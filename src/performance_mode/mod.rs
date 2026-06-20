@@ -1,13 +1,11 @@
 use std::collections::BTreeSet;
 
-use windows_sys::Win32::System::{
-    RemoteDesktop::ProcessIdToSessionId, Threading::GetCurrentProcessId,
-};
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings},
-    foreground::{list_processes, ProcessInfo},
+    foreground::{list_processes, process_session_id, ProcessInfo},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -349,12 +347,6 @@ fn performance_rule_name(rule: &PerformanceModeRule) -> String {
     } else {
         name.to_owned()
     }
-}
-
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
 }
 
 #[cfg(test)]

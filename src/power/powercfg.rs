@@ -23,10 +23,7 @@ impl PowerPlanManager {
         let mut plans = Vec::new();
         let mut index = 0;
 
-        loop {
-            let Some(guid) = enumerate_scheme_guid(index)? else {
-                break;
-            };
+        while let Some(guid) = enumerate_scheme_guid(index)? {
             let guid_text = format_guid(&guid);
             let name = read_scheme_name(&guid).unwrap_or_else(|_| guid_text.clone());
             let active = active_guid

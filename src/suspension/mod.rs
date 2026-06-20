@@ -36,7 +36,6 @@ use windows_sys::Win32::{
         JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, SetInformationJobObject,
         },
-        RemoteDesktop::ProcessIdToSessionId,
         Threading::{
             GetCurrentProcessId, OpenProcess, WaitForSingleObject,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE,
@@ -46,12 +45,15 @@ use windows_sys::Win32::{
 };
 
 use crate::config::AppSuspensionSettings;
-use crate::foreground::list_processes;
+use crate::foreground::{
+    is_process_exited_message, list_processes, process_name_key, process_session_id,
+    unique_app_names,
+};
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     rules::{
         execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AppMatcher, AppResourceActionBackend, ExecutionFailureState,
+        AppMatcher, AppResourceActionBackend, ExecutionFailureTracker,
     },
 };
 
@@ -111,8 +113,8 @@ pub struct AppSuspensionManager {
     suspended: BTreeMap<u32, SuspendedProcess>,
     freezers: BTreeMap<u32, ProcessFreezer>,
     temporary_thawed: BTreeMap<u32, TemporaryThaw>,
-    failure_suppression: BTreeMap<String, AppSuspensionFailureSuppression>,
-    action_failure_suppression: BTreeMap<String, AppSuspensionFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
+    action_failure_suppression: ExecutionFailureTracker,
     network_snapshot: NetworkConnectionSnapshot,
     network_wake_windows: BTreeMap<String, NetworkWakeWindow>,
     audio_wake_windows: BTreeMap<String, AudioWakeWindow>,
@@ -174,8 +176,6 @@ struct SuspendedProcess {
     process_name: String,
     suspended_since: Instant,
 }
-
-type AppSuspensionFailureSuppression = ExecutionFailureState;
 
 struct TemporaryThaw {
     process_name: String,
@@ -346,8 +346,7 @@ impl AppSuspensionManager {
             .values()
             .map(|name| process_name_key(name))
             .collect::<BTreeSet<_>>();
-        self.failure_suppression
-            .retain(|name, _| active_target_names.contains(name));
+        self.failure_suppression.retain_keys(&active_target_names);
         let mut active_action_failure_keys = BTreeSet::new();
         if settings.network_wake_enabled {
             active_action_failure_keys.insert(NETWORK_DETECTION_FAILURE_KEY.to_owned());
@@ -356,7 +355,7 @@ impl AppSuspensionManager {
             active_action_failure_keys.insert(AUDIO_DETECTION_FAILURE_KEY.to_owned());
         }
         self.action_failure_suppression
-            .retain(|key, _| active_action_failure_keys.contains(key));
+            .retain_keys(&active_action_failure_keys);
         failed_actions += self.release_non_targets(
             &target_ids,
             action_log,
@@ -1403,17 +1402,12 @@ impl AppSuspensionManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        let Some(suppression) = self
-            .failure_suppression
-            .get_mut(&process_name_key(process_name))
-        else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
+        let suppression = self.failure_suppression.process_suppression(process_name);
+        if !suppression.suppressed {
             return false;
         }
 
-        if suppression.mark_suppression_logged() {
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::AppSuspension,
                 Some(process_id),
@@ -1431,16 +1425,12 @@ impl AppSuspensionManager {
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
-        let suppression = self
-            .failure_suppression
-            .entry(process_name_key(process_name))
-            .or_default();
-        suppression.record_failure();
+        self.failure_suppression
+            .record_process_failure(process_name);
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .remove(&process_name_key(process_name));
+        self.failure_suppression.clear_process_failure(process_name);
     }
 
     fn is_action_suppressed(
@@ -1449,14 +1439,12 @@ impl AppSuspensionManager {
         action_label: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        let Some(suppression) = self.action_failure_suppression.get_mut(key) else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
+        let suppression = self.action_failure_suppression.key_suppression(key);
+        if !suppression.suppressed {
             return false;
         }
 
-        if suppression.mark_suppression_logged() {
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::AppSuspension,
                 None,
@@ -1474,15 +1462,11 @@ impl AppSuspensionManager {
     }
 
     fn record_action_failure(&mut self, key: &str) {
-        let suppression = self
-            .action_failure_suppression
-            .entry(key.to_owned())
-            .or_default();
-        suppression.record_failure();
+        self.action_failure_suppression.record_key_failure(key);
     }
 
     fn clear_action_failure(&mut self, key: &str) {
-        self.action_failure_suppression.remove(key);
+        self.action_failure_suppression.clear_key_failure(key);
     }
 }
 
@@ -1838,10 +1822,6 @@ fn eligible_network_wake_names(
         .collect()
 }
 
-fn process_name_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
-}
-
 fn manual_freeze_requests_by_name(process_names: &[String]) -> BTreeMap<String, usize> {
     let mut requests = BTreeMap::new();
     for process_name in process_names {
@@ -2023,7 +2003,7 @@ fn tcp4_data_stats(row: &MIB_TCPROW_LH) -> Option<NetworkActivityCounters> {
         )
     };
 
-    (status == NO_ERROR).then(|| NetworkActivityCounters {
+    (status == NO_ERROR).then_some(NetworkActivityCounters {
         bytes_in: rod.DataBytesIn,
         bytes_out: rod.DataBytesOut,
     })
@@ -2047,7 +2027,7 @@ fn tcp6_data_stats(row: &MIB_TCP6ROW) -> Option<NetworkActivityCounters> {
         )
     };
 
-    (status == NO_ERROR).then(|| NetworkActivityCounters {
+    (status == NO_ERROR).then_some(NetworkActivityCounters {
         bytes_in: rod.DataBytesIn,
         bytes_out: rod.DataBytesOut,
     })
@@ -2149,20 +2129,6 @@ fn table_rows<T: Copy>(buffer: &[u8]) -> Vec<T> {
         .collect()
 }
 
-fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    let mut unique = BTreeMap::new();
-    for name in names {
-        let trimmed = name.trim();
-        if !trimmed.is_empty() {
-            unique
-                .entry(trimmed.to_ascii_lowercase())
-                .or_insert_with(|| trimmed.to_owned());
-        }
-    }
-
-    unique.into_values().collect()
-}
-
 fn should_skip_foreground_process(
     process_id: u32,
     process_name: &str,
@@ -2172,12 +2138,6 @@ fn should_skip_foreground_process(
     process_id == foreground_process_id
         || foreground_process_name
             .is_some_and(|name| process_name_key(name) == process_name_key(process_name))
-}
-
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -2197,13 +2157,6 @@ fn suspension_error_message(error: SuspensionError) -> String {
         SuspensionError::Unsupported => "Windows Job Object freeze is unsupported.".to_owned(),
         SuspensionError::Failed(message) => message,
     }
-}
-
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
 }
 
 const JOB_OBJECT_FREEZE_INFORMATION_CLASS: i32 = 18;
@@ -2734,8 +2687,10 @@ mod tests {
     fn foreground_unknown_pauses_without_releasing_suspended_processes() {
         let mut manager = AppSuspensionManager::default();
         let mut log = ActionLog::new(8);
-        let mut settings = AppSuspensionSettings::default();
-        settings.enabled = true;
+        let settings = AppSuspensionSettings {
+            enabled: true,
+            ..Default::default()
+        };
         let now = Instant::now();
         manager.tracked.insert(
             6,
@@ -3131,9 +3086,11 @@ mod tests {
     #[test]
     fn network_wake_window_extends_until_quiet_or_cycle_cap() {
         let mut manager = AppSuspensionManager::default();
-        let mut settings = AppSuspensionSettings::default();
-        settings.network_wake_enabled = true;
-        settings.network_wake_duration_seconds = 10;
+        let settings = AppSuspensionSettings {
+            network_wake_enabled: true,
+            network_wake_duration_seconds: 10,
+            ..Default::default()
+        };
         let now = Instant::now();
         let names = BTreeSet::from(["chrome.exe".to_owned()]);
 
@@ -3170,9 +3127,11 @@ mod tests {
     #[test]
     fn audio_wake_window_extends_until_quiet() {
         let mut manager = AppSuspensionManager::default();
-        let mut settings = AppSuspensionSettings::default();
-        settings.audio_wake_enabled = true;
-        settings.audio_wake_duration_seconds = 10;
+        let settings = AppSuspensionSettings {
+            audio_wake_enabled: true,
+            audio_wake_duration_seconds: 10,
+            ..Default::default()
+        };
         let now = Instant::now();
         let names = BTreeSet::from(["music.exe".to_owned()]);
 

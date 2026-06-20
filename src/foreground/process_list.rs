@@ -2,13 +2,16 @@ use std::{collections::BTreeMap, ffi::OsString, os::windows::ffi::OsStringExt, p
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-    System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
-    },
-    System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+    System::{
+        Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+        RemoteDesktop::ProcessIdToSessionId,
+        Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        },
     },
 };
 
@@ -91,6 +94,87 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     }
 
     Ok(processes)
+}
+
+pub fn process_names_by_id(processes: &[ProcessInfo]) -> BTreeMap<u32, String> {
+    processes
+        .iter()
+        .map(|process| (process.id, process.name.clone()))
+        .collect()
+}
+
+pub fn process_session_id(process_id: u32) -> Option<u32> {
+    let mut session_id = 0;
+    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
+    (ok != 0).then_some(session_id)
+}
+
+pub fn process_id_matches_name(
+    current_process_names: Option<&BTreeMap<u32, String>>,
+    process_id: u32,
+    process_name: &str,
+) -> bool {
+    current_process_names.is_none_or(|names| {
+        names
+            .get(&process_id)
+            .is_some_and(|name| name.eq_ignore_ascii_case(process_name))
+    })
+}
+
+pub fn is_foreground_process(
+    process_id: u32,
+    process_name: &str,
+    foreground_process_id: Option<u32>,
+    foreground_process_name: Option<&str>,
+) -> bool {
+    Some(process_id) == foreground_process_id
+        || foreground_process_name
+            .is_some_and(|foreground| foreground.trim().eq_ignore_ascii_case(process_name.trim()))
+}
+
+pub fn should_ignore_foreground_process(
+    exclude_foreground_app: bool,
+    process_id: u32,
+    process_name: &str,
+    foreground_process_id: Option<u32>,
+    foreground_process_name: Option<&str>,
+) -> bool {
+    exclude_foreground_app
+        && (foreground_process_id.is_some_and(|id| id == process_id)
+            || foreground_process_name
+                .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
+}
+
+pub fn process_name_key(process_name: &str) -> String {
+    process_name.trim().to_ascii_lowercase()
+}
+
+pub fn process_failure_key(process_name: &str) -> String {
+    process_name_key(process_name)
+}
+
+pub fn is_process_exited_message(message: &str) -> bool {
+    message
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("Process exited")
+}
+
+pub fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
+    names
+        .map(process_name_key)
+        .filter(|name| !name.is_empty())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub fn process_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 process".to_owned()
+    } else {
+        format!("{count} processes")
+    }
 }
 
 fn process_name_from_entry(entry: &PROCESSENTRY32W) -> Option<String> {

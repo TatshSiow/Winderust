@@ -191,7 +191,7 @@ pub struct RuntimeProcessInfo {
     pub process_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RuntimeState {
     pub foreground_app: Option<RuntimeProcessInfo>,
     pub running_processes: Vec<RuntimeProcessInfo>,
@@ -206,46 +206,32 @@ pub struct RuntimeState {
 impl RuntimeState {
     pub fn apply_event(&mut self, event: DetectorEvent) {
         match event {
-            DetectorEvent::ForegroundChanged(process) => {
+            DetectorEvent::Foreground(process) => {
                 self.foreground_app = process;
             }
-            DetectorEvent::ProcessListChanged(processes) => {
+            DetectorEvent::ProcessList(processes) => {
                 self.running_processes = processes;
             }
-            DetectorEvent::CpuLoadChanged(percent) => {
+            DetectorEvent::CpuLoad(percent) => {
                 self.cpu_load_percent = Some(percent.clamp(0.0, 100.0));
             }
-            DetectorEvent::UserIdleChanged { idle_secs } => {
+            DetectorEvent::UserIdle { idle_secs } => {
                 self.user_idle_secs = Some(idle_secs);
             }
-            DetectorEvent::ActiveSchedulesChanged(schedule_ids) => {
+            DetectorEvent::ActiveSchedules(schedule_ids) => {
                 self.active_schedule_ids = schedule_ids;
             }
         }
     }
 }
 
-impl Default for RuntimeState {
-    fn default() -> Self {
-        Self {
-            foreground_app: None,
-            running_processes: Vec::new(),
-            cpu_load_percent: None,
-            user_idle_secs: None,
-            active_schedule_ids: Vec::new(),
-            active_rules: Vec::new(),
-            applied_actions: Vec::new(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DetectorEvent {
-    ForegroundChanged(Option<RuntimeProcessInfo>),
-    ProcessListChanged(Vec<RuntimeProcessInfo>),
-    CpuLoadChanged(f32),
-    UserIdleChanged { idle_secs: u64 },
-    ActiveSchedulesChanged(Vec<String>),
+    Foreground(Option<RuntimeProcessInfo>),
+    ProcessList(Vec<RuntimeProcessInfo>),
+    CpuLoad(f32),
+    UserIdle { idle_secs: u64 },
+    ActiveSchedules(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -479,15 +465,13 @@ mod tests {
     fn runtime_state_applies_detector_events() {
         let mut state = RuntimeState::default();
 
-        state.apply_event(DetectorEvent::ForegroundChanged(Some(RuntimeProcessInfo {
+        state.apply_event(DetectorEvent::Foreground(Some(RuntimeProcessInfo {
             process_id: 42,
             process_name: "editor.exe".to_owned(),
         })));
-        state.apply_event(DetectorEvent::CpuLoadChanged(120.0));
-        state.apply_event(DetectorEvent::UserIdleChanged { idle_secs: 15 });
-        state.apply_event(DetectorEvent::ActiveSchedulesChanged(vec![
-            "night".to_owned()
-        ]));
+        state.apply_event(DetectorEvent::CpuLoad(120.0));
+        state.apply_event(DetectorEvent::UserIdle { idle_secs: 15 });
+        state.apply_event(DetectorEvent::ActiveSchedules(vec!["night".to_owned()]));
 
         assert_eq!(
             state

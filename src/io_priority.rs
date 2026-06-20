@@ -2,20 +2,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
-    System::{
-        RemoteDesktop::ProcessIdToSessionId,
-        Threading::{
-            GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION,
-        },
+    System::Threading::{
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_INFORMATION,
     },
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{IoPrioritySettings, ProcessIoPriority},
-    foreground::list_processes,
-    rules::{execution_failure_suppression_threshold, ExecutionFailureState},
+    foreground::{
+        is_foreground_process, is_process_exited_message, list_processes, process_count_label,
+        process_failure_key, process_names_by_id, process_session_id, unique_app_names,
+    },
+    rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
 const PROCESS_IO_PRIORITY: u32 = 33;
@@ -56,10 +56,8 @@ pub struct IoPrioritySnapshot {
 #[derive(Default)]
 pub struct IoPriorityManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
-    failure_suppression: BTreeMap<String, IoPriorityFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
 }
-
-type IoPriorityFailureSuppression = ExecutionFailureState;
 
 #[derive(Clone)]
 struct AdjustedProcess {
@@ -147,10 +145,7 @@ impl IoPriorityManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = processes
-            .iter()
-            .map(|process| (process.id, process.name.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
             foreground_process_id.and_then(|id| {
                 processes
@@ -194,8 +189,7 @@ impl IoPriorityManager {
             .values()
             .map(|(name, _priority)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
-        self.failure_suppression
-            .retain(|process_name, _| active_target_names.contains(process_name));
+        self.failure_suppression.retain_keys(&active_target_names);
 
         let mut failures = self.release_non_targets(
             &target_ids,
@@ -391,17 +385,12 @@ impl IoPriorityManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        let Some(suppression) = self
-            .failure_suppression
-            .get_mut(&process_failure_key(process_name))
-        else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
+        let suppression = self.failure_suppression.process_suppression(process_name);
+        if !suppression.suppressed {
             return false;
         }
 
-        if suppression.mark_suppression_logged() {
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::IoPriority,
                 Some(process_id),
@@ -419,16 +408,12 @@ impl IoPriorityManager {
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
-        let suppression = self
-            .failure_suppression
-            .entry(process_failure_key(process_name))
-            .or_default();
-        suppression.record_failure();
+        self.failure_suppression
+            .record_process_failure(process_name);
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .remove(&process_failure_key(process_name));
+        self.failure_suppression.clear_process_failure(process_name);
     }
 }
 
@@ -606,55 +591,10 @@ fn io_priority_apply_summary_message(count: usize) -> String {
     format!("Applied I/O priority to {}.", process_count_label(count))
 }
 
-fn process_count_label(count: usize) -> String {
-    if count == 1 {
-        "1 process".to_owned()
-    } else {
-        format!("{count} processes")
-    }
-}
-
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
-}
-
-fn process_failure_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
-}
-
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
-}
-
-fn is_foreground_process(
-    process_id: u32,
-    process_name: &str,
-    foreground_process_id: Option<u32>,
-    foreground_process_name: Option<&str>,
-) -> bool {
-    Some(process_id) == foreground_process_id
-        || foreground_process_name
-            .is_some_and(|foreground| foreground.trim().eq_ignore_ascii_case(process_name.trim()))
-}
-
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     BUILT_IN_EXCLUSIONS
         .iter()
         .any(|excluded| excluded.eq_ignore_ascii_case(process_name.trim()))
-}
-
-fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    names
-        .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| !name.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }
 
 fn last_error() -> u32 {

@@ -2,6 +2,18 @@
 
 use crate::rules::{Action, AffinityPolicy, AppMatcher, RuleProcessPriority};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessorPowerValueSet {
+    pub ac_core_parking_min_percent: u8,
+    pub ac_performance_min_percent: u8,
+    pub ac_performance_max_percent: u8,
+    pub ac_boost_mode: u32,
+    pub dc_core_parking_min_percent: u8,
+    pub dc_performance_min_percent: u8,
+    pub dc_performance_max_percent: u8,
+    pub dc_boost_mode: u32,
+}
+
 pub trait PowerPlanActionBackend {
     fn active_power_plan_guid(&mut self) -> Result<Option<String>, String>;
     fn set_active_power_plan(&mut self, plan_guid: &str) -> Result<(), String>;
@@ -14,14 +26,7 @@ pub trait PowerPlanActionBackend {
     fn set_processor_power_values(
         &mut self,
         plan_guid: &str,
-        ac_core_parking_min_percent: u8,
-        ac_performance_min_percent: u8,
-        ac_performance_max_percent: u8,
-        ac_boost_mode: u32,
-        dc_core_parking_min_percent: u8,
-        dc_performance_min_percent: u8,
-        dc_performance_max_percent: u8,
-        dc_boost_mode: u32,
+        values: ProcessorPowerValueSet,
     ) -> Result<(), String>;
 }
 
@@ -173,14 +178,16 @@ impl ActionExecutor {
                 dc_boost_mode,
             } => match backend.set_processor_power_values(
                 plan_guid,
-                *ac_core_parking_min_percent,
-                *ac_performance_min_percent,
-                *ac_performance_max_percent,
-                *ac_boost_mode,
-                *dc_core_parking_min_percent,
-                *dc_performance_min_percent,
-                *dc_performance_max_percent,
-                *dc_boost_mode,
+                ProcessorPowerValueSet {
+                    ac_core_parking_min_percent: *ac_core_parking_min_percent,
+                    ac_performance_min_percent: *ac_performance_min_percent,
+                    ac_performance_max_percent: *ac_performance_max_percent,
+                    ac_boost_mode: *ac_boost_mode,
+                    dc_core_parking_min_percent: *dc_core_parking_min_percent,
+                    dc_performance_min_percent: *dc_performance_min_percent,
+                    dc_performance_max_percent: *dc_performance_max_percent,
+                    dc_boost_mode: *dc_boost_mode,
+                },
             ) {
                 Ok(()) => ActionExecution::Applied,
                 Err(err) => ActionExecution::Failed(err),
@@ -429,26 +436,9 @@ mod tests {
         fn set_processor_power_values(
             &mut self,
             plan_guid: &str,
-            ac_core_parking_min_percent: u8,
-            ac_performance_min_percent: u8,
-            ac_performance_max_percent: u8,
-            ac_boost_mode: u32,
-            dc_core_parking_min_percent: u8,
-            dc_performance_min_percent: u8,
-            dc_performance_max_percent: u8,
-            dc_boost_mode: u32,
+            values: ProcessorPowerValueSet,
         ) -> Result<(), String> {
-            self.power.set_processor_power_values(
-                plan_guid,
-                ac_core_parking_min_percent,
-                ac_performance_min_percent,
-                ac_performance_max_percent,
-                ac_boost_mode,
-                dc_core_parking_min_percent,
-                dc_performance_min_percent,
-                dc_performance_max_percent,
-                dc_boost_mode,
-            )
+            self.power.set_processor_power_values(plan_guid, values)
         }
     }
 
@@ -661,20 +651,21 @@ mod tests {
         fn set_processor_power_values(
             &mut self,
             plan_guid: &str,
-            ac_core_parking_min_percent: u8,
-            ac_performance_min_percent: u8,
-            ac_performance_max_percent: u8,
-            ac_boost_mode: u32,
-            dc_core_parking_min_percent: u8,
-            dc_performance_min_percent: u8,
-            dc_performance_max_percent: u8,
-            dc_boost_mode: u32,
+            values: ProcessorPowerValueSet,
         ) -> Result<(), String> {
             if let Some(err) = self.set_error.clone() {
                 Err(err)
             } else {
                 self.set_calls.push(format!(
-                    "processor-power:{plan_guid}:{ac_core_parking_min_percent}:{ac_performance_min_percent}:{ac_performance_max_percent}:{ac_boost_mode}:{dc_core_parking_min_percent}:{dc_performance_min_percent}:{dc_performance_max_percent}:{dc_boost_mode}"
+                    "processor-power:{plan_guid}:{}:{}:{}:{}:{}:{}:{}:{}",
+                    values.ac_core_parking_min_percent,
+                    values.ac_performance_min_percent,
+                    values.ac_performance_max_percent,
+                    values.ac_boost_mode,
+                    values.dc_core_parking_min_percent,
+                    values.dc_performance_min_percent,
+                    values.dc_performance_max_percent,
+                    values.dc_boost_mode
                 ));
                 Ok(())
             }

@@ -7,23 +7,25 @@ use windows_sys::Win32::{
     Foundation::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
     },
-    System::{
-        RemoteDesktop::ProcessIdToSessionId,
-        Threading::{
-            GetCurrentProcessId, GetProcessAffinityMask, GetProcessTimes, OpenProcess,
-            SetProcessAffinityMask, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION,
-        },
+    System::Threading::{
+        GetCurrentProcessId, GetProcessAffinityMask, GetProcessTimes, OpenProcess,
+        SetProcessAffinityMask, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_INFORMATION,
     },
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{CpuLimiterRule, CpuLimiterSettings},
-    foreground::list_processes,
+    cpu::{process_cpu_usage_percent, ProcessCpuSample},
+    foreground::{
+        is_process_exited_message, list_processes, process_failure_key, process_id_matches_name,
+        process_names_by_id, process_session_id, should_ignore_foreground_process,
+        unique_app_names,
+    },
     rules::{
         execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AppMatcher, AppResourceActionBackend, ExecutionFailureState,
+        AppMatcher, AppResourceActionBackend, ExecutionFailureTracker,
     },
 };
 
@@ -72,7 +74,7 @@ pub struct CpuLimiterSnapshot {
 pub struct CpuLimiterManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     limited: BTreeMap<u32, LimitedProcess>,
-    failure_suppression: BTreeMap<String, CpuLimiterFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
 }
 
 #[derive(Clone)]
@@ -88,14 +90,6 @@ struct LimitedProcess {
     process_name: String,
     previous_affinity: usize,
     applied_affinity: usize,
-}
-
-type CpuLimiterFailureSuppression = ExecutionFailureState;
-
-#[derive(Clone, Copy)]
-struct ProcessCpuSample {
-    cpu_time_100ns: u64,
-    sampled_at: Instant,
 }
 
 impl CpuLimiterManager {
@@ -169,10 +163,7 @@ impl CpuLimiterManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = processes
-            .iter()
-            .map(|process| (process.id, process.name.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if settings.exclude_foreground_app {
             foreground_process_id.and_then(|id| {
                 processes
@@ -190,7 +181,7 @@ impl CpuLimiterManager {
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
                 || should_ignore_foreground_process(
-                    settings,
+                    settings.exclude_foreground_app,
                     process.id,
                     &process.name,
                     foreground_process_id,
@@ -225,8 +216,7 @@ impl CpuLimiterManager {
             .values()
             .map(|(name, _rule)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
-        self.failure_suppression
-            .retain(|name, _| active_target_names.contains(name));
+        self.failure_suppression.retain_keys(&active_target_names);
         let mut failures = self.release_non_targets(
             &target_ids,
             &current_process_names,
@@ -425,12 +415,11 @@ impl CpuLimiterManager {
         for process_id in process_ids {
             if let Some(process) = self.limited.remove(process_id) {
                 let process_name = process.process_name.clone();
-                let still_same_process = current_process_names.map_or(true, |names| {
-                    names
-                        .get(process_id)
-                        .is_some_and(|name| name.eq_ignore_ascii_case(&process.process_name))
-                });
-                if still_same_process {
+                if process_id_matches_name(
+                    current_process_names,
+                    *process_id,
+                    &process.process_name,
+                ) {
                     if let Err(err) = restore_affinity(*process_id, process) {
                         if !matches!(err, CpuLimiterError::ProcessExited) {
                             failures.record_error(
@@ -463,17 +452,12 @@ impl CpuLimiterManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        let Some(suppression) = self
-            .failure_suppression
-            .get_mut(&process_failure_key(process_name))
-        else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
+        let suppression = self.failure_suppression.process_suppression(process_name);
+        if !suppression.suppressed {
             return false;
         }
 
-        if suppression.mark_suppression_logged() {
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::CpuLimiter,
                 Some(process_id),
@@ -491,16 +475,12 @@ impl CpuLimiterManager {
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
-        let suppression = self
-            .failure_suppression
-            .entry(process_failure_key(process_name))
-            .or_default();
-        suppression.record_failure();
+        self.failure_suppression
+            .record_process_failure(process_name);
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .remove(&process_failure_key(process_name));
+        self.failure_suppression.clear_process_failure(process_name);
     }
 }
 
@@ -546,23 +526,6 @@ fn matching_rule<'a>(
                 .trim()
                 .eq_ignore_ascii_case(process_name.trim())
     })
-}
-
-fn should_ignore_foreground_process(
-    settings: &CpuLimiterSettings,
-    process_id: u32,
-    process_name: &str,
-    foreground_process_id: Option<u32>,
-    foreground_process_name: Option<&str>,
-) -> bool {
-    settings.exclude_foreground_app
-        && (foreground_process_id.is_some_and(|id| id == process_id)
-            || foreground_process_name
-                .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
-}
-
-fn process_failure_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
 }
 
 fn limited_affinity_mask(
@@ -710,32 +673,9 @@ fn restore_affinity(process_id: u32, process_state: LimitedProcess) -> Result<()
     process.set_affinity_mask(process_state.previous_affinity)
 }
 
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
-}
-
 fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, CpuLimiterError> {
     let process = ProcessHandle::open_query(process_id)?;
     process.cpu_sample()
-}
-
-fn process_cpu_usage_percent(previous: ProcessCpuSample, current: ProcessCpuSample) -> Option<f32> {
-    let elapsed = current.sampled_at.duration_since(previous.sampled_at);
-    let elapsed_100ns = elapsed.as_nanos() / 100;
-    if elapsed_100ns == 0 {
-        return None;
-    }
-
-    let cpu_delta = current
-        .cpu_time_100ns
-        .saturating_sub(previous.cpu_time_100ns) as f64;
-    let processor_count = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .max(1) as f64;
-    Some(((cpu_delta / (elapsed_100ns as f64 * processor_count)) * 100.0).clamp(0.0, 100.0) as f32)
 }
 
 enum CpuLimiterError {
@@ -814,28 +754,12 @@ fn process_failure_message(
     format!("{action} {process_name} ({process_id}): {message}")
 }
 
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
-}
-
 fn cpu_limiter_error_message(error: &CpuLimiterError) -> String {
     match error {
         CpuLimiterError::AccessDenied => "Access denied.".to_owned(),
         CpuLimiterError::ProcessExited => "Process exited.".to_owned(),
         CpuLimiterError::Failed(message) => message.clone(),
     }
-}
-
-fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    names
-        .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| !name.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }
 
 struct ProcessHandle(HANDLE);
@@ -981,21 +905,21 @@ mod tests {
         };
 
         assert!(should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             42,
             "helper.exe",
             Some(42),
             Some("app.exe"),
         ));
         assert!(should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             99,
             "APP.EXE",
             Some(42),
             Some("app.exe"),
         ));
         assert!(!should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             99,
             "other.exe",
             Some(42),

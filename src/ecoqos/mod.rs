@@ -12,7 +12,6 @@ use windows_sys::Win32::{
         ERROR_NOT_SUPPORTED, HANDLE,
     },
     System::{
-        RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION},
         Threading::{
             GetCurrentProcessId, GetPriorityClass, GetProcessAffinityMask,
@@ -33,10 +32,13 @@ use crate::{
         EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode,
         EcoQosCpuRestrictionStrategy, EcoQosSettings,
     },
-    foreground::list_processes,
+    foreground::{
+        is_process_exited_message, list_processes, process_failure_key, process_session_id,
+        should_ignore_foreground_process,
+    },
     rules::{
         execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AffinityPolicy, AppMatcher, AppResourceActionBackend, ExecutionFailureState,
+        AffinityPolicy, AppMatcher, AppResourceActionBackend, ExecutionFailureTracker,
         ExecutionSuppression,
     },
 };
@@ -119,7 +121,7 @@ pub struct EcoQosSnapshot {
 #[derive(Default)]
 pub struct EcoQosManager {
     throttled: BTreeMap<u32, ThrottledProcess>,
-    failure_suppression: BTreeMap<String, EcoQosFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
 }
 
 struct ThrottledProcess {
@@ -131,8 +133,6 @@ struct ThrottledProcess {
     previous_affinity: Option<usize>,
     applied_affinity: Option<usize>,
 }
-
-type EcoQosFailureSuppression = ExecutionFailureState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct EcoQosCpuRestriction {
@@ -248,7 +248,7 @@ impl EcoQosManager {
             if process.id == 0
                 || process.id == current_process_id
                 || should_ignore_foreground_process(
-                    settings,
+                    settings.exclude_foreground_app,
                     process.id,
                     &process.name,
                     foreground_process_id,
@@ -270,8 +270,7 @@ impl EcoQosManager {
             .values()
             .map(|name| process_failure_key(name))
             .collect::<BTreeSet<_>>();
-        self.failure_suppression
-            .retain(|name, _| active_target_names.contains(name));
+        self.failure_suppression.retain_keys(&active_target_names);
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut failures =
@@ -445,18 +444,8 @@ impl EcoQosManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> ProcessSuppression {
-        let Some(suppression) = self
-            .failure_suppression
-            .get_mut(&process_failure_key(process_name))
-        else {
-            return ProcessSuppression::default();
-        };
-        if !suppression.is_suppressed() {
-            return ProcessSuppression::default();
-        }
-
-        let newly_suppressed = suppression.mark_suppression_logged();
-        if newly_suppressed {
+        let suppression = self.failure_suppression.process_suppression(process_name);
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::EcoQos,
                 Some(process_id),
@@ -470,7 +459,7 @@ impl EcoQosManager {
             );
         }
 
-        ProcessSuppression::active(newly_suppressed)
+        suppression
     }
 
     #[cfg(test)]
@@ -485,37 +474,16 @@ impl EcoQosManager {
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
-        let suppression = self
-            .failure_suppression
-            .entry(process_failure_key(process_name))
-            .or_default();
-        suppression.record_failure();
+        self.failure_suppression
+            .record_process_failure(process_name);
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .remove(&process_failure_key(process_name));
+        self.failure_suppression.clear_process_failure(process_name);
     }
 }
 
 type ProcessSuppression = ExecutionSuppression;
-
-fn should_ignore_foreground_process(
-    settings: &EcoQosSettings,
-    process_id: u32,
-    process_name: &str,
-    foreground_process_id: Option<u32>,
-    foreground_process_name: Option<&str>,
-) -> bool {
-    settings.exclude_foreground_app
-        && (foreground_process_id.is_some_and(|id| id == process_id)
-            || foreground_process_name
-                .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
-}
-
-fn process_failure_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
-}
 
 impl Drop for EcoQosManager {
     fn drop(&mut self) {
@@ -562,12 +530,6 @@ fn built_in_exclusions_for(aggressiveness: EcoQosAggressiveness) -> &'static [&'
         EcoQosAggressiveness::Balanced => BALANCED_BUILT_IN_EXCLUSIONS,
         EcoQosAggressiveness::Aggressive => AGGRESSIVE_BUILT_IN_EXCLUSIONS,
     }
-}
-
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
 }
 
 enum EcoQosError {
@@ -765,13 +727,6 @@ fn eco_qos_error_message(error: &EcoQosError) -> String {
         EcoQosError::Unsupported => "Operation unsupported.".to_owned(),
         EcoQosError::Failed(message) => message.clone(),
     }
-}
-
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
 }
 
 fn process_failure_message(
@@ -1572,9 +1527,11 @@ mod tests {
 
     #[test]
     fn aggressiveness_profiles_control_builtin_exclusions() {
-        let mut settings = EcoQosSettings::default();
+        let mut settings = EcoQosSettings {
+            aggressiveness: EcoQosAggressiveness::Safe,
+            ..Default::default()
+        };
 
-        settings.aggressiveness = EcoQosAggressiveness::Safe;
         assert!(is_process_excluded("SearchHost.exe", &settings));
         assert!(is_process_excluded("dwm.exe", &settings));
         assert!(is_process_excluded("winlogon.exe", &settings));
@@ -1714,25 +1671,27 @@ mod tests {
 
     #[test]
     fn foreground_ignore_matches_pid_or_process_name() {
-        let mut settings = EcoQosSettings::default();
-        settings.exclude_foreground_app = true;
+        let mut settings = EcoQosSettings {
+            exclude_foreground_app: true,
+            ..Default::default()
+        };
 
         assert!(should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             42,
             "helper.exe",
             Some(42),
             Some("app.exe"),
         ));
         assert!(should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             99,
             "APP.EXE",
             Some(42),
             Some("app.exe"),
         ));
         assert!(!should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             99,
             "other.exe",
             Some(42),
@@ -1741,7 +1700,7 @@ mod tests {
 
         settings.exclude_foreground_app = false;
         assert!(!should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             42,
             "app.exe",
             Some(42),

@@ -85,7 +85,7 @@ use crate::{
     responsiveness::{self, AutoBalanceProcessState, ForegroundResponsivenessSnapshot},
     rules::{
         Action, ActionExecution, ActionExecutor, DecisionEngine, DecisionInput, DecisionOutcome,
-        DecisionState, PerformanceModeDecision, PowerPlanActionBackend,
+        DecisionState, PerformanceModeDecision, PowerPlanActionBackend, ProcessorPowerValueSet,
         MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
@@ -691,27 +691,20 @@ impl PowerPlanActionBackend for UiPowerPlanBackend<'_> {
     fn set_processor_power_values(
         &mut self,
         plan_guid: &str,
-        ac_core_parking_min_percent: u8,
-        ac_performance_min_percent: u8,
-        ac_performance_max_percent: u8,
-        ac_boost_mode: u32,
-        dc_core_parking_min_percent: u8,
-        dc_performance_min_percent: u8,
-        dc_performance_max_percent: u8,
-        dc_boost_mode: u32,
+        values: ProcessorPowerValueSet,
     ) -> Result<(), String> {
         let values = ProcessorPowerAcDcValues {
             ac: ProcessorPowerValues::new_with_boost_mode(
-                u32::from(ac_core_parking_min_percent),
-                u32::from(ac_performance_min_percent),
-                u32::from(ac_performance_max_percent),
-                ProcessorBoostMode::from_power_value(ac_boost_mode),
+                u32::from(values.ac_core_parking_min_percent),
+                u32::from(values.ac_performance_min_percent),
+                u32::from(values.ac_performance_max_percent),
+                ProcessorBoostMode::from_power_value(values.ac_boost_mode),
             ),
             dc: ProcessorPowerValues::new_with_boost_mode(
-                u32::from(dc_core_parking_min_percent),
-                u32::from(dc_performance_min_percent),
-                u32::from(dc_performance_max_percent),
-                ProcessorBoostMode::from_power_value(dc_boost_mode),
+                u32::from(values.dc_core_parking_min_percent),
+                u32::from(values.dc_performance_min_percent),
+                u32::from(values.dc_performance_max_percent),
+                ProcessorBoostMode::from_power_value(values.dc_boost_mode),
             ),
         };
         self.power.apply_processor_power_values(plan_guid, values)
@@ -1503,7 +1496,7 @@ impl PowerLeafApp {
             Timer::after(APP_TICK_INTERVAL).await;
             let _ = cx.update(move |window, app_cx| {
                 if let Some(this) = this.upgrade() {
-                    let _ = this.update(app_cx, |app, cx| match app.tick(window) {
+                    this.update(app_cx, |app, cx| match app.tick(window) {
                         TickOutcome::Continue { changed } => {
                             app.schedule_tick(window, cx);
                             if changed {
@@ -3278,6 +3271,10 @@ impl PowerLeafApp {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "dropdown metadata plus the options builder is clearer at each UI call site"
+    )]
     fn render_dropdown_select(
         &self,
         id: impl Into<String>,
@@ -4524,19 +4521,23 @@ impl PowerLeafApp {
                 }),
             ))
             .child(activity_slider_card(
-                "activity-idle-timeout",
-                &t!("activity.idle_timeout"),
-                self.render_numeric_value(
-                    NumericField::ActivityIdleTimeout,
-                    seconds_label(self.settings.activity_mode.idle_timeout_seconds),
-                    self.settings.activity_mode.idle_timeout_seconds.to_string(),
-                    cx,
-                ),
-                &self.inputs.activity_idle_timeout,
-                enabled,
-                ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
-                ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
-                1,
+                ActivitySliderCardSpec {
+                    id: SharedString::from("activity-idle-timeout"),
+                    label: SharedString::from(t!("activity.idle_timeout").to_string()),
+                    value_element: self.render_numeric_value(
+                        NumericField::ActivityIdleTimeout,
+                        seconds_label(self.settings.activity_mode.idle_timeout_seconds),
+                        self.settings.activity_mode.idle_timeout_seconds.to_string(),
+                        cx,
+                    ),
+                    state: &self.inputs.activity_idle_timeout,
+                    enabled,
+                    range: SliderRange {
+                        min: ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
+                        max: ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
+                        step: 1,
+                    },
+                },
                 window,
                 cx,
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
@@ -4551,19 +4552,23 @@ impl PowerLeafApp {
                 }),
             ))
             .child(activity_slider_card(
-                "general-check-interval",
-                &t!("activity.check_interval"),
-                self.render_numeric_value(
-                    NumericField::GeneralCheckInterval,
-                    milliseconds_label(self.settings.general.check_interval_ms),
-                    self.settings.general.check_interval_ms.to_string(),
-                    cx,
-                ),
-                &self.inputs.activity_check_interval,
-                enabled,
-                ACTIVITY_CHECK_INTERVAL_MIN_MS,
-                ACTIVITY_CHECK_INTERVAL_MAX_MS,
-                ACTIVITY_CHECK_INTERVAL_STEP_MS,
+                ActivitySliderCardSpec {
+                    id: SharedString::from("general-check-interval"),
+                    label: SharedString::from(t!("activity.check_interval").to_string()),
+                    value_element: self.render_numeric_value(
+                        NumericField::GeneralCheckInterval,
+                        milliseconds_label(self.settings.general.check_interval_ms),
+                        self.settings.general.check_interval_ms.to_string(),
+                        cx,
+                    ),
+                    state: &self.inputs.activity_check_interval,
+                    enabled,
+                    range: SliderRange {
+                        min: ACTIVITY_CHECK_INTERVAL_MIN_MS,
+                        max: ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                        step: ACTIVITY_CHECK_INTERVAL_STEP_MS,
+                    },
+                },
                 window,
                 cx,
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
@@ -5163,16 +5168,19 @@ impl PowerLeafApp {
                     )
                     .into_any_element(),
                     threshold_level_slider(
-                        format!("cpu-rule-threshold-{index}"),
-                        &t!("cpu_rules.threshold"),
-                        self.render_numeric_value(
-                            NumericField::CpuThreshold(index),
-                            format!("{}%", rule.threshold_percent),
-                            rule.threshold_percent.to_string(),
-                            cx,
-                        ),
-                        &threshold_state,
-                        feature_enabled,
+                        SliderRowSpec {
+                            id: SharedString::from(format!("cpu-rule-threshold-{index}")),
+                            label: SharedString::from(t!("cpu_rules.threshold").to_string()),
+                            value_element: self.render_numeric_value(
+                                NumericField::CpuThreshold(index),
+                                format!("{}%", rule.threshold_percent),
+                                rule.threshold_percent.to_string(),
+                                cx,
+                            ),
+                            state: &threshold_state,
+                            enabled: feature_enabled,
+                            delta: 1_u8,
+                        },
                         window,
                         cx,
                         cx.listener(move |app, change: &StepChange<u8>, _, cx| {
@@ -5194,16 +5202,19 @@ impl PowerLeafApp {
             if rule.comparison == CpuUsageComparison::Between {
                 condition_fields.push(
                     threshold_level_slider(
-                        format!("cpu-rule-upper-threshold-{index}"),
-                        &t!("cpu_rules.upper_threshold"),
-                        self.render_numeric_value(
-                            NumericField::CpuUpperThreshold(index),
-                            format!("{upper}%"),
-                            upper.to_string(),
-                            cx,
-                        ),
-                        &upper_threshold_state,
-                        feature_enabled,
+                        SliderRowSpec {
+                            id: SharedString::from(format!("cpu-rule-upper-threshold-{index}")),
+                            label: SharedString::from(t!("cpu_rules.upper_threshold").to_string()),
+                            value_element: self.render_numeric_value(
+                                NumericField::CpuUpperThreshold(index),
+                                format!("{upper}%"),
+                                upper.to_string(),
+                                cx,
+                            ),
+                            state: &upper_threshold_state,
+                            enabled: feature_enabled,
+                            delta: 1_u8,
+                        },
                         window,
                         cx,
                         cx.listener(move |app, change: &StepChange<u8>, _, cx| {
@@ -5424,8 +5435,7 @@ impl PowerLeafApp {
     ) -> AnyElement {
         setting_group_with_help(
             SettingGroupTarget::EfficiencyEnable,
-            t!("efficiency.enable").to_string(),
-            help,
+            (t!("efficiency.enable").to_string(), help),
             setting_group_switch_action(
                 "eco-qos-enabled-switch",
                 enabled,
@@ -5772,9 +5782,11 @@ impl PowerLeafApp {
                     cx.notify();
                 }),
             ),
-            collapsed,
-            rows,
-            Some(body_animation_height),
+            SettingGroupBody {
+                collapsed,
+                rows,
+                animation_height: Some(body_animation_height),
+            },
             window,
             cx,
         )
@@ -6230,24 +6242,28 @@ impl PowerLeafApp {
                         2,
                         rule_card_body_row(vec![
                             self.render_network_threshold(
-                                index,
-                                true,
-                                &t!("suspension.download_threshold"),
-                                rule.network_download_threshold_bytes,
-                                rule.network_download_threshold_unit,
-                                ThresholdField::Download(index),
-                                network_thresholds_enabled,
+                                NetworkThresholdRenderSpec {
+                                    label: SharedString::from(
+                                        t!("suspension.download_threshold").to_string(),
+                                    ),
+                                    threshold_bytes: rule.network_download_threshold_bytes,
+                                    unit: rule.network_download_threshold_unit,
+                                    field: ThresholdField::Download(index),
+                                    enabled: network_thresholds_enabled,
+                                },
                                 window,
                                 cx,
                             ),
                             self.render_network_threshold(
-                                index,
-                                false,
-                                &t!("suspension.upload_threshold"),
-                                rule.network_upload_threshold_bytes,
-                                rule.network_upload_threshold_unit,
-                                ThresholdField::Upload(index),
-                                network_thresholds_enabled,
+                                NetworkThresholdRenderSpec {
+                                    label: SharedString::from(
+                                        t!("suspension.upload_threshold").to_string(),
+                                    ),
+                                    threshold_bytes: rule.network_upload_threshold_bytes,
+                                    unit: rule.network_upload_threshold_unit,
+                                    field: ThresholdField::Upload(index),
+                                    enabled: network_thresholds_enabled,
+                                },
                                 window,
                                 cx,
                             ),
@@ -6522,9 +6538,12 @@ impl PowerLeafApp {
                         cx.notify();
                     }),
                 ),
-                self.is_setting_group_collapsed(SettingGroupTarget::BackgroundCpuRestriction),
-                rows,
-                Some(body_animation_height),
+                SettingGroupBody {
+                    collapsed: self
+                        .is_setting_group_collapsed(SettingGroupTarget::BackgroundCpuRestriction),
+                    rows,
+                    animation_height: Some(body_animation_height),
+                },
                 window,
                 cx,
             ))
@@ -7531,8 +7550,10 @@ impl PowerLeafApp {
         let mut rows = vec![
             setting_group_with_help(
                 SettingGroupTarget::AutoBalanceEfficiency,
-                t!("responsiveness.auto_efficiency_adjustment").to_string(),
-                t!("responsiveness.auto_efficiency_adjustment_help").to_string(),
+                (
+                    t!("responsiveness.auto_efficiency_adjustment").to_string(),
+                    t!("responsiveness.auto_efficiency_adjustment_help").to_string(),
+                ),
                 efficiency_action,
                 self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceEfficiency),
                 vec![
@@ -7556,8 +7577,10 @@ impl PowerLeafApp {
             .into_any_element(),
             setting_group_with_help(
                 SettingGroupTarget::AutoBalanceIoPriority,
-                t!("responsiveness.auto_io_priority").to_string(),
-                t!("responsiveness.auto_io_priority_help").to_string(),
+                (
+                    t!("responsiveness.auto_io_priority").to_string(),
+                    t!("responsiveness.auto_io_priority_help").to_string(),
+                ),
                 setting_group_switch_action(
                     "responsiveness-lower-background-io-toggle",
                     settings.lower_background_io_priority_enabled,
@@ -7582,8 +7605,10 @@ impl PowerLeafApp {
             .into_any_element(),
             setting_group_with_help(
                 SettingGroupTarget::AutoBalanceAffinity,
-                t!("responsiveness.auto_affinity_escalation").to_string(),
-                t!("responsiveness.auto_affinity_escalation_help").to_string(),
+                (
+                    t!("responsiveness.auto_affinity_escalation").to_string(),
+                    t!("responsiveness.auto_affinity_escalation_help").to_string(),
+                ),
                 setting_group_switch_action(
                     "responsiveness-auto-affinity-escalation-switch",
                     settings.auto_balance_affinity_escalation_enabled,
@@ -7654,8 +7679,10 @@ impl PowerLeafApp {
             .into_any_element(),
             setting_group_with_help(
                 SettingGroupTarget::AutoBalanceMemoryPriority,
-                t!("responsiveness.auto_memory_priority").to_string(),
-                t!("responsiveness.auto_memory_priority_help").to_string(),
+                (
+                    t!("responsiveness.auto_memory_priority").to_string(),
+                    t!("responsiveness.auto_memory_priority_help").to_string(),
+                ),
                 setting_group_switch_action(
                     "responsiveness-auto-memory-priority-switch",
                     settings.auto_balance_memory_priority_enabled,
@@ -7680,8 +7707,10 @@ impl PowerLeafApp {
             .into_any_element(),
             setting_group_with_help(
                 SettingGroupTarget::AutoBalanceBehaviourTuning,
-                t!("responsiveness.auto_balance_behaviour_tuning").to_string(),
-                t!("responsiveness.auto_balance_behaviour_tuning_help").to_string(),
+                (
+                    t!("responsiveness.auto_balance_behaviour_tuning").to_string(),
+                    t!("responsiveness.auto_balance_behaviour_tuning_help").to_string(),
+                ),
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceBehaviourTuning),
                 vec![
@@ -7903,12 +7932,19 @@ impl PowerLeafApp {
         rows.push(
             setting_group_with_help_body_height(
                 SettingGroupTarget::AutoBalanceExclusions,
-                t!("responsiveness.auto_balance_exclusions").to_string(),
-                t!("responsiveness.auto_balance_exclusions_help").to_string(),
+                (
+                    t!("responsiveness.auto_balance_exclusions").to_string(),
+                    t!("responsiveness.auto_balance_exclusions_help").to_string(),
+                ),
                 div().into_any_element(),
-                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceExclusions),
-                vec![exclusion_editor.into_any_element()],
-                auto_balance_exclusions_body_height(settings.auto_balance_exclusions.len()),
+                SettingGroupBody {
+                    collapsed: self
+                        .is_setting_group_collapsed(SettingGroupTarget::AutoBalanceExclusions),
+                    rows: vec![exclusion_editor.into_any_element()],
+                    animation_height: Some(auto_balance_exclusions_body_height(
+                        settings.auto_balance_exclusions.len(),
+                    )),
+                },
                 window,
                 cx,
             )
@@ -8315,8 +8351,7 @@ impl PowerLeafApp {
         ]);
         let master_card = setting_group_with_help(
             SettingGroupTarget::IoPriorityMaster,
-            t!("io_priority.enable").to_string(),
-            help,
+            (t!("io_priority.enable").to_string(), help),
             setting_group_switch_action(
                 "io-priority-enabled-toggle",
                 enabled,
@@ -8345,8 +8380,10 @@ impl PowerLeafApp {
         let body = feature_body(enabled)
             .child(setting_group_with_help(
                 SettingGroupTarget::IoPriorityForegroundDetection,
-                t!("io_priority.foreground_detection").to_string(),
-                t!("io_priority.foreground_detection_help").to_string(),
+                (
+                    t!("io_priority.foreground_detection").to_string(),
+                    t!("io_priority.foreground_detection_help").to_string(),
+                ),
                 setting_group_switch_action(
                     "io-priority-foreground-detection-toggle",
                     self.settings.io_priority.foreground_detection_enabled,
@@ -8529,8 +8566,7 @@ impl PowerLeafApp {
         ]);
         let master_card = setting_group_with_help(
             SettingGroupTarget::GpuPriorityMaster,
-            t!("gpu_priority.enable").to_string(),
-            help,
+            (t!("gpu_priority.enable").to_string(), help),
             setting_group_switch_action(
                 "gpu-priority-enabled-toggle",
                 enabled,
@@ -8559,8 +8595,10 @@ impl PowerLeafApp {
         let body = feature_body(enabled)
             .child(setting_group_with_help(
                 SettingGroupTarget::GpuPriorityForegroundDetection,
-                t!("gpu_priority.foreground_detection").to_string(),
-                t!("gpu_priority.foreground_detection_help").to_string(),
+                (
+                    t!("gpu_priority.foreground_detection").to_string(),
+                    t!("gpu_priority.foreground_detection_help").to_string(),
+                ),
                 setting_group_switch_action(
                     "gpu-priority-foreground-detection-toggle",
                     self.settings.gpu_priority.foreground_detection_enabled,
@@ -8796,8 +8834,7 @@ impl PowerLeafApp {
         ]);
         let master_card = setting_group_with_help(
             SettingGroupTarget::MemoryPriorityMaster,
-            t!("memory_priority.enable").to_string(),
-            help,
+            (t!("memory_priority.enable").to_string(), help),
             setting_group_switch_action(
                 "memory-priority-enabled-toggle",
                 enabled,
@@ -8826,8 +8863,10 @@ impl PowerLeafApp {
         let body = feature_body(enabled)
             .child(setting_group_with_help(
                 SettingGroupTarget::MemoryPriorityForegroundDetection,
-                t!("memory_priority.foreground_detection").to_string(),
-                t!("memory_priority.foreground_detection_help").to_string(),
+                (
+                    t!("memory_priority.foreground_detection").to_string(),
+                    t!("memory_priority.foreground_detection_help").to_string(),
+                ),
                 setting_group_switch_action(
                     "memory-priority-foreground-detection-toggle",
                     self.settings.memory_priority.foreground_detection_enabled,
@@ -9025,8 +9064,7 @@ impl PowerLeafApp {
         ]);
         let master_card = setting_group_with_help(
             SettingGroupTarget::LaunchPriorityMaster,
-            t!("launch_priority.enable").to_string(),
-            help,
+            (t!("launch_priority.enable").to_string(), help),
             setting_group_switch_action(
                 "launch-priority-enabled-toggle",
                 enabled,
@@ -9397,8 +9435,10 @@ impl PowerLeafApp {
         let body = feature_body(enabled)
             .child(setting_group_with_help(
                 SettingGroupTarget::SmartTrimBehaviour,
-                t!("smart_trim.category_trim_behavior").to_string(),
-                t!("smart_trim.category_trim_behavior_help").to_string(),
+                (
+                    t!("smart_trim.category_trim_behavior").to_string(),
+                    t!("smart_trim.category_trim_behavior_help").to_string(),
+                ),
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimBehaviour),
                 vec![
@@ -9478,8 +9518,10 @@ impl PowerLeafApp {
             ))
             .child(setting_group_with_help(
                 SettingGroupTarget::SmartTrimThresholds,
-                t!("smart_trim.category_thresholds").to_string(),
-                t!("smart_trim.category_thresholds_help").to_string(),
+                (
+                    t!("smart_trim.category_thresholds").to_string(),
+                    t!("smart_trim.category_thresholds_help").to_string(),
+                ),
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimThresholds),
                 vec![
@@ -9537,8 +9579,10 @@ impl PowerLeafApp {
             ))
             .child(setting_group_with_help(
                 SettingGroupTarget::SmartTrimWhen,
-                t!("smart_trim.category_when_to_trim").to_string(),
-                t!("smart_trim.category_when_to_trim_help").to_string(),
+                (
+                    t!("smart_trim.category_when_to_trim").to_string(),
+                    t!("smart_trim.category_when_to_trim_help").to_string(),
+                ),
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimWhen),
                 vec![
@@ -9612,8 +9656,10 @@ impl PowerLeafApp {
             ))
             .child(setting_group_with_help(
                 SettingGroupTarget::SmartTrimSafety,
-                t!("smart_trim.category_safety").to_string(),
-                t!("smart_trim.category_safety_help").to_string(),
+                (
+                    t!("smart_trim.category_safety").to_string(),
+                    t!("smart_trim.category_safety_help").to_string(),
+                ),
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::SmartTrimSafety),
                 vec![
@@ -9711,8 +9757,10 @@ impl PowerLeafApp {
             ))
             .child(setting_group_with_help(
                 SettingGroupTarget::SmartTrimMonitoring,
-                t!("smart_trim.category_monitoring").to_string(),
-                t!("smart_trim.category_monitoring_help").to_string(),
+                (
+                    t!("smart_trim.category_monitoring").to_string(),
+                    t!("smart_trim.category_monitoring_help").to_string(),
+                ),
                 primary_control_button(Button::new("smart-trim-now"), cx)
                     .label(t!("smart_trim.trim_now").to_string())
                     .disabled(!enabled)
@@ -10362,16 +10410,17 @@ impl PowerLeafApp {
 
     fn render_network_threshold(
         &self,
-        _index: usize,
-        _download: bool,
-        label: &str,
-        threshold_bytes: u64,
-        unit: NetworkThresholdUnit,
-        field: ThresholdField,
-        enabled: bool,
+        spec: NetworkThresholdRenderSpec,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let NetworkThresholdRenderSpec {
+            label,
+            threshold_bytes,
+            unit,
+            field,
+            enabled,
+        } = spec;
         let value = unit.threshold_value_from_bytes(threshold_bytes);
         let value_label = if threshold_bytes == 0 {
             t!("affinity.unlimited").to_string()
@@ -10380,7 +10429,7 @@ impl PowerLeafApp {
         };
         rule_action_row(
             format!("network-threshold-card-{field:?}"),
-            label.to_owned(),
+            label,
             h_flex()
                 .gap_2()
                 .items_center()
@@ -11689,7 +11738,6 @@ impl PowerLeafApp {
                             .child(processor_power_slider(
                                 "processor-power-ac-core-parking-min",
                                 &t!("processor_power.core_parking_min"),
-                                self.processor_power_ac_core_parking_min,
                                 self.render_numeric_value(
                                     NumericField::ProcessorAcCoreParkingMin,
                                     format!("{}%", self.processor_power_ac_core_parking_min),
@@ -11716,7 +11764,6 @@ impl PowerLeafApp {
                             .child(processor_power_slider(
                                 "processor-power-ac-performance-min",
                                 &t!("processor_power.processor_min"),
-                                self.processor_power_ac_performance_min,
                                 self.render_numeric_value(
                                     NumericField::ProcessorAcPerformanceMin,
                                     format!("{}%", self.processor_power_ac_performance_min),
@@ -11743,7 +11790,6 @@ impl PowerLeafApp {
                             .child(processor_power_slider(
                                 "processor-power-ac-performance-max",
                                 &t!("processor_power.processor_max"),
-                                self.processor_power_ac_performance_max,
                                 self.render_numeric_value(
                                     NumericField::ProcessorAcPerformanceMax,
                                     format!("{}%", self.processor_power_ac_performance_max),
@@ -11788,7 +11834,6 @@ impl PowerLeafApp {
                             .child(processor_power_slider(
                                 "processor-power-dc-core-parking-min",
                                 &t!("processor_power.core_parking_min"),
-                                self.processor_power_dc_core_parking_min,
                                 self.render_numeric_value(
                                     NumericField::ProcessorDcCoreParkingMin,
                                     format!("{}%", self.processor_power_dc_core_parking_min),
@@ -11815,7 +11860,6 @@ impl PowerLeafApp {
                             .child(processor_power_slider(
                                 "processor-power-dc-performance-min",
                                 &t!("processor_power.processor_min"),
-                                self.processor_power_dc_performance_min,
                                 self.render_numeric_value(
                                     NumericField::ProcessorDcPerformanceMin,
                                     format!("{}%", self.processor_power_dc_performance_min),
@@ -11842,7 +11886,6 @@ impl PowerLeafApp {
                             .child(processor_power_slider(
                                 "processor-power-dc-performance-max",
                                 &t!("processor_power.processor_max"),
-                                self.processor_power_dc_performance_max,
                                 self.render_numeric_value(
                                     NumericField::ProcessorDcPerformanceMax,
                                     format!("{}%", self.processor_power_dc_performance_max),
@@ -12944,7 +12987,7 @@ fn dropdown_option_row(
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     h_flex()
-        .id(SharedString::from(id))
+        .id(id)
         .relative()
         .min_h(px(40.0))
         .items_center()
@@ -12978,7 +13021,7 @@ fn dropdown_process_option_row(
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     h_flex()
-        .id(SharedString::from(id))
+        .id(id)
         .relative()
         .min_h(px(40.0))
         .items_center()
@@ -13320,6 +13363,56 @@ struct StepChange<T> {
     increase: bool,
 }
 
+type StepChangeHandler<T> = Rc<dyn Fn(&StepChange<T>, &mut Window, &mut App)>;
+type BoolChangeHandler = Rc<dyn Fn(&bool, &mut Window, &mut App)>;
+
+#[derive(Debug, Clone, Copy)]
+struct SliderRange {
+    min: u64,
+    max: u64,
+    step: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StableSliderSpec {
+    range: SliderRange,
+    enabled: bool,
+    track_color: u32,
+    thumb_color: u32,
+}
+
+struct SliderRowSpec<'a, T> {
+    id: SharedString,
+    label: SharedString,
+    value_element: AnyElement,
+    state: &'a Entity<SliderState>,
+    enabled: bool,
+    delta: T,
+}
+
+struct ActivitySliderCardSpec<'a> {
+    id: SharedString,
+    label: SharedString,
+    value_element: AnyElement,
+    state: &'a Entity<SliderState>,
+    enabled: bool,
+    range: SliderRange,
+}
+
+struct NetworkThresholdRenderSpec {
+    label: SharedString,
+    threshold_bytes: u64,
+    unit: NetworkThresholdUnit,
+    field: ThresholdField,
+    enabled: bool,
+}
+
+struct SettingGroupBody {
+    collapsed: bool,
+    rows: Vec<AnyElement>,
+    animation_height: Option<f32>,
+}
+
 fn make_input(
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
@@ -13429,7 +13522,7 @@ fn clear_input_to(
     cx: &mut Context<PowerLeafApp>,
 ) {
     let value = SharedString::from(value.to_owned());
-    let _ = input.update(cx, |input, cx| input.set_value(value, window, cx));
+    input.update(cx, |input, cx| input.set_value(value, window, cx));
 }
 
 fn apply_appearance_settings(general: &config::GeneralSettings, window: &mut Window, cx: &mut App) {
@@ -13994,7 +14087,7 @@ fn win32_priority_separation_field_bits(value: u32, field: Win32PrioritySeparati
             _ => 0x04,
         },
         Win32PrioritySeparationField::ForegroundBoost => match value & 0x03 {
-            0x00 | 0x01 | 0x02 => value & 0x03,
+            0x00..=0x02 => value & 0x03,
             _ => 0x02,
         },
     }
@@ -15770,14 +15863,14 @@ fn setting_group(
 
 fn setting_group_with_help(
     target: SettingGroupTarget,
-    title: impl Into<SharedString>,
-    help: impl Into<SharedString>,
+    title_help: (impl Into<SharedString>, impl Into<SharedString>),
     action: AnyElement,
     collapsed: bool,
     rows: Vec<AnyElement>,
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
+    let (title, help) = title_help;
     let title: SharedString = title.into();
     setting_group_with_title_element(
         target,
@@ -15802,15 +15895,13 @@ fn setting_group_with_help(
 
 fn setting_group_with_help_body_height(
     target: SettingGroupTarget,
-    title: impl Into<SharedString>,
-    help: impl Into<SharedString>,
+    title_help: (impl Into<SharedString>, impl Into<SharedString>),
     action: AnyElement,
-    collapsed: bool,
-    rows: Vec<AnyElement>,
-    body_animation_height: f32,
+    body: SettingGroupBody,
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
+    let (title, help) = title_help;
     let title: SharedString = title.into();
     setting_group_with_title_element_with_body_height(
         target,
@@ -15826,9 +15917,7 @@ fn setting_group_with_help_body_height(
             ))
             .into_any_element(),
         action,
-        collapsed,
-        rows,
-        Some(body_animation_height),
+        body,
         window,
         cx,
     )
@@ -15844,7 +15933,16 @@ fn setting_group_with_title_element(
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     setting_group_with_title_element_with_body_height(
-        target, title, action, collapsed, rows, None, window, cx,
+        target,
+        title,
+        action,
+        SettingGroupBody {
+            collapsed,
+            rows,
+            animation_height: None,
+        },
+        window,
+        cx,
     )
 }
 
@@ -15852,12 +15950,15 @@ fn setting_group_with_title_element_with_body_height(
     target: SettingGroupTarget,
     title: AnyElement,
     action: AnyElement,
-    collapsed: bool,
-    rows: Vec<AnyElement>,
-    body_animation_height: Option<f32>,
+    body: SettingGroupBody,
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
+    let SettingGroupBody {
+        collapsed,
+        rows,
+        animation_height,
+    } = body;
     let chevron_target = target;
     let hover_id = format!("setting-group-hover-{target:?}");
     let motion_id = format!("setting-group-{target:?}");
@@ -15934,8 +16035,8 @@ fn setting_group_with_title_element_with_body_height(
         for row in rows {
             body = body.child(row);
         }
-        let body_animation_height = body_animation_height
-            .or_else(|| setting_group_body_animation_height(target, row_count));
+        let body_animation_height =
+            animation_height.or_else(|| setting_group_body_animation_height(target, row_count));
         group = group.child(if let Some(progress) = motion_progress {
             expanded_child_at_progress(body.into_any_element(), body_animation_height, progress)
         } else if let Some(height) = body_animation_height {
@@ -16131,7 +16232,7 @@ fn setting_group_stepper_row_u64(
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id: SharedString = id.into();
-    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
+    let handler: StepChangeHandler<u64> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let delta = u64_step(value);
 
@@ -16235,7 +16336,7 @@ fn rule_stepper_row_u64(
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
     let id: SharedString = id.into();
-    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
+    let handler: StepChangeHandler<u64> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let delta = u64_step(value);
 
@@ -16289,7 +16390,7 @@ fn rule_checkbox_row(
 ) -> AnyElement {
     let id: SharedString = id.into();
     let title: SharedString = title.into();
-    let handler: Rc<dyn Fn(&bool, &mut Window, &mut App)> = Rc::new(handler);
+    let handler: BoolChangeHandler = Rc::new(handler);
     let checkbox_handler = Rc::clone(&handler);
     let label_handler = Rc::clone(&handler);
 
@@ -16466,7 +16567,7 @@ fn setting_stepper_card_u64(
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<gpui::Div> {
     let id: SharedString = id.into();
-    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
+    let handler: StepChangeHandler<u64> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let delta = u64_step(value);
 
@@ -17082,11 +17183,11 @@ fn action_log_feature_filter_label(filter: ActionLogFeatureFilter) -> String {
     }
 }
 
-fn action_log_filtered_entries<'a>(
-    entries: &'a [ActionLogEntry],
+fn action_log_filtered_entries(
+    entries: &[ActionLogEntry],
     result_filter: ActionLogResultFilter,
     feature_filter: ActionLogFeatureFilter,
-) -> Vec<&'a ActionLogEntry> {
+) -> Vec<&ActionLogEntry> {
     entries
         .iter()
         .rev()
@@ -17383,8 +17484,6 @@ fn app_input_color(focused: bool) -> u32 {
         } else {
             0x2f2f2f
         }
-    } else if focused {
-        0xffffff
     } else {
         0xffffff
     }
@@ -17854,11 +17953,7 @@ fn nav_row(
     } else {
         cx.theme().transparent
     };
-    let text_color = if selected {
-        cx.theme().sidebar_foreground
-    } else {
-        cx.theme().sidebar_foreground
-    };
+    let text_color = cx.theme().sidebar_foreground;
     let hover_bg: gpui::Hsla = if selected {
         rgb(sidebar_selected_color()).into()
     } else {
@@ -18417,7 +18512,6 @@ fn processor_power_column_header(value: impl Into<SharedString>) -> gpui::Div {
 fn processor_power_slider(
     id: impl Into<SharedString>,
     label: &str,
-    _value: u64,
     value_element: AnyElement,
     state: &Entity<SliderState>,
     window: &mut Window,
@@ -18425,12 +18519,14 @@ fn processor_power_slider(
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     percent_slider_row(
-        id,
-        label,
-        value_element,
-        state,
-        true,
-        1_u64,
+        SliderRowSpec {
+            id: id.into(),
+            label: SharedString::from(label.to_owned()),
+            value_element,
+            state,
+            enabled: true,
+            delta: 1_u64,
+        },
         window,
         cx,
         handler,
@@ -18592,43 +18688,31 @@ fn win32_priority_row(
 }
 
 fn threshold_level_slider(
-    id: impl Into<SharedString>,
-    label: &str,
-    value_element: AnyElement,
-    state: &Entity<SliderState>,
-    enabled: bool,
+    spec: SliderRowSpec<'_, u8>,
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
     handler: impl Fn(&StepChange<u8>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    rule_percent_slider_row(
-        id,
-        label,
-        value_element,
-        state,
-        enabled,
-        1_u8,
-        window,
-        cx,
-        handler,
-    )
+    rule_percent_slider_row(spec, window, cx, handler)
 }
 
 fn stable_slider(
     state: &Entity<SliderState>,
-    min: u64,
-    max: u64,
-    step: u64,
-    enabled: bool,
-    track_color: u32,
-    thumb_color: u32,
+    spec: StableSliderSpec,
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
 ) -> AnyElement {
+    let StableSliderSpec {
+        range,
+        enabled,
+        track_color,
+        thumb_color,
+    } = spec;
     let value = state.read(cx).value().end();
-    let min = min.min(max);
-    let max = max.max(min + u64::from(max == min));
-    let step = step.max(1);
+    let min = range.min.min(range.max);
+    let max = range.max.max(min + u64::from(range.max == min));
+    let step = range.step.max(1);
+    let range = SliderRange { min, max, step };
     let percentage = stable_slider_percentage(value, min, max);
     let track = Hsla::from(rgb(track_color));
     let bounds = Rc::new(RefCell::new(Bounds::<Pixels>::default()));
@@ -18657,9 +18741,7 @@ fn stable_slider(
                             state,
                             bounds,
                             event.position,
-                            min,
-                            max,
-                            step,
+                            range,
                             window,
                             cx,
                         );
@@ -18678,9 +18760,7 @@ fn stable_slider(
                                     state,
                                     *drag_bounds.borrow(),
                                     event.event.position,
-                                    min,
-                                    max,
-                                    step,
+                                    range,
                                     window,
                                     cx,
                                 );
@@ -18748,12 +18828,11 @@ fn update_stable_slider_from_position(
     state: &mut SliderState,
     bounds: Bounds<Pixels>,
     position: Point<Pixels>,
-    min: u64,
-    max: u64,
-    step: u64,
+    range: SliderRange,
     window: &mut Window,
     cx: &mut Context<SliderState>,
 ) {
+    let SliderRange { min, max, step } = range;
     let total_size = bounds.size.width;
     if total_size <= px(0.0) {
         return;
@@ -18771,21 +18850,22 @@ fn update_stable_slider_from_position(
 }
 
 fn activity_slider_card(
-    id: impl Into<SharedString>,
-    label: &str,
-    value_element: AnyElement,
-    state: &Entity<SliderState>,
-    enabled: bool,
-    min: u64,
-    max: u64,
-    delta: u64,
+    spec: ActivitySliderCardSpec<'_>,
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    let id: SharedString = id.into();
-    let handler: Rc<dyn Fn(&StepChange<u64>, &mut Window, &mut App)> = Rc::new(handler);
+    let ActivitySliderCardSpec {
+        id,
+        label,
+        value_element,
+        state,
+        enabled,
+        range,
+    } = spec;
+    let handler: StepChangeHandler<u64> = Rc::new(handler);
     let down = Rc::clone(&handler);
+    let delta = range.step;
     let slider_track_color = if enabled {
         accent_color()
     } else {
@@ -18832,12 +18912,12 @@ fn activity_slider_card(
                     })
                     .child(stable_slider(
                         state,
-                        min,
-                        max,
-                        delta,
-                        enabled,
-                        slider_track_color,
-                        slider_thumb_color,
+                        StableSliderSpec {
+                            range,
+                            enabled,
+                            track_color: slider_track_color,
+                            thumb_color: slider_thumb_color,
+                        },
                         window,
                         cx,
                     )),
@@ -18864,12 +18944,7 @@ fn activity_slider_card(
 }
 
 fn rule_percent_slider_row<T>(
-    id: impl Into<SharedString>,
-    label: &str,
-    value_element: AnyElement,
-    state: &Entity<SliderState>,
-    enabled: bool,
-    delta: T,
+    spec: SliderRowSpec<'_, T>,
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
     handler: impl Fn(&StepChange<T>, &mut Window, &mut App) + 'static,
@@ -18877,8 +18952,15 @@ fn rule_percent_slider_row<T>(
 where
     T: Copy + 'static,
 {
-    let id: SharedString = id.into();
-    let handler: Rc<dyn Fn(&StepChange<T>, &mut Window, &mut App)> = Rc::new(handler);
+    let SliderRowSpec {
+        id,
+        label,
+        value_element,
+        state,
+        enabled,
+        delta,
+    } = spec;
+    let handler: StepChangeHandler<T> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let down_delta = delta;
     let up_delta = delta;
@@ -18900,7 +18982,7 @@ where
 
     rule_action_row_with_title_color(
         id.clone(),
-        label.to_owned(),
+        label,
         h_flex()
             .items_center()
             .justify_end()
@@ -18933,12 +19015,16 @@ where
                     })
                     .child(stable_slider(
                         state,
-                        0,
-                        100,
-                        1,
-                        enabled,
-                        slider_track_color,
-                        slider_thumb_color,
+                        StableSliderSpec {
+                            range: SliderRange {
+                                min: 0,
+                                max: 100,
+                                step: 1,
+                            },
+                            enabled,
+                            track_color: slider_track_color,
+                            thumb_color: slider_thumb_color,
+                        },
                         window,
                         cx,
                     )),
@@ -18966,12 +19052,7 @@ where
 }
 
 fn percent_slider_row<T>(
-    id: impl Into<SharedString>,
-    label: &str,
-    value_element: AnyElement,
-    state: &Entity<SliderState>,
-    enabled: bool,
-    delta: T,
+    spec: SliderRowSpec<'_, T>,
     window: &mut Window,
     cx: &mut Context<PowerLeafApp>,
     handler: impl Fn(&StepChange<T>, &mut Window, &mut App) + 'static,
@@ -18979,9 +19060,16 @@ fn percent_slider_row<T>(
 where
     T: Copy + 'static,
 {
-    let id: SharedString = id.into();
+    let SliderRowSpec {
+        id,
+        label,
+        value_element,
+        state,
+        enabled,
+        delta,
+    } = spec;
     let hover_id = id.to_string();
-    let handler: Rc<dyn Fn(&StepChange<T>, &mut Window, &mut App)> = Rc::new(handler);
+    let handler: StepChangeHandler<T> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let down_delta = delta;
     let up_delta = delta;
@@ -19032,7 +19120,7 @@ where
                 .min_w(px(0.0))
                 .truncate()
                 .text_color(rgb(label_color))
-                .child(label.to_owned()),
+                .child(label),
         )
         .child(
             h_flex()
@@ -19067,12 +19155,16 @@ where
                         })
                         .child(stable_slider(
                             state,
-                            0,
-                            100,
-                            1,
-                            enabled,
-                            slider_track_color,
-                            slider_thumb_color,
+                            StableSliderSpec {
+                                range: SliderRange {
+                                    min: 0,
+                                    max: 100,
+                                    step: 1,
+                                },
+                                enabled,
+                                track_color: slider_track_color,
+                                thumb_color: slider_thumb_color,
+                            },
                             window,
                             cx,
                         )),
@@ -20596,6 +20688,28 @@ fn default_action_log_export_csv_path() -> PathBuf {
         ))
 }
 
+fn path_to_wide_buffer(path: &Path, len: usize) -> Vec<u16> {
+    let mut buffer: Vec<u16> = path.as_os_str().encode_wide().take(len - 1).collect();
+    buffer.resize(len, 0);
+    buffer
+}
+
+fn path_from_wide_buffer(buffer: &[u16]) -> PathBuf {
+    let len = buffer
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(buffer.len());
+    PathBuf::from(OsString::from_wide(&buffer[..len]))
+}
+
+fn wide_null(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain([0]).collect()
+}
+
+fn wide_nulls(value: &str) -> Vec<u16> {
+    OsStr::new(value).encode_wide().chain([0]).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -20893,26 +21007,4 @@ mod tests {
             vec!["--flag".to_owned(), String::new(),]
         );
     }
-}
-
-fn path_to_wide_buffer(path: &Path, len: usize) -> Vec<u16> {
-    let mut buffer: Vec<u16> = path.as_os_str().encode_wide().take(len - 1).collect();
-    buffer.resize(len, 0);
-    buffer
-}
-
-fn path_from_wide_buffer(buffer: &[u16]) -> PathBuf {
-    let len = buffer
-        .iter()
-        .position(|character| *character == 0)
-        .unwrap_or(buffer.len());
-    PathBuf::from(OsString::from_wide(&buffer[..len]))
-}
-
-fn wide_null(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain([0]).collect()
-}
-
-fn wide_nulls(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain([0]).collect()
 }

@@ -9,7 +9,6 @@ use windows_sys::Win32::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
     },
     System::{
-        RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::GetSystemTimeAsFileTime,
         Threading::{
             GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
@@ -29,12 +28,16 @@ use crate::{
         CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, EcoQosCpuRestrictionMode,
         ForegroundBoostPriority, ForegroundResponsivenessSettings, PriorityRule, ProcessPriority,
     },
-    cpu::PerProcessorUsageMonitor,
-    foreground::{list_processes, ProcessInfo},
+    cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
+    foreground::{
+        is_process_exited_message, list_processes, process_count_label, process_failure_key,
+        process_id_matches_name, process_names_by_id, process_session_id, unique_app_names,
+        ProcessInfo,
+    },
     memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
     rules::{
         execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AppMatcher, AppPriorityActionBackend, ExecutionFailureState, RuleProcessPriority,
+        AppMatcher, AppPriorityActionBackend, ExecutionFailureTracker, RuleProcessPriority,
     },
 };
 
@@ -120,7 +123,7 @@ pub struct ForegroundResponsivenessManager {
     auto_balance_core_selection: Option<AutoBalanceCoreSelection>,
     last_background_apply_summary_logged_at: Option<Instant>,
     per_processor_usage: PerProcessorUsageMonitor,
-    failure_suppression: BTreeMap<String, PriorityFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
 }
 
 impl Default for ForegroundResponsivenessManager {
@@ -141,7 +144,7 @@ impl Default for ForegroundResponsivenessManager {
             auto_balance_core_selection: None,
             last_background_apply_summary_logged_at: None,
             per_processor_usage: PerProcessorUsageMonitor::default(),
-            failure_suppression: BTreeMap::new(),
+            failure_suppression: ExecutionFailureTracker::default(),
         }
     }
 }
@@ -154,8 +157,6 @@ struct AdjustedProcess {
     previous_efficiency_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     applied_efficiency_mode: bool,
 }
-
-type PriorityFailureSuppression = ExecutionFailureState;
 
 #[derive(Clone)]
 struct BoostedProcess {
@@ -203,12 +204,6 @@ struct AutoBalanceCoreSelection {
     selected_at: Instant,
 }
 
-#[derive(Clone, Copy)]
-struct ProcessCpuSample {
-    cpu_time_100ns: u64,
-    sampled_at: Instant,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PriorityTargetSource {
     AutoBalance,
@@ -216,17 +211,58 @@ enum PriorityTargetSource {
     Rule,
 }
 
+pub struct ForegroundResponsivenessUpdate<'a> {
+    pub settings: &'a ForegroundResponsivenessSettings,
+    pub automation_enabled: bool,
+    pub foreground_process_id: Option<u32>,
+    pub total_cpu_usage_percent: Option<f32>,
+    pub background_efficiency_managed: bool,
+    pub eco_qos_process_ids: &'a BTreeSet<u32>,
+}
+
+struct ForegroundBoostRequest<'a> {
+    process_id: u32,
+    process_name: Option<&'a str>,
+    current_process_id: u32,
+    current_session_id: u32,
+    stability_delay_ms: u64,
+    priority_class: u32,
+}
+
+struct ForegroundBoostGroup<'a> {
+    foreground_id: u32,
+    foreground_process_name: Option<&'a str>,
+    targets: &'a [(u32, String)],
+    stability_delay_ms: u64,
+    foreground_boost: ForegroundBoostPriority,
+    foreground_cpu_usage_percent: Option<f32>,
+}
+
+struct ApplyPriorityRequest<'a> {
+    process_id: u32,
+    process_name: String,
+    priority_class: u32,
+    existing: Option<&'a AdjustedProcess>,
+    source: PriorityTargetSource,
+    apply_efficiency_mode: bool,
+    log_success: bool,
+}
+
 impl ForegroundResponsivenessManager {
     pub fn update(
         &mut self,
-        settings: &ForegroundResponsivenessSettings,
-        automation_enabled: bool,
-        foreground_process_id: Option<u32>,
-        total_cpu_usage_percent: Option<f32>,
-        background_efficiency_managed: bool,
-        eco_qos_process_ids: &BTreeSet<u32>,
+        input: ForegroundResponsivenessUpdate<'_>,
         action_log: &mut ActionLog,
     ) -> ForegroundResponsivenessSnapshot {
+        let ForegroundResponsivenessUpdate {
+            settings,
+            automation_enabled,
+            foreground_process_id,
+            total_cpu_usage_percent,
+            background_efficiency_managed,
+            eco_qos_process_ids,
+        } = input;
+
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
             self.failure_suppression.clear();
@@ -278,10 +314,7 @@ impl ForegroundResponsivenessManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = processes
-            .iter()
-            .map(|process| (process.id, process.name.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = foreground_process_id.and_then(|id| {
             processes
                 .iter()
@@ -394,16 +427,13 @@ impl ForegroundResponsivenessManager {
                 if let Some(decision) =
                     self.update_auto_balance_process(process.id, &process.name, settings, now)
                 {
-                    if !target_processes.contains_key(&process.id) {
-                        target_processes.insert(
-                            process.id,
-                            (
-                                process.name.clone(),
-                                ProcessPriority::BelowNormal,
-                                PriorityTargetSource::AutoBalance,
-                            ),
-                        );
-                    }
+                    target_processes.entry(process.id).or_insert_with(|| {
+                        (
+                            process.name.clone(),
+                            ProcessPriority::BelowNormal,
+                            PriorityTargetSource::AutoBalance,
+                        )
+                    });
                     if settings.auto_balance_memory_priority_enabled {
                         auto_balance_memory_targets.push(MemoryPriorityTarget {
                             process_id: process.id,
@@ -423,9 +453,6 @@ impl ForegroundResponsivenessManager {
                     }
                 }
             }
-        } else if settings.auto_balance_enabled {
-            self.auto_balance.clear();
-            self.auto_balance_core_selection = None;
         } else {
             self.auto_balance.clear();
             self.auto_balance_core_selection = None;
@@ -473,8 +500,7 @@ impl ForegroundResponsivenessManager {
         if let Some(name) = foreground_process_name.as_deref() {
             active_target_names.insert(process_failure_key(name));
         }
-        self.failure_suppression
-            .retain(|name, _| active_target_names.contains(name));
+        self.failure_suppression.retain_keys(&active_target_names);
         failures.merge(self.release_non_targets(
             &target_ids,
             &current_process_names,
@@ -624,12 +650,14 @@ impl ForegroundResponsivenessManager {
                     .map(|process| (process.id, process.name.clone()))
                     .collect::<Vec<_>>();
                 let result = self.apply_foreground_boost_group(
-                    foreground_id,
-                    foreground_process_name.as_deref(),
-                    &boost_targets,
-                    settings.foreground_stability_delay_ms,
-                    settings.foreground_boost,
-                    foreground_cpu_usage_percent,
+                    ForegroundBoostGroup {
+                        foreground_id,
+                        foreground_process_name: foreground_process_name.as_deref(),
+                        targets: &boost_targets,
+                        stability_delay_ms: settings.foreground_stability_delay_ms,
+                        foreground_boost: settings.foreground_boost,
+                        foreground_cpu_usage_percent,
+                    },
                     action_log,
                 );
                 skipped_processes += result.skipped;
@@ -785,25 +813,16 @@ impl ForegroundResponsivenessManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        let process_name = process_name.trim();
-        if process_name.is_empty() {
-            return false;
-        }
-        let Some(suppression) = self
-            .failure_suppression
-            .get_mut(&process_failure_key(process_name))
-        else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
+        let suppression = self.failure_suppression.process_suppression(process_name);
+        if !suppression.suppressed {
             return false;
         }
 
-        if suppression.mark_suppression_logged() {
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::ForegroundResponsiveness,
                 Some(process_id),
-                process_name.to_owned(),
+                process_name.trim().to_owned(),
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
@@ -817,24 +836,12 @@ impl ForegroundResponsivenessManager {
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
-        let process_name = process_name.trim();
-        if process_name.is_empty() {
-            return;
-        }
-        let suppression = self
-            .failure_suppression
-            .entry(process_failure_key(process_name))
-            .or_default();
-        suppression.record_failure();
+        self.failure_suppression
+            .record_process_failure(process_name);
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
-        let process_name = process_name.trim();
-        if process_name.is_empty() {
-            return;
-        }
-        self.failure_suppression
-            .remove(&process_failure_key(process_name));
+        self.failure_suppression.clear_process_failure(process_name);
     }
 
     fn release_processes(
@@ -849,12 +856,11 @@ impl ForegroundResponsivenessManager {
         for process_id in process_ids {
             if let Some(process) = self.adjusted.remove(process_id) {
                 let process_name = process.process_name.clone();
-                let still_same_process = current_process_names.map_or(true, |names| {
-                    names
-                        .get(process_id)
-                        .is_some_and(|name| name.eq_ignore_ascii_case(&process.process_name))
-                });
-                if still_same_process {
+                if process_id_matches_name(
+                    current_process_names,
+                    *process_id,
+                    &process.process_name,
+                ) {
                     if let Err(err) = restore_adjusted_priority(*process_id, process) {
                         if !matches!(err, PriorityError::ProcessExited) {
                             failures.record_error(
@@ -886,14 +892,17 @@ impl ForegroundResponsivenessManager {
 
     fn update_foreground_boost(
         &mut self,
-        process_id: u32,
-        process_name: Option<&str>,
-        current_process_id: u32,
-        current_session_id: u32,
-        stability_delay_ms: u64,
-        priority_class: u32,
+        request: ForegroundBoostRequest<'_>,
         action_log: &mut ActionLog,
     ) -> Result<(), PriorityError> {
+        let ForegroundBoostRequest {
+            process_id,
+            process_name,
+            current_process_id,
+            current_session_id,
+            stability_delay_ms,
+            priority_class,
+        } = request;
         let process_name = process_name.unwrap_or("").trim();
         if !foreground_boost_eligible(
             process_id,
@@ -961,14 +970,17 @@ impl ForegroundResponsivenessManager {
 
     fn apply_foreground_boost_group(
         &mut self,
-        foreground_id: u32,
-        foreground_process_name: Option<&str>,
-        targets: &[(u32, String)],
-        stability_delay_ms: u64,
-        foreground_boost: ForegroundBoostPriority,
-        foreground_cpu_usage_percent: Option<f32>,
+        group: ForegroundBoostGroup<'_>,
         action_log: &mut ActionLog,
     ) -> ForegroundBoostGroupResult {
+        let ForegroundBoostGroup {
+            foreground_id,
+            foreground_process_name,
+            targets,
+            stability_delay_ms,
+            foreground_boost,
+            foreground_cpu_usage_percent,
+        } = group;
         let mut result = ForegroundBoostGroupResult::default();
         let foreground_name = foreground_process_name.unwrap_or("").trim();
         if foreground_name.is_empty() || targets.is_empty() {
@@ -1880,12 +1892,14 @@ impl AppPriorityActionBackend for ForegroundBoostPriorityBackend<'_, '_, '_> {
         }
 
         match self.manager.update_foreground_boost(
-            self.process_id,
-            self.process_name,
-            self.current_process_id,
-            self.current_session_id,
-            self.stability_delay_ms,
-            self.priority_class,
+            ForegroundBoostRequest {
+                process_id: self.process_id,
+                process_name: self.process_name,
+                current_process_id: self.current_process_id,
+                current_session_id: self.current_session_id,
+                stability_delay_ms: self.stability_delay_ms,
+                priority_class: self.priority_class,
+            },
             self.action_log,
         ) {
             Ok(()) => Ok(()),
@@ -1937,14 +1951,16 @@ impl AppPriorityActionBackend for ForegroundResponsivenessPriorityBackend<'_, '_
         };
 
         match apply_priority(
-            self.process_id,
-            self.process_name.clone(),
-            priority_class,
-            self.existing,
+            ApplyPriorityRequest {
+                process_id: self.process_id,
+                process_name: self.process_name.clone(),
+                priority_class,
+                existing: self.existing,
+                source: self.source,
+                apply_efficiency_mode: self.apply_efficiency_mode,
+                log_success: self.log_success,
+            },
             self.action_log,
-            self.source,
-            self.apply_efficiency_mode,
-            self.log_success,
             &mut self.changed,
         ) {
             Ok(Some(adjusted)) => {
@@ -1973,16 +1989,19 @@ impl AppPriorityActionBackend for ForegroundResponsivenessPriorityBackend<'_, '_
 }
 
 fn apply_priority(
-    process_id: u32,
-    process_name: String,
-    priority_class: u32,
-    existing: Option<&AdjustedProcess>,
+    request: ApplyPriorityRequest<'_>,
     action_log: &mut ActionLog,
-    source: PriorityTargetSource,
-    apply_efficiency_mode: bool,
-    log_success: bool,
     changed: &mut bool,
 ) -> Result<Option<AdjustedProcess>, PriorityError> {
+    let ApplyPriorityRequest {
+        process_id,
+        process_name,
+        priority_class,
+        existing,
+        source,
+        apply_efficiency_mode,
+        log_success,
+    } = request;
     let process = ProcessHandle::open(process_id)?;
     let reusable_existing =
         existing.filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name));
@@ -2102,12 +2121,6 @@ fn restore_boosted_priority(process_state: BoostedProcess) -> Result<(), Priorit
     process.set_priority_class(process_state.previous_priority)
 }
 
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
-}
-
 fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, PriorityError> {
     let process = ProcessHandle::open_query(process_id)?;
     process.cpu_sample()
@@ -2142,23 +2155,6 @@ fn process_group_cpu_sample(process_ids: &BTreeSet<u32>) -> Option<ProcessCpuSam
         cpu_time_100ns,
         sampled_at,
     })
-}
-
-fn process_cpu_usage_percent(previous: ProcessCpuSample, current: ProcessCpuSample) -> Option<f32> {
-    let elapsed = current.sampled_at.duration_since(previous.sampled_at);
-    let elapsed_100ns = elapsed.as_nanos() / 100;
-    if elapsed_100ns == 0 {
-        return None;
-    }
-
-    let cpu_delta = current
-        .cpu_time_100ns
-        .saturating_sub(previous.cpu_time_100ns) as f64;
-    let processor_count = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .max(1) as f64;
-    Some(((cpu_delta / (elapsed_100ns as f64 * processor_count)) * 100.0).clamp(0.0, 100.0) as f32)
 }
 
 fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
@@ -2279,17 +2275,6 @@ fn process_failure_message(
     format!("{action} {name} ({process_id}): {message}")
 }
 
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
-}
-
-fn process_failure_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
-}
-
 fn priority_source_label(source: PriorityTargetSource) -> &'static str {
     match source {
         PriorityTargetSource::AutoBalance => "Auto Balance",
@@ -2325,14 +2310,6 @@ fn background_apply_summary_log_due(last_logged_at: Option<Instant>, now: Instan
         .is_none_or(|last| now.duration_since(last) >= BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL)
 }
 
-fn process_count_label(count: usize) -> String {
-    if count == 1 {
-        "1 process".to_owned()
-    } else {
-        format!("{count} processes")
-    }
-}
-
 fn priority_class_label(priority_class: u32) -> &'static str {
     match priority_class {
         NORMAL_PRIORITY_CLASS => "Normal",
@@ -2343,15 +2320,6 @@ fn priority_class_label(priority_class: u32) -> &'static str {
         REALTIME_PRIORITY_CLASS => "Realtime",
         _ => "Unknown",
     }
-}
-
-fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    names
-        .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| !name.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }
 
 struct ProcessHandle(HANDLE);

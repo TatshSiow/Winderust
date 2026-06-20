@@ -9,7 +9,6 @@ use windows_sys::Win32::{
         CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
     },
     System::{
-        RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::{GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO},
         Threading::{
             GetCurrentProcessId, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -21,9 +20,13 @@ use windows_sys::Win32::{
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::SmartTrimSettings,
-    foreground::list_processes,
+    cpu::{process_cpu_usage_percent, ProcessCpuSample},
+    foreground::{
+        is_process_exited_message, list_processes, process_failure_key, process_session_id,
+        should_ignore_foreground_process,
+    },
     privilege::{enable_increase_quota_privilege, enable_profile_single_process_privilege},
-    rules::{execution_failure_suppression_threshold, ExecutionFailureState},
+    rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
 const MB: u64 = 1024 * 1024;
@@ -81,23 +84,15 @@ pub struct SmartTrimSnapshot {
 pub struct SmartTrimManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     last_trimmed: BTreeMap<u32, Instant>,
-    failure_suppression: BTreeMap<String, SmartTrimFailureSuppression>,
-    system_failure_suppression: BTreeMap<String, SmartTrimFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
+    system_failure_suppression: ExecutionFailureTracker,
 }
-
-type SmartTrimFailureSuppression = ExecutionFailureState;
 
 #[derive(Clone)]
 struct TrackedProcess {
     process_name: String,
     previous_cpu_time: Option<ProcessCpuSample>,
     idle_since: Option<Instant>,
-}
-
-#[derive(Clone, Copy)]
-struct ProcessCpuSample {
-    cpu_time_100ns: u64,
-    sampled_at: Instant,
 }
 
 #[derive(Clone, Copy)]
@@ -253,7 +248,7 @@ impl SmartTrimManager {
                 || is_builtin_excluded(&process.name)
                 || settings.exclusion_enabled_for(&process.name)
                 || should_ignore_foreground_process(
-                    settings,
+                    settings.exclude_foreground_app,
                     process.id,
                     &process.name,
                     foreground_process_id,
@@ -276,8 +271,7 @@ impl SmartTrimManager {
             .values()
             .map(|name| process_failure_key(name))
             .collect::<BTreeSet<_>>();
-        self.failure_suppression
-            .retain(|process_name, _| active_target_names.contains(process_name));
+        self.failure_suppression.retain_keys(&active_target_names);
 
         let mut candidate_processes = 0;
         let mut trimmed_processes = 0;
@@ -531,17 +525,12 @@ impl SmartTrimManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        let Some(suppression) = self
-            .failure_suppression
-            .get_mut(&process_failure_key(process_name))
-        else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
+        let suppression = self.failure_suppression.process_suppression(process_name);
+        if !suppression.suppressed {
             return false;
         }
 
-        if suppression.mark_suppression_logged() {
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::SmartTrim,
                 Some(process_id),
@@ -559,16 +548,12 @@ impl SmartTrimManager {
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
-        let suppression = self
-            .failure_suppression
-            .entry(process_failure_key(process_name))
-            .or_default();
-        suppression.record_failure();
+        self.failure_suppression
+            .record_process_failure(process_name);
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .remove(&process_failure_key(process_name));
+        self.failure_suppression.clear_process_failure(process_name);
     }
 
     fn is_system_action_suppressed(
@@ -577,14 +562,12 @@ impl SmartTrimManager {
         label: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        let Some(suppression) = self.system_failure_suppression.get_mut(key) else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
+        let suppression = self.system_failure_suppression.key_suppression(key);
+        if !suppression.suppressed {
             return false;
         }
 
-        if suppression.mark_suppression_logged() {
+        if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::SmartTrim,
                 None,
@@ -602,15 +585,11 @@ impl SmartTrimManager {
     }
 
     fn record_system_action_failure(&mut self, key: &str) {
-        let suppression = self
-            .system_failure_suppression
-            .entry(key.to_owned())
-            .or_default();
-        suppression.record_failure();
+        self.system_failure_suppression.record_key_failure(key);
     }
 
     fn clear_system_action_failure(&mut self, key: &str) {
-        self.system_failure_suppression.remove(key);
+        self.system_failure_suppression.clear_key_failure(key);
     }
 }
 
@@ -867,46 +846,10 @@ fn system_memory_load_percent() -> Result<u8, String> {
     }
 }
 
-fn process_cpu_usage_percent(previous: ProcessCpuSample, current: ProcessCpuSample) -> Option<f32> {
-    let elapsed = current.sampled_at.duration_since(previous.sampled_at);
-    let elapsed_100ns = elapsed.as_nanos() / 100;
-    if elapsed_100ns == 0 {
-        return None;
-    }
-
-    let cpu_delta = current
-        .cpu_time_100ns
-        .saturating_sub(previous.cpu_time_100ns) as f64;
-    let processor_count = std::thread::available_parallelism()
-        .map(usize::from)
-        .unwrap_or(1)
-        .max(1) as f64;
-    Some(((cpu_delta / (elapsed_100ns as f64 * processor_count)) * 100.0).clamp(0.0, 100.0) as f32)
-}
-
-fn should_ignore_foreground_process(
-    settings: &SmartTrimSettings,
-    process_id: u32,
-    process_name: &str,
-    foreground_process_id: Option<u32>,
-    foreground_process_name: Option<&str>,
-) -> bool {
-    settings.exclude_foreground_app
-        && (foreground_process_id.is_some_and(|id| id == process_id)
-            || foreground_process_name
-                .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
-}
-
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     BUILT_IN_EXCLUSIONS
         .iter()
         .any(|excluded| excluded.eq_ignore_ascii_case(process_name.trim()))
-}
-
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
 }
 
 fn open_process_error(process_id: u32, error: u32) -> SmartTrimError {
@@ -925,17 +868,6 @@ fn smart_trim_error_message(error: SmartTrimError) -> String {
         SmartTrimError::ProcessExited => "Process exited.".to_owned(),
         SmartTrimError::Failed(message) => message,
     }
-}
-
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
-}
-
-fn process_failure_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
 }
 
 fn filetime_to_u64(value: FILETIME) -> u64 {
@@ -1174,21 +1106,21 @@ mod tests {
         };
 
         assert!(should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             42,
             "helper.exe",
             Some(42),
             Some("app.exe"),
         ));
         assert!(should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             99,
             "APP.EXE",
             Some(42),
             Some("app.exe"),
         ));
         assert!(!should_ignore_foreground_process(
-            &settings,
+            settings.exclude_foreground_app,
             99,
             "other.exe",
             Some(42),

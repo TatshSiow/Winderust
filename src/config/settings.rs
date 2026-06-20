@@ -497,7 +497,7 @@ pub struct CpuLimiterRule {
     pub max_logical_processors: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PerformanceModeSettings {
     pub enabled: bool,
     #[serde(default)]
@@ -515,7 +515,7 @@ pub struct PerformanceModeRule {
     pub power_plan_guid: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchdogSettings {
     pub enabled: bool,
     #[serde(default)]
@@ -669,7 +669,7 @@ pub struct MemoryPrioritySettings {
     pub exclusions: Vec<ProcessExclusionRule>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchPrioritySettings {
     pub enabled: bool,
     #[serde(default)]
@@ -1007,9 +1007,10 @@ pub struct AppSuspensionRule {
     pub network_upload_threshold_unit: NetworkThresholdUnit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkThresholdUnit {
+    #[default]
     Bytes,
     Kilobytes,
     Megabytes,
@@ -1402,12 +1403,6 @@ const fn default_rule_network_download_threshold_bytes() -> u64 {
     1
 }
 
-impl Default for NetworkThresholdUnit {
-    fn default() -> Self {
-        Self::Bytes
-    }
-}
-
 impl NetworkThresholdUnit {
     pub const ALL: [Self; 8] = [
         Self::Bytes,
@@ -1524,24 +1519,6 @@ impl Default for CpuLimiterSettings {
     }
 }
 
-impl Default for PerformanceModeSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            rules: Vec::new(),
-        }
-    }
-}
-
-impl Default for WatchdogSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            rules: Vec::new(),
-        }
-    }
-}
-
 impl Default for ForegroundResponsivenessSettings {
     fn default() -> Self {
         Self {
@@ -1613,15 +1590,6 @@ impl Default for MemoryPrioritySettings {
             foreground_priority: default_memory_priority_foreground(),
             background_priority: default_memory_priority_background(),
             exclusions: Vec::new(),
-        }
-    }
-}
-
-impl Default for LaunchPrioritySettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            rules: Vec::new(),
         }
     }
 }
@@ -2270,21 +2238,23 @@ mod tests {
 
     #[test]
     fn auto_balance_exclusions_support_wildcards() {
-        let mut settings = ForegroundResponsivenessSettings::default();
-        settings.auto_balance_exclusions = vec![
-            ProcessExclusionRule {
-                enabled: true,
-                process_name: "game*.exe".to_owned(),
-            },
-            ProcessExclusionRule {
-                enabled: true,
-                process_name: "worker?.exe".to_owned(),
-            },
-            ProcessExclusionRule {
-                enabled: false,
-                process_name: "disabled.exe".to_owned(),
-            },
-        ];
+        let settings = ForegroundResponsivenessSettings {
+            auto_balance_exclusions: vec![
+                ProcessExclusionRule {
+                    enabled: true,
+                    process_name: "game*.exe".to_owned(),
+                },
+                ProcessExclusionRule {
+                    enabled: true,
+                    process_name: "worker?.exe".to_owned(),
+                },
+                ProcessExclusionRule {
+                    enabled: false,
+                    process_name: "disabled.exe".to_owned(),
+                },
+            ],
+            ..Default::default()
+        };
 
         assert!(settings.auto_balance_exclusion_enabled_for("GameClient.exe"));
         assert!(settings.auto_balance_exclusion_enabled_for("worker1.exe"));

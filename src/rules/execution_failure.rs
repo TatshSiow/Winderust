@@ -1,6 +1,11 @@
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::atomic::{AtomicU8, Ordering},
+};
+
+use crate::foreground::process_name_key;
 
 pub const DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
 pub const MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD: u8 = 1;
@@ -28,7 +33,7 @@ pub fn execution_failure_suppression_threshold() -> u8 {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ExecutionFailureState {
+struct ExecutionFailureState {
     pub attempts: u8,
     pub suppression_logged: bool,
 }
@@ -56,6 +61,74 @@ impl ExecutionFailureState {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExecutionFailureTracker {
+    states: BTreeMap<String, ExecutionFailureState>,
+}
+
+impl ExecutionFailureTracker {
+    pub fn clear(&mut self) {
+        self.states.clear();
+    }
+
+    pub fn retain_keys(&mut self, active_keys: &BTreeSet<String>) {
+        self.states.retain(|key, _| active_keys.contains(key));
+    }
+
+    pub fn key_suppression(&mut self, key: &str) -> ExecutionSuppression {
+        let Some(state) = self.states.get_mut(key) else {
+            return ExecutionSuppression::default();
+        };
+        if !state.is_suppressed() {
+            return ExecutionSuppression::default();
+        }
+
+        ExecutionSuppression::active(state.mark_suppression_logged())
+    }
+
+    pub fn is_key_suppressed(&self, key: &str) -> bool {
+        self.states
+            .get(key)
+            .is_some_and(ExecutionFailureState::is_suppressed)
+    }
+
+    pub fn process_suppression(&mut self, process_name: &str) -> ExecutionSuppression {
+        let Some(key) = process_failure_key(process_name) else {
+            return ExecutionSuppression::default();
+        };
+        self.key_suppression(&key)
+    }
+
+    pub fn record_key_failure(&mut self, key: &str) -> bool {
+        if key.is_empty() {
+            return false;
+        }
+        let is_new = !self.states.contains_key(key);
+        self.states
+            .entry(key.to_owned())
+            .or_default()
+            .record_failure();
+        is_new
+    }
+
+    pub fn record_process_failure(&mut self, process_name: &str) -> bool {
+        let Some(key) = process_failure_key(process_name) else {
+            return false;
+        };
+        self.record_key_failure(&key)
+    }
+
+    pub fn clear_key_failure(&mut self, key: &str) {
+        self.states.remove(key);
+    }
+
+    pub fn clear_process_failure(&mut self, process_name: &str) {
+        if let Some(key) = process_failure_key(process_name) {
+            self.clear_key_failure(&key);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExecutionSuppression {
     pub suppressed: bool,
@@ -69,6 +142,11 @@ impl ExecutionSuppression {
             newly_suppressed,
         }
     }
+}
+
+fn process_failure_key(process_name: &str) -> Option<String> {
+    let process_name = process_name_key(process_name);
+    (!process_name.is_empty()).then_some(process_name)
 }
 
 #[cfg(test)]
@@ -93,5 +171,21 @@ mod tests {
 
         assert!(state.mark_suppression_logged());
         assert!(!state.mark_suppression_logged());
+    }
+
+    #[test]
+    fn tracker_normalizes_process_names() {
+        let mut tracker = ExecutionFailureTracker::default();
+
+        tracker.record_process_failure("APP.exe");
+        tracker.record_process_failure("app.exe");
+        assert!(!tracker.process_suppression("app.exe").suppressed);
+
+        tracker.record_process_failure("app.exe");
+        let first = tracker.process_suppression("APP.exe");
+        let second = tracker.process_suppression("app.exe");
+
+        assert_eq!(first, ExecutionSuppression::active(true));
+        assert_eq!(second, ExecutionSuppression::active(false));
     }
 }

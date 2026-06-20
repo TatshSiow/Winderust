@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     sync::{Arc, Condvar, Mutex},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -17,20 +17,25 @@ use crate::{
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
-    foreground::{list_processes, top_level_window_process_ids, ForegroundDetector},
+    foreground::{
+        list_processes, process_name_key, top_level_window_process_ids, ForegroundDetector,
+    },
     gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
     io_priority::{IoPriorityManager, IoPrioritySnapshot},
     memory_priority::{MemoryPriorityManager, MemoryPrioritySnapshot},
     performance_mode::{PerformanceModeManager, PerformanceModeSnapshot},
     power::PowerPlanManager,
     power_source,
-    responsiveness::{ForegroundResponsivenessManager, ForegroundResponsivenessSnapshot},
+    responsiveness::{
+        ForegroundResponsivenessManager, ForegroundResponsivenessSnapshot,
+        ForegroundResponsivenessUpdate,
+    },
     rules::{
         active_app_resource_rules_for_settings, active_power_plan_rules_for_context,
         set_execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AppliedActionStore, ConflictGroup, DecisionInput, DetectorEvent, ExecutionFailureState,
-        PerformanceModeDecision, PowerPlanActionBackend, PreviousValue, ResolvedAction, RuleEngine,
-        RuntimeProcessInfo, RuntimeState,
+        AppliedActionStore, ConflictGroup, DecisionInput, DetectorEvent, ExecutionFailureTracker,
+        PerformanceModeDecision, PowerPlanActionBackend, PreviousValue, ProcessorPowerValueSet,
+        ResolvedAction, RuleEngine, RuntimeProcessInfo, RuntimeState,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
     smart_trim::{SmartTrimManager, SmartTrimSnapshot},
@@ -248,7 +253,7 @@ impl BackgroundAutomation {
     }
 
     pub fn request_app_suspension_freeze(&self, process_name: &str) {
-        let process_name = process_name.trim().to_ascii_lowercase();
+        let process_name = process_name_key(process_name);
         if process_name.is_empty() {
             return;
         }
@@ -365,11 +370,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_controller_activity_poll = Instant::now();
     let mut foreground_responsiveness_fast_until: Option<Instant> = None;
 
-    loop {
-        let snapshot = match automation_snapshot(&shared) {
-            Some(snapshot) => snapshot,
-            None => break,
-        };
+    while let Some(snapshot) = automation_snapshot(&shared) {
         let settings = snapshot.settings;
         let change_generation = snapshot.change_generation;
         let app_suspension_freeze_requests = snapshot.app_suspension_freeze_requests;
@@ -963,7 +964,7 @@ fn update_background_cpu_restriction_status(
 
 fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) {
     for name in names {
-        let name = name.trim().to_ascii_lowercase();
+        let name = process_name_key(name);
         if !name.is_empty()
             && !target
                 .iter()
@@ -1371,7 +1372,7 @@ struct HiddenAutomationRunner {
     current_guid: Option<String>,
     next_active_plan_refresh: Option<Instant>,
     last_switch_attempt: Option<(String, Instant)>,
-    switch_failure_suppression: BTreeMap<String, SwitchFailureSuppression>,
+    switch_failure_suppression: ExecutionFailureTracker,
     power: PowerPlanManager,
     cpu_usage: CpuUsageSnapshot,
     next_cpu_usage_refresh: Option<Instant>,
@@ -1400,8 +1401,6 @@ struct HiddenAutomationRunner {
     applied_action_store: AppliedActionStore,
     runtime_state: RuntimeState,
 }
-
-type SwitchFailureSuppression = ExecutionFailureState;
 
 impl HiddenAutomationRunner {
     fn note_settings(&mut self, settings: &Settings) -> bool {
@@ -1545,7 +1544,7 @@ impl HiddenAutomationRunner {
 
     fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {
         self.last_app_suspension_shell_user_intent
-            .map_or(true, |last| {
+            .is_none_or(|last| {
                 now.duration_since(last) >= APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL
             })
     }
@@ -1585,14 +1584,12 @@ impl HiddenAutomationRunner {
     }
 
     fn run_performance_mode_update(&mut self, settings: &Settings) -> PerformanceModeSnapshot {
-        let status = self.performance_mode_manager.update(
+        self.performance_mode_manager.update(
             &settings.performance_mode,
             &settings.power_plans,
             settings.general.enabled,
             &mut self.action_log,
-        );
-
-        status
+        )
     }
 
     fn run_watchdog_update(&mut self, settings: &Settings) -> WatchdogSnapshot {
@@ -1612,12 +1609,14 @@ impl HiddenAutomationRunner {
         let mut excluded_process_ids = self.eco_qos_manager.throttled_process_ids();
         excluded_process_ids.extend(self.performance_mode_manager.active_process_ids());
         self.foreground_responsiveness_manager.update(
-            &settings.foreground_responsiveness,
-            settings.general.enabled,
-            foreground_process_id,
-            self.cpu_usage.percent,
-            settings.eco_qos.enabled,
-            &excluded_process_ids,
+            ForegroundResponsivenessUpdate {
+                settings: &settings.foreground_responsiveness,
+                automation_enabled: settings.general.enabled,
+                foreground_process_id,
+                total_cpu_usage_percent: self.cpu_usage.percent,
+                background_efficiency_managed: settings.eco_qos.enabled,
+                eco_qos_process_ids: &excluded_process_ids,
+            },
             &mut self.action_log,
         )
     }
@@ -1705,7 +1704,7 @@ impl HiddenAutomationRunner {
     fn run_check(&mut self, settings: &Settings) {
         let should_refresh_active_plan = self
             .next_active_plan_refresh
-            .map_or(true, |refresh_at| Instant::now() >= refresh_at);
+            .is_none_or(|refresh_at| Instant::now() >= refresh_at);
         if should_refresh_active_plan {
             self.refresh_active_plan();
         }
@@ -1719,28 +1718,27 @@ impl HiddenAutomationRunner {
             .cpu_usage_scheduler
             .current_decision(&settings.cpu_usage_mode, self.cpu_usage.percent);
         self.runtime_state
-            .apply_event(DetectorEvent::ForegroundChanged(
-                foreground_process_id.and_then(|process_id| {
+            .apply_event(DetectorEvent::Foreground(foreground_process_id.and_then(
+                |process_id| {
                     foreground_app
                         .clone()
                         .map(|process_name| RuntimeProcessInfo {
                             process_id,
                             process_name,
                         })
-                }),
-            ));
+                },
+            )));
         if let Some(cpu_load_percent) = self.cpu_usage.percent {
             self.runtime_state
-                .apply_event(DetectorEvent::CpuLoadChanged(cpu_load_percent));
+                .apply_event(DetectorEvent::CpuLoad(cpu_load_percent));
         }
         if let Some(idle_for) = activity.idle_for {
-            self.runtime_state
-                .apply_event(DetectorEvent::UserIdleChanged {
-                    idle_secs: idle_for.as_secs(),
-                });
+            self.runtime_state.apply_event(DetectorEvent::UserIdle {
+                idle_secs: idle_for.as_secs(),
+            });
         }
         self.runtime_state
-            .apply_event(DetectorEvent::ActiveSchedulesChanged(
+            .apply_event(DetectorEvent::ActiveSchedules(
                 schedule
                     .as_ref()
                     .map(|schedule| vec![schedule.rule_name.clone()])
@@ -1791,7 +1789,7 @@ impl HiddenAutomationRunner {
     fn refresh_cpu_usage(&mut self) {
         if self
             .next_cpu_usage_refresh
-            .map_or(true, |refresh_at| Instant::now() >= refresh_at)
+            .is_none_or(|refresh_at| Instant::now() >= refresh_at)
         {
             self.cpu_usage = self.cpu_monitor.sample();
             self.next_cpu_usage_refresh = Some(Instant::now() + CPU_USAGE_REFRESH_INTERVAL);
@@ -1810,7 +1808,7 @@ impl HiddenAutomationRunner {
         let already_active = self
             .current_guid
             .as_deref()
-            .is_some_and(|guid| guid.eq_ignore_ascii_case(&plan_guid));
+            .is_some_and(|guid| guid.eq_ignore_ascii_case(plan_guid));
         if already_active {
             self.clear_switch_failure(plan_guid);
             return;
@@ -1821,7 +1819,7 @@ impl HiddenAutomationRunner {
         }
 
         if let Some((last_guid, attempted_at)) = &self.last_switch_attempt {
-            if last_guid.eq_ignore_ascii_case(&plan_guid)
+            if last_guid.eq_ignore_ascii_case(plan_guid)
                 && attempted_at.elapsed() < SWITCH_RETRY_INTERVAL
             {
                 return;
@@ -1855,21 +1853,17 @@ impl HiddenAutomationRunner {
 
     fn is_switch_suppressed(&self, target_guid: &str) -> bool {
         self.switch_failure_suppression
-            .get(&switch_failure_key(target_guid))
-            .is_some_and(ExecutionFailureState::is_suppressed)
+            .is_key_suppressed(&switch_failure_key(target_guid))
     }
 
     fn record_switch_failure(&mut self, target_guid: &str) {
-        let suppression = self
-            .switch_failure_suppression
-            .entry(switch_failure_key(target_guid))
-            .or_default();
-        suppression.record_failure();
+        self.switch_failure_suppression
+            .record_key_failure(&switch_failure_key(target_guid));
     }
 
     fn clear_switch_failure(&mut self, target_guid: &str) {
         self.switch_failure_suppression
-            .remove(&switch_failure_key(target_guid));
+            .clear_key_failure(&switch_failure_key(target_guid));
     }
 }
 
@@ -1963,27 +1957,20 @@ impl PowerPlanActionBackend for CachedPowerPlanBackend<'_> {
     fn set_processor_power_values(
         &mut self,
         plan_guid: &str,
-        ac_core_parking_min_percent: u8,
-        ac_performance_min_percent: u8,
-        ac_performance_max_percent: u8,
-        ac_boost_mode: u32,
-        dc_core_parking_min_percent: u8,
-        dc_performance_min_percent: u8,
-        dc_performance_max_percent: u8,
-        dc_boost_mode: u32,
+        values: ProcessorPowerValueSet,
     ) -> Result<(), String> {
         let values = crate::power::ProcessorPowerAcDcValues {
             ac: crate::power::ProcessorPowerValues::new_with_boost_mode(
-                u32::from(ac_core_parking_min_percent),
-                u32::from(ac_performance_min_percent),
-                u32::from(ac_performance_max_percent),
-                crate::power::ProcessorBoostMode::from_power_value(ac_boost_mode),
+                u32::from(values.ac_core_parking_min_percent),
+                u32::from(values.ac_performance_min_percent),
+                u32::from(values.ac_performance_max_percent),
+                crate::power::ProcessorBoostMode::from_power_value(values.ac_boost_mode),
             ),
             dc: crate::power::ProcessorPowerValues::new_with_boost_mode(
-                u32::from(dc_core_parking_min_percent),
-                u32::from(dc_performance_min_percent),
-                u32::from(dc_performance_max_percent),
-                crate::power::ProcessorBoostMode::from_power_value(dc_boost_mode),
+                u32::from(values.dc_core_parking_min_percent),
+                u32::from(values.dc_performance_min_percent),
+                u32::from(values.dc_performance_max_percent),
+                crate::power::ProcessorBoostMode::from_power_value(values.dc_boost_mode),
             ),
         };
         self.power.apply_processor_power_values(plan_guid, values)

@@ -5,20 +5,20 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
-    System::{
-        RemoteDesktop::ProcessIdToSessionId,
-        Threading::{
-            GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION,
-        },
+    System::Threading::{
+        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SET_INFORMATION,
     },
 };
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{GpuPrioritySettings, ProcessGpuPriority},
-    foreground::list_processes,
-    rules::ExecutionFailureState,
+    foreground::{
+        is_foreground_process, is_process_exited_message, list_processes, process_count_label,
+        process_failure_key, process_names_by_id, process_session_id, unique_app_names,
+    },
+    rules::ExecutionFailureTracker,
 };
 
 const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
@@ -63,7 +63,7 @@ pub struct GpuPrioritySnapshot {
 #[derive(Default)]
 pub struct GpuPriorityManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
-    failure_suppression: BTreeMap<String, GpuPriorityFailureSuppression>,
+    failure_suppression: ExecutionFailureTracker,
     pending_context: BTreeSet<String>,
     pending_apply_log_count: usize,
     pending_context_log_count: usize,
@@ -71,8 +71,6 @@ pub struct GpuPriorityManager {
     last_apply_summary_logged_at: Option<Instant>,
     last_skip_summary_logged_at: Option<Instant>,
 }
-
-type GpuPriorityFailureSuppression = ExecutionFailureState;
 
 #[derive(Clone)]
 struct AdjustedProcess {
@@ -161,10 +159,7 @@ impl GpuPriorityManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = processes
-            .iter()
-            .map(|process| (process.id, process.name.clone()))
-            .collect::<BTreeMap<_, _>>();
+        let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
             foreground_process_id.and_then(|id| {
                 processes
@@ -208,8 +203,7 @@ impl GpuPriorityManager {
             .values()
             .map(|(name, _priority)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
-        self.failure_suppression
-            .retain(|process_name, _| active_target_names.contains(process_name));
+        self.failure_suppression.retain_keys(&active_target_names);
         self.pending_context
             .retain(|process_name| active_target_names.contains(process_name));
 
@@ -451,31 +445,18 @@ impl GpuPriorityManager {
     }
 
     fn is_process_suppressed(&mut self, process_name: &str) -> bool {
-        let Some(suppression) = self
-            .failure_suppression
-            .get_mut(&process_failure_key(process_name))
-        else {
-            return false;
-        };
-        if !suppression.is_suppressed() {
-            return false;
-        }
-        suppression.mark_suppression_logged();
-
-        true
+        self.failure_suppression
+            .process_suppression(process_name)
+            .suppressed
     }
 
     fn record_process_failure(&mut self, process_name: &str) -> bool {
-        let key = process_failure_key(process_name);
-        let is_new = !self.failure_suppression.contains_key(&key);
-        let suppression = self.failure_suppression.entry(key).or_default();
-        suppression.record_failure();
-        is_new
+        self.failure_suppression
+            .record_process_failure(process_name)
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .remove(&process_failure_key(process_name));
+        self.failure_suppression.clear_process_failure(process_name);
     }
 
     fn record_process_pending_context(&mut self, process_name: &str) -> bool {
@@ -737,14 +718,6 @@ fn gpu_priority_summary_log_due(last_logged_at: Option<Instant>, now: Instant) -
     last_logged_at.is_none_or(|last| now.duration_since(last) >= GPU_PRIORITY_SUMMARY_LOG_INTERVAL)
 }
 
-fn process_count_label(count: usize) -> String {
-    if count == 1 {
-        "1 process".to_owned()
-    } else {
-        format!("{count} processes")
-    }
-}
-
 fn gpu_priority_status_message(
     pending_processes: usize,
     denied_processes: usize,
@@ -764,47 +737,10 @@ fn gpu_priority_status_message(
     }
 }
 
-fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
-}
-
-fn process_failure_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
-}
-
-fn process_session_id(process_id: u32) -> Option<u32> {
-    let mut session_id = 0;
-    let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
-    (ok != 0).then_some(session_id)
-}
-
-fn is_foreground_process(
-    process_id: u32,
-    process_name: &str,
-    foreground_process_id: Option<u32>,
-    foreground_process_name: Option<&str>,
-) -> bool {
-    Some(process_id) == foreground_process_id
-        || foreground_process_name
-            .is_some_and(|foreground| foreground.trim().eq_ignore_ascii_case(process_name.trim()))
-}
-
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     BUILT_IN_EXCLUSIONS
         .iter()
         .any(|excluded| excluded.eq_ignore_ascii_case(process_name.trim()))
-}
-
-fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
-    names
-        .map(|name| name.trim().to_ascii_lowercase())
-        .filter(|name| !name.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
 }
 
 fn last_error() -> u32 {

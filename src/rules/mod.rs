@@ -11,7 +11,8 @@ pub mod restore;
 #[allow(unused_imports)]
 pub use action_executor::{
     ActionExecution, ActionExecutor, AppLifecycleActionBackend, AppPriorityActionBackend,
-    AppResourceActionBackend, GenericActionBackend, PowerPlanActionBackend, SystemCpuActionBackend,
+    AppResourceActionBackend, GenericActionBackend, PowerPlanActionBackend, ProcessorPowerValueSet,
+    SystemCpuActionBackend,
 };
 #[allow(unused_imports)]
 pub use app_resource_adapter::{
@@ -27,7 +28,7 @@ pub use engine::{EngineEvaluation, RuleEngine};
 #[allow(unused_imports)]
 pub use execution_failure::{
     execution_failure_suppression_threshold, normalize_execution_failure_suppression_threshold,
-    set_execution_failure_suppression_threshold, ExecutionFailureState, ExecutionSuppression,
+    set_execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };

@@ -18,6 +18,7 @@ use crate::config::{
     LaunchPriorityRule, LaunchPrioritySettings, ProcessIoPrioritySetting,
     ProcessMemoryPrioritySetting,
 };
+use crate::foreground::process_name_key;
 
 const IFEO_SUB_KEY: &str =
     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
@@ -151,7 +152,7 @@ fn registry_rule_from_settings_rule(
 }
 
 pub fn normalize_process_image_name(process_name: &str) -> Option<String> {
-    let process_name = process_name.trim().to_ascii_lowercase();
+    let process_name = process_name_key(process_name);
     (!process_name.is_empty()
         && !process_name.contains('\\')
         && !process_name.contains('/')

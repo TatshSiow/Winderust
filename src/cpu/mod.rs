@@ -3,6 +3,7 @@ use std::{
     iter::once,
     mem::size_of,
     ptr::{null, null_mut},
+    time::Instant,
 };
 
 use windows_sys::{
@@ -41,6 +42,12 @@ pub struct CpuUsageMonitor {
 #[derive(Debug, Default)]
 pub struct PerProcessorUsageMonitor {
     previous: Option<Vec<ProcessorCpuTimes>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessCpuSample {
+    pub cpu_time_100ns: u64,
+    pub sampled_at: Instant,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -199,6 +206,26 @@ impl PerProcessorUsageMonitor {
         self.previous = Some(current);
         usage
     }
+}
+
+pub fn process_cpu_usage_percent(
+    previous: ProcessCpuSample,
+    current: ProcessCpuSample,
+) -> Option<f32> {
+    let elapsed = current.sampled_at.duration_since(previous.sampled_at);
+    let elapsed_100ns = elapsed.as_nanos() / 100;
+    if elapsed_100ns == 0 {
+        return None;
+    }
+
+    let cpu_delta = current
+        .cpu_time_100ns
+        .saturating_sub(previous.cpu_time_100ns) as f64;
+    let processor_count = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .max(1) as f64;
+    Some(((cpu_delta / (elapsed_100ns as f64 * processor_count)) * 100.0).clamp(0.0, 100.0) as f32)
 }
 
 fn read_system_cpu_times() -> Option<SystemCpuTimes> {
