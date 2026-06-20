@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::{Duration, Instant},
+};
 
 use windows_sys::Win32::{
     Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
@@ -15,11 +18,12 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{GpuPrioritySettings, ProcessGpuPriority},
     foreground::list_processes,
-    rules::{execution_failure_suppression_threshold, ExecutionFailureState},
+    rules::ExecutionFailureState,
 };
 
 const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
 const STATUS_INVALID_PARAMETER: u32 = 0xC000000D;
+const GPU_PRIORITY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "audiodg.exe",
@@ -61,6 +65,11 @@ pub struct GpuPriorityManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
     failure_suppression: BTreeMap<String, GpuPriorityFailureSuppression>,
     pending_context: BTreeSet<String>,
+    pending_apply_log_count: usize,
+    pending_context_log_count: usize,
+    pending_access_denied_log_count: usize,
+    last_apply_summary_logged_at: Option<Instant>,
+    last_skip_summary_logged_at: Option<Instant>,
 }
 
 type GpuPriorityFailureSuppression = ExecutionFailureState;
@@ -214,16 +223,26 @@ impl GpuPriorityManager {
         let mut pending_processes = 0;
         let mut denied_processes = 0;
         let mut suppressed_processes = 0;
+        let mut applied_log_count = 0;
+        let mut pending_context_log_count = 0;
+        let mut access_denied_log_count = 0;
 
         for (process_id, (process_name, priority)) in target_processes {
-            if self.is_process_suppressed(process_id, &process_name, action_log) {
+            if self.is_process_suppressed(&process_name) {
                 skipped_processes += 1;
                 suppressed_processes += 1;
                 continue;
             }
 
-            match self.apply_process(process_id, process_name.clone(), priority, action_log) {
-                Ok(ApplyOutcome::Applied) | Ok(ApplyOutcome::AlreadyApplied) => {
+            match self.apply_process(process_id, process_name.clone(), priority) {
+                Ok(ApplyOutcome::Applied { loggable }) => {
+                    if loggable {
+                        applied_log_count += 1;
+                    }
+                    self.clear_process_failure(&process_name);
+                    self.clear_process_pending_context(&process_name);
+                }
+                Ok(ApplyOutcome::AlreadyApplied) => {
                     self.clear_process_failure(&process_name);
                     self.clear_process_pending_context(&process_name);
                 }
@@ -234,20 +253,16 @@ impl GpuPriorityManager {
                     skipped_processes += 1;
                     denied_processes += 1;
                     self.clear_process_pending_context(&process_name);
-                    self.record_process_failure(&process_name);
-                    action_log.record(
-                        ActionLogFeature::GpuPriority,
-                        Some(process_id),
-                        process_name,
-                        ActionLogAction::Skip,
-                        ActionLogResult::Skipped,
-                        "Skipped because Windows denied GPU priority access to the process.",
-                    );
+                    if self.record_process_failure(&process_name) {
+                        access_denied_log_count += 1;
+                    }
                 }
                 Err(GpuPriorityError::GpuContextUnavailable) => {
                     skipped_processes += 1;
                     pending_processes += 1;
-                    self.record_process_pending_context(process_id, &process_name, action_log);
+                    if self.record_process_pending_context(&process_name) {
+                        pending_context_log_count += 1;
+                    }
                 }
                 Err(err) => {
                     self.clear_process_pending_context(&process_name);
@@ -256,6 +271,13 @@ impl GpuPriorityManager {
                 }
             }
         }
+        self.record_pending_log_summaries(
+            applied_log_count,
+            pending_context_log_count,
+            access_denied_log_count,
+            Instant::now(),
+            action_log,
+        );
 
         GpuPrioritySnapshot {
             enabled: true,
@@ -286,7 +308,6 @@ impl GpuPriorityManager {
         process_id: u32,
         process_name: String,
         priority: ProcessGpuPriority,
-        action_log: &mut ActionLog,
     ) -> Result<ApplyOutcome, GpuPriorityError> {
         let process = ProcessHandle::open(process_id)?;
         let reusable_existing = self
@@ -295,6 +316,10 @@ impl GpuPriorityManager {
             .filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name));
         let current_priority_raw = process.gpu_priority_raw()?;
         let desired_priority_raw = gpu_priority_raw(priority);
+        let changed = current_priority_raw != desired_priority_raw;
+        let loggable = reusable_existing
+            .map(|adjusted| adjusted.applied_priority != priority)
+            .unwrap_or(true);
 
         if reusable_existing.is_some_and(|adjusted| {
             adjusted.applied_priority == priority && current_priority_raw == desired_priority_raw
@@ -302,7 +327,7 @@ impl GpuPriorityManager {
             return Ok(ApplyOutcome::AlreadyApplied);
         }
 
-        if current_priority_raw != desired_priority_raw {
+        if changed {
             process.set_gpu_priority_raw(desired_priority_raw)?;
             let refreshed_priority_raw = process.gpu_priority_raw()?;
             if refreshed_priority_raw != desired_priority_raw {
@@ -312,14 +337,8 @@ impl GpuPriorityManager {
                     gpu_priority_label(priority)
                 )));
             }
-            action_log.record(
-                ActionLogFeature::GpuPriority,
-                Some(process_id),
-                process_name.clone(),
-                ActionLogAction::Apply,
-                ActionLogResult::Applied,
-                format!("Set GPU priority to {}.", gpu_priority_label(priority)),
-            );
+        } else if reusable_existing.is_none() {
+            return Ok(ApplyOutcome::AlreadyApplied);
         }
 
         let previous_priority_raw = reusable_existing
@@ -333,7 +352,9 @@ impl GpuPriorityManager {
                 applied_priority: priority,
             },
         );
-        Ok(ApplyOutcome::Applied)
+        Ok(ApplyOutcome::Applied {
+            loggable: loggable && changed,
+        })
     }
 
     fn release_non_targets(
@@ -361,6 +382,7 @@ impl GpuPriorityManager {
         let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
         let failures = self.release_processes(&process_ids, None, action_log, reason);
         self.pending_context.clear();
+        self.reset_log_summaries();
         failures
     }
 
@@ -428,12 +450,7 @@ impl GpuPriorityManager {
         failures
     }
 
-    fn is_process_suppressed(
-        &mut self,
-        process_id: u32,
-        process_name: &str,
-        action_log: &mut ActionLog,
-    ) -> bool {
+    fn is_process_suppressed(&mut self, process_name: &str) -> bool {
         let Some(suppression) = self
             .failure_suppression
             .get_mut(&process_failure_key(process_name))
@@ -443,30 +460,17 @@ impl GpuPriorityManager {
         if !suppression.is_suppressed() {
             return false;
         }
-
-        if suppression.mark_suppression_logged() {
-            action_log.record(
-                ActionLogFeature::GpuPriority,
-                Some(process_id),
-                process_name.to_owned(),
-                ActionLogAction::Skip,
-                ActionLogResult::Skipped,
-                format!(
-                    "Stopped retrying GPU Priority after {} failed attempts.",
-                    execution_failure_suppression_threshold(),
-                ),
-            );
-        }
+        suppression.mark_suppression_logged();
 
         true
     }
 
-    fn record_process_failure(&mut self, process_name: &str) {
-        let suppression = self
-            .failure_suppression
-            .entry(process_failure_key(process_name))
-            .or_default();
+    fn record_process_failure(&mut self, process_name: &str) -> bool {
+        let key = process_failure_key(process_name);
+        let is_new = !self.failure_suppression.contains_key(&key);
+        let suppression = self.failure_suppression.entry(key).or_default();
         suppression.record_failure();
+        is_new
     }
 
     fn clear_process_failure(&mut self, process_name: &str) {
@@ -474,23 +478,51 @@ impl GpuPriorityManager {
             .remove(&process_failure_key(process_name));
     }
 
-    fn record_process_pending_context(
+    fn record_process_pending_context(&mut self, process_name: &str) -> bool {
+        self.pending_context
+            .insert(process_failure_key(process_name))
+    }
+
+    fn record_pending_log_summaries(
         &mut self,
-        process_id: u32,
-        process_name: &str,
+        applied_count: usize,
+        pending_context_count: usize,
+        access_denied_count: usize,
+        now: Instant,
         action_log: &mut ActionLog,
     ) {
-        if self
-            .pending_context
-            .insert(process_failure_key(process_name))
+        self.pending_apply_log_count += applied_count;
+        self.pending_context_log_count += pending_context_count;
+        self.pending_access_denied_log_count += access_denied_count;
+
+        if self.pending_apply_log_count > 0
+            && gpu_priority_summary_log_due(self.last_apply_summary_logged_at, now)
         {
+            let count = std::mem::take(&mut self.pending_apply_log_count);
+            self.last_apply_summary_logged_at = Some(now);
             action_log.record(
                 ActionLogFeature::GpuPriority,
-                Some(process_id),
-                process_name.to_owned(),
+                None,
+                "GPU Priority",
+                ActionLogAction::Apply,
+                ActionLogResult::Applied,
+                gpu_priority_apply_summary_message(count),
+            );
+        }
+
+        if (self.pending_context_log_count > 0 || self.pending_access_denied_log_count > 0)
+            && gpu_priority_summary_log_due(self.last_skip_summary_logged_at, now)
+        {
+            let pending_context_count = std::mem::take(&mut self.pending_context_log_count);
+            let access_denied_count = std::mem::take(&mut self.pending_access_denied_log_count);
+            self.last_skip_summary_logged_at = Some(now);
+            action_log.record(
+                ActionLogFeature::GpuPriority,
+                None,
+                "GPU Priority",
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
-                "Waiting for GPU scheduling priority to become available for the process.",
+                gpu_priority_skip_summary_message(pending_context_count, access_denied_count),
             );
         }
     }
@@ -499,10 +531,18 @@ impl GpuPriorityManager {
         self.pending_context
             .remove(&process_failure_key(process_name));
     }
+
+    fn reset_log_summaries(&mut self) {
+        self.pending_apply_log_count = 0;
+        self.pending_context_log_count = 0;
+        self.pending_access_denied_log_count = 0;
+        self.last_apply_summary_logged_at = None;
+        self.last_skip_summary_logged_at = None;
+    }
 }
 
 enum ApplyOutcome {
-    Applied,
+    Applied { loggable: bool },
     AlreadyApplied,
 }
 
@@ -662,6 +702,49 @@ fn gpu_priority_error_message(error: GpuPriorityError) -> String {
     }
 }
 
+fn gpu_priority_apply_summary_message(count: usize) -> String {
+    if count == 1 {
+        "Applied GPU priority to 1 process.".to_owned()
+    } else {
+        format!("Applied GPU priority to {count} processes.")
+    }
+}
+
+fn gpu_priority_skip_summary_message(
+    pending_context_count: usize,
+    access_denied_count: usize,
+) -> String {
+    let total = pending_context_count + access_denied_count;
+    match (pending_context_count, access_denied_count) {
+        (pending, 0) => format!(
+            "Skipped GPU priority for {}: waiting for GPU scheduling context.",
+            process_count_label(pending)
+        ),
+        (0, denied) => format!(
+            "Skipped GPU priority for {}: Windows denied access.",
+            process_count_label(denied)
+        ),
+        (pending, denied) => format!(
+            "Skipped GPU priority for {}: {} waiting for GPU scheduling context, {} denied access.",
+            process_count_label(total),
+            process_count_label(pending),
+            process_count_label(denied)
+        ),
+    }
+}
+
+fn gpu_priority_summary_log_due(last_logged_at: Option<Instant>, now: Instant) -> bool {
+    last_logged_at.is_none_or(|last| now.duration_since(last) >= GPU_PRIORITY_SUMMARY_LOG_INTERVAL)
+}
+
+fn process_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 process".to_owned()
+    } else {
+        format!("{count} processes")
+    }
+}
+
 fn gpu_priority_status_message(
     pending_processes: usize,
     denied_processes: usize,
@@ -764,36 +847,63 @@ mod tests {
     #[test]
     fn pending_gpu_context_does_not_suppress_future_retries() {
         let mut manager = GpuPriorityManager::default();
-        let mut log = ActionLog::new(8);
 
-        manager.record_process_pending_context(42, "game.exe", &mut log);
-        manager.record_process_pending_context(43, "GAME.exe", &mut log);
+        assert!(manager.record_process_pending_context("game.exe"));
+        assert!(!manager.record_process_pending_context("GAME.exe"));
 
-        assert!(!manager.is_process_suppressed(42, "game.exe", &mut log));
-        assert_eq!(log.entries().len(), 1);
-        assert!(log.entries()[0]
-            .reason
-            .contains("Waiting for GPU scheduling"));
+        assert!(!manager.is_process_suppressed("game.exe"));
     }
 
     #[test]
     fn repeated_process_failures_suppress_gpu_priority_retries() {
         let mut manager = GpuPriorityManager::default();
-        let mut log = ActionLog::new(8);
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.record_process_failure("APP.exe"));
+        assert!(!manager.record_process_failure("app.exe"));
+        assert!(!manager.is_process_suppressed("app.exe"));
 
-        manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+        assert!(!manager.record_process_failure("app.exe"));
+        assert!(manager.is_process_suppressed("app.exe"));
+        assert!(manager.is_process_suppressed("APP.exe"));
+    }
 
-        let entries = log.entries();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::GpuPriority);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
-        assert_eq!(entries[0].result, ActionLogResult::Skipped);
-        assert!(entries[0].reason.contains("Stopped retrying GPU Priority"));
+    #[test]
+    fn gpu_priority_summary_messages_use_process_counts() {
+        assert_eq!(
+            gpu_priority_apply_summary_message(1),
+            "Applied GPU priority to 1 process."
+        );
+        assert_eq!(
+            gpu_priority_apply_summary_message(3),
+            "Applied GPU priority to 3 processes."
+        );
+        assert_eq!(
+            gpu_priority_skip_summary_message(2, 0),
+            "Skipped GPU priority for 2 processes: waiting for GPU scheduling context."
+        );
+        assert_eq!(
+            gpu_priority_skip_summary_message(0, 1),
+            "Skipped GPU priority for 1 process: Windows denied access."
+        );
+        assert_eq!(
+            gpu_priority_skip_summary_message(2, 1),
+            "Skipped GPU priority for 3 processes: 2 processes waiting for GPU scheduling context, 1 process denied access."
+        );
+    }
+
+    #[test]
+    fn gpu_priority_summary_log_is_rate_limited() {
+        let now = Instant::now();
+
+        assert!(gpu_priority_summary_log_due(None, now));
+        assert!(!gpu_priority_summary_log_due(Some(now), now));
+        assert!(!gpu_priority_summary_log_due(
+            Some(now),
+            now + GPU_PRIORITY_SUMMARY_LOG_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(gpu_priority_summary_log_due(
+            Some(now),
+            now + GPU_PRIORITY_SUMMARY_LOG_INTERVAL
+        ));
     }
 }

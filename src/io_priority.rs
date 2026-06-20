@@ -341,6 +341,7 @@ impl IoPriorityManager {
         reason: &str,
     ) -> IoPriorityFailures {
         let mut failures = IoPriorityFailures::default();
+        let mut restored_processes = 0;
         for process_id in process_ids {
             let Some(process_state) = self.adjusted.remove(process_id) else {
                 continue;
@@ -352,14 +353,7 @@ impl IoPriorityManager {
             match restore_process(*process_id, process_state) {
                 Ok(()) => {
                     self.clear_process_failure(&log_name);
-                    action_log.record(
-                        ActionLogFeature::IoPriority,
-                        Some(*process_id),
-                        log_name,
-                        ActionLogAction::Restore,
-                        ActionLogResult::Restored,
-                        format!("Restored previous I/O priority: {reason}."),
-                    );
+                    restored_processes += 1;
                 }
                 Err(IoPriorityError::ProcessExited) => {}
                 Err(err) => {
@@ -367,6 +361,16 @@ impl IoPriorityManager {
                     failures.record("Restore", *process_id, &log_name, err, action_log);
                 }
             }
+        }
+        if restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::IoPriority,
+                None,
+                "I/O Priority",
+                ActionLogAction::Restore,
+                ActionLogResult::Restored,
+                io_priority_restore_summary_message(restored_processes, reason),
+            );
         }
         failures
     }
@@ -581,6 +585,21 @@ fn io_priority_error_message(error: IoPriorityError) -> String {
     }
 }
 
+fn io_priority_restore_summary_message(count: usize, reason: &str) -> String {
+    format!(
+        "Restored previous I/O priority for {}: {reason}.",
+        process_count_label(count)
+    )
+}
+
+fn process_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 process".to_owned()
+    } else {
+        format!("{count} processes")
+    }
+}
+
 fn is_process_exited_message(message: &str) -> bool {
     message
         .trim()
@@ -682,6 +701,18 @@ mod tests {
 
         manager.clear_process_failure("APP.exe");
         assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+    }
+
+    #[test]
+    fn io_priority_restore_summary_message_uses_process_count() {
+        assert_eq!(
+            io_priority_restore_summary_message(1, "foreground app is unknown"),
+            "Restored previous I/O priority for 1 process: foreground app is unknown."
+        );
+        assert_eq!(
+            io_priority_restore_summary_message(68, "foreground app is unknown"),
+            "Restored previous I/O priority for 68 processes: foreground app is unknown."
+        );
     }
 
     #[test]

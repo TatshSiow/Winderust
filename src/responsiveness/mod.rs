@@ -69,6 +69,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = &[
 const AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT: f32 = 85.0;
 const AUTO_BALANCE_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
 const AUTO_BALANCE_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
+const BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const FOREGROUND_LAUNCH_BOOST_WINDOW: Duration = Duration::from_secs(8);
 const AUTO_BALANCE_REPEAT_OFFENDER_SUSTAIN_DIVISOR: u32 = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +118,7 @@ pub struct ForegroundResponsivenessManager {
     auto_balance_affinity: CpuAffinityManager,
     auto_balance_memory_priority: MemoryPriorityManager,
     auto_balance_core_selection: Option<AutoBalanceCoreSelection>,
+    last_background_apply_summary_logged_at: Option<Instant>,
     per_processor_usage: PerProcessorUsageMonitor,
     failure_suppression: BTreeMap<String, PriorityFailureSuppression>,
 }
@@ -137,6 +139,7 @@ impl Default for ForegroundResponsivenessManager {
             ),
             auto_balance_memory_priority: MemoryPriorityManager::default(),
             auto_balance_core_selection: None,
+            last_background_apply_summary_logged_at: None,
             per_processor_usage: PerProcessorUsageMonitor::default(),
             failure_suppression: BTreeMap::new(),
         }
@@ -480,6 +483,7 @@ impl ForegroundResponsivenessManager {
         ));
         let mut skipped_processes = 0;
         skipped_processes += auto_balance_memory_snapshot.skipped_processes;
+        let mut summarized_background_applies = 0;
 
         for (process_id, (process_name, priority, source)) in target_processes {
             let failure_process_name = process_name.clone();
@@ -498,18 +502,24 @@ impl ForegroundResponsivenessManager {
                 action_log,
                 source,
                 apply_efficiency_mode: source != PriorityTargetSource::AutoBalance,
+                log_success: source == PriorityTargetSource::Rule,
                 adjusted: None,
                 skipped: false,
+                changed: false,
                 last_error: None,
             };
             let execution = ActionExecutor.apply_app_priority_action(&action, &mut backend);
             let adjusted = backend.adjusted.take();
             let skipped = backend.skipped;
+            let changed = backend.changed;
             let last_error = backend.last_error.take();
             drop(backend);
 
             match execution {
                 ActionExecution::Applied | ActionExecution::AlreadyApplied => {
+                    if changed && source != PriorityTargetSource::Rule {
+                        summarized_background_applies += 1;
+                    }
                     if let Some(adjusted) = adjusted {
                         self.clear_process_failure(&failure_process_name);
                         self.adjusted.insert(process_id, adjusted);
@@ -564,8 +574,22 @@ impl ForegroundResponsivenessManager {
                 }
             }
         }
+        let now = Instant::now();
+        if summarized_background_applies > 0
+            && background_apply_summary_log_due(self.last_background_apply_summary_logged_at, now)
+        {
+            self.last_background_apply_summary_logged_at = Some(now);
+            action_log.record(
+                ActionLogFeature::ForegroundResponsiveness,
+                None,
+                "Auto Balance",
+                ActionLogAction::Apply,
+                ActionLogResult::Applied,
+                background_apply_summary_message(summarized_background_applies),
+            );
+        }
 
-        let auto_balance_details = self.auto_balance_statuses(Instant::now());
+        let auto_balance_details = self.auto_balance_statuses(now);
         let auto_balanced_processes = auto_balance_details
             .iter()
             .filter(|status| {
@@ -684,6 +708,7 @@ impl ForegroundResponsivenessManager {
         self.foreground_candidate = None;
         self.foreground_cpu_sample = None;
         self.auto_balance.clear();
+        self.last_background_apply_summary_logged_at = None;
         let affinity_settings = CpuAffinitySettings {
             enabled: false,
             exclude_foreground_app: true,
@@ -730,6 +755,7 @@ impl ForegroundResponsivenessManager {
         }
         let mut failures = PriorityFailures::default();
         let boosted = std::mem::take(&mut self.boosted);
+        let mut restored_processes = 0;
         for (process_id, process) in boosted {
             let process_name = process.process_name.clone();
             if let Err(err) = restore_boosted_priority(process) {
@@ -737,15 +763,18 @@ impl ForegroundResponsivenessManager {
                     failures.record_error("Restore", process_id, &process_name, err, action_log);
                 }
             } else {
-                action_log.record(
-                    ActionLogFeature::ForegroundResponsiveness,
-                    Some(process_id),
-                    process_name,
-                    ActionLogAction::Restore,
-                    ActionLogResult::Restored,
-                    format!("{reason}: restored foreground boost."),
-                );
+                restored_processes += 1;
             }
+        }
+        if restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::ForegroundResponsiveness,
+                None,
+                "Auto Balance",
+                ActionLogAction::Restore,
+                ActionLogResult::Restored,
+                foreground_boost_restore_summary_message(restored_processes, reason),
+            );
         }
         Some(failures)
     }
@@ -816,6 +845,7 @@ impl ForegroundResponsivenessManager {
         reason: &str,
     ) -> PriorityFailures {
         let mut failures = PriorityFailures::default();
+        let mut restored_processes = 0;
         for process_id in process_ids {
             if let Some(process) = self.adjusted.remove(process_id) {
                 let process_name = process.process_name.clone();
@@ -836,17 +866,20 @@ impl ForegroundResponsivenessManager {
                             );
                         }
                     } else {
-                        action_log.record(
-                            ActionLogFeature::ForegroundResponsiveness,
-                            Some(*process_id),
-                            process_name,
-                            ActionLogAction::Restore,
-                            ActionLogResult::Restored,
-                            format!("{reason}: restored background priority."),
-                        );
+                        restored_processes += 1;
                     }
                 }
             }
+        }
+        if restored_processes > 0 {
+            action_log.record(
+                ActionLogFeature::ForegroundResponsiveness,
+                None,
+                "Auto Balance",
+                ActionLogAction::Restore,
+                ActionLogResult::Restored,
+                background_priority_restore_summary_message(restored_processes, reason),
+            );
         }
         failures
     }
@@ -1880,8 +1913,10 @@ struct ForegroundResponsivenessPriorityBackend<'a, 'log> {
     action_log: &'log mut ActionLog,
     source: PriorityTargetSource,
     apply_efficiency_mode: bool,
+    log_success: bool,
     adjusted: Option<AdjustedProcess>,
     skipped: bool,
+    changed: bool,
     last_error: Option<PriorityError>,
 }
 
@@ -1909,6 +1944,8 @@ impl AppPriorityActionBackend for ForegroundResponsivenessPriorityBackend<'_, '_
             self.action_log,
             self.source,
             self.apply_efficiency_mode,
+            self.log_success,
+            &mut self.changed,
         ) {
             Ok(Some(adjusted)) => {
                 self.adjusted = Some(adjusted);
@@ -1943,6 +1980,8 @@ fn apply_priority(
     action_log: &mut ActionLog,
     source: PriorityTargetSource,
     apply_efficiency_mode: bool,
+    log_success: bool,
+    changed: &mut bool,
 ) -> Result<Option<AdjustedProcess>, PriorityError> {
     let process = ProcessHandle::open(process_id)?;
     let reusable_existing =
@@ -1970,14 +2009,17 @@ fn apply_priority(
         let current_state = process.power_throttling_state().ok();
         if !current_state.is_some_and(power_throttling_execution_enabled) {
             process.set_power_throttling_state(power_throttling_enabled_state(current_state))?;
-            action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
-                Some(process_id),
-                process_name.clone(),
-                ActionLogAction::Apply,
-                ActionLogResult::Applied,
-                "Enabled Windows Efficiency Mode for background responsiveness.",
-            );
+            *changed = true;
+            if log_success {
+                action_log.record(
+                    ActionLogFeature::ForegroundResponsiveness,
+                    Some(process_id),
+                    process_name.clone(),
+                    ActionLogAction::Apply,
+                    ActionLogResult::Applied,
+                    "Enabled Windows Efficiency Mode for background responsiveness.",
+                );
+            }
         }
         reusable_existing
             .and_then(|adjusted| adjusted.previous_efficiency_state)
@@ -1995,18 +2037,21 @@ fn apply_priority(
 
     if current_priority != priority_class {
         process.set_priority_class(priority_class)?;
-        action_log.record(
-            ActionLogFeature::ForegroundResponsiveness,
-            Some(process_id),
-            process_name.clone(),
-            ActionLogAction::Apply,
-            ActionLogResult::Applied,
-            format!(
-                "{} set background priority to {}.",
-                priority_source_label(source),
-                priority_class_label(priority_class)
-            ),
-        );
+        *changed = true;
+        if log_success {
+            action_log.record(
+                ActionLogFeature::ForegroundResponsiveness,
+                Some(process_id),
+                process_name.clone(),
+                ActionLogAction::Apply,
+                ActionLogResult::Applied,
+                format!(
+                    "{} set background priority to {}.",
+                    priority_source_label(source),
+                    priority_class_label(priority_class)
+                ),
+            );
+        }
     }
 
     let previous_priority = reusable_existing
@@ -2250,6 +2295,41 @@ fn priority_source_label(source: PriorityTargetSource) -> &'static str {
         PriorityTargetSource::AutoBalance => "Auto Balance",
         PriorityTargetSource::BackgroundPolicy => "Background policy",
         PriorityTargetSource::Rule => "Rule",
+    }
+}
+
+fn background_apply_summary_message(count: usize) -> String {
+    if count == 1 {
+        "Applied background responsiveness to 1 process.".to_owned()
+    } else {
+        format!("Applied background responsiveness to {count} processes.")
+    }
+}
+
+fn background_priority_restore_summary_message(count: usize, reason: &str) -> String {
+    format!(
+        "Restored background priority for {}: {reason}.",
+        process_count_label(count)
+    )
+}
+
+fn foreground_boost_restore_summary_message(count: usize, reason: &str) -> String {
+    format!(
+        "Restored foreground boost for {}: {reason}.",
+        process_count_label(count)
+    )
+}
+
+fn background_apply_summary_log_due(last_logged_at: Option<Instant>, now: Instant) -> bool {
+    last_logged_at
+        .is_none_or(|last| now.duration_since(last) >= BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL)
+}
+
+fn process_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 process".to_owned()
+    } else {
+        format!("{count} processes")
     }
 }
 
@@ -2515,6 +2595,50 @@ mod tests {
     }
 
     #[test]
+    fn background_apply_summary_message_uses_process_count() {
+        assert_eq!(
+            background_apply_summary_message(1),
+            "Applied background responsiveness to 1 process."
+        );
+        assert_eq!(
+            background_apply_summary_message(3),
+            "Applied background responsiveness to 3 processes."
+        );
+    }
+
+    #[test]
+    fn responsiveness_restore_summary_messages_use_process_count() {
+        assert_eq!(
+            background_priority_restore_summary_message(1, "process no longer matches a responsiveness rule"),
+            "Restored background priority for 1 process: process no longer matches a responsiveness rule."
+        );
+        assert_eq!(
+            background_priority_restore_summary_message(20, "process no longer matches a responsiveness rule"),
+            "Restored background priority for 20 processes: process no longer matches a responsiveness rule."
+        );
+        assert_eq!(
+            foreground_boost_restore_summary_message(17, "foreground app changed before stability delay"),
+            "Restored foreground boost for 17 processes: foreground app changed before stability delay."
+        );
+    }
+
+    #[test]
+    fn background_apply_summary_log_is_rate_limited() {
+        let now = Instant::now();
+
+        assert!(background_apply_summary_log_due(None, now));
+        assert!(!background_apply_summary_log_due(Some(now), now));
+        assert!(!background_apply_summary_log_due(
+            Some(now),
+            now + BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL - Duration::from_millis(1)
+        ));
+        assert!(background_apply_summary_log_due(
+            Some(now),
+            now + BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL
+        ));
+    }
+
+    #[test]
     fn foreground_boost_maps_to_generic_rule_priority() {
         assert_eq!(
             foreground_boost_rule_priority(ForegroundBoostPriority::Auto, None),
@@ -2544,8 +2668,10 @@ mod tests {
             action_log: &mut log,
             source: PriorityTargetSource::Rule,
             apply_efficiency_mode: true,
+            log_success: true,
             adjusted: None,
             skipped: false,
+            changed: false,
             last_error: None,
         };
 
