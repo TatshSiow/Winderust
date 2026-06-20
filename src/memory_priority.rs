@@ -22,13 +22,21 @@ use crate::{
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
+    "audiodg.exe",
+    "conhost.exe",
     "csrss.exe",
+    "ctfmon.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "fontdrvhost.exe",
     "lsaiso.exe",
     "lsass.exe",
     "registry",
     "services.exe",
+    "sihost.exe",
     "smss.exe",
     "system",
+    "taskmgr.exe",
     "wininit.exe",
     "winlogon.exe",
 ];
@@ -282,7 +290,7 @@ impl MemoryPriorityManager {
                         target.process_name,
                         ActionLogAction::Skip,
                         ActionLogResult::Skipped,
-                        "Skipped because the process could not be opened.",
+                        "Skipped because Windows denied memory priority access to the process.",
                     );
                 }
                 Err(err) => {
@@ -336,6 +344,14 @@ impl MemoryPriorityManager {
 
         if current_priority != priority {
             process.set_memory_priority(priority)?;
+            let refreshed_priority = process.memory_priority()?;
+            if refreshed_priority != priority {
+                return Err(MemoryPriorityError::Failed(format!(
+                    "Memory priority remained {} after requesting {}.",
+                    memory_priority_label(refreshed_priority),
+                    memory_priority_label(priority)
+                )));
+            }
             action_log.record(
                 action_log_feature,
                 Some(process_id),
@@ -426,6 +442,19 @@ impl MemoryPriorityManager {
                     );
                 }
                 Err(MemoryPriorityError::ProcessExited) => {}
+                Err(MemoryPriorityError::AccessDenied) => {
+                    self.record_process_failure(&log_name);
+                    action_log.record(
+                        action_log_feature,
+                        Some(*process_id),
+                        log_name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        format!(
+                            "Skipped restoring previous memory priority because Windows denied access: {reason}."
+                        ),
+                    );
+                }
                 Err(err) => {
                     self.record_process_failure(&log_name);
                     failures.record(
@@ -601,7 +630,17 @@ fn restore_process(
     process_state: AdjustedProcess,
 ) -> Result<(), MemoryPriorityError> {
     let process = ProcessHandle::open(process_id)?;
-    process.set_memory_priority(process_state.previous_priority)
+    process.set_memory_priority(process_state.previous_priority)?;
+    let refreshed_priority = process.memory_priority()?;
+    if refreshed_priority == process_state.previous_priority {
+        Ok(())
+    } else {
+        Err(MemoryPriorityError::Failed(format!(
+            "Memory priority remained {} after restoring {}.",
+            memory_priority_label(refreshed_priority),
+            memory_priority_label(process_state.previous_priority)
+        )))
+    }
 }
 
 fn open_process_error(process_id: u32, error: u32) -> MemoryPriorityError {

@@ -275,6 +275,14 @@ impl IoPriorityManager {
 
         if current_priority != priority {
             process.set_io_priority(priority)?;
+            let refreshed_priority = process.io_priority()?;
+            if refreshed_priority != priority {
+                return Err(IoPriorityError::Failed(format!(
+                    "I/O priority remained {} after requesting {}.",
+                    io_priority_label(refreshed_priority),
+                    io_priority_label(priority)
+                )));
+            }
             action_log.record(
                 ActionLogFeature::IoPriority,
                 Some(process_id),
@@ -505,7 +513,17 @@ impl Drop for ProcessHandle {
 
 fn restore_process(process_id: u32, process_state: AdjustedProcess) -> Result<(), IoPriorityError> {
     let process = ProcessHandle::open(process_id)?;
-    process.set_io_priority(process_state.previous_priority)
+    process.set_io_priority(process_state.previous_priority)?;
+    let refreshed_priority = process.io_priority()?;
+    if refreshed_priority == process_state.previous_priority {
+        Ok(())
+    } else {
+        Err(IoPriorityError::Failed(format!(
+            "I/O priority remained {} after restoring {}.",
+            io_priority_label(refreshed_priority),
+            io_priority_label(process_state.previous_priority)
+        )))
+    }
 }
 
 fn ntstatus_result(status: i32) -> Result<(), IoPriorityError> {

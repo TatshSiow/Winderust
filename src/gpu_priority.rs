@@ -19,6 +19,7 @@ use crate::{
 };
 
 const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
+const STATUS_INVALID_PARAMETER: u32 = 0xC000000D;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
     "audiodg.exe",
@@ -71,6 +72,7 @@ struct AdjustedProcess {
 enum GpuPriorityError {
     AccessDenied,
     ProcessExited,
+    UnsupportedProcess,
     Failed(String),
 }
 
@@ -226,7 +228,19 @@ impl GpuPriorityManager {
                         process_name,
                         ActionLogAction::Skip,
                         ActionLogResult::Skipped,
-                        "Skipped because the process could not be opened.",
+                        "Skipped because Windows denied GPU priority access to the process.",
+                    );
+                }
+                Err(GpuPriorityError::UnsupportedProcess) => {
+                    skipped_processes += 1;
+                    self.record_process_failure(&process_name);
+                    action_log.record(
+                        ActionLogFeature::GpuPriority,
+                        Some(process_id),
+                        process_name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        "Skipped because GPU scheduling priority is unavailable for the process.",
                     );
                 }
                 Err(err) => {
@@ -275,6 +289,14 @@ impl GpuPriorityManager {
 
         if current_priority_raw != desired_priority_raw {
             process.set_gpu_priority_raw(desired_priority_raw)?;
+            let refreshed_priority_raw = process.gpu_priority_raw()?;
+            if refreshed_priority_raw != desired_priority_raw {
+                return Err(GpuPriorityError::Failed(format!(
+                    "GPU priority remained {} after requesting {}.",
+                    gpu_priority_raw_label(refreshed_priority_raw),
+                    gpu_priority_label(priority)
+                )));
+            }
             action_log.record(
                 ActionLogFeature::GpuPriority,
                 Some(process_id),
@@ -354,6 +376,32 @@ impl GpuPriorityManager {
                     );
                 }
                 Err(GpuPriorityError::ProcessExited) => {}
+                Err(GpuPriorityError::AccessDenied) => {
+                    self.record_process_failure(&log_name);
+                    action_log.record(
+                        ActionLogFeature::GpuPriority,
+                        Some(*process_id),
+                        log_name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        format!(
+                            "Skipped restoring previous GPU priority because Windows denied access: {reason}."
+                        ),
+                    );
+                }
+                Err(GpuPriorityError::UnsupportedProcess) => {
+                    self.record_process_failure(&log_name);
+                    action_log.record(
+                        ActionLogFeature::GpuPriority,
+                        Some(*process_id),
+                        log_name,
+                        ActionLogAction::Skip,
+                        ActionLogResult::Skipped,
+                        format!(
+                            "Skipped restoring previous GPU priority because GPU scheduling priority is unavailable: {reason}."
+                        ),
+                    );
+                }
                 Err(err) => {
                     self.record_process_failure(&log_name);
                     failures.record("Restore", *process_id, &log_name, err, action_log);
@@ -493,19 +541,30 @@ fn restore_process(
     process_state: AdjustedProcess,
 ) -> Result<(), GpuPriorityError> {
     let process = ProcessHandle::open(process_id)?;
-    process.set_gpu_priority_raw(process_state.previous_priority_raw)
+    process.set_gpu_priority_raw(process_state.previous_priority_raw)?;
+    let refreshed_priority_raw = process.gpu_priority_raw()?;
+    if refreshed_priority_raw == process_state.previous_priority_raw {
+        Ok(())
+    } else {
+        Err(GpuPriorityError::Failed(format!(
+            "GPU priority remained {} after restoring {}.",
+            gpu_priority_raw_label(refreshed_priority_raw),
+            gpu_priority_raw_label(process_state.previous_priority_raw)
+        )))
+    }
 }
 
 fn ntstatus_result(status: i32) -> Result<(), GpuPriorityError> {
     if status >= 0 {
         Ok(())
-    } else if status as u32 == STATUS_PROCESS_IS_TERMINATING {
-        Err(GpuPriorityError::ProcessExited)
     } else {
-        Err(GpuPriorityError::Failed(format!(
-            "NTSTATUS 0x{:08X}.",
-            status as u32
-        )))
+        match status as u32 {
+            STATUS_PROCESS_IS_TERMINATING => Err(GpuPriorityError::ProcessExited),
+            STATUS_INVALID_PARAMETER => Err(GpuPriorityError::UnsupportedProcess),
+            status => Err(GpuPriorityError::Failed(format!(
+                "NTSTATUS 0x{status:08X}."
+            ))),
+        }
     }
 }
 
@@ -537,10 +596,25 @@ pub fn gpu_priority_label(priority: ProcessGpuPriority) -> &'static str {
     }
 }
 
+fn gpu_priority_raw_label(priority: u32) -> String {
+    match priority {
+        0 => "Idle".to_owned(),
+        1 => "Below Normal".to_owned(),
+        2 => "Normal".to_owned(),
+        3 => "Above Normal".to_owned(),
+        4 => "High".to_owned(),
+        5 => "Realtime".to_owned(),
+        other => format!("Unknown ({other})"),
+    }
+}
+
 fn gpu_priority_error_message(error: GpuPriorityError) -> String {
     match error {
         GpuPriorityError::AccessDenied => "Access denied.".to_owned(),
         GpuPriorityError::ProcessExited => "Process exited.".to_owned(),
+        GpuPriorityError::UnsupportedProcess => {
+            "GPU scheduling priority is unavailable for this process.".to_owned()
+        }
         GpuPriorityError::Failed(message) => message,
     }
 }
@@ -615,6 +689,14 @@ mod tests {
         assert_eq!(gpu_priority_raw(ProcessGpuPriority::BelowNormal), 1);
         assert_eq!(gpu_priority_raw(ProcessGpuPriority::Normal), 2);
         assert_eq!(gpu_priority_raw(ProcessGpuPriority::AboveNormal), 3);
+    }
+
+    #[test]
+    fn d3dkmt_invalid_parameter_is_skipped_as_unsupported_process() {
+        assert!(matches!(
+            ntstatus_result(STATUS_INVALID_PARAMETER as i32),
+            Err(GpuPriorityError::UnsupportedProcess)
+        ));
     }
 
     #[test]
