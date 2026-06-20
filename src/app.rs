@@ -235,6 +235,40 @@ impl ActionLogResultFilter {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionLogFeatureFilter {
+    All,
+    Feature(ActionLogFeature),
+}
+
+impl ActionLogFeatureFilter {
+    const ALL: [Self; 14] = [
+        Self::All,
+        Self::Feature(ActionLogFeature::AppSuspension),
+        Self::Feature(ActionLogFeature::BackgroundCpuRestriction),
+        Self::Feature(ActionLogFeature::CoreSteering),
+        Self::Feature(ActionLogFeature::EcoQos),
+        Self::Feature(ActionLogFeature::CpuLimiter),
+        Self::Feature(ActionLogFeature::PerformanceMode),
+        Self::Feature(ActionLogFeature::Watchdog),
+        Self::Feature(ActionLogFeature::ForegroundResponsiveness),
+        Self::Feature(ActionLogFeature::IoPriority),
+        Self::Feature(ActionLogFeature::GpuPriority),
+        Self::Feature(ActionLogFeature::MemoryPriority),
+        Self::Feature(ActionLogFeature::SmartTrim),
+        Self::Feature(ActionLogFeature::TimerResolution),
+    ];
+
+    fn matches(self, feature: ActionLogFeature) -> bool {
+        match self {
+            Self::All => true,
+            Self::Feature(filter_feature) => filter_feature == feature,
+        }
+    }
+}
+
+const ACTION_LOG_PAGE_SIZE: usize = 15;
+
 const ACCENT_PALETTE: [u32; 48] = [
     0xffb900, 0xff8c00, 0xf7630c, 0xca5010, 0xda3b01, 0xef6950, 0xd13438, 0xff4343, 0xe74856,
     0xe81123, 0xea005e, 0xc30052, 0xe3008c, 0xbf0077, 0xc239b3, 0x9a0089, 0x0078d4, 0x0063b1,
@@ -327,7 +361,9 @@ pub struct PowerLeafApp {
     smart_trim_status: SmartTrimSnapshot,
     timer_resolution_status: TimerResolutionSnapshot,
     action_log_entries: Vec<ActionLogEntry>,
-    action_log_filter: ActionLogResultFilter,
+    action_log_result_filter: ActionLogResultFilter,
+    action_log_feature_filter: ActionLogFeatureFilter,
+    action_log_page: usize,
     foreground_app: Option<String>,
     decision: DecisionOutcome,
     next_schedule: String,
@@ -1045,7 +1081,9 @@ impl PowerLeafApp {
             smart_trim_status: SmartTrimSnapshot::default(),
             timer_resolution_status: initial_timer_resolution_status,
             action_log_entries: Vec::new(),
-            action_log_filter: ActionLogResultFilter::All,
+            action_log_result_filter: ActionLogResultFilter::All,
+            action_log_feature_filter: ActionLogFeatureFilter::All,
+            action_log_page: 0,
             foreground_app: None,
             decision: DecisionOutcome {
                 target_guid: None,
@@ -12113,84 +12151,94 @@ impl PowerLeafApp {
     }
 
     fn render_action_log_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut visible_entries = Vec::new();
-        for entry in self
-            .action_log_entries
-            .iter()
-            .rev()
-            .filter(|entry| self.action_log_filter.matches(entry.result))
-        {
-            visible_entries.push(entry);
-            if visible_entries.len() == 100 {
-                break;
-            }
-        }
+        let visible_entries = action_log_filtered_entries(
+            &self.action_log_entries,
+            self.action_log_result_filter,
+            self.action_log_feature_filter,
+        );
+        let visible_count = visible_entries.len();
+        let page_count = action_log_page_count(visible_count);
+        let current_page = self.action_log_page.min(page_count.saturating_sub(1));
+        let page_start = current_page * ACTION_LOG_PAGE_SIZE;
+        let page_end = (page_start + ACTION_LOG_PAGE_SIZE).min(visible_count);
+        let page_entries = if page_start < page_end {
+            &visible_entries[page_start..page_end]
+        } else {
+            &[]
+        };
 
         let mut list = action_log_list_surface();
         if self.action_log_entries.is_empty() {
             list = list.child(action_log_empty_row(t!("action_log.empty").to_string()));
-        } else if visible_entries.is_empty() {
+        } else if visible_count == 0 {
             list = list.child(action_log_empty_row(
                 t!("action_log.no_filter_matches").to_string(),
             ));
         } else {
             list = list.child(action_log_header_row());
-            for (index, entry) in visible_entries.into_iter().enumerate() {
+            for (index, entry) in page_entries.iter().enumerate() {
                 list = list.child(action_log_entry_row(entry, index > 0));
             }
         }
 
-        self.page_shell(Page::ActionLog, cx)
+        let action_controls = h_flex()
+            .gap_2()
+            .items_center()
+            .flex_wrap()
             .child(
-                h_flex()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .flex_wrap()
-                    .child(self.render_action_log_filter(window, cx))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .flex_wrap()
-                            .child(
-                                control_button(Button::new("clear-action-log"))
-                                    .label(t!("action_log.clear").to_string())
-                                    .disabled(self.action_log_entries.is_empty())
-                                    .on_click(cx.listener(|app, _, _, cx| {
-                                        app.background_automation.clear_action_log();
-                                        app.action_log_entries.clear();
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                control_button(Button::new("export-action-log"))
-                                    .label(t!("action_log.export_csv").to_string())
-                                    .disabled(self.action_log_entries.is_empty())
-                                    .on_click(cx.listener(|app, _, _, cx| {
-                                        app.export_action_log_csv();
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
+                control_button(Button::new("clear-action-log"))
+                    .label(t!("action_log.clear").to_string())
+                    .disabled(self.action_log_entries.is_empty())
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.background_automation.clear_action_log();
+                        app.action_log_entries.clear();
+                        app.action_log_page = 0;
+                        cx.notify();
+                    })),
             )
+            .child(
+                control_button(Button::new("export-action-log"))
+                    .label(t!("action_log.export_csv").to_string())
+                    .disabled(self.action_log_entries.is_empty())
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.export_action_log_csv();
+                        cx.notify();
+                    })),
+            );
+        let page_controls = action_log_page_controls(visible_count, current_page, page_count, cx);
+
+        self.page_shell(Page::ActionLog, cx)
+            .child(self.render_action_log_feature_filter(window, cx))
+            .child(self.render_action_log_result_filter(window, cx))
+            .child(action_log_command_row(
+                action_controls.into_any_element(),
+                page_controls.into_any_element(),
+            ))
             .child(
                 v_flex()
                     .w_full()
                     .min_w(px(0.0))
                     .gap_2()
-                    .child(section_title_label(
-                        t!("action_log.recent_entries").to_string(),
+                    .child(action_log_table_summary(
+                        visible_count,
+                        current_page,
+                        page_count,
+                        page_start,
+                        page_end,
                     ))
                     .child(list),
             )
             .into_any_element()
     }
 
-    fn render_action_log_filter(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let selected = self.action_log_filter;
+    fn render_action_log_result_filter(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.action_log_result_filter;
         let dropdown = self.render_dropdown_select(
-            "action-log-filter",
+            "action-log-result-filter",
             action_log_filter_label(selected),
             true,
             DropdownSelectWidth::Standard,
@@ -12202,13 +12250,16 @@ impl PowerLeafApp {
                 for filter in ActionLogResultFilter::ALL {
                     options = options.child(
                         dropdown_option_row(
-                            SharedString::from(format!("action-log-filter-option-{filter:?}")),
+                            SharedString::from(format!(
+                                "action-log-result-filter-option-{filter:?}"
+                            )),
                             action_log_filter_label(filter),
                             selected == filter,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            app.action_log_filter = filter;
+                            app.action_log_result_filter = filter;
+                            app.action_log_page = 0;
                             app.active_power_plan_picker = None;
                             cx.notify();
                         })),
@@ -12219,8 +12270,54 @@ impl PowerLeafApp {
         );
 
         setting_action_card(
-            "action-log-filter-card",
-            t!("action_log.filter").to_string(),
+            "action-log-result-filter-card",
+            t!("action_log.result_filter").to_string(),
+            dropdown,
+        )
+        .into_any_element()
+    }
+
+    fn render_action_log_feature_filter(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.action_log_feature_filter;
+        let dropdown = self.render_dropdown_select(
+            "action-log-feature-filter",
+            action_log_feature_filter_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            ActionLogFeatureFilter::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for filter in ActionLogFeatureFilter::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "action-log-feature-filter-option-{filter:?}"
+                            )),
+                            action_log_feature_filter_label(filter),
+                            selected == filter,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.action_log_feature_filter = filter;
+                            app.action_log_page = 0;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
+
+        setting_action_card(
+            "action-log-feature-filter-card",
+            t!("action_log.feature_filter").to_string(),
             dropdown,
         )
         .into_any_element()
@@ -16738,6 +16835,51 @@ const ACTION_LOG_TIME_WIDTH: f32 = 96.0;
 const ACTION_LOG_FEATURE_WIDTH: f32 = 156.0;
 const ACTION_LOG_RESULT_WIDTH: f32 = 88.0;
 const ACTION_LOG_PROCESS_WIDTH: f32 = 176.0;
+const ACTION_LOG_PAGINATION_WIDTH: f32 = 320.0;
+
+fn action_log_command_row(actions: AnyElement, page_controls: AnyElement) -> gpui::Div {
+    h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(32.0))
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .flex_wrap()
+        .child(div().flex_1().min_w(px(0.0)).child(actions))
+        .child(div().flex_shrink_0().child(page_controls))
+}
+
+fn action_log_page_controls(
+    total_entries: usize,
+    current_page: usize,
+    page_count: usize,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Div {
+    let has_entries = total_entries > 0;
+    h_flex()
+        .flex_shrink_0()
+        .items_center()
+        .gap_2()
+        .child(
+            control_button(Button::new("action-log-prev-page"))
+                .label(t!("action_log.previous").to_string())
+                .disabled(!has_entries || current_page == 0)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.action_log_page = current_page.saturating_sub(1);
+                    cx.notify();
+                })),
+        )
+        .child(
+            control_button(Button::new("action-log-next-page"))
+                .label(t!("action_log.next").to_string())
+                .disabled(!has_entries || current_page + 1 >= page_count)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.action_log_page = current_page.saturating_add(1);
+                    cx.notify();
+                })),
+        )
+}
 
 fn action_log_list_surface() -> gpui::Div {
     v_flex()
@@ -16764,11 +16906,45 @@ fn action_log_empty_row(message: impl Into<SharedString>) -> gpui::Div {
         .child(text_muted(message.into()))
 }
 
+fn action_log_table_summary(
+    total_entries: usize,
+    current_page: usize,
+    page_count: usize,
+    page_start: usize,
+    page_end: usize,
+) -> gpui::Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(38.0))
+        .gap(px(2.0))
+        .child(
+            div()
+                .min_h(px(TEXT_BODY_LINE_HEIGHT))
+                .child(section_title_text(
+                    t!("action_log.recent_entries").to_string(),
+                )),
+        )
+        .child(
+            div()
+                .w(px(ACTION_LOG_PAGINATION_WIDTH))
+                .min_h(px(TEXT_BODY_LINE_HEIGHT))
+                .truncate()
+                .child(text_muted(action_log_pagination_label(
+                    total_entries,
+                    current_page,
+                    page_count,
+                    page_start,
+                    page_end,
+                ))),
+        )
+}
+
 fn action_log_header_row() -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(34.0))
+        .h(px(32.0))
         .items_center()
         .gap_3()
         .px_4()
@@ -16822,7 +16998,7 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
     let content = h_flex()
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(46.0))
+        .h(px(40.0))
         .items_center()
         .gap_3()
         .px_4()
@@ -16833,6 +17009,7 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
             div()
                 .w(px(ACTION_LOG_SEQUENCE_WIDTH))
                 .flex_shrink_0()
+                .truncate()
                 .text_color(rgb(dim_text_color()))
                 .child(format!("#{}", entry.sequence)),
         )
@@ -16840,6 +17017,7 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
             div()
                 .w(px(ACTION_LOG_TIME_WIDTH))
                 .flex_shrink_0()
+                .truncate()
                 .text_color(rgb(muted_text_color()))
                 .child(action_log_time_label(entry.timestamp_epoch_ms)),
         )
@@ -16877,7 +17055,7 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
         .id(row_id.clone())
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(46.0))
+        .h(px(40.0))
         .relative()
         .overflow_hidden()
         .on_hover({
@@ -16890,7 +17068,13 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
             row.border_t_1().border_color(rgb(border_color()))
         })
         .child(animated_card_hover_layer(row_id.as_ref()))
-        .child(animated_presence_child(row_id, content.into_any_element()))
+        .child(
+            div()
+                .w_full()
+                .min_w(px(0.0))
+                .overflow_hidden()
+                .child(content),
+        )
 }
 
 fn action_log_result_tag(result: ActionLogResult) -> Tag {
@@ -16904,21 +17088,25 @@ fn action_log_result_tag(result: ActionLogResult) -> Tag {
     }
 }
 
-fn action_log_feature_label(feature: ActionLogFeature) -> &'static str {
+fn action_log_feature_label(feature: ActionLogFeature) -> String {
     match feature {
-        ActionLogFeature::AppSuspension => "App Suspension",
-        ActionLogFeature::BackgroundCpuRestriction => "Background CPU Restriction",
-        ActionLogFeature::CoreSteering => "Core Steering",
-        ActionLogFeature::EcoQos => "Efficiency Mode",
-        ActionLogFeature::CpuLimiter => "Core Limiter",
-        ActionLogFeature::PerformanceMode => "By Running App",
-        ActionLogFeature::Watchdog => "Watchdog Rules",
-        ActionLogFeature::ForegroundResponsiveness => "Foreground Responsiveness",
-        ActionLogFeature::IoPriority => "I/O Priority",
-        ActionLogFeature::GpuPriority => "GPU Priority",
-        ActionLogFeature::MemoryPriority => "Memory Priority",
-        ActionLogFeature::SmartTrim => "SmartTrim",
-        ActionLogFeature::TimerResolution => "Timer Resolution",
+        ActionLogFeature::AppSuspension => t!("nav.app_suspension").to_string(),
+        ActionLogFeature::BackgroundCpuRestriction => {
+            t!("nav.background_cpu_restriction").to_string()
+        }
+        ActionLogFeature::CoreSteering => t!("nav.cpu_affinity").to_string(),
+        ActionLogFeature::EcoQos => t!("nav.efficiency_mode").to_string(),
+        ActionLogFeature::CpuLimiter => t!("nav.cpu_limiter").to_string(),
+        ActionLogFeature::PerformanceMode => t!("nav.performance_mode").to_string(),
+        ActionLogFeature::Watchdog => t!("nav.watchdog").to_string(),
+        ActionLogFeature::ForegroundResponsiveness => {
+            t!("nav.foreground_responsiveness").to_string()
+        }
+        ActionLogFeature::IoPriority => t!("nav.io_priority").to_string(),
+        ActionLogFeature::GpuPriority => t!("nav.gpu_priority").to_string(),
+        ActionLogFeature::MemoryPriority => t!("nav.memory_priority").to_string(),
+        ActionLogFeature::SmartTrim => t!("nav.smart_trim").to_string(),
+        ActionLogFeature::TimerResolution => t!("nav.timer_resolution").to_string(),
     }
 }
 
@@ -16950,6 +17138,53 @@ fn action_log_filter_label(filter: ActionLogResultFilter) -> String {
         ActionLogResultFilter::Failed => {
             action_log_result_label(ActionLogResult::Failed).to_string()
         }
+    }
+}
+
+fn action_log_feature_filter_label(filter: ActionLogFeatureFilter) -> String {
+    match filter {
+        ActionLogFeatureFilter::All => t!("action_log.filter_all").to_string(),
+        ActionLogFeatureFilter::Feature(feature) => action_log_feature_label(feature),
+    }
+}
+
+fn action_log_filtered_entries<'a>(
+    entries: &'a [ActionLogEntry],
+    result_filter: ActionLogResultFilter,
+    feature_filter: ActionLogFeatureFilter,
+) -> Vec<&'a ActionLogEntry> {
+    entries
+        .iter()
+        .rev()
+        .filter(|entry| {
+            result_filter.matches(entry.result) && feature_filter.matches(entry.feature)
+        })
+        .collect()
+}
+
+fn action_log_page_count(total_entries: usize) -> usize {
+    total_entries.div_ceil(ACTION_LOG_PAGE_SIZE)
+}
+
+fn action_log_pagination_label(
+    total_entries: usize,
+    current_page: usize,
+    page_count: usize,
+    page_start: usize,
+    page_end: usize,
+) -> String {
+    if total_entries == 0 {
+        t!("action_log.pagination_empty").to_string()
+    } else {
+        t!(
+            "action_log.pagination",
+            start = page_start + 1,
+            end = page_end,
+            total = total_entries,
+            current = current_page + 1,
+            pages = page_count.max(1)
+        )
+        .to_string()
     }
 }
 
@@ -17001,7 +17236,8 @@ fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
         csv.push(',');
         push_csv_field(&mut csv, &timestamp);
         csv.push(',');
-        push_csv_field(&mut csv, action_log_feature_label(entry.feature));
+        let feature = action_log_feature_label(entry.feature);
+        push_csv_field(&mut csv, &feature);
         csv.push(',');
         push_csv_field(&mut csv, &process_id);
         csv.push(',');
@@ -20519,6 +20755,49 @@ mod tests {
         assert!(csv.contains(
             ",Watchdog Rules,42,worker.exe,Fail,Failed,\"Restart failed, access denied\"\r\n"
         ));
+    }
+
+    #[test]
+    fn action_log_filtering_matches_result_and_feature() {
+        let entries = vec![
+            ActionLogEntry {
+                sequence: 1,
+                timestamp_epoch_ms: 1_700_000_000_000,
+                feature: ActionLogFeature::Watchdog,
+                process_id: Some(42),
+                process_name: "worker.exe".to_owned(),
+                action: ActionLogAction::Fail,
+                result: ActionLogResult::Failed,
+                reason: "restart failed".to_owned(),
+            },
+            ActionLogEntry {
+                sequence: 2,
+                timestamp_epoch_ms: 1_700_000_000_100,
+                feature: ActionLogFeature::GpuPriority,
+                process_id: Some(43),
+                process_name: "game.exe".to_owned(),
+                action: ActionLogAction::Apply,
+                result: ActionLogResult::Applied,
+                reason: "priority applied".to_owned(),
+            },
+        ];
+
+        let filtered_entries = action_log_filtered_entries(
+            &entries,
+            ActionLogResultFilter::Failed,
+            ActionLogFeatureFilter::Feature(ActionLogFeature::Watchdog),
+        );
+
+        assert_eq!(filtered_entries.len(), 1);
+        assert_eq!(filtered_entries[0].sequence, 1);
+    }
+
+    #[test]
+    fn action_log_page_count_rounds_up() {
+        assert_eq!(action_log_page_count(0), 0);
+        assert_eq!(action_log_page_count(1), 1);
+        assert_eq!(action_log_page_count(ACTION_LOG_PAGE_SIZE), 1);
+        assert_eq!(action_log_page_count(ACTION_LOG_PAGE_SIZE + 1), 2);
     }
 
     #[test]
