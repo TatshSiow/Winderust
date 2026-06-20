@@ -204,6 +204,7 @@ impl IoPriorityManager {
             "process is excluded or no longer matches I/O priority defaults",
         );
         let mut skipped_processes = 0;
+        let mut applied_processes = 0;
 
         for (process_id, (process_name, priority)) in target_processes {
             if self.is_process_suppressed(process_id, &process_name, action_log) {
@@ -211,8 +212,14 @@ impl IoPriorityManager {
                 continue;
             }
 
-            match self.apply_process(process_id, process_name.clone(), priority, action_log) {
-                Ok(ApplyOutcome::Applied) | Ok(ApplyOutcome::AlreadyApplied) => {
+            match self.apply_process(process_id, process_name.clone(), priority) {
+                Ok(ApplyOutcome::Applied { loggable }) => {
+                    if loggable {
+                        applied_processes += 1;
+                    }
+                    self.clear_process_failure(&process_name);
+                }
+                Ok(ApplyOutcome::AlreadyApplied) => {
                     self.clear_process_failure(&process_name);
                 }
                 Err(IoPriorityError::ProcessExited) => {
@@ -236,6 +243,16 @@ impl IoPriorityManager {
                 }
             }
         }
+        if applied_processes > 0 {
+            action_log.record(
+                ActionLogFeature::IoPriority,
+                None,
+                "I/O Priority",
+                ActionLogAction::Apply,
+                ActionLogResult::Applied,
+                io_priority_apply_summary_message(applied_processes),
+            );
+        }
 
         IoPrioritySnapshot {
             enabled: true,
@@ -258,7 +275,6 @@ impl IoPriorityManager {
         process_id: u32,
         process_name: String,
         priority: ProcessIoPriority,
-        action_log: &mut ActionLog,
     ) -> Result<ApplyOutcome, IoPriorityError> {
         let process = ProcessHandle::open(process_id)?;
         let reusable_existing = self
@@ -283,14 +299,6 @@ impl IoPriorityManager {
                     io_priority_label(priority)
                 )));
             }
-            action_log.record(
-                ActionLogFeature::IoPriority,
-                Some(process_id),
-                process_name.clone(),
-                ActionLogAction::Apply,
-                ActionLogResult::Applied,
-                format!("Set I/O priority to {}.", io_priority_label(priority)),
-            );
         }
 
         let previous_priority = reusable_existing
@@ -304,7 +312,9 @@ impl IoPriorityManager {
                 applied_priority: priority,
             },
         );
-        Ok(ApplyOutcome::Applied)
+        Ok(ApplyOutcome::Applied {
+            loggable: current_priority != priority,
+        })
     }
 
     fn release_non_targets(
@@ -423,7 +433,7 @@ impl IoPriorityManager {
 }
 
 enum ApplyOutcome {
-    Applied,
+    Applied { loggable: bool },
     AlreadyApplied,
 }
 
@@ -592,6 +602,10 @@ fn io_priority_restore_summary_message(count: usize, reason: &str) -> String {
     )
 }
 
+fn io_priority_apply_summary_message(count: usize) -> String {
+    format!("Applied I/O priority to {}.", process_count_label(count))
+}
+
 fn process_count_label(count: usize) -> String {
     if count == 1 {
         "1 process".to_owned()
@@ -712,6 +726,18 @@ mod tests {
         assert_eq!(
             io_priority_restore_summary_message(68, "foreground app is unknown"),
             "Restored previous I/O priority for 68 processes: foreground app is unknown."
+        );
+    }
+
+    #[test]
+    fn io_priority_apply_summary_message_uses_process_count() {
+        assert_eq!(
+            io_priority_apply_summary_message(1),
+            "Applied I/O priority to 1 process."
+        );
+        assert_eq!(
+            io_priority_apply_summary_message(68),
+            "Applied I/O priority to 68 processes."
         );
     }
 

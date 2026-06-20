@@ -256,6 +256,7 @@ impl MemoryPriorityManager {
             "process no longer matches a memory priority target",
         );
         let mut skipped_processes = 0;
+        let mut applied_processes = 0;
 
         for target in targets {
             if self.is_process_suppressed(
@@ -272,10 +273,14 @@ impl MemoryPriorityManager {
                 target.process_id,
                 target.process_name.clone(),
                 target.priority,
-                action_log_feature,
-                action_log,
             ) {
-                Ok(ApplyOutcome::Applied) | Ok(ApplyOutcome::AlreadyApplied) => {
+                Ok(ApplyOutcome::Applied { loggable }) => {
+                    if loggable {
+                        applied_processes += 1;
+                    }
+                    self.clear_process_failure(&target.process_name);
+                }
+                Ok(ApplyOutcome::AlreadyApplied) => {
                     self.clear_process_failure(&target.process_name);
                 }
                 Err(MemoryPriorityError::ProcessExited) => {
@@ -306,6 +311,16 @@ impl MemoryPriorityManager {
                 }
             }
         }
+        if applied_processes > 0 {
+            action_log.record(
+                action_log_feature,
+                None,
+                memory_priority_summary_process_name(action_log_feature),
+                ActionLogAction::Apply,
+                ActionLogResult::Applied,
+                memory_priority_apply_summary_message(applied_processes),
+            );
+        }
 
         MemoryPrioritySnapshot {
             enabled: true,
@@ -326,8 +341,6 @@ impl MemoryPriorityManager {
         process_id: u32,
         process_name: String,
         priority: ProcessMemoryPriority,
-        action_log_feature: ActionLogFeature,
-        action_log: &mut ActionLog,
     ) -> Result<ApplyOutcome, MemoryPriorityError> {
         let process = ProcessHandle::open(process_id)?;
         let reusable_existing = self
@@ -352,17 +365,6 @@ impl MemoryPriorityManager {
                     memory_priority_label(priority)
                 )));
             }
-            action_log.record(
-                action_log_feature,
-                Some(process_id),
-                process_name.clone(),
-                ActionLogAction::Apply,
-                ActionLogResult::Applied,
-                format!(
-                    "Set memory priority to {}.",
-                    memory_priority_label(priority)
-                ),
-            );
         }
 
         let previous_priority = reusable_existing
@@ -376,7 +378,9 @@ impl MemoryPriorityManager {
                 applied_priority: priority,
             },
         );
-        Ok(ApplyOutcome::Applied)
+        Ok(ApplyOutcome::Applied {
+            loggable: current_priority != priority,
+        })
     }
 
     fn release_non_targets(
@@ -421,6 +425,7 @@ impl MemoryPriorityManager {
         reason: &str,
     ) -> MemoryPriorityFailures {
         let mut failures = MemoryPriorityFailures::default();
+        let mut restored_processes = 0;
         for process_id in process_ids {
             let Some(process_state) = self.adjusted.remove(process_id) else {
                 continue;
@@ -432,14 +437,7 @@ impl MemoryPriorityManager {
             match restore_process(*process_id, process_state) {
                 Ok(()) => {
                     self.clear_process_failure(&log_name);
-                    action_log.record(
-                        action_log_feature,
-                        Some(*process_id),
-                        log_name,
-                        ActionLogAction::Restore,
-                        ActionLogResult::Restored,
-                        format!("Restored previous memory priority: {reason}."),
-                    );
+                    restored_processes += 1;
                 }
                 Err(MemoryPriorityError::ProcessExited) => {}
                 Err(MemoryPriorityError::AccessDenied) => {
@@ -467,6 +465,16 @@ impl MemoryPriorityManager {
                     );
                 }
             }
+        }
+        if restored_processes > 0 {
+            action_log.record(
+                action_log_feature,
+                None,
+                memory_priority_summary_process_name(action_log_feature),
+                ActionLogAction::Restore,
+                ActionLogResult::Restored,
+                memory_priority_restore_summary_message(restored_processes, reason),
+            );
         }
         failures
     }
@@ -520,7 +528,7 @@ impl MemoryPriorityManager {
 }
 
 enum ApplyOutcome {
-    Applied,
+    Applied { loggable: bool },
     AlreadyApplied,
 }
 
@@ -729,6 +737,32 @@ fn memory_priority_error_message(error: MemoryPriorityError) -> String {
     }
 }
 
+fn memory_priority_apply_summary_message(count: usize) -> String {
+    format!("Applied memory priority to {}.", process_count_label(count))
+}
+
+fn memory_priority_restore_summary_message(count: usize, reason: &str) -> String {
+    format!(
+        "Restored previous memory priority for {}: {reason}.",
+        process_count_label(count)
+    )
+}
+
+fn process_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 process".to_owned()
+    } else {
+        format!("{count} processes")
+    }
+}
+
+fn memory_priority_summary_process_name(action_log_feature: ActionLogFeature) -> &'static str {
+    match action_log_feature {
+        ActionLogFeature::ForegroundResponsiveness => "Auto Balance",
+        _ => "Memory Priority",
+    }
+}
+
 fn is_process_exited_message(message: &str) -> bool {
     message
         .trim()
@@ -806,5 +840,37 @@ mod tests {
         assert!(entries[0]
             .reason
             .contains("Stopped retrying memory priority"));
+    }
+
+    #[test]
+    fn memory_priority_summary_messages_use_process_count() {
+        assert_eq!(
+            memory_priority_apply_summary_message(1),
+            "Applied memory priority to 1 process."
+        );
+        assert_eq!(
+            memory_priority_apply_summary_message(5),
+            "Applied memory priority to 5 processes."
+        );
+        assert_eq!(
+            memory_priority_restore_summary_message(1, "foreground app is unknown"),
+            "Restored previous memory priority for 1 process: foreground app is unknown."
+        );
+        assert_eq!(
+            memory_priority_restore_summary_message(5, "foreground app is unknown"),
+            "Restored previous memory priority for 5 processes: foreground app is unknown."
+        );
+    }
+
+    #[test]
+    fn memory_priority_summary_process_name_matches_feature_context() {
+        assert_eq!(
+            memory_priority_summary_process_name(ActionLogFeature::MemoryPriority),
+            "Memory Priority"
+        );
+        assert_eq!(
+            memory_priority_summary_process_name(ActionLogFeature::ForegroundResponsiveness),
+            "Auto Balance"
+        );
     }
 }
