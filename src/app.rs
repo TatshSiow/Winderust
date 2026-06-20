@@ -3582,17 +3582,7 @@ impl Render for PowerLeafApp {
             .text_color(cx.theme().foreground)
             .font_family("Segoe UI Variable")
             .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
-                match event.button {
-                    MouseButton::Navigate(NavigationDirection::Back) => {
-                        app.navigate_back(cx);
-                        cx.stop_propagation();
-                    }
-                    MouseButton::Navigate(NavigationDirection::Forward) => {
-                        app.navigate_forward(cx);
-                        cx.stop_propagation();
-                    }
-                    _ => {}
-                }
+                handle_navigation_mouse_button(app, event.button, cx);
             }))
             .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
                 clear_input(&app.inputs.dashboard_search, window, cx);
@@ -10798,6 +10788,11 @@ impl PowerLeafApp {
                     .overflow_hidden()
                     .block_mouse_except_scroll()
                     .cursor_pointer()
+                    .capture_any_mouse_down(cx.listener(
+                        |app, event: &gpui::MouseDownEvent, _, cx| {
+                            handle_navigation_mouse_button(app, event.button, cx);
+                        },
+                    ))
                     .on_hover({
                         let accent_hover_id = accent_hover_id.clone();
                         move |hovered, _, cx| {
@@ -15079,6 +15074,26 @@ fn collapsible_chevron_icon(id: impl Into<SharedString>, collapsed: bool) -> Any
     )
 }
 
+fn handle_navigation_mouse_button(
+    app: &mut PowerLeafApp,
+    button: MouseButton,
+    cx: &mut Context<PowerLeafApp>,
+) -> bool {
+    match button {
+        MouseButton::Navigate(NavigationDirection::Back) => {
+            app.navigate_back(cx);
+            cx.stop_propagation();
+            true
+        }
+        MouseButton::Navigate(NavigationDirection::Forward) => {
+            app.navigate_forward(cx);
+            cx.stop_propagation();
+            true
+        }
+        _ => false,
+    }
+}
+
 fn animated_expanded_child(id: impl Into<SharedString>, child: AnyElement) -> AnyElement {
     let id = id.into();
     let motion_id = format!("expanded-child-{id}");
@@ -15498,6 +15513,9 @@ fn rule_card_with_header_action(
         .px_2()
         .block_mouse_except_scroll()
         .cursor_pointer()
+        .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
+            handle_navigation_mouse_button(app, event.button, cx);
+        }))
         .on_hover(move |hovered, _, cx| {
             set_card_hovered(trailing_hover_id.clone(), *hovered, cx);
         })
@@ -15542,6 +15560,11 @@ fn rule_card_with_header_action(
                         .id(header_action_id)
                         .block_mouse_except_scroll()
                         .cursor_pointer()
+                        .capture_any_mouse_down(cx.listener(
+                            |app, event: &gpui::MouseDownEvent, _, cx| {
+                                handle_navigation_mouse_button(app, event.button, cx);
+                            },
+                        ))
                         .on_hover({
                             let hover_id = hover_id.clone();
                             move |hovered, _, cx| {
@@ -15624,16 +15647,8 @@ fn disabled_interaction_shield(cx: &mut Context<PowerLeafApp>) -> AnyElement {
         .absolute()
         .inset_0()
         .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
-            match event.button {
-                MouseButton::Navigate(NavigationDirection::Back) => {
-                    app.navigate_back(cx);
-                    cx.stop_propagation();
-                }
-                MouseButton::Navigate(NavigationDirection::Forward) => {
-                    app.navigate_forward(cx);
-                    cx.stop_propagation();
-                }
-                _ => cx.stop_propagation(),
+            if !handle_navigation_mouse_button(app, event.button, cx) {
+                cx.stop_propagation();
             }
         }))
         .capture_any_mouse_up(|event, _, cx| {
@@ -15880,6 +15895,9 @@ fn setting_group_with_title_element_with_body_height(
                 .overflow_hidden()
                 .block_mouse_except_scroll()
                 .cursor_pointer()
+                .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
+                    handle_navigation_mouse_button(app, event.button, cx);
+                }))
                 .on_hover({
                     let hover_id = hover_id.clone();
                     move |hovered, _, cx| {
