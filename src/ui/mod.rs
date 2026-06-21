@@ -14,6 +14,7 @@ pub enum Page {
     CoreParking,
     CpuLimiter,
     BackgroundCpuRestriction,
+    ProcessList,
     EfficiencyMode,
     AppSuspension,
     Watchdog,
@@ -41,6 +42,7 @@ pub struct PageSection {
 }
 
 const OVERVIEW_PAGES: [Page; 1] = [Page::Dashboard];
+const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
 const POWER_AUTOMATION_PAGES: [Page; 5] = [
     Page::ForegroundRules,
     Page::PerformanceMode,
@@ -70,10 +72,14 @@ const ADVANCED_PAGES: [Page; 3] = [
     Page::TimerResolution,
     Page::Win32PrioritySeparation,
 ];
-const PAGE_SECTIONS: [PageSection; 9] = [
+const PAGE_SECTIONS: [PageSection; 10] = [
     PageSection {
         landing_page: Page::Dashboard,
         pages: &OVERVIEW_PAGES,
+    },
+    PageSection {
+        landing_page: Page::ProcessList,
+        pages: &PROCESS_LIST_PAGES,
     },
     PageSection {
         landing_page: Page::ForegroundResponsiveness,
@@ -124,6 +130,7 @@ impl Page {
             Self::CoreParking => t!("nav.core_parking"),
             Self::CpuLimiter => t!("nav.cpu_limiter"),
             Self::BackgroundCpuRestriction => t!("nav.background_cpu_restriction"),
+            Self::ProcessList => t!("nav.process_list"),
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
             Self::Watchdog => t!("nav.watchdog"),
@@ -156,6 +163,7 @@ impl Page {
             Self::MemoryControl => t!("nav.memory_control"),
             Self::AppHome => t!("nav.settings"),
             Self::AdvancedHome => t!("nav.advanced"),
+            Self::ProcessList => t!("nav.process_list"),
             Self::Activity
             | Self::Schedule
             | Self::ForegroundRules
@@ -186,6 +194,7 @@ impl Page {
     pub const fn section_landing_page(self) -> Page {
         match self {
             Self::Dashboard => Self::Dashboard,
+            Self::ProcessList => Self::ProcessList,
             Self::PowerPlanAutomation
             | Self::Activity
             | Self::Schedule
@@ -219,6 +228,7 @@ impl Page {
     pub const fn child_pages(self) -> Option<&'static [Page]> {
         match self {
             Self::Dashboard => Some(&OVERVIEW_PAGES),
+            Self::ProcessList => Some(&PROCESS_LIST_PAGES),
             Self::PowerPlanAutomation => Some(&POWER_AUTOMATION_PAGES),
             Self::ProcessorControls => Some(&CPU_CONTROL_PAGES),
             Self::ProcessPolicies => Some(&PROCESS_POLICY_PAGES),
@@ -240,5 +250,20 @@ pub fn duration_label(seconds: u64) -> String {
         format!("{seconds}s")
     } else {
         format!("{}m {}s", seconds / 60, seconds % 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_list_is_standalone_after_dashboard() {
+        let sections = Page::sections();
+
+        assert_eq!(sections[0].landing_page, Page::Dashboard);
+        assert_eq!(sections[1].landing_page, Page::ProcessList);
+        assert_eq!(Page::ProcessList.section_landing_page(), Page::ProcessList);
+        assert!(!PROCESS_POLICY_PAGES.contains(&Page::ProcessList));
     }
 }
