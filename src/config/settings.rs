@@ -957,11 +957,6 @@ pub enum ProcessPriority {
     Idle,
 }
 
-impl ProcessPriority {
-    #[allow(dead_code)]
-    pub const ALL: [Self; 3] = [Self::Normal, Self::BelowNormal, Self::Idle];
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForegroundBoostPriority {

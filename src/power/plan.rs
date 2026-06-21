@@ -38,15 +38,6 @@ pub struct ProcessorPowerAcDcValues {
 }
 
 impl ProcessorPowerValues {
-    pub const fn new(core_parking_min: u32, performance_min: u32, performance_max: u32) -> Self {
-        Self::new_with_boost_mode(
-            core_parking_min,
-            performance_min,
-            performance_max,
-            ProcessorBoostMode::Enabled,
-        )
-    }
-
     pub const fn new_with_boost_mode(
         core_parking_min: u32,
         performance_min: u32,

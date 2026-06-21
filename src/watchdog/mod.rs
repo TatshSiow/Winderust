@@ -20,10 +20,7 @@ use crate::{
         is_process_exited_message, list_processes, process_name_key, process_session_id,
         ProcessInfo,
     },
-    rules::{
-        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AppLifecycleActionBackend, AppMatcher, ExecutionFailureTracker,
-    },
+    rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -207,15 +204,8 @@ impl WatchdogManager {
                         if self.terminated_process_ids.contains(&process.id) {
                             continue;
                         }
-                        let action = Action::TerminateApp {
-                            app: AppMatcher::ProcessName(process.name.clone()),
-                        };
-                        let mut backend = WatchdogLifecycleBackend::for_process(process.id);
-                        let execution =
-                            ActionExecutor.apply_app_lifecycle_action(&action, &mut backend);
-                        let terminate_error = backend.take_terminate_error();
-                        match execution {
-                            ActionExecution::Applied => {
+                        match terminate_process(process.id) {
+                            Ok(()) => {
                                 self.clear_rule_failure(&key);
                                 self.terminated_process_ids.insert(process.id);
                                 terminated_processes += 1;
@@ -231,20 +221,8 @@ impl WatchdogManager {
                                     ),
                                 );
                             }
-                            ActionExecution::Failed(_err)
-                                if matches!(
-                                    terminate_error.as_ref(),
-                                    Some(WatchdogError::ProcessExited)
-                                ) =>
-                            {
-                                skipped_processes += 1;
-                            }
-                            ActionExecution::Failed(_err)
-                                if matches!(
-                                    terminate_error.as_ref(),
-                                    Some(WatchdogError::AccessDenied)
-                                ) =>
-                            {
+                            Err(WatchdogError::ProcessExited) => skipped_processes += 1,
+                            Err(WatchdogError::AccessDenied) => {
                                 skipped_processes += 1;
                                 self.record_rule_failure(&key);
                                 action_log.record(
@@ -256,7 +234,8 @@ impl WatchdogManager {
                                     "Skipped because the process could not be terminated.",
                                 );
                             }
-                            ActionExecution::Failed(err) => {
+                            Err(error) => {
+                                let err = watchdog_error_message(&error);
                                 if is_process_exited_message(&err) {
                                     skipped_processes += 1;
                                     continue;
@@ -270,7 +249,6 @@ impl WatchdogManager {
                                     action_log,
                                 );
                             }
-                            ActionExecution::AlreadyApplied | ActionExecution::Unsupported => {}
                         }
                     }
                 }
@@ -295,14 +273,8 @@ impl WatchdogManager {
                         }
                     }
 
-                    let action = Action::RestartApp {
-                        app: AppMatcher::ProcessName(process_name.clone()),
-                        launch_path: rule.launch_path.clone(),
-                        args: rule.launch_args.clone(),
-                    };
-                    let mut backend = WatchdogLifecycleBackend::default();
-                    match ActionExecutor.apply_app_lifecycle_action(&action, &mut backend) {
-                        ActionExecution::Applied => {
+                    match restart_launch_path(&rule.launch_path, &rule.launch_args) {
+                        Ok(()) => {
                             self.clear_rule_failure(&key);
                             restarted_processes += 1;
                             if let Some(state) = self.restart_state.get_mut(&key) {
@@ -318,7 +290,7 @@ impl WatchdogManager {
                                 format!("Rule '{}' restarted missing process.", rule_label(rule)),
                             );
                         }
-                        ActionExecution::Failed(err) => {
+                        Err(err) => {
                             if is_process_exited_message(&err) {
                                 skipped_processes += 1;
                                 continue;
@@ -329,7 +301,6 @@ impl WatchdogManager {
                             }
                             failures.record("Restart", None, &rule.process_name, err, action_log);
                         }
-                        ActionExecution::AlreadyApplied | ActionExecution::Unsupported => {}
                     }
                 }
             }
@@ -448,50 +419,6 @@ fn matching_processes<'a>(
         .iter()
         .filter(|process| process.name.trim().eq_ignore_ascii_case(process_name))
         .collect()
-}
-
-#[derive(Default)]
-struct WatchdogLifecycleBackend {
-    terminate_process_id: Option<u32>,
-    terminate_error: Option<WatchdogError>,
-}
-
-impl WatchdogLifecycleBackend {
-    fn for_process(process_id: u32) -> Self {
-        Self {
-            terminate_process_id: Some(process_id),
-            terminate_error: None,
-        }
-    }
-
-    fn take_terminate_error(&mut self) -> Option<WatchdogError> {
-        self.terminate_error.take()
-    }
-}
-
-impl AppLifecycleActionBackend for WatchdogLifecycleBackend {
-    fn terminate_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
-        let process_id = self
-            .terminate_process_id
-            .ok_or_else(|| "Watchdog terminate requires a selected process ID.".to_owned())?;
-        match terminate_process(process_id) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let message = watchdog_error_message(&error);
-                self.terminate_error = Some(error);
-                Err(message)
-            }
-        }
-    }
-
-    fn restart_app(
-        &mut self,
-        _app: &AppMatcher,
-        launch_path: &str,
-        args: &[String],
-    ) -> Result<(), String> {
-        restart_launch_path(launch_path, args)
-    }
 }
 
 fn restart_launch_path(launch_path: &str, args: &[String]) -> Result<(), String> {
@@ -802,33 +729,11 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_backend_routes_restart_through_watchdog_validation() {
-        let mut backend = WatchdogLifecycleBackend::default();
-        let action = Action::RestartApp {
-            app: AppMatcher::ProcessName("tool.exe".to_owned()),
-            launch_path: "relative-tool.exe".to_owned(),
-            args: Vec::new(),
-        };
-
+    fn restart_launch_path_rejects_relative_paths() {
         assert!(matches!(
-            ActionExecutor.apply_app_lifecycle_action(&action, &mut backend),
-            ActionExecution::Failed(message)
+            restart_launch_path("relative-tool.exe", &[]),
+            Err(message)
                 if message.contains("Restart path must be an absolute executable path")
         ));
-    }
-
-    #[test]
-    fn lifecycle_backend_requires_pid_for_terminate() {
-        let mut backend = WatchdogLifecycleBackend::default();
-        let action = Action::TerminateApp {
-            app: AppMatcher::ProcessName("tool.exe".to_owned()),
-        };
-
-        assert_eq!(
-            ActionExecutor.apply_app_lifecycle_action(&action, &mut backend),
-            ActionExecution::Failed(
-                "Watchdog terminate requires a selected process ID.".to_owned()
-            )
-        );
     }
 }

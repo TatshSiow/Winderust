@@ -35,10 +35,7 @@ use crate::{
         ProcessInfo,
     },
     memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
-    rules::{
-        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AppMatcher, AppPriorityActionBackend, ExecutionFailureTracker, RuleProcessPriority,
-    },
+    rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -218,15 +215,6 @@ pub struct ForegroundResponsivenessUpdate<'a> {
     pub total_cpu_usage_percent: Option<f32>,
     pub background_efficiency_managed: bool,
     pub eco_qos_process_ids: &'a BTreeSet<u32>,
-}
-
-struct ForegroundBoostRequest<'a> {
-    process_id: u32,
-    process_name: Option<&'a str>,
-    current_process_id: u32,
-    current_session_id: u32,
-    stability_delay_ms: u64,
-    priority_class: u32,
 }
 
 struct ForegroundBoostGroup<'a> {
@@ -517,51 +505,34 @@ impl ForegroundResponsivenessManager {
                 skipped_processes += 1;
                 continue;
             }
-            let action = Action::SetAppPriority {
-                app: AppMatcher::ProcessName(process_name.clone()),
-                priority: rule_process_priority(priority),
-            };
-            let mut backend = ForegroundResponsivenessPriorityBackend {
-                process_id,
-                process_name,
-                existing: self.adjusted.get(&process_id),
+            match apply_priority(
+                ApplyPriorityRequest {
+                    process_id,
+                    process_name,
+                    priority_class: process_priority_class(priority),
+                    existing: self.adjusted.get(&process_id),
+                    source,
+                    apply_efficiency_mode: source != PriorityTargetSource::AutoBalance,
+                    log_success: source == PriorityTargetSource::Rule,
+                },
                 action_log,
-                source,
-                apply_efficiency_mode: source != PriorityTargetSource::AutoBalance,
-                log_success: source == PriorityTargetSource::Rule,
-                adjusted: None,
-                skipped: false,
-                changed: false,
-                last_error: None,
-            };
-            let execution = ActionExecutor.apply_app_priority_action(&action, &mut backend);
-            let adjusted = backend.adjusted.take();
-            let skipped = backend.skipped;
-            let changed = backend.changed;
-            let last_error = backend.last_error.take();
-            drop(backend);
-
-            match execution {
-                ActionExecution::Applied | ActionExecution::AlreadyApplied => {
-                    if changed && source != PriorityTargetSource::Rule {
+            ) {
+                Ok(outcome) => {
+                    if outcome.changed && source != PriorityTargetSource::Rule {
                         summarized_background_applies += 1;
                     }
-                    if let Some(adjusted) = adjusted {
+                    if let Some(adjusted) = outcome.adjusted {
                         self.clear_process_failure(&failure_process_name);
                         self.adjusted.insert(process_id, adjusted);
-                    } else if skipped {
+                    } else if outcome.skipped {
                         self.clear_process_failure(&failure_process_name);
                         skipped_processes += 1;
                     }
                 }
-                ActionExecution::Failed(_)
-                    if matches!(last_error.as_ref(), Some(PriorityError::ProcessExited)) =>
-                {
+                Err(PriorityError::ProcessExited) => {
                     skipped_processes += 1;
                 }
-                ActionExecution::Failed(_)
-                    if matches!(last_error.as_ref(), Some(PriorityError::AccessDenied)) =>
-                {
+                Err(PriorityError::AccessDenied) => {
                     skipped_processes += 1;
                     self.record_process_failure(&failure_process_name);
                     action_log.record(
@@ -573,7 +544,8 @@ impl ForegroundResponsivenessManager {
                         "Skipped because the process could not be opened.",
                     );
                 }
-                ActionExecution::Failed(err) => {
+                Err(error) => {
+                    let err = priority_error_message(&error);
                     if is_process_exited_message(&err) {
                         skipped_processes += 1;
                         continue;
@@ -584,17 +556,6 @@ impl ForegroundResponsivenessManager {
                         process_id,
                         &failure_process_name,
                         err,
-                        action_log,
-                    );
-                }
-                ActionExecution::Unsupported => {
-                    self.record_process_failure(&failure_process_name);
-                    failures.record_message(
-                        "Apply",
-                        process_id,
-                        &failure_process_name,
-                        "Foreground Responsiveness action was not supported by the generic executor."
-                            .to_owned(),
                         action_log,
                     );
                 }
@@ -888,49 +849,6 @@ impl ForegroundResponsivenessManager {
             );
         }
         failures
-    }
-
-    fn update_foreground_boost(
-        &mut self,
-        request: ForegroundBoostRequest<'_>,
-        action_log: &mut ActionLog,
-    ) -> Result<(), PriorityError> {
-        let ForegroundBoostRequest {
-            process_id,
-            process_name,
-            current_process_id,
-            current_session_id,
-            stability_delay_ms,
-            priority_class,
-        } = request;
-        let process_name = process_name.unwrap_or("").trim();
-        if !foreground_boost_eligible(
-            process_id,
-            process_name,
-            current_process_id,
-            current_session_id,
-        ) {
-            if let Some(error) =
-                self.clear_boosted(true, action_log, "foreground process is not eligible")
-            {
-                return error.into_result();
-            }
-            return Ok(());
-        }
-
-        if !self.foreground_boost_stable(process_id, process_name, stability_delay_ms) {
-            if let Some(error) = self.clear_boosted(
-                false,
-                action_log,
-                "foreground app changed before stability delay",
-            ) {
-                return error.into_result();
-            }
-            return Ok(());
-        }
-
-        self.release_non_boost_targets(&BTreeSet::from([process_id]), action_log)?;
-        self.apply_boost_process(process_id, process_name, priority_class, action_log)
     }
 
     fn foreground_boost_stable(
@@ -1392,12 +1310,6 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
         .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
 }
 
-#[allow(dead_code)]
-pub fn contains_process(list: &[String], process_name: &str) -> bool {
-    list.iter()
-        .any(|name| name.trim().eq_ignore_ascii_case(process_name.trim()))
-}
-
 fn percent_tenths(usage: f32) -> u16 {
     (usage.clamp(0.0, 100.0) * 10.0).round() as u16
 }
@@ -1790,29 +1702,11 @@ fn logical_indices_to_limited_mask(
     (mask != 0).then_some(mask)
 }
 
-#[cfg(test)]
-pub const fn priority_class(priority: ProcessPriority) -> u32 {
+pub const fn process_priority_class(priority: ProcessPriority) -> u32 {
     match priority {
         ProcessPriority::Normal => NORMAL_PRIORITY_CLASS,
         ProcessPriority::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
         ProcessPriority::Idle => IDLE_PRIORITY_CLASS,
-    }
-}
-
-fn rule_process_priority(priority: ProcessPriority) -> RuleProcessPriority {
-    match priority {
-        ProcessPriority::Normal => RuleProcessPriority::Normal,
-        ProcessPriority::BelowNormal => RuleProcessPriority::BelowNormal,
-        ProcessPriority::Idle => RuleProcessPriority::Idle,
-    }
-}
-
-fn priority_class_from_rule_priority(priority: RuleProcessPriority) -> Option<u32> {
-    match priority {
-        RuleProcessPriority::Idle => Some(IDLE_PRIORITY_CLASS),
-        RuleProcessPriority::BelowNormal => Some(BELOW_NORMAL_PRIORITY_CLASS),
-        RuleProcessPriority::Normal => Some(NORMAL_PRIORITY_CLASS),
-        RuleProcessPriority::AboveNormal | RuleProcessPriority::High => None,
     }
 }
 
@@ -1833,24 +1727,6 @@ pub fn foreground_boost_priority_class(
     }
 }
 
-#[cfg(test)]
-fn foreground_boost_rule_priority(
-    priority: ForegroundBoostPriority,
-    foreground_cpu_usage_percent: Option<f32>,
-) -> RuleProcessPriority {
-    match priority {
-        ForegroundBoostPriority::Auto => {
-            if foreground_cpu_usage_percent.is_some_and(foreground_cpu_saturates_workload) {
-                RuleProcessPriority::Normal
-            } else {
-                RuleProcessPriority::AboveNormal
-            }
-        }
-        ForegroundBoostPriority::Normal => RuleProcessPriority::Normal,
-        ForegroundBoostPriority::AboveNormal => RuleProcessPriority::AboveNormal,
-    }
-}
-
 fn foreground_launch_boost_eligible(process_id: u32) -> bool {
     process_age(process_id)
         .is_some_and(|age| process_age_in_launch_boost_window(age, FOREGROUND_LAUNCH_BOOST_WINDOW))
@@ -1860,139 +1736,16 @@ fn process_age_in_launch_boost_window(age: Duration, launch_window: Duration) ->
     age <= launch_window
 }
 
-struct ForegroundBoostPriorityBackend<'a, 'name, 'log> {
-    manager: &'a mut ForegroundResponsivenessManager,
-    process_id: u32,
-    process_name: Option<&'name str>,
-    current_process_id: u32,
-    current_session_id: u32,
-    stability_delay_ms: u64,
-    priority_class: u32,
-    action_log: &'log mut ActionLog,
-    last_error: Option<PriorityError>,
-}
-
-impl AppPriorityActionBackend for ForegroundBoostPriorityBackend<'_, '_, '_> {
-    fn app_priority(&mut self, _app: &AppMatcher) -> Result<Option<RuleProcessPriority>, String> {
-        Ok(None)
-    }
-
-    fn set_app_priority(
-        &mut self,
-        _app: &AppMatcher,
-        priority: RuleProcessPriority,
-    ) -> Result<(), String> {
-        if !matches!(
-            priority,
-            RuleProcessPriority::Normal | RuleProcessPriority::AboveNormal
-        ) {
-            return Err(format!(
-                "Foreground boost does not support {priority:?} priority."
-            ));
-        }
-
-        match self.manager.update_foreground_boost(
-            ForegroundBoostRequest {
-                process_id: self.process_id,
-                process_name: self.process_name,
-                current_process_id: self.current_process_id,
-                current_session_id: self.current_session_id,
-                stability_delay_ms: self.stability_delay_ms,
-                priority_class: self.priority_class,
-            },
-            self.action_log,
-        ) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let message = priority_error_message(&error);
-                self.last_error = Some(error);
-                Err(message)
-            }
-        }
-    }
-
-    fn lower_background_apps(
-        &mut self,
-        _priority: RuleProcessPriority,
-        _exclusions: &[AppMatcher],
-    ) -> Result<(), String> {
-        Err("Foreground boost backend expects a foreground boost action.".to_owned())
-    }
-}
-
-struct ForegroundResponsivenessPriorityBackend<'a, 'log> {
-    process_id: u32,
-    process_name: String,
-    existing: Option<&'a AdjustedProcess>,
-    action_log: &'log mut ActionLog,
-    source: PriorityTargetSource,
-    apply_efficiency_mode: bool,
-    log_success: bool,
+struct ApplyPriorityOutcome {
     adjusted: Option<AdjustedProcess>,
     skipped: bool,
     changed: bool,
-    last_error: Option<PriorityError>,
-}
-
-impl AppPriorityActionBackend for ForegroundResponsivenessPriorityBackend<'_, '_> {
-    fn app_priority(&mut self, _app: &AppMatcher) -> Result<Option<RuleProcessPriority>, String> {
-        Ok(None)
-    }
-
-    fn set_app_priority(
-        &mut self,
-        _app: &AppMatcher,
-        priority: RuleProcessPriority,
-    ) -> Result<(), String> {
-        let Some(priority_class) = priority_class_from_rule_priority(priority) else {
-            return Err(format!(
-                "Foreground Responsiveness does not support {priority:?} background priority."
-            ));
-        };
-
-        match apply_priority(
-            ApplyPriorityRequest {
-                process_id: self.process_id,
-                process_name: self.process_name.clone(),
-                priority_class,
-                existing: self.existing,
-                source: self.source,
-                apply_efficiency_mode: self.apply_efficiency_mode,
-                log_success: self.log_success,
-            },
-            self.action_log,
-            &mut self.changed,
-        ) {
-            Ok(Some(adjusted)) => {
-                self.adjusted = Some(adjusted);
-                Ok(())
-            }
-            Ok(None) => {
-                self.skipped = true;
-                Ok(())
-            }
-            Err(error) => {
-                let message = priority_error_message(&error);
-                self.last_error = Some(error);
-                Err(message)
-            }
-        }
-    }
-
-    fn lower_background_apps(
-        &mut self,
-        _priority: RuleProcessPriority,
-        _exclusions: &[AppMatcher],
-    ) -> Result<(), String> {
-        Err("Foreground Responsiveness backend expects per-process priority actions.".to_owned())
-    }
 }
 
 fn apply_priority(
     request: ApplyPriorityRequest<'_>,
     action_log: &mut ActionLog,
-    changed: &mut bool,
-) -> Result<Option<AdjustedProcess>, PriorityError> {
+) -> Result<ApplyPriorityOutcome, PriorityError> {
     let ApplyPriorityRequest {
         process_id,
         process_name,
@@ -2002,6 +1755,7 @@ fn apply_priority(
         apply_efficiency_mode,
         log_success,
     } = request;
+    let mut changed = false;
     let process = ProcessHandle::open(process_id)?;
     let reusable_existing =
         existing.filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name));
@@ -2022,13 +1776,17 @@ fn apply_priority(
 
     let current_priority = process.priority_class()?;
     if current_priority == HIGH_PRIORITY_CLASS || current_priority == REALTIME_PRIORITY_CLASS {
-        return Ok(None);
+        return Ok(ApplyPriorityOutcome {
+            adjusted: None,
+            skipped: true,
+            changed,
+        });
     }
     let previous_efficiency_state = if apply_efficiency_mode {
         let current_state = process.power_throttling_state().ok();
         if !current_state.is_some_and(power_throttling_execution_enabled) {
             process.set_power_throttling_state(power_throttling_enabled_state(current_state))?;
-            *changed = true;
+            changed = true;
             if log_success {
                 action_log.record(
                     ActionLogFeature::ForegroundResponsiveness,
@@ -2051,12 +1809,16 @@ fn apply_priority(
             && current_priority == priority_class
             && adjusted.applied_efficiency_mode == apply_efficiency_mode
     }) {
-        return Ok(existing.cloned());
+        return Ok(ApplyPriorityOutcome {
+            adjusted: existing.cloned(),
+            skipped: false,
+            changed,
+        });
     }
 
     if current_priority != priority_class {
         process.set_priority_class(priority_class)?;
-        *changed = true;
+        changed = true;
         if log_success {
             action_log.record(
                 ActionLogFeature::ForegroundResponsiveness,
@@ -2077,13 +1839,17 @@ fn apply_priority(
         .map(|adjusted| adjusted.previous_priority)
         .unwrap_or(current_priority);
 
-    Ok(Some(AdjustedProcess {
-        process_name,
-        previous_priority,
-        applied_priority: priority_class,
-        previous_efficiency_state,
-        applied_efficiency_mode: apply_efficiency_mode,
-    }))
+    Ok(ApplyPriorityOutcome {
+        adjusted: Some(AdjustedProcess {
+            process_name,
+            previous_priority,
+            applied_priority: priority_class,
+            previous_efficiency_state,
+            applied_efficiency_mode: apply_efficiency_mode,
+        }),
+        skipped: false,
+        changed,
+    })
 }
 
 fn restore_adjusted_priority(
@@ -2204,13 +1970,6 @@ impl PriorityFailures {
         self.count += other.count;
         if self.last_error.is_none() {
             self.last_error = other.last_error;
-        }
-    }
-
-    fn into_result(self) -> Result<(), PriorityError> {
-        match self.last_error {
-            Some(error) => Err(PriorityError::Failed(error)),
-            None => Ok(()),
         }
     }
 
@@ -2508,14 +2267,17 @@ mod tests {
     #[test]
     fn priority_mapping_uses_safe_classes() {
         assert_eq!(
-            priority_class(ProcessPriority::Normal),
+            process_priority_class(ProcessPriority::Normal),
             NORMAL_PRIORITY_CLASS
         );
         assert_eq!(
-            priority_class(ProcessPriority::BelowNormal),
+            process_priority_class(ProcessPriority::BelowNormal),
             BELOW_NORMAL_PRIORITY_CLASS
         );
-        assert_eq!(priority_class(ProcessPriority::Idle), IDLE_PRIORITY_CLASS);
+        assert_eq!(
+            process_priority_class(ProcessPriority::Idle),
+            IDLE_PRIORITY_CLASS
+        );
         assert_eq!(
             foreground_boost_priority_class(ForegroundBoostPriority::Auto, None),
             ABOVE_NORMAL_PRIORITY_CLASS
@@ -2544,22 +2306,6 @@ mod tests {
             FOREGROUND_LAUNCH_BOOST_WINDOW + Duration::from_millis(1),
             FOREGROUND_LAUNCH_BOOST_WINDOW,
         ));
-    }
-
-    #[test]
-    fn process_priority_maps_to_generic_rule_priority() {
-        assert_eq!(
-            rule_process_priority(ProcessPriority::Normal),
-            RuleProcessPriority::Normal
-        );
-        assert_eq!(
-            rule_process_priority(ProcessPriority::BelowNormal),
-            RuleProcessPriority::BelowNormal
-        );
-        assert_eq!(
-            rule_process_priority(ProcessPriority::Idle),
-            RuleProcessPriority::Idle
-        );
     }
 
     #[test]
@@ -2604,92 +2350,6 @@ mod tests {
             Some(now),
             now + BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL
         ));
-    }
-
-    #[test]
-    fn foreground_boost_maps_to_generic_rule_priority() {
-        assert_eq!(
-            foreground_boost_rule_priority(ForegroundBoostPriority::Auto, None),
-            RuleProcessPriority::AboveNormal
-        );
-        assert_eq!(
-            foreground_boost_rule_priority(ForegroundBoostPriority::Auto, Some(85.0)),
-            RuleProcessPriority::Normal
-        );
-        assert_eq!(
-            foreground_boost_rule_priority(ForegroundBoostPriority::Normal, Some(80.0)),
-            RuleProcessPriority::Normal
-        );
-        assert_eq!(
-            foreground_boost_rule_priority(ForegroundBoostPriority::AboveNormal, Some(100.0)),
-            RuleProcessPriority::AboveNormal
-        );
-    }
-
-    #[test]
-    fn responsiveness_priority_backend_rejects_boost_priorities() {
-        let mut log = ActionLog::new(8);
-        let mut backend = ForegroundResponsivenessPriorityBackend {
-            process_id: 42,
-            process_name: "worker.exe".to_owned(),
-            existing: None,
-            action_log: &mut log,
-            source: PriorityTargetSource::Rule,
-            apply_efficiency_mode: true,
-            log_success: true,
-            adjusted: None,
-            skipped: false,
-            changed: false,
-            last_error: None,
-        };
-
-        assert_eq!(
-            ActionExecutor.apply_app_priority_action(
-                &Action::SetAppPriority {
-                    app: AppMatcher::ProcessName("worker.exe".to_owned()),
-                    priority: RuleProcessPriority::AboveNormal,
-                },
-                &mut backend,
-            ),
-            ActionExecution::Failed(
-                "Foreground Responsiveness does not support AboveNormal background priority."
-                    .to_owned()
-            )
-        );
-        assert!(backend.adjusted.is_none());
-        assert!(log.entries().is_empty());
-    }
-
-    #[test]
-    fn foreground_boost_backend_rejects_non_boost_priority() {
-        let mut manager = ForegroundResponsivenessManager::default();
-        let mut log = ActionLog::new(8);
-        let mut backend = ForegroundBoostPriorityBackend {
-            manager: &mut manager,
-            process_id: 42,
-            process_name: Some("game.exe"),
-            current_process_id: 1,
-            current_session_id: 0,
-            stability_delay_ms: 0,
-            priority_class: ABOVE_NORMAL_PRIORITY_CLASS,
-            action_log: &mut log,
-            last_error: None,
-        };
-
-        assert_eq!(
-            ActionExecutor.apply_app_priority_action(
-                &Action::BoostForegroundPriority {
-                    app: AppMatcher::ProcessName("game.exe".to_owned()),
-                    priority: RuleProcessPriority::BelowNormal,
-                },
-                &mut backend,
-            ),
-            ActionExecution::Failed(
-                "Foreground boost does not support BelowNormal priority.".to_owned()
-            )
-        );
-        assert!(backend.manager.boosted.is_empty());
-        assert!(log.entries().is_empty());
     }
 
     #[test]

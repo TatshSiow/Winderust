@@ -23,10 +23,7 @@ use crate::{
         process_names_by_id, process_session_id, should_ignore_foreground_process,
         unique_app_names,
     },
-    rules::{
-        execution_failure_suppression_threshold, Action, ActionExecution, ActionExecutor,
-        AppMatcher, AppResourceActionBackend, ExecutionFailureTracker,
-    },
+    rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -353,27 +350,13 @@ impl CpuLimiterManager {
         max_logical_processors: u8,
         action_log: &mut ActionLog,
     ) -> Result<(), CpuLimiterError> {
-        let action = Action::SetAppCpuLimit {
-            app: AppMatcher::ProcessName(process_name.clone()),
-            logical_processor_percent: max_logical_processors,
-        };
-        let mut backend = CpuLimiterActionBackend {
+        apply_cpu_limit_to_process(
             process_id,
             process_name,
-            limited: &mut self.limited,
+            max_logical_processors,
+            &mut self.limited,
             action_log,
-            last_error: None,
-        };
-
-        match ActionExecutor.apply_app_resource_action(&action, &mut backend) {
-            ActionExecution::Applied | ActionExecution::AlreadyApplied => Ok(()),
-            ActionExecution::Failed(err) => {
-                Err(backend.last_error.unwrap_or(CpuLimiterError::Failed(err)))
-            }
-            ActionExecution::Unsupported => Err(CpuLimiterError::Failed(
-                "Core Limiter action was not supported by the generic executor.".to_owned(),
-            )),
-        }
+        )
     }
 
     fn release_non_targets(
@@ -556,66 +539,6 @@ fn limited_affinity_mask(
     (target != 0 && target != current_affinity).then_some(target)
 }
 
-struct CpuLimiterActionBackend<'a, 'log> {
-    process_id: u32,
-    process_name: String,
-    limited: &'a mut BTreeMap<u32, LimitedProcess>,
-    action_log: &'log mut ActionLog,
-    last_error: Option<CpuLimiterError>,
-}
-
-impl AppResourceActionBackend for CpuLimiterActionBackend<'_, '_> {
-    fn set_app_efficiency_mode(&mut self, _app: &AppMatcher, _enabled: bool) -> Result<(), String> {
-        Err("Core Limiter backend only supports CPU limit actions.".to_owned())
-    }
-
-    fn set_app_affinity(
-        &mut self,
-        _app: &AppMatcher,
-        _affinity: &crate::rules::AffinityPolicy,
-    ) -> Result<(), String> {
-        Err("Core Limiter backend only supports CPU limit actions.".to_owned())
-    }
-
-    fn set_app_cpu_limit(
-        &mut self,
-        _app: &AppMatcher,
-        logical_processor_percent: u8,
-    ) -> Result<(), String> {
-        match apply_cpu_limit_to_process(
-            self.process_id,
-            self.process_name.clone(),
-            logical_processor_percent,
-            self.limited,
-            self.action_log,
-        ) {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                let message = cpu_limiter_error_message(&error);
-                self.last_error = Some(error);
-                Err(message)
-            }
-        }
-    }
-
-    fn suspend_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
-        Err("Core Limiter backend only supports CPU limit actions.".to_owned())
-    }
-
-    fn resume_app(&mut self, _app: &AppMatcher) -> Result<(), String> {
-        Err("Core Limiter backend only supports CPU limit actions.".to_owned())
-    }
-
-    fn configure_background_efficiency_policy(
-        &mut self,
-        _exclusions: &[AppMatcher],
-        _prefer_efficiency_cores: bool,
-        _logical_processor_percent: Option<u8>,
-    ) -> Result<(), String> {
-        Err("Core Limiter backend only supports CPU limit actions.".to_owned())
-    }
-}
-
 fn apply_cpu_limit_to_process(
     process_id: u32,
     process_name: String,
@@ -752,14 +675,6 @@ fn process_failure_message(
     message: &str,
 ) -> String {
     format!("{action} {process_name} ({process_id}): {message}")
-}
-
-fn cpu_limiter_error_message(error: &CpuLimiterError) -> String {
-    match error {
-        CpuLimiterError::AccessDenied => "Access denied.".to_owned(),
-        CpuLimiterError::ProcessExited => "Process exited.".to_owned(),
-        CpuLimiterError::Failed(message) => message.clone(),
-    }
 }
 
 struct ProcessHandle(HANDLE);
@@ -954,33 +869,6 @@ mod tests {
         assert_eq!(limited_affinity_mask(0b1010, 0b1111, 1), Some(0b0010));
         assert_eq!(limited_affinity_mask(0b0011, 0b1111, 2), None);
         assert_eq!(limited_affinity_mask(0b1111, 0b1111, 0), Some(0b0001));
-    }
-
-    #[test]
-    fn limiter_backend_rejects_non_cpu_limit_resource_actions() {
-        let mut limited = BTreeMap::new();
-        let mut log = ActionLog::new(8);
-        let mut backend = CpuLimiterActionBackend {
-            process_id: 42,
-            process_name: "worker.exe".to_owned(),
-            limited: &mut limited,
-            action_log: &mut log,
-            last_error: None,
-        };
-
-        assert_eq!(
-            ActionExecutor.apply_app_resource_action(
-                &Action::SuspendApp {
-                    app: AppMatcher::ProcessName("worker.exe".to_owned()),
-                },
-                &mut backend,
-            ),
-            ActionExecution::Failed(
-                "Core Limiter backend only supports CPU limit actions.".to_owned()
-            )
-        );
-        assert!(limited.is_empty());
-        assert!(log.entries().is_empty());
     }
 
     #[test]

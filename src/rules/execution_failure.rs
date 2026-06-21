@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::atomic::{AtomicU8, Ordering},

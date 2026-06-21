@@ -58,7 +58,7 @@ use crate::{
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
         ForegroundRules, GpuPrioritySettings, IoPrioritySettings, LaunchPriorityRule,
         LaunchPrioritySettings, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
-        PerformanceModeSettings, PriorityRule, ProcessCpuPrioritySetting, ProcessExclusionRule,
+        PerformanceModeSettings, ProcessCpuPrioritySetting, ProcessExclusionRule,
         ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
         ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority, ScheduleRule,
         Settings, SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
@@ -86,10 +86,9 @@ use crate::{
     },
     power_source,
     process_icon::load_process_icon,
-    responsiveness::{self, AutoBalanceProcessState, ForegroundResponsivenessSnapshot},
+    responsiveness::{self, ForegroundResponsivenessSnapshot},
     rules::{
-        Action, ActionExecution, ActionExecutor, DecisionEngine, DecisionInput, DecisionOutcome,
-        DecisionState, PerformanceModeDecision, PowerPlanActionBackend, ProcessorPowerValueSet,
+        DecisionEngine, DecisionInput, DecisionOutcome, DecisionState, PerformanceModeDecision,
         MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
@@ -574,7 +573,6 @@ enum ListItemRemovalTarget {
     CpuLimiterRule(usize),
     WatchdogRule(usize),
     PerformanceModeRule(usize),
-    ResponsivenessRule(usize),
     ResponsivenessExclusion(usize),
     IoPriorityExclusion(usize),
     GpuPriorityExclusion(usize),
@@ -597,15 +595,14 @@ impl ListItemRemovalTarget {
             Self::CpuLimiterRule(_) => 6,
             Self::WatchdogRule(_) => 7,
             Self::PerformanceModeRule(_) => 8,
-            Self::ResponsivenessRule(_) => 9,
-            Self::ResponsivenessExclusion(_) => 10,
-            Self::IoPriorityExclusion(_) => 11,
-            Self::GpuPriorityExclusion(_) => 12,
-            Self::MemoryPriorityExclusion(_) => 13,
-            Self::LaunchPriorityRule(_) => 14,
-            Self::TimerResolutionRule(_) => 15,
-            Self::SmartTrimExclusion(_) => 16,
-            Self::CpuAffinityRule(_) => 17,
+            Self::ResponsivenessExclusion(_) => 9,
+            Self::IoPriorityExclusion(_) => 10,
+            Self::GpuPriorityExclusion(_) => 11,
+            Self::MemoryPriorityExclusion(_) => 12,
+            Self::LaunchPriorityRule(_) => 13,
+            Self::TimerResolutionRule(_) => 14,
+            Self::SmartTrimExclusion(_) => 15,
+            Self::CpuAffinityRule(_) => 16,
         }
     }
 
@@ -620,7 +617,6 @@ impl ListItemRemovalTarget {
             | Self::CpuLimiterRule(index)
             | Self::WatchdogRule(index)
             | Self::PerformanceModeRule(index)
-            | Self::ResponsivenessRule(index)
             | Self::ResponsivenessExclusion(index)
             | Self::IoPriorityExclusion(index)
             | Self::GpuPriorityExclusion(index)
@@ -643,7 +639,6 @@ impl ListItemRemovalTarget {
             Self::CpuLimiterRule(_) => Self::CpuLimiterRule(index),
             Self::WatchdogRule(_) => Self::WatchdogRule(index),
             Self::PerformanceModeRule(_) => Self::PerformanceModeRule(index),
-            Self::ResponsivenessRule(_) => Self::ResponsivenessRule(index),
             Self::ResponsivenessExclusion(_) => Self::ResponsivenessExclusion(index),
             Self::IoPriorityExclusion(_) => Self::IoPriorityExclusion(index),
             Self::GpuPriorityExclusion(_) => Self::GpuPriorityExclusion(index),
@@ -705,71 +700,6 @@ struct InitialProcessorPowerState {
     target_plan_guid: Option<String>,
     loaded_plan_guid: Option<String>,
     status_message: String,
-}
-
-struct UiPowerPlanBackend<'a> {
-    power: &'a PowerPlanManager,
-}
-
-impl PowerPlanActionBackend for UiPowerPlanBackend<'_> {
-    fn active_power_plan_guid(&mut self) -> Result<Option<String>, String> {
-        Ok(None)
-    }
-
-    fn set_active_power_plan(&mut self, plan_guid: &str) -> Result<(), String> {
-        self.power.set_active(plan_guid)
-    }
-
-    fn set_core_parking(
-        &mut self,
-        plan_guid: &str,
-        min_cores_percent: u8,
-        max_cores_percent: u8,
-    ) -> Result<(), String> {
-        let values = ProcessorPowerAcDcValues::same(ProcessorPowerValues::new(
-            u32::from(min_cores_percent),
-            u32::from(min_cores_percent),
-            u32::from(max_cores_percent),
-        ));
-        self.power.apply_processor_power_values(plan_guid, values)
-    }
-
-    fn set_processor_power_values(
-        &mut self,
-        plan_guid: &str,
-        values: ProcessorPowerValueSet,
-    ) -> Result<(), String> {
-        let values = ProcessorPowerAcDcValues {
-            ac: ProcessorPowerValues::new_with_boost_mode(
-                u32::from(values.ac_core_parking_min_percent),
-                u32::from(values.ac_performance_min_percent),
-                u32::from(values.ac_performance_max_percent),
-                ProcessorBoostMode::from_power_value(values.ac_boost_mode),
-            ),
-            dc: ProcessorPowerValues::new_with_boost_mode(
-                u32::from(values.dc_core_parking_min_percent),
-                u32::from(values.dc_performance_min_percent),
-                u32::from(values.dc_performance_max_percent),
-                ProcessorBoostMode::from_power_value(values.dc_boost_mode),
-            ),
-        };
-        self.power.apply_processor_power_values(plan_guid, values)
-    }
-}
-
-fn processor_power_action(plan_guid: &str, values: ProcessorPowerAcDcValues) -> Action {
-    let values = values.normalized();
-    Action::SetProcessorPowerValues {
-        plan_guid: plan_guid.to_owned(),
-        ac_core_parking_min_percent: values.ac.core_parking_min as u8,
-        ac_performance_min_percent: values.ac.performance_min as u8,
-        ac_performance_max_percent: values.ac.performance_max as u8,
-        ac_boost_mode: values.ac.boost_mode.power_value(),
-        dc_core_parking_min_percent: values.dc.core_parking_min as u8,
-        dc_performance_min_percent: values.dc.performance_min as u8,
-        dc_performance_max_percent: values.dc.performance_max as u8,
-        dc_boost_mode: values.dc.boost_mode.power_value(),
-    }
 }
 
 #[derive(Clone)]
@@ -1462,15 +1392,6 @@ impl PowerLeafApp {
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalTarget::ResponsivenessRule(index) => {
-                if let Some(rule) = self.settings.foreground_responsiveness.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::Responsiveness(rule.process_name.clone()));
-                }
-                if index < self.settings.foreground_responsiveness.rules.len() {
-                    self.settings.foreground_responsiveness.rules.remove(index);
-                }
-            }
             ListItemRemovalTarget::ResponsivenessExclusion(index) => {
                 if index
                     < self
@@ -1929,20 +1850,18 @@ impl PowerLeafApp {
         let values = self.processor_power_values();
         self.set_processor_power_values(values);
 
-        let action = processor_power_action(&plan.guid, values);
-        let mut backend = UiPowerPlanBackend { power: &self.power };
-        match ActionExecutor.apply_power_plan_action(&action, &mut backend) {
-            ActionExecution::Applied | ActionExecution::AlreadyApplied => {
+        match self
+            .power
+            .apply_processor_power_values(&plan.guid, values.normalized())
+        {
+            Ok(()) => {
                 self.processor_power_loaded_plan_guid = Some(plan.guid.clone());
                 self.processor_power_dirty = false;
                 self.status_message =
                     t!("processor_power.applied_custom", plan = plan.display_name()).to_string();
                 self.refresh_active_plan();
             }
-            ActionExecution::Failed(err) => self.status_message = err,
-            ActionExecution::Unsupported => {
-                self.status_message = "Processor power action is not supported.".to_owned();
-            }
+            Err(err) => self.status_message = err,
         }
     }
 
@@ -2169,20 +2088,13 @@ impl PowerLeafApp {
 
         self.last_switch_attempt = Some((target_guid.to_owned(), Instant::now()));
 
-        let action = Action::SwitchPowerPlan {
-            plan_guid: target_guid.to_owned(),
-        };
-        let mut backend = UiPowerPlanBackend { power: &self.power };
-        match ActionExecutor.apply_power_plan_action(&action, &mut backend) {
-            ActionExecution::Applied | ActionExecution::AlreadyApplied => {
+        match self.power.set_active(target_guid) {
+            Ok(()) => {
                 self.status_message =
                     t!("status.switched_power_plan", reason = self.decision.reason).to_string();
                 self.refresh_power_plans();
             }
-            ActionExecution::Failed(err) => self.status_message = err,
-            ActionExecution::Unsupported => {
-                self.status_message = "Power plan action is not supported.".to_owned();
-            }
+            Err(err) => self.status_message = err,
         }
     }
 
@@ -8716,128 +8628,6 @@ impl PowerLeafApp {
         )
     }
 
-    #[allow(dead_code)]
-    fn render_responsiveness_rules(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self
-            .settings
-            .foreground_responsiveness
-            .rules
-            .iter()
-            .enumerate()
-        {
-            let process = rule.process_name.clone();
-            let adjusted = responsiveness::contains_process(
-                &self.foreground_responsiveness_status.adjusted_apps,
-                &process,
-            );
-            let indicator = if responsiveness::is_builtin_excluded(&process) {
-                (
-                    t!("affinity.indicator.protected").to_string(),
-                    settings_card_hover_color(),
-                    accent_color(),
-                )
-            } else if adjusted {
-                (
-                    t!("responsiveness.indicator_lowered").to_string(),
-                    success_bg_color(),
-                    success_text_color(),
-                )
-            } else if self.foreground_responsiveness_status.enabled {
-                (
-                    t!("affinity.indicator.ready").to_string(),
-                    panel_active_color(),
-                    muted_text_color(),
-                )
-            } else {
-                (
-                    t!("affinity.indicator.off").to_string(),
-                    panel_active_color(),
-                    dim_text_color(),
-                )
-            };
-            let card_target = RuleCardTarget::Responsiveness(process.clone());
-            let collapsed = self.is_rule_card_collapsed(&card_target);
-            let mut card = rule_card(
-                self.process_rule_title(&process, cx),
-                rule_enable_checkbox(
-                    format!("responsiveness-rule-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) =
-                            app.settings.foreground_responsiveness.rules.get_mut(index)
-                        {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ),
-                rule_card_collapse_indicator(card_target.clone(), collapsed),
-                card_target.clone(),
-                collapsed,
-                cx,
-            );
-            if rule_card_body_visible(&card_target, collapsed, window) {
-                card = card
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        0,
-                        1,
-                        rule_card_body_row(vec![rule_action_row(
-                            format!("responsiveness-rule-status-{index}"),
-                            t!("common.status").to_string(),
-                            status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
-                        )
-                        .into_any_element()]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        1,
-                        1,
-                        rule_card_body_row(vec![self.render_priority_selector(
-                            index,
-                            rule.priority,
-                            window,
-                            cx,
-                        )]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        2,
-                        1,
-                        rule_card_body_action(
-                            danger_control_button(Button::new(SharedString::from(format!(
-                                "remove-responsiveness-{index}"
-                            ))))
-                            .label(t!("common.remove").to_string())
-                            .on_click(cx.listener({
-                                move |app, _, _, cx| {
-                                    app.request_list_item_removal(
-                                        ListItemRemovalTarget::ResponsivenessRule(index),
-                                        cx,
-                                    );
-                                }
-                            }))
-                            .into_any_element(),
-                        ),
-                    ));
-            }
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::ResponsivenessRule(index),
-                SharedString::from(format!("responsiveness-rule-{index}")),
-                card.into_any_element(),
-            ));
-        }
-        if self.settings.foreground_responsiveness.rules.is_empty() {
-            list = list.child(text_muted(t!("responsiveness.no_rules").to_string()));
-        }
-        list.into_any_element()
-    }
-
     fn render_responsiveness_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = v_flex().gap_2();
         for (index, rule) in self
@@ -8894,56 +8684,6 @@ impl PowerLeafApp {
             ));
         }
         list.into_any_element()
-    }
-
-    #[allow(dead_code)]
-    fn render_priority_selector(
-        &self,
-        index: usize,
-        selected_priority: ProcessPriority,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let dropdown = self.render_dropdown_select(
-            format!("responsiveness-priority-{index}"),
-            process_priority_label(selected_priority),
-            true,
-            DropdownSelectWidth::Standard,
-            ProcessPriority::ALL.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessPriority::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!(
-                                "responsiveness-priority-{index}-option-{priority:?}"
-                            )),
-                            process_priority_label(priority),
-                            selected_priority == priority,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) =
-                                app.settings.foreground_responsiveness.rules.get_mut(index)
-                            {
-                                rule.priority = priority;
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        );
-        rule_action_row(
-            format!("responsiveness-priority-row-{index}"),
-            t!("responsiveness.background_priority").to_string(),
-            dropdown,
-        )
-        .into_any_element()
     }
 
     fn render_io_priority_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -13839,8 +13579,6 @@ enum RuleCardTarget {
     Suspension(String),
     CpuLimiter(String),
     Watchdog(String),
-    #[allow(dead_code)]
-    Responsiveness(String),
     LaunchPriority(String),
     Affinity(String),
 }
@@ -19773,91 +19511,6 @@ fn yes_no_label(value: bool) -> String {
     if value { "Yes" } else { "No" }.to_owned()
 }
 
-#[allow(dead_code)]
-fn format_percent_tenths(value: u16) -> String {
-    format!("{}.{:01}%", value / 10, value % 10)
-}
-
-#[allow(dead_code)]
-fn auto_balance_status_row(detail: &responsiveness::AutoBalanceProcessStatus) -> gpui::Div {
-    let cpu_usage = detail
-        .cpu_usage_tenths
-        .map(format_percent_tenths)
-        .unwrap_or_else(|| t!("common.unknown").to_string());
-    let elapsed = detail
-        .elapsed_seconds
-        .map(|seconds| format!("{seconds}s"))
-        .unwrap_or_else(|| "-".to_owned());
-    let reaction = detail
-        .reaction_millis
-        .map(format_millis)
-        .unwrap_or_else(|| "-".to_owned());
-
-    h_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .h(px(CARD_ROW_HEIGHT))
-        .items_center()
-        .justify_between()
-        .gap_3()
-        .py_3()
-        .px_4()
-        .rounded_sm()
-        .border_1()
-        .border_color(rgb(border_color()))
-        .bg(rgb(settings_card_color()))
-        .child(
-            v_flex()
-                .min_w(px(0.0))
-                .gap_1()
-                .child(
-                    div()
-                        .truncate()
-                        .text_color(rgb(primary_text_color()))
-                        .text_size(px(TEXT_BODY_SIZE))
-                        .child(format!("{} ({})", detail.process_name, detail.process_id)),
-                )
-                .child(
-                    text_muted(format!(
-                        "{}: {cpu_usage} | {}: {elapsed} | {}: {reaction} | {}: {}",
-                        t!("responsiveness.auto_balance_process_cpu"),
-                        t!("responsiveness.auto_balance_elapsed"),
-                        t!("responsiveness.auto_balance_reaction"),
-                        t!("responsiveness.auto_balance_repeats"),
-                        detail.restraint_count
-                    ))
-                    .truncate(),
-                ),
-        )
-        .child(auto_balance_state_tag(detail.state))
-}
-
-fn format_millis(value: u64) -> String {
-    if value >= 1_000 {
-        format!("{:.1}s", value as f64 / 1_000.0)
-    } else {
-        format!("{value}ms")
-    }
-}
-
-#[allow(dead_code)]
-fn auto_balance_state_tag(state: AutoBalanceProcessState) -> Tag {
-    match state {
-        AutoBalanceProcessState::Watching => Tag::warning()
-            .outline()
-            .child(t!("responsiveness.auto_balance_state_watching").to_string()),
-        AutoBalanceProcessState::Lowered => Tag::success()
-            .outline()
-            .child(t!("responsiveness.auto_balance_state_lowered").to_string()),
-        AutoBalanceProcessState::AffinityRestrained => Tag::success()
-            .outline()
-            .child(t!("responsiveness.auto_balance_state_affinity").to_string()),
-        AutoBalanceProcessState::CoolingDown => Tag::secondary()
-            .outline()
-            .child(t!("responsiveness.auto_balance_state_cooling").to_string()),
-    }
-}
-
 fn app_input(
     input: &Entity<InputState>,
     focused: bool,
@@ -20134,91 +19787,6 @@ fn checkbox(
                             begin_control_motion(label_motion_id.clone(), next, cx);
                             label_handler(&next, window, cx);
                         }),
-                ),
-        )
-        .into_any_element()
-}
-
-#[allow(dead_code)]
-fn checkbox_with_help(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    help: impl Into<SharedString>,
-    checked: bool,
-    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    let id: SharedString = id.into();
-    let label: SharedString = label.into();
-    let help: SharedString = help.into();
-    let accent = accent_color();
-    let text_color = if checked {
-        primary_text_color()
-    } else {
-        muted_text_color()
-    };
-    let check_color = accent_glyph_color(accent);
-    let handler = Rc::new(handler);
-    let box_handler = handler.clone();
-    let label_handler = handler;
-    let mark_id = SharedString::from(format!("{id}-mark"));
-    let motion_id = format!("checkbox-{id}");
-    let progress = control_motion_progress(&motion_id, checked);
-    let box_motion_id = motion_id.clone();
-    let label_motion_id = motion_id;
-
-    h_flex()
-        .w_full()
-        .min_w(px(0.0))
-        .child(
-            h_flex()
-                .id(id.clone())
-                .flex_none()
-                .items_center()
-                .gap_2()
-                .py_1()
-                .px_1()
-                .rounded_sm()
-                .text_color(rgb(text_color))
-                .text_size(px(TEXT_BODY_SIZE))
-                .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("{id}-box-hitbox")))
-                        .hover(|style| style.opacity(0.86))
-                        .cursor_pointer()
-                        .child(checkbox_box(
-                            SharedString::from(format!("{id}-box")),
-                            16.0,
-                            mark_id,
-                            check_color,
-                            progress,
-                        ))
-                        .on_click(move |_, window, cx| {
-                            cx.stop_propagation();
-                            let next = !checked;
-                            begin_control_motion(box_motion_id.clone(), next, cx);
-                            box_handler(&next, window, cx);
-                        }),
-                )
-                .child(
-                    h_flex()
-                        .min_w(px(0.0))
-                        .gap_1()
-                        .child(
-                            div()
-                                .id(SharedString::from(format!("{id}-label")))
-                                .truncate()
-                                .hover(|style| style.opacity(0.86))
-                                .cursor_pointer()
-                                .child(label)
-                                .on_click(move |_, window, cx| {
-                                    cx.stop_propagation();
-                                    let next = !checked;
-                                    begin_control_motion(label_motion_id.clone(), next, cx);
-                                    label_handler(&next, window, cx);
-                                }),
-                        )
-                        .child(title_info_button(format!("{id}-info"), help)),
                 ),
         )
         .into_any_element()
@@ -22643,15 +22211,6 @@ fn cpu_limiter_app_contains(apps: &[String], process: &str) -> bool {
         .any(|app| app.trim().eq_ignore_ascii_case(process.trim()))
 }
 
-#[allow(dead_code)]
-fn new_responsiveness_rule(process: &str) -> PriorityRule {
-    PriorityRule {
-        enabled: true,
-        process_name: process.trim().to_ascii_lowercase(),
-        priority: ProcessPriority::BelowNormal,
-    }
-}
-
 fn new_performance_mode_rule(
     process: &str,
     power_plan_guid: Option<String>,
@@ -23064,7 +22623,6 @@ fn format_cpu_mask(mask: u64) -> String {
     ranges.join(", ")
 }
 
-#[allow(dead_code)]
 fn process_priority_label(priority: ProcessPriority) -> String {
     match priority {
         ProcessPriority::Normal => t!("responsiveness.priority_normal").to_string(),
@@ -24625,42 +24183,6 @@ mod tests {
             ProcessorPowerSlider::DcCoreParkingMin.paired_power_source(),
             ProcessorPowerSlider::AcCoreParkingMin
         );
-    }
-
-    #[test]
-    fn processor_power_action_preserves_ac_and_dc_values() {
-        let action = processor_power_action(
-            "plan-guid",
-            ProcessorPowerAcDcValues {
-                ac: ProcessorPowerValues::new_with_boost_mode(
-                    10,
-                    20,
-                    90,
-                    ProcessorBoostMode::Aggressive,
-                ),
-                dc: ProcessorPowerValues::new_with_boost_mode(
-                    5,
-                    15,
-                    70,
-                    ProcessorBoostMode::EfficientEnabled,
-                ),
-            },
-        );
-
-        assert!(matches!(
-            action,
-            Action::SetProcessorPowerValues {
-                plan_guid,
-                ac_core_parking_min_percent: 10,
-                ac_performance_min_percent: 20,
-                ac_performance_max_percent: 90,
-                ac_boost_mode: 2,
-                dc_core_parking_min_percent: 5,
-                dc_performance_min_percent: 15,
-                dc_performance_max_percent: 70,
-                dc_boost_mode: 3,
-            } if plan_guid == "plan-guid"
-        ));
     }
 
     #[test]

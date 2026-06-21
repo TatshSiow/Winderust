@@ -7,7 +7,6 @@ license = "MIT"
 
 [dependencies]
 chrono = { version = "0.4.44", features = ["serde"] }
-dirs = "5.0.1"
 gpui = "0.2.2"
 gpui-component = "0.5.1"
 raw-window-handle = "0.6.2"

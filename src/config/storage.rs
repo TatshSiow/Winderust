@@ -40,7 +40,8 @@ fn legacy_config_dir() -> PathBuf {
 }
 
 fn base_config_dir() -> PathBuf {
-    dirs::config_dir()
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
 }

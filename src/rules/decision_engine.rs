@@ -2,7 +2,7 @@ use chrono::Utc;
 
 use crate::{
     activity::ActivityState,
-    config::{ManualOverride, PowerPlanSettings, Settings},
+    config::{PowerPlanSettings, Settings},
     scheduler::{CpuUsageDecision, ScheduleDecision},
 };
 
@@ -231,11 +231,6 @@ fn active_plan(power_plans: &PowerPlanSettings, settings: &Settings) -> Option<S
         .performance_guid
         .clone()
         .or_else(|| settings.power_plans.performance_guid.clone())
-}
-
-#[allow(dead_code)]
-fn _manual_override_is_used(override_state: &ManualOverride) -> bool {
-    !matches!(override_state, ManualOverride::None)
 }
 
 #[cfg(test)]

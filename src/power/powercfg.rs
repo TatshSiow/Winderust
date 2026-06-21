@@ -462,7 +462,9 @@ mod tests {
 
     #[test]
     fn processor_power_values_normalize_to_valid_percentages() {
-        let values = ProcessorPowerValues::new(140, 75, 20).normalized();
+        let values =
+            ProcessorPowerValues::new_with_boost_mode(140, 75, 20, ProcessorBoostMode::Enabled)
+                .normalized();
 
         assert_eq!(values.core_parking_min, 100);
         assert_eq!(values.performance_min, 75);
@@ -473,8 +475,8 @@ mod tests {
     #[test]
     fn processor_power_ac_dc_values_normalize_each_power_source() {
         let values = ProcessorPowerAcDcValues::new(
-            ProcessorPowerValues::new(120, 90, 80),
-            ProcessorPowerValues::new(10, 20, 15),
+            ProcessorPowerValues::new_with_boost_mode(120, 90, 80, ProcessorBoostMode::Enabled),
+            ProcessorPowerValues::new_with_boost_mode(10, 20, 15, ProcessorBoostMode::Enabled),
         )
         .normalized();
 
