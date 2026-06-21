@@ -26,7 +26,8 @@ use crate::{
     affinity::{self, CpuAffinityManager, LogicalProcessorInfo, LogicalProcessorKind},
     config::{
         CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, EcoQosCpuRestrictionMode,
-        ForegroundBoostPriority, ForegroundResponsivenessSettings, PriorityRule, ProcessPriority,
+        ForegroundBoostPriority, ForegroundResponsivenessSettings, PriorityRule,
+        ProcessMemoryPriority, ProcessPriority,
     },
     cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
     foreground::{
@@ -78,6 +79,7 @@ pub struct ForegroundResponsivenessSnapshot {
     pub scanned_processes: usize,
     pub background_adjusted_processes: usize,
     pub foreground_boosted_process: Option<String>,
+    pub launch_boost_active: bool,
     pub auto_balanced_processes: usize,
     pub auto_balance_message: String,
     pub auto_balance_total_cpu_usage_tenths: Option<u16>,
@@ -368,6 +370,20 @@ impl ForegroundResponsivenessManager {
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
         );
+        let foreground_launch_boost_target = foreground_process_id
+            .zip(foreground_process_name.as_deref())
+            .is_some_and(|(process_id, process_name)| {
+                !eco_qos_process_ids.contains(&process_id)
+                    && foreground_boost_eligible(
+                        process_id,
+                        process_name,
+                        current_process_id,
+                        current_session_id,
+                    )
+                    && foreground_launch_boost_eligible(process_id)
+            });
+        let launch_boost_running =
+            auto_balance_launch_boost_enabled(settings, foreground_launch_boost_target);
         let lower_background_affinity_settings = CpuAffinitySettings {
             enabled: false,
             exclude_foreground_app: true,
@@ -386,6 +402,25 @@ impl ForegroundResponsivenessManager {
 
         let mut auto_balance_rules = Vec::new();
         let mut auto_balance_memory_targets = Vec::new();
+        if launch_boost_running {
+            for (process_id, process_name) in &lowerable_background_processes {
+                if settings.auto_balance_exclusion_enabled_for(process_name) {
+                    continue;
+                }
+                target_processes.entry(*process_id).or_insert_with(|| {
+                    (
+                        process_name.clone(),
+                        ProcessPriority::Idle,
+                        PriorityTargetSource::AutoBalance,
+                    )
+                });
+                auto_balance_memory_targets.push(MemoryPriorityTarget {
+                    process_id: *process_id,
+                    process_name: process_name.clone(),
+                    priority: ProcessMemoryPriority::VeryLow,
+                });
+            }
+        }
         if auto_balance_running {
             let now = Instant::now();
             let auto_balance_core_mask =
@@ -422,7 +457,7 @@ impl ForegroundResponsivenessManager {
                             PriorityTargetSource::AutoBalance,
                         )
                     });
-                    if settings.auto_balance_memory_priority_enabled {
+                    if settings.auto_balance_memory_priority_enabled && !launch_boost_running {
                         auto_balance_memory_targets.push(MemoryPriorityTarget {
                             process_id: process.id,
                             process_name: process.name.clone(),
@@ -464,8 +499,8 @@ impl ForegroundResponsivenessManager {
         let auto_balance_memory_snapshot = self.auto_balance_memory_priority.update(
             if settings.enabled
                 && settings.auto_balance_enabled
-                && auto_balance_running
-                && settings.auto_balance_memory_priority_enabled
+                && (auto_balance_running || launch_boost_running)
+                && (settings.auto_balance_memory_priority_enabled || launch_boost_running)
             {
                 auto_balance_memory_targets
             } else {
@@ -590,12 +625,15 @@ impl ForegroundResponsivenessManager {
             settings,
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
+            launch_boost_running,
             auto_balance_running,
             auto_balanced_processes,
         );
 
         if let Some(foreground_id) = foreground_process_id {
-            if settings.boost_foreground_app && !eco_qos_process_ids.contains(&foreground_id) {
+            if (settings.boost_foreground_app || launch_boost_running)
+                && !eco_qos_process_ids.contains(&foreground_id)
+            {
                 let boost_targets = processes
                     .iter()
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
@@ -615,8 +653,16 @@ impl ForegroundResponsivenessManager {
                         foreground_id,
                         foreground_process_name: foreground_process_name.as_deref(),
                         targets: &boost_targets,
-                        stability_delay_ms: settings.foreground_stability_delay_ms,
-                        foreground_boost: settings.foreground_boost,
+                        stability_delay_ms: if launch_boost_running {
+                            0
+                        } else {
+                            settings.foreground_stability_delay_ms
+                        },
+                        foreground_boost: if launch_boost_running {
+                            ForegroundBoostPriority::AboveNormal
+                        } else {
+                            settings.foreground_boost
+                        },
                         foreground_cpu_usage_percent,
                     },
                     action_log,
@@ -650,6 +696,7 @@ impl ForegroundResponsivenessManager {
                     )
                 }
             }),
+            launch_boost_active: launch_boost_running,
             auto_balanced_processes,
             auto_balance_message,
             auto_balance_total_cpu_usage_tenths: foreground_cpu_usage_tenths,
@@ -1290,6 +1337,7 @@ impl Default for ForegroundResponsivenessSnapshot {
             scanned_processes: 0,
             background_adjusted_processes: 0,
             foreground_boosted_process: None,
+            launch_boost_active: false,
             auto_balanced_processes: 0,
             auto_balance_message: "Auto-balance disabled.".to_owned(),
             auto_balance_total_cpu_usage_tenths: None,
@@ -1322,11 +1370,17 @@ fn auto_balance_status_message(
     settings: &ForegroundResponsivenessSettings,
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
+    launch_boost_running: bool,
     running: bool,
     restrained_count: usize,
 ) -> String {
     if !settings.auto_balance_enabled {
         return "Auto-balance disabled.".to_owned();
+    }
+
+    if launch_boost_running {
+        return "Launch boost active: lowering eligible background work while the foreground app starts."
+            .to_owned();
     }
 
     if !running {
@@ -1730,6 +1784,13 @@ pub fn foreground_boost_priority_class(
 fn foreground_launch_boost_eligible(process_id: u32) -> bool {
     process_age(process_id)
         .is_some_and(|age| process_age_in_launch_boost_window(age, FOREGROUND_LAUNCH_BOOST_WINDOW))
+}
+
+fn auto_balance_launch_boost_enabled(
+    settings: &ForegroundResponsivenessSettings,
+    foreground_is_launching: bool,
+) -> bool {
+    settings.auto_balance_enabled && foreground_is_launching
 }
 
 fn process_age_in_launch_boost_window(age: Duration, launch_window: Duration) -> bool {
@@ -2306,6 +2367,38 @@ mod tests {
             FOREGROUND_LAUNCH_BOOST_WINDOW + Duration::from_millis(1),
             FOREGROUND_LAUNCH_BOOST_WINDOW,
         ));
+    }
+
+    #[test]
+    fn launch_boost_runs_for_any_auto_balance_preset_while_app_is_launching() {
+        let settings = ForegroundResponsivenessSettings {
+            auto_balance_enabled: true,
+            boost_foreground_app: false,
+            ..Default::default()
+        };
+
+        assert!(auto_balance_launch_boost_enabled(&settings, true));
+        assert!(!auto_balance_launch_boost_enabled(&settings, false));
+        assert!(!auto_balance_launch_boost_enabled(
+            &ForegroundResponsivenessSettings {
+                auto_balance_enabled: false,
+                ..settings.clone()
+            },
+            true
+        ));
+    }
+
+    #[test]
+    fn auto_balance_status_reports_launch_boost_before_cpu_waiting() {
+        let settings = ForegroundResponsivenessSettings {
+            auto_balance_enabled: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            auto_balance_status_message(&settings, None, None, true, false, 0),
+            "Launch boost active: lowering eligible background work while the foreground app starts."
+        );
     }
 
     #[test]

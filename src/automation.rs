@@ -61,7 +61,7 @@ const IO_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const GPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
-const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(10);
+const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
@@ -1062,9 +1062,10 @@ fn feature_refresh_required(settings: &Settings, feature_enabled: bool) -> bool 
 fn io_priority_required(settings: &Settings) -> bool {
     settings.io_priority.enabled
         || (settings.foreground_responsiveness.enabled
-            && settings
+            && (settings
                 .foreground_responsiveness
-                .lower_background_io_priority_enabled)
+                .lower_background_io_priority_enabled
+                || settings.foreground_responsiveness.auto_balance_enabled))
 }
 
 fn memory_priority_required(settings: &Settings) -> bool {
@@ -1075,9 +1076,17 @@ fn timer_resolution_required(settings: &Settings) -> bool {
     settings.timer_resolution.enabled
 }
 
-fn effective_io_priority_settings(settings: &Settings) -> crate::config::IoPrioritySettings {
+fn effective_io_priority_settings(
+    settings: &Settings,
+    launch_boost_active: bool,
+) -> crate::config::IoPrioritySettings {
     let mut io_priority = settings.io_priority.clone();
-    if settings.foreground_responsiveness.enabled
+    if launch_boost_active {
+        io_priority.enabled = true;
+        io_priority.foreground_detection_enabled = true;
+        io_priority.foreground_priority = ProcessIoPriority::Normal.into();
+        io_priority.background_priority = ProcessIoPriority::VeryLow.into();
+    } else if settings.foreground_responsiveness.enabled
         && settings
             .foreground_responsiveness
             .lower_background_io_priority_enabled
@@ -1374,6 +1383,7 @@ struct HiddenAutomationRunner {
     watchdog_manager: WatchdogManager,
     action_log: ActionLog,
     foreground_responsiveness_manager: ForegroundResponsivenessManager,
+    launch_boost_active: bool,
     io_priority_manager: IoPriorityManager,
     gpu_priority_manager: GpuPriorityManager,
     memory_priority_manager: MemoryPriorityManager,
@@ -1588,7 +1598,7 @@ impl HiddenAutomationRunner {
         let foreground_process_id = self.foreground_detector.process_id();
         let mut excluded_process_ids = self.eco_qos_manager.throttled_process_ids();
         excluded_process_ids.extend(self.performance_mode_manager.active_process_ids());
-        self.foreground_responsiveness_manager.update(
+        let snapshot = self.foreground_responsiveness_manager.update(
             ForegroundResponsivenessUpdate {
                 settings: &settings.foreground_responsiveness,
                 automation_enabled: settings.general.enabled,
@@ -1598,11 +1608,14 @@ impl HiddenAutomationRunner {
                 eco_qos_process_ids: &excluded_process_ids,
             },
             &mut self.action_log,
-        )
+        );
+        self.launch_boost_active = snapshot.launch_boost_active;
+        snapshot
     }
 
     fn run_io_priority_update(&mut self, settings: &Settings) -> IoPrioritySnapshot {
-        let io_priority_settings = effective_io_priority_settings(settings);
+        let io_priority_settings =
+            effective_io_priority_settings(settings, self.launch_boost_active);
         self.io_priority_manager.update(
             &io_priority_settings,
             settings.general.enabled,
@@ -1880,6 +1893,33 @@ mod tests {
             Some(deadline),
             deadline,
         ));
+    }
+
+    #[test]
+    fn launch_boost_forces_background_io_assist() {
+        let settings = Settings::default();
+        let io_priority = effective_io_priority_settings(&settings, true);
+
+        assert!(io_priority.enabled);
+        assert!(io_priority.foreground_detection_enabled);
+        assert_eq!(
+            io_priority.foreground_priority.priority(),
+            Some(ProcessIoPriority::Normal)
+        );
+        assert_eq!(
+            io_priority.background_priority.priority(),
+            Some(ProcessIoPriority::VeryLow)
+        );
+    }
+
+    #[test]
+    fn auto_balance_makes_launch_boost_io_refresh_available() {
+        let mut settings = Settings::default();
+        settings.foreground_responsiveness.enabled = true;
+        settings.foreground_responsiveness.auto_balance_enabled = true;
+        settings.foreground_responsiveness.boost_foreground_app = false;
+
+        assert!(io_priority_required(&settings));
     }
 
     #[test]

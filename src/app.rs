@@ -4508,16 +4508,19 @@ impl PowerLeafApp {
             ));
         }
         if settings.foreground_responsiveness.enabled {
-            items.push((
-                t!("nav.foreground_responsiveness").to_string(),
+            let responsiveness_status = if self.foreground_responsiveness_status.launch_boost_active
+            {
+                "launch boost".to_owned()
+            } else {
                 format!(
                     "{} adjusted",
                     self.foreground_responsiveness_status
                         .background_adjusted_processes
-                        + self
-                            .foreground_responsiveness_status
-                            .auto_balanced_processes
-                ),
+                )
+            };
+            items.push((
+                t!("nav.foreground_responsiveness").to_string(),
+                responsiveness_status,
             ));
         }
         if settings.io_priority.enabled {
@@ -8192,6 +8195,74 @@ impl PowerLeafApp {
                 }),
             )
         };
+        let affinity_mode_control = if settings.lower_background_auto_cpu_percent {
+            value_pill(format!(
+                "{} ({})",
+                efficiency_cpu_restriction_mode_label(EcoQosCpuRestrictionMode::SoftCpuSets),
+                t!("responsiveness.priority_auto")
+            ))
+            .into_any_element()
+        } else {
+            self.render_auto_balance_affinity_mode_selector(window, cx)
+        };
+        let mut affinity_rows = vec![
+            setting_group_action_row(
+                "responsiveness-auto-affinity-mode",
+                t!("responsiveness.auto_balance_affinity_mode").to_string(),
+                affinity_mode_control,
+                true,
+            )
+            .into_any_element(),
+            setting_group_action_row(
+                "responsiveness-auto-cpu-share-mode",
+                t!("responsiveness.dynamic_cpu_share").to_string(),
+                setting_group_switch_action(
+                    "responsiveness-auto-cpu-share-mode-switch",
+                    settings.lower_background_auto_cpu_percent,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings
+                            .foreground_responsiveness
+                            .lower_background_auto_cpu_percent = *checked;
+                        cx.notify();
+                    }),
+                ),
+                true,
+            )
+            .into_any_element(),
+        ];
+        if !settings.lower_background_auto_cpu_percent {
+            affinity_rows.push(
+                setting_group_stepper_row_u64(
+                    "responsiveness-auto-cpu-percent",
+                    t!("responsiveness.minimum_cpu_share").to_string(),
+                    u64::from(settings.auto_balance_cpu_percent),
+                    self.render_numeric_value(
+                        NumericField::AutoBalanceCpuPercent,
+                        format!("{}%", settings.auto_balance_cpu_percent),
+                        settings.auto_balance_cpu_percent.to_string(),
+                        cx,
+                    ),
+                    true,
+                    cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                        let current = u64::from(
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_cpu_percent,
+                        );
+                        app.settings
+                            .foreground_responsiveness
+                            .auto_balance_cpu_percent = apply_u64_step(
+                            current,
+                            change,
+                            AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
+                            AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
+                        ) as u8;
+                        cx.notify();
+                    }),
+                )
+                .into_any_element(),
+            );
+        }
         let mut rows = vec![
             setting_group_with_help(
                 SettingGroupTarget::AutoBalanceEfficiency,
@@ -8265,59 +8336,7 @@ impl PowerLeafApp {
                     }),
                 ),
                 self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceAffinity),
-                vec![
-                    setting_group_action_row(
-                        "responsiveness-auto-affinity-mode",
-                        t!("responsiveness.auto_balance_affinity_mode").to_string(),
-                        self.render_auto_balance_affinity_mode_selector(window, cx),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_action_row(
-                        "responsiveness-auto-cpu-share-mode",
-                        t!("responsiveness.dynamic_cpu_share").to_string(),
-                        setting_group_switch_action(
-                            "responsiveness-auto-cpu-share-mode-switch",
-                            settings.lower_background_auto_cpu_percent,
-                            cx.listener(|app, checked, _, cx| {
-                                app.settings
-                                    .foreground_responsiveness
-                                    .lower_background_auto_cpu_percent = *checked;
-                                cx.notify();
-                            }),
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_stepper_row_u64(
-                        "responsiveness-auto-cpu-percent",
-                        t!("responsiveness.minimum_cpu_share").to_string(),
-                        u64::from(settings.auto_balance_cpu_percent),
-                        self.render_numeric_value(
-                            NumericField::AutoBalanceCpuPercent,
-                            format!("{}%", settings.auto_balance_cpu_percent),
-                            settings.auto_balance_cpu_percent.to_string(),
-                            cx,
-                        ),
-                        true,
-                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
-                            let current = u64::from(
-                                app.settings
-                                    .foreground_responsiveness
-                                    .auto_balance_cpu_percent,
-                            );
-                            app.settings
-                                .foreground_responsiveness
-                                .auto_balance_cpu_percent = apply_u64_step(
-                                current,
-                                change,
-                                AUTO_BALANCE_THRESHOLD_MIN_PERCENT,
-                                AUTO_BALANCE_THRESHOLD_MAX_PERCENT,
-                            ) as u8;
-                            cx.notify();
-                        }),
-                    ),
-                ],
+                affinity_rows,
                 window,
                 cx,
             )
