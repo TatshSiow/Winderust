@@ -43,15 +43,15 @@ pub struct PageSection {
 
 const OVERVIEW_PAGES: [Page; 1] = [Page::Dashboard];
 const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
-const POWER_AUTOMATION_PAGES: [Page; 5] = [
+const POWER_AUTOMATION_PAGES: [Page; 6] = [
     Page::ForegroundRules,
     Page::PerformanceMode,
     Page::CpuUsage,
     Page::Activity,
     Page::Schedule,
-];
-const CPU_CONTROL_PAGES: [Page; 4] = [
     Page::CoreParking,
+];
+const CPU_CONTROL_PAGES: [Page; 3] = [
     Page::CpuLimiter,
     Page::BackgroundCpuRestriction,
     Page::CpuAffinity,
@@ -168,11 +168,9 @@ impl Page {
             | Self::Schedule
             | Self::ForegroundRules
             | Self::PerformanceMode
-            | Self::CpuUsage => t!("nav.power_automation"),
-            Self::CoreParking
-            | Self::CpuLimiter
-            | Self::BackgroundCpuRestriction
-            | Self::CpuAffinity => {
+            | Self::CpuUsage
+            | Self::CoreParking => t!("nav.power_automation"),
+            Self::CpuLimiter | Self::BackgroundCpuRestriction | Self::CpuAffinity => {
                 t!("nav.processor_controls")
             }
             Self::EfficiencyMode
@@ -200,9 +198,9 @@ impl Page {
             | Self::Schedule
             | Self::ForegroundRules
             | Self::PerformanceMode
-            | Self::CpuUsage => Self::PowerPlanAutomation,
+            | Self::CpuUsage
+            | Self::CoreParking => Self::PowerPlanAutomation,
             Self::ProcessorControls
-            | Self::CoreParking
             | Self::CpuLimiter
             | Self::BackgroundCpuRestriction
             | Self::CpuAffinity => Self::ProcessorControls,
@@ -265,5 +263,16 @@ mod tests {
         assert_eq!(sections[1].landing_page, Page::ProcessList);
         assert_eq!(Page::ProcessList.section_landing_page(), Page::ProcessList);
         assert!(!PROCESS_POLICY_PAGES.contains(&Page::ProcessList));
+    }
+
+    #[test]
+    fn advanced_power_plan_tuning_lives_under_power_plan_control() {
+        assert_eq!(
+            Page::CoreParking.section_landing_page(),
+            Page::PowerPlanAutomation
+        );
+        assert!(POWER_AUTOMATION_PAGES.contains(&Page::CoreParking));
+        assert_eq!(POWER_AUTOMATION_PAGES.last(), Some(&Page::CoreParking));
+        assert!(!CPU_CONTROL_PAGES.contains(&Page::CoreParking));
     }
 }

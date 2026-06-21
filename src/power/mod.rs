@@ -2,7 +2,7 @@ pub mod plan;
 pub mod powercfg;
 
 pub use plan::{
-    PowerPlan, ProcessorBoostMode, ProcessorPowerAcDcValues, ProcessorPowerPreset,
-    ProcessorPowerValues,
+    EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode,
+    ProcessorPowerAcDcValues, ProcessorPowerPreset, ProcessorPowerValues,
 };
-pub use powercfg::PowerPlanManager;
+pub use powercfg::{EffectivePowerModeMonitor, PowerPlanManager};

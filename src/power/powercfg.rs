@@ -1,4 +1,11 @@
-use std::ptr::null_mut;
+use std::{
+    ffi::c_void,
+    ptr::null_mut,
+    sync::{
+        atomic::{AtomicI32, Ordering},
+        Arc,
+    },
+};
 
 use windows_sys::{
     core::GUID,
@@ -6,16 +13,27 @@ use windows_sys::{
         Foundation::{LocalFree, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
         System::Power::{
             PowerEnumerate, PowerGetActiveScheme, PowerReadACValueIndex, PowerReadDCValueIndex,
-            PowerReadFriendlyName, PowerSetActiveScheme, PowerWriteACValueIndex,
-            PowerWriteDCValueIndex, ACCESS_SCHEME,
+            PowerReadFriendlyName, PowerRegisterForEffectivePowerModeNotifications,
+            PowerSetActiveScheme, PowerUnregisterFromEffectivePowerModeNotifications,
+            PowerWriteACValueIndex, PowerWriteDCValueIndex, ACCESS_SCHEME, EFFECTIVE_POWER_MODE,
+            EFFECTIVE_POWER_MODE_V2,
         },
     },
 };
 
-use super::{PowerPlan, ProcessorBoostMode, ProcessorPowerAcDcValues, ProcessorPowerValues};
+use super::{
+    EffectivePowerMode, PowerPlan, PowerPlanPersonality, ProcessorBoostMode,
+    ProcessorPowerAcDcValues, ProcessorPowerValues,
+};
 
 #[derive(Debug, Default)]
 pub struct PowerPlanManager;
+
+#[derive(Debug)]
+pub struct EffectivePowerModeMonitor {
+    mode: Arc<AtomicI32>,
+    registration: *mut c_void,
+}
 
 impl PowerPlanManager {
     pub fn list_plans(&self) -> Result<Vec<PowerPlan>, String> {
@@ -66,6 +84,15 @@ impl PowerPlanManager {
         }
     }
 
+    pub fn read_plan_personality(&self, guid: &str) -> Result<PowerPlanPersonality, String> {
+        let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+        Ok(PowerPlanPersonality::from_power_value(read_ac_value(
+            &scheme,
+            &GUID_NO_SUBGROUP,
+            &GUID_POWERSCHEME_PERSONALITY,
+        )?))
+    }
+
     pub fn apply_processor_power_values(
         &self,
         guid: &str,
@@ -113,6 +140,18 @@ impl PowerPlanManager {
         write_ac_value(
             &scheme,
             &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
+            values.ac.boost_policy,
+        )?;
+        write_dc_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+            &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
+            values.dc.boost_policy,
+        )?;
+        write_ac_value(
+            &scheme,
+            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
             &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
             values.ac.boost_mode.power_value(),
         )?;
@@ -155,6 +194,11 @@ impl PowerPlanManager {
                     &GUID_PROCESSOR_SETTINGS_SUBGROUP,
                     &GUID_PROCESSOR_PERFORMANCE_MAX,
                 )?,
+                read_ac_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
+                )?,
                 ProcessorBoostMode::from_power_value(read_ac_value(
                     &scheme,
                     &GUID_PROCESSOR_SETTINGS_SUBGROUP,
@@ -178,6 +222,11 @@ impl PowerPlanManager {
                     &GUID_PROCESSOR_SETTINGS_SUBGROUP,
                     &GUID_PROCESSOR_PERFORMANCE_MAX,
                 )?,
+                read_dc_value(
+                    &scheme,
+                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                    &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
+                )?,
                 ProcessorBoostMode::from_power_value(read_dc_value(
                     &scheme,
                     &GUID_PROCESSOR_SETTINGS_SUBGROUP,
@@ -188,6 +237,70 @@ impl PowerPlanManager {
         ))
     }
 }
+
+impl EffectivePowerModeMonitor {
+    pub fn new() -> Result<Self, String> {
+        let mode = Arc::new(AtomicI32::new(EFFECTIVE_POWER_MODE_UNKNOWN));
+        let mut registration = null_mut();
+        let result = unsafe {
+            PowerRegisterForEffectivePowerModeNotifications(
+                EFFECTIVE_POWER_MODE_V2,
+                Some(effective_power_mode_callback),
+                Arc::as_ptr(&mode).cast(),
+                &mut registration,
+            )
+        };
+
+        if result >= 0 {
+            Ok(Self { mode, registration })
+        } else {
+            Err(format!(
+                "PowerRegisterForEffectivePowerModeNotifications failed with HRESULT {result:#x}."
+            ))
+        }
+    }
+
+    pub fn snapshot(&self) -> EffectivePowerMode {
+        EffectivePowerMode::from_raw(self.mode.load(Ordering::Relaxed))
+    }
+}
+
+impl Drop for EffectivePowerModeMonitor {
+    fn drop(&mut self) {
+        if !self.registration.is_null() {
+            unsafe {
+                PowerUnregisterFromEffectivePowerModeNotifications(self.registration.cast_const());
+            }
+        }
+    }
+}
+
+unsafe extern "system" fn effective_power_mode_callback(
+    mode: EFFECTIVE_POWER_MODE,
+    context: *const c_void,
+) {
+    if !context.is_null() {
+        unsafe {
+            (*(context as *const AtomicI32)).store(mode, Ordering::Relaxed);
+        }
+    }
+}
+
+const EFFECTIVE_POWER_MODE_UNKNOWN: i32 = -1;
+
+const GUID_NO_SUBGROUP: GUID = GUID {
+    data1: 0xfea3413e,
+    data2: 0x7e05,
+    data3: 0x4911,
+    data4: [0x9a, 0x71, 0x70, 0x03, 0x31, 0xf1, 0xc2, 0x94],
+};
+
+const GUID_POWERSCHEME_PERSONALITY: GUID = GUID {
+    data1: 0x245d8541,
+    data2: 0x3943,
+    data3: 0x4422,
+    data4: [0xb0, 0x25, 0x13, 0xa7, 0x84, 0xf6, 0x79, 0xb7],
+};
 
 const GUID_PROCESSOR_SETTINGS_SUBGROUP: GUID = GUID {
     data1: 0x54533251,
@@ -215,6 +328,13 @@ const GUID_PROCESSOR_PERFORMANCE_MAX: GUID = GUID {
     data2: 0x23e0,
     data3: 0x4960,
     data4: [0x96, 0xda, 0x33, 0xab, 0xaf, 0x59, 0x35, 0xec],
+};
+
+const GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY: GUID = GUID {
+    data1: 0x45bcc044,
+    data2: 0xd885,
+    data3: 0x43e2,
+    data4: [0x86, 0x05, 0xee, 0x0e, 0xc6, 0xe9, 0x6b, 0x59],
 };
 
 const GUID_PROCESSOR_PERFORMANCE_BOOST_MODE: GUID = GUID {
@@ -433,7 +553,7 @@ fn format_guid(guid: &GUID) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::power::ProcessorPowerPreset;
+    use crate::power::{EffectivePowerMode, PowerPlanPersonality, ProcessorPowerPreset};
 
     use super::*;
 
@@ -446,45 +566,77 @@ mod tests {
     }
 
     #[test]
+    fn maps_windows_power_modes() {
+        assert_eq!(
+            PowerPlanPersonality::from_power_value(2),
+            PowerPlanPersonality::Balanced
+        );
+        assert_eq!(
+            EffectivePowerMode::from_raw(4),
+            EffectivePowerMode::MaxPerformance
+        );
+        assert_eq!(
+            EffectivePowerMode::from_raw(-1),
+            EffectivePowerMode::Unknown
+        );
+    }
+
+    #[test]
     fn processor_power_presets_use_explicit_percentages() {
         let performance = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Performance);
         assert_eq!(performance.core_parking_min, 100);
         assert_eq!(performance.performance_min, 100);
         assert_eq!(performance.performance_max, 100);
+        assert_eq!(performance.boost_policy, 100);
         assert_eq!(performance.boost_mode, ProcessorBoostMode::Aggressive);
 
         let saver = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver);
         assert_eq!(saver.core_parking_min, 0);
         assert_eq!(saver.performance_min, 5);
         assert_eq!(saver.performance_max, 80);
+        assert_eq!(saver.boost_policy, 40);
         assert_eq!(saver.boost_mode, ProcessorBoostMode::EfficientEnabled);
     }
 
     #[test]
     fn processor_power_values_normalize_to_valid_percentages() {
-        let values =
-            ProcessorPowerValues::new_with_boost_mode(140, 75, 20, ProcessorBoostMode::Enabled)
-                .normalized();
+        let values = ProcessorPowerValues::new_with_boost_mode(
+            140,
+            75,
+            20,
+            150,
+            ProcessorBoostMode::Enabled,
+        )
+        .normalized();
 
         assert_eq!(values.core_parking_min, 100);
         assert_eq!(values.performance_min, 75);
         assert_eq!(values.performance_max, 75);
+        assert_eq!(values.boost_policy, 100);
         assert_eq!(values.boost_mode, ProcessorBoostMode::Enabled);
     }
 
     #[test]
     fn processor_power_ac_dc_values_normalize_each_power_source() {
         let values = ProcessorPowerAcDcValues::new(
-            ProcessorPowerValues::new_with_boost_mode(120, 90, 80, ProcessorBoostMode::Enabled),
-            ProcessorPowerValues::new_with_boost_mode(10, 20, 15, ProcessorBoostMode::Enabled),
+            ProcessorPowerValues::new_with_boost_mode(
+                120,
+                90,
+                80,
+                120,
+                ProcessorBoostMode::Enabled,
+            ),
+            ProcessorPowerValues::new_with_boost_mode(10, 20, 15, 30, ProcessorBoostMode::Enabled),
         )
         .normalized();
 
         assert_eq!(values.ac.core_parking_min, 100);
         assert_eq!(values.ac.performance_min, 90);
         assert_eq!(values.ac.performance_max, 90);
+        assert_eq!(values.ac.boost_policy, 100);
         assert_eq!(values.dc.core_parking_min, 10);
         assert_eq!(values.dc.performance_min, 20);
         assert_eq!(values.dc.performance_max, 20);
+        assert_eq!(values.dc.boost_policy, 30);
     }
 }

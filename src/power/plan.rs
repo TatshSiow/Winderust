@@ -6,6 +6,26 @@ pub struct PowerPlan {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerPlanPersonality {
+    PowerSaver,
+    HighPerformance,
+    Balanced,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectivePowerMode {
+    Unknown,
+    BatterySaver,
+    BetterBattery,
+    Balanced,
+    HighPerformance,
+    MaxPerformance,
+    GameMode,
+    MixedReality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessorPowerPreset {
     Performance,
     Balanced,
@@ -28,6 +48,7 @@ pub struct ProcessorPowerValues {
     pub core_parking_min: u32,
     pub performance_min: u32,
     pub performance_max: u32,
+    pub boost_policy: u32,
     pub boost_mode: ProcessorBoostMode,
 }
 
@@ -42,12 +63,14 @@ impl ProcessorPowerValues {
         core_parking_min: u32,
         performance_min: u32,
         performance_max: u32,
+        boost_policy: u32,
         boost_mode: ProcessorBoostMode,
     ) -> Self {
         Self {
             core_parking_min,
             performance_min,
             performance_max,
+            boost_policy,
             boost_mode,
         }
     }
@@ -58,18 +81,21 @@ impl ProcessorPowerValues {
                 core_parking_min: 100,
                 performance_min: 100,
                 performance_max: 100,
+                boost_policy: 100,
                 boost_mode: ProcessorBoostMode::Aggressive,
             },
             ProcessorPowerPreset::Balanced => Self {
                 core_parking_min: 50,
                 performance_min: 5,
                 performance_max: 100,
+                boost_policy: 60,
                 boost_mode: ProcessorBoostMode::Enabled,
             },
             ProcessorPowerPreset::Saver => Self {
                 core_parking_min: 0,
                 performance_min: 5,
                 performance_max: 80,
+                boost_policy: 40,
                 boost_mode: ProcessorBoostMode::EfficientEnabled,
             },
         }
@@ -81,6 +107,7 @@ impl ProcessorPowerValues {
             core_parking_min: self.core_parking_min.min(100),
             performance_min,
             performance_max: self.performance_max.min(100).max(performance_min),
+            boost_policy: self.boost_policy.min(100),
             boost_mode: self.boost_mode,
         }
     }
@@ -149,6 +176,32 @@ impl PowerPlan {
             format!("{} (active)", self.name)
         } else {
             self.name.clone()
+        }
+    }
+}
+
+impl PowerPlanPersonality {
+    pub const fn from_power_value(value: u32) -> Self {
+        match value {
+            0 => Self::PowerSaver,
+            1 => Self::HighPerformance,
+            2 => Self::Balanced,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+impl EffectivePowerMode {
+    pub const fn from_raw(value: i32) -> Self {
+        match value {
+            0 => Self::BatterySaver,
+            1 => Self::BetterBattery,
+            2 => Self::Balanced,
+            3 => Self::HighPerformance,
+            4 => Self::MaxPerformance,
+            5 => Self::GameMode,
+            6 => Self::MixedReality,
+            _ => Self::Unknown,
         }
     }
 }

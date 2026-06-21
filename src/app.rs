@@ -81,8 +81,9 @@ use crate::{
     memory_priority::{self, MemoryPrioritySnapshot},
     performance_mode::{self, PerformanceModeSnapshot},
     power::{
-        PowerPlan, PowerPlanManager, ProcessorBoostMode, ProcessorPowerAcDcValues,
-        ProcessorPowerPreset, ProcessorPowerValues,
+        EffectivePowerMode, EffectivePowerModeMonitor, PowerPlan, PowerPlanManager,
+        PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerAcDcValues, ProcessorPowerPreset,
+        ProcessorPowerValues,
     },
     power_source,
     process_icon::load_process_icon,
@@ -416,6 +417,8 @@ pub struct PowerLeafApp {
     next_process_refresh: Instant,
     last_switch_attempt: Option<(String, Instant)>,
     power: PowerPlanManager,
+    effective_power_mode_monitor: Option<EffectivePowerModeMonitor>,
+    effective_power_mode: EffectivePowerMode,
     background_automation: BackgroundAutomation,
     cpu_monitor: CpuUsageMonitor,
     memory_monitor: MemoryUsageMonitor,
@@ -438,13 +441,16 @@ pub struct PowerLeafApp {
     processor_power_ac_core_parking_min: u64,
     processor_power_ac_performance_min: u64,
     processor_power_ac_performance_max: u64,
+    processor_power_ac_boost_policy: u64,
     processor_power_ac_boost_mode: ProcessorBoostMode,
     processor_power_dc_core_parking_min: u64,
     processor_power_dc_performance_min: u64,
     processor_power_dc_performance_max: u64,
+    processor_power_dc_boost_policy: u64,
     processor_power_dc_boost_mode: ProcessorBoostMode,
     processor_power_target_plan_guid: Option<String>,
     processor_power_loaded_plan_guid: Option<String>,
+    processor_power_target_plan_personality: Option<PowerPlanPersonality>,
     processor_power_link_ac_dc: bool,
     processor_power_dirty: bool,
     win32_priority_separation_value: Option<u32>,
@@ -688,9 +694,11 @@ struct UiInputs {
     processor_power_ac_core_parking_min: Entity<SliderState>,
     processor_power_ac_performance_min: Entity<SliderState>,
     processor_power_ac_performance_max: Entity<SliderState>,
+    processor_power_ac_boost_policy: Entity<SliderState>,
     processor_power_dc_core_parking_min: Entity<SliderState>,
     processor_power_dc_performance_min: Entity<SliderState>,
     processor_power_dc_performance_max: Entity<SliderState>,
+    processor_power_dc_boost_policy: Entity<SliderState>,
 }
 
 struct InitialProcessorPowerState {
@@ -699,6 +707,7 @@ struct InitialProcessorPowerState {
     values: ProcessorPowerAcDcValues,
     target_plan_guid: Option<String>,
     loaded_plan_guid: Option<String>,
+    target_plan_personality: Option<PowerPlanPersonality>,
     status_message: String,
 }
 
@@ -842,6 +851,10 @@ impl UiInputs {
                 cx,
                 processor_power_values.ac.performance_max as u64,
             ),
+            processor_power_ac_boost_policy: make_processor_power_slider(
+                cx,
+                processor_power_values.ac.boost_policy as u64,
+            ),
             processor_power_dc_core_parking_min: make_processor_power_slider(
                 cx,
                 processor_power_values.dc.core_parking_min as u64,
@@ -853,6 +866,10 @@ impl UiInputs {
             processor_power_dc_performance_max: make_processor_power_slider(
                 cx,
                 processor_power_values.dc.performance_max as u64,
+            ),
+            processor_power_dc_boost_policy: make_processor_power_slider(
+                cx,
+                processor_power_values.dc.boost_policy as u64,
             ),
         }
     }
@@ -961,6 +978,9 @@ fn load_initial_processor_power_state(power: &PowerPlanManager) -> InitialProces
             let current_plan = plans.iter().find(|plan| plan.active).cloned();
             let target_plan = current_plan.as_ref().or_else(|| plans.first()).cloned();
             let status_loaded = t!("status.loaded_power_plans", count = plans.len()).to_string();
+            let target_plan_personality = target_plan
+                .as_ref()
+                .and_then(|plan| power.read_plan_personality(&plan.guid).ok());
 
             let (values, loaded_plan_guid, status_message) = match target_plan.as_ref() {
                 Some(plan) => match power.read_processor_power_values(&plan.guid) {
@@ -976,6 +996,7 @@ fn load_initial_processor_power_state(power: &PowerPlanManager) -> InitialProces
                 values,
                 target_plan_guid: target_plan.map(|plan| plan.guid),
                 loaded_plan_guid,
+                target_plan_personality,
                 status_message,
             }
         }
@@ -985,6 +1006,7 @@ fn load_initial_processor_power_state(power: &PowerPlanManager) -> InitialProces
             values: fallback_values,
             target_plan_guid: None,
             loaded_plan_guid: None,
+            target_plan_personality: None,
             status_message: err,
         },
     }
@@ -1007,6 +1029,11 @@ impl PowerLeafApp {
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
         let power = PowerPlanManager;
+        let effective_power_mode_monitor = EffectivePowerModeMonitor::new().ok();
+        let effective_power_mode = effective_power_mode_monitor
+            .as_ref()
+            .map(EffectivePowerModeMonitor::snapshot)
+            .unwrap_or(EffectivePowerMode::Unknown);
         let initial_processor_power = load_initial_processor_power_state(&power);
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
         let (win32_priority_separation_value, win32_priority_separation_status) =
@@ -1069,6 +1096,8 @@ impl PowerLeafApp {
             next_process_refresh: Instant::now(),
             last_switch_attempt: None,
             power,
+            effective_power_mode_monitor,
+            effective_power_mode,
             background_automation,
             cpu_monitor: CpuUsageMonitor::default(),
             memory_monitor: MemoryUsageMonitor,
@@ -1094,6 +1123,7 @@ impl PowerLeafApp {
                 as u64,
             processor_power_ac_performance_max: initial_processor_power.values.ac.performance_max
                 as u64,
+            processor_power_ac_boost_policy: initial_processor_power.values.ac.boost_policy as u64,
             processor_power_ac_boost_mode: initial_processor_power.values.ac.boost_mode,
             processor_power_dc_core_parking_min: initial_processor_power.values.dc.core_parking_min
                 as u64,
@@ -1101,9 +1131,12 @@ impl PowerLeafApp {
                 as u64,
             processor_power_dc_performance_max: initial_processor_power.values.dc.performance_max
                 as u64,
+            processor_power_dc_boost_policy: initial_processor_power.values.dc.boost_policy as u64,
             processor_power_dc_boost_mode: initial_processor_power.values.dc.boost_mode,
             processor_power_target_plan_guid: initial_processor_power.target_plan_guid,
             processor_power_loaded_plan_guid: initial_processor_power.loaded_plan_guid,
+            processor_power_target_plan_personality: initial_processor_power
+                .target_plan_personality,
             processor_power_link_ac_dc: initial_processor_power.values.ac
                 == initial_processor_power.values.dc,
             processor_power_dirty: false,
@@ -1521,6 +1554,31 @@ impl PowerLeafApp {
         }
     }
 
+    fn refresh_effective_power_mode(&mut self) -> bool {
+        let Some(monitor) = &self.effective_power_mode_monitor else {
+            return false;
+        };
+        let mode = monitor.snapshot();
+        if self.effective_power_mode == mode {
+            return false;
+        }
+
+        self.effective_power_mode = mode;
+        true
+    }
+
+    fn refresh_processor_power_target_plan_personality(&mut self) -> bool {
+        let personality = self
+            .processor_power_target_plan()
+            .and_then(|plan| self.power.read_plan_personality(&plan.guid).ok());
+        if self.processor_power_target_plan_personality == personality {
+            return false;
+        }
+
+        self.processor_power_target_plan_personality = personality;
+        true
+    }
+
     fn ensure_processor_power_target_plan(&mut self) {
         let target_still_available = self
             .processor_power_target_plan_guid
@@ -1568,6 +1626,7 @@ impl PowerLeafApp {
     }
 
     fn sync_processor_power_values_from_target_plan(&mut self, force: bool) -> bool {
+        self.refresh_processor_power_target_plan_personality();
         let Some(plan) = self.processor_power_target_plan() else {
             self.processor_power_loaded_plan_guid = None;
             return false;
@@ -1600,12 +1659,14 @@ impl PowerLeafApp {
                 self.processor_power_ac_core_parking_min as u32,
                 self.processor_power_ac_performance_min as u32,
                 self.processor_power_ac_performance_max as u32,
+                self.processor_power_ac_boost_policy as u32,
                 self.processor_power_ac_boost_mode,
             ),
             ProcessorPowerValues::new_with_boost_mode(
                 self.processor_power_dc_core_parking_min as u32,
                 self.processor_power_dc_performance_min as u32,
                 self.processor_power_dc_performance_max as u32,
+                self.processor_power_dc_boost_policy as u32,
                 self.processor_power_dc_boost_mode,
             ),
         )
@@ -1617,10 +1678,12 @@ impl PowerLeafApp {
         self.processor_power_ac_core_parking_min = values.ac.core_parking_min as u64;
         self.processor_power_ac_performance_min = values.ac.performance_min as u64;
         self.processor_power_ac_performance_max = values.ac.performance_max as u64;
+        self.processor_power_ac_boost_policy = values.ac.boost_policy as u64;
         self.processor_power_ac_boost_mode = values.ac.boost_mode;
         self.processor_power_dc_core_parking_min = values.dc.core_parking_min as u64;
         self.processor_power_dc_performance_min = values.dc.performance_min as u64;
         self.processor_power_dc_performance_max = values.dc.performance_max as u64;
+        self.processor_power_dc_boost_policy = values.dc.boost_policy as u64;
         self.processor_power_dc_boost_mode = values.dc.boost_mode;
     }
 
@@ -1668,6 +1731,9 @@ impl PowerLeafApp {
             ProcessorPowerSlider::AcPerformanceMax => {
                 self.processor_power_ac_performance_max = value;
             }
+            ProcessorPowerSlider::AcBoostPolicy => {
+                self.processor_power_ac_boost_policy = value;
+            }
             ProcessorPowerSlider::DcCoreParkingMin => {
                 self.processor_power_dc_core_parking_min = value;
             }
@@ -1676,6 +1742,9 @@ impl PowerLeafApp {
             }
             ProcessorPowerSlider::DcPerformanceMax => {
                 self.processor_power_dc_performance_max = value;
+            }
+            ProcessorPowerSlider::DcBoostPolicy => {
+                self.processor_power_dc_boost_policy = value;
             }
         }
     }
@@ -1695,6 +1764,10 @@ impl PowerLeafApp {
                 self.processor_power_ac_performance_max,
             ),
             (
+                ProcessorPowerSlider::AcBoostPolicy,
+                self.processor_power_ac_boost_policy,
+            ),
+            (
                 ProcessorPowerSlider::DcCoreParkingMin,
                 self.processor_power_dc_core_parking_min,
             ),
@@ -1705,6 +1778,10 @@ impl PowerLeafApp {
             (
                 ProcessorPowerSlider::DcPerformanceMax,
                 self.processor_power_dc_performance_max,
+            ),
+            (
+                ProcessorPowerSlider::DcBoostPolicy,
+                self.processor_power_dc_boost_policy,
             ),
         ] {
             let input = processor_power_slider_input(&self.inputs, slider);
@@ -1913,6 +1990,7 @@ impl PowerLeafApp {
         let next_schedule = self.next_schedule.clone();
         let plans = self.plans.clone();
         let current_plan = self.current_plan.clone();
+        let processor_power_target_plan_personality = self.processor_power_target_plan_personality;
         let status_message = self.status_message.clone();
 
         self.run_check();
@@ -1930,6 +2008,8 @@ impl PowerLeafApp {
             || self.next_schedule != next_schedule
             || self.plans != plans
             || self.current_plan != current_plan
+            || self.processor_power_target_plan_personality
+                != processor_power_target_plan_personality
             || self.status_message != status_message
     }
 
@@ -2445,6 +2525,8 @@ impl PowerLeafApp {
             changed = true;
         }
 
+        changed |= self.refresh_effective_power_mode();
+
         if self.page == Page::TimerResolution && !self.settings.timer_resolution.enabled {
             let timer_resolution_status =
                 timer_resolution::query_snapshot(self.settings.timer_resolution.enabled);
@@ -2716,9 +2798,11 @@ impl PowerLeafApp {
             ProcessorPowerSlider::AcCoreParkingMin,
             ProcessorPowerSlider::AcPerformanceMin,
             ProcessorPowerSlider::AcPerformanceMax,
+            ProcessorPowerSlider::AcBoostPolicy,
             ProcessorPowerSlider::DcCoreParkingMin,
             ProcessorPowerSlider::DcPerformanceMin,
             ProcessorPowerSlider::DcPerformanceMax,
+            ProcessorPowerSlider::DcBoostPolicy,
         ] {
             let input = processor_power_slider_input(&self.inputs, slider);
             self._processor_power_slider_subscriptions
@@ -3089,6 +3173,14 @@ impl PowerLeafApp {
                     );
                 }
             }
+            NumericField::ProcessorAcBoostPolicy => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.set_processor_power_slider_value(
+                        ProcessorPowerSlider::AcBoostPolicy,
+                        value,
+                    );
+                }
+            }
             NumericField::ProcessorDcCoreParkingMin => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_processor_power_slider_value(
@@ -3109,6 +3201,14 @@ impl PowerLeafApp {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_processor_power_slider_value(
                         ProcessorPowerSlider::DcPerformanceMax,
+                        value,
+                    );
+                }
+            }
+            NumericField::ProcessorDcBoostPolicy => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.set_processor_power_slider_value(
+                        ProcessorPowerSlider::DcBoostPolicy,
                         value,
                     );
                 }
@@ -4152,7 +4252,36 @@ impl PowerLeafApp {
     ) -> AnyElement {
         let mut cards = v_flex().w_full().min_w(px(0.0)).gap_2();
 
-        if let Some(pages) = section_page.child_pages() {
+        if section_page == Page::PowerPlanAutomation {
+            cards = cards.child(section_title_text(t!("nav.automation_group").to_string()));
+            for target in [
+                Page::ForegroundRules,
+                Page::PerformanceMode,
+                Page::CpuUsage,
+                Page::Activity,
+                Page::Schedule,
+            ] {
+                let status = self.nav_status(target);
+                cards = cards.child(
+                    section_landing_card(target, status, cx)
+                        .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                            app.navigate_to(target, cx);
+                        }))
+                        .into_any_element(),
+                );
+            }
+
+            cards = cards.child(section_title_text(t!("nav.advanced_group").to_string()));
+            let target = Page::CoreParking;
+            let status = self.nav_status(target);
+            cards = cards.child(
+                section_landing_card(target, status, cx)
+                    .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                        app.navigate_to(target, cx);
+                    }))
+                    .into_any_element(),
+            );
+        } else if let Some(pages) = section_page.child_pages() {
             for page in pages {
                 let target = *page;
                 let status = self.nav_status(target);
@@ -12003,6 +12132,7 @@ impl PowerLeafApp {
     ) -> AnyElement {
         self.sync_processor_power_slider_states(window, cx);
         let has_current_plan = self.current_plan.is_some();
+        let target_plan_notice = self.processor_power_target_plan_notice();
         let processor_power_presets = [
             ProcessorPowerPreset::Performance,
             ProcessorPowerPreset::Balanced,
@@ -12048,6 +12178,14 @@ impl PowerLeafApp {
             .min_w(px(0.0))
             .gap_2()
             .child(self.render_processor_power_plan_picker(window, cx))
+            .child(text_muted(self.effective_power_mode_status()))
+            .when_some(target_plan_notice, |card, (notice, warning)| {
+                if warning {
+                    card.child(text_warning(notice))
+                } else {
+                    card.child(text_muted(notice))
+                }
+            })
             .child(feature_toggle_switch(
                 "processor-power-link-ac-dc",
                 t!("processor_power.link_ac_dc").to_string(),
@@ -12157,6 +12295,32 @@ impl PowerLeafApp {
                                     cx.notify();
                                 }),
                             ))
+                            .child(processor_power_slider(
+                                "processor-power-ac-boost-policy",
+                                &t!("processor_power.boost_policy"),
+                                self.render_numeric_value(
+                                    NumericField::ProcessorAcBoostPolicy,
+                                    format!("{}%", self.processor_power_ac_boost_policy),
+                                    self.processor_power_ac_boost_policy.to_string(),
+                                    cx,
+                                ),
+                                &self.inputs.processor_power_ac_boost_policy,
+                                window,
+                                cx,
+                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                                    let value = apply_u64_step(
+                                        app.processor_power_ac_boost_policy,
+                                        change,
+                                        0,
+                                        100,
+                                    );
+                                    app.set_processor_power_slider_value(
+                                        ProcessorPowerSlider::AcBoostPolicy,
+                                        value,
+                                    );
+                                    cx.notify();
+                                }),
+                            ))
                             .child(processor_power_setting_row(
                                 "processor-power-ac-boost-mode",
                                 t!("processor_power.boost_mode").to_string(),
@@ -12253,6 +12417,32 @@ impl PowerLeafApp {
                                     cx.notify();
                                 }),
                             ))
+                            .child(processor_power_slider(
+                                "processor-power-dc-boost-policy",
+                                &t!("processor_power.boost_policy"),
+                                self.render_numeric_value(
+                                    NumericField::ProcessorDcBoostPolicy,
+                                    format!("{}%", self.processor_power_dc_boost_policy),
+                                    self.processor_power_dc_boost_policy.to_string(),
+                                    cx,
+                                ),
+                                &self.inputs.processor_power_dc_boost_policy,
+                                window,
+                                cx,
+                                cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                                    let value = apply_u64_step(
+                                        app.processor_power_dc_boost_policy,
+                                        change,
+                                        0,
+                                        100,
+                                    );
+                                    app.set_processor_power_slider_value(
+                                        ProcessorPowerSlider::DcBoostPolicy,
+                                        value,
+                                    );
+                                    cx.notify();
+                                }),
+                            ))
                             .child(processor_power_setting_row(
                                 "processor-power-dc-boost-mode",
                                 t!("processor_power.boost_mode").to_string(),
@@ -12292,6 +12482,40 @@ impl PowerLeafApp {
                     ),
             )
             .into_any_element()
+    }
+
+    fn effective_power_mode_status(&self) -> String {
+        t!(
+            "processor_power.effective_power_mode",
+            mode = effective_power_mode_label(self.effective_power_mode)
+        )
+        .to_string()
+    }
+
+    fn processor_power_target_plan_notice(&self) -> Option<(String, bool)> {
+        let target_plan = self.processor_power_target_plan()?;
+        if !target_plan.active {
+            let active_plan = self
+                .current_plan
+                .as_ref()
+                .map(|plan| plan.name.clone())
+                .unwrap_or_else(|| t!("processor_power.no_active_plan").to_string());
+            return Some((
+                t!("processor_power.target_plan_inactive", plan = active_plan).to_string(),
+                false,
+            ));
+        }
+
+        if self.processor_power_target_plan_personality != Some(PowerPlanPersonality::Balanced)
+            || matches!(
+                self.effective_power_mode,
+                EffectivePowerMode::Unknown | EffectivePowerMode::Balanced
+            )
+        {
+            return None;
+        }
+
+        Some((t!("processor_power.overlay_warning").to_string(), true))
     }
 
     fn render_processor_boost_mode_picker(
@@ -13667,9 +13891,11 @@ enum NumericField {
     ProcessorAcCoreParkingMin,
     ProcessorAcPerformanceMin,
     ProcessorAcPerformanceMax,
+    ProcessorAcBoostPolicy,
     ProcessorDcCoreParkingMin,
     ProcessorDcPerformanceMin,
     ProcessorDcPerformanceMax,
+    ProcessorDcBoostPolicy,
     CpuThreshold(usize),
     CpuUpperThreshold(usize),
     CpuDuration(usize),
@@ -13687,9 +13913,11 @@ enum ProcessorPowerSlider {
     AcCoreParkingMin,
     AcPerformanceMin,
     AcPerformanceMax,
+    AcBoostPolicy,
     DcCoreParkingMin,
     DcPerformanceMin,
     DcPerformanceMax,
+    DcBoostPolicy,
 }
 
 impl ProcessorPowerSlider {
@@ -13698,9 +13926,11 @@ impl ProcessorPowerSlider {
             Self::AcCoreParkingMin => Self::DcCoreParkingMin,
             Self::AcPerformanceMin => Self::DcPerformanceMin,
             Self::AcPerformanceMax => Self::DcPerformanceMax,
+            Self::AcBoostPolicy => Self::DcBoostPolicy,
             Self::DcCoreParkingMin => Self::AcCoreParkingMin,
             Self::DcPerformanceMin => Self::AcPerformanceMin,
             Self::DcPerformanceMax => Self::AcPerformanceMax,
+            Self::DcBoostPolicy => Self::AcBoostPolicy,
         }
     }
 }
@@ -13839,11 +14069,13 @@ fn processor_power_slider_input(
         }
         ProcessorPowerSlider::AcPerformanceMin => inputs.processor_power_ac_performance_min.clone(),
         ProcessorPowerSlider::AcPerformanceMax => inputs.processor_power_ac_performance_max.clone(),
+        ProcessorPowerSlider::AcBoostPolicy => inputs.processor_power_ac_boost_policy.clone(),
         ProcessorPowerSlider::DcCoreParkingMin => {
             inputs.processor_power_dc_core_parking_min.clone()
         }
         ProcessorPowerSlider::DcPerformanceMin => inputs.processor_power_dc_performance_min.clone(),
         ProcessorPowerSlider::DcPerformanceMax => inputs.processor_power_dc_performance_max.clone(),
+        ProcessorPowerSlider::DcBoostPolicy => inputs.processor_power_dc_boost_policy.clone(),
     }
 }
 
@@ -20447,9 +20679,11 @@ fn numeric_value_width(field: NumericField) -> f32 {
         NumericField::ProcessorAcCoreParkingMin
         | NumericField::ProcessorAcPerformanceMin
         | NumericField::ProcessorAcPerformanceMax
+        | NumericField::ProcessorAcBoostPolicy
         | NumericField::ProcessorDcCoreParkingMin
         | NumericField::ProcessorDcPerformanceMin
         | NumericField::ProcessorDcPerformanceMax
+        | NumericField::ProcessorDcBoostPolicy
         | NumericField::EcoQosRestrictionPercent
         | NumericField::BackgroundCpuRestrictionPercent
         | NumericField::SmartTrimMemoryLoadThreshold
@@ -20478,6 +20712,14 @@ fn text_muted(value: impl Into<SharedString>) -> gpui::Div {
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .opacity(0.72)
+        .child(value.into())
+}
+
+fn text_warning(value: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .text_color(rgb(warning_text_color()))
         .child(value.into())
 }
 
@@ -23250,6 +23492,23 @@ fn processor_power_preset_label(preset: ProcessorPowerPreset) -> String {
     }
 }
 
+fn effective_power_mode_label(mode: EffectivePowerMode) -> String {
+    match mode {
+        EffectivePowerMode::Unknown => t!("processor_power.mode_unknown").to_string(),
+        EffectivePowerMode::BatterySaver => t!("processor_power.mode_battery_saver").to_string(),
+        EffectivePowerMode::BetterBattery => t!("processor_power.mode_better_battery").to_string(),
+        EffectivePowerMode::Balanced => t!("processor_power.mode_balanced").to_string(),
+        EffectivePowerMode::HighPerformance => {
+            t!("processor_power.mode_high_performance").to_string()
+        }
+        EffectivePowerMode::MaxPerformance => {
+            t!("processor_power.mode_max_performance").to_string()
+        }
+        EffectivePowerMode::GameMode => t!("processor_power.mode_game_mode").to_string(),
+        EffectivePowerMode::MixedReality => t!("processor_power.mode_mixed_reality").to_string(),
+    }
+}
+
 fn processor_boost_mode_label(boost_mode: ProcessorBoostMode) -> String {
     match boost_mode {
         ProcessorBoostMode::Disabled => t!("processor_power.boost_disabled").to_string(),
@@ -24180,8 +24439,16 @@ mod tests {
             ProcessorPowerSlider::DcPerformanceMax
         );
         assert_eq!(
+            ProcessorPowerSlider::AcBoostPolicy.paired_power_source(),
+            ProcessorPowerSlider::DcBoostPolicy
+        );
+        assert_eq!(
             ProcessorPowerSlider::DcCoreParkingMin.paired_power_source(),
             ProcessorPowerSlider::AcCoreParkingMin
+        );
+        assert_eq!(
+            ProcessorPowerSlider::DcBoostPolicy.paired_power_source(),
+            ProcessorPowerSlider::AcBoostPolicy
         );
     }
 
