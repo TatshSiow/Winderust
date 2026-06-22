@@ -1,5 +1,5 @@
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_NOT_ALL_ASSIGNED, LUID},
+    Foundation::{CloseHandle, ERROR_NOT_ALL_ASSIGNED, LUID},
     Security::{
         AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME,
         SE_INCREASE_QUOTA_NAME, SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME,
@@ -7,6 +7,8 @@ use windows_sys::Win32::{
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
+
+use crate::win_util::last_error;
 
 pub fn enable_debug_privilege() -> bool {
     enable_privilege(SE_DEBUG_NAME)
@@ -68,5 +70,5 @@ fn enable_privilege_for_token(
             std::ptr::null_mut(),
         )
     };
-    adjusted != 0 && unsafe { GetLastError() } != ERROR_NOT_ALL_ASSIGNED
+    adjusted != 0 && last_error() != ERROR_NOT_ALL_ASSIGNED
 }

@@ -3,6 +3,7 @@ use chrono::Utc;
 use crate::{
     activity::ActivityState,
     config::{PowerPlanSettings, Settings},
+    foreground::same_process_name,
     scheduler::{CpuUsageDecision, ScheduleDecision},
 };
 
@@ -82,7 +83,7 @@ impl DecisionEngine {
             .filter(|_| settings.foreground_rules.enabled)
         {
             for rule in &settings.foreground_rules.rules {
-                if rule.enabled && rule.process_name.trim().eq_ignore_ascii_case(app.trim()) {
+                if rule.enabled && same_process_name(&rule.process_name, app) {
                     if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
                         return DecisionOutcome::with_target(
                             Some(power_plan_guid),

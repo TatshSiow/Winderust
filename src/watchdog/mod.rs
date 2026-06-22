@@ -6,7 +6,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
     System::Threading::{
         GetCurrentProcessId, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         PROCESS_TERMINATE,
@@ -17,10 +17,11 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{WatchdogAction, WatchdogRule, WatchdogSettings},
     foreground::{
-        is_process_exited_message, list_processes, process_name_key, process_session_id,
-        ProcessInfo,
+        contains_process_name, is_process_exited_message, list_processes, process_name_key,
+        process_session_id, same_process_name, ProcessInfo,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
+    win_util::{last_error, WinHandle},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -405,10 +406,7 @@ impl WatchdogFailures {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    let process_name = process_name.trim();
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 fn matching_processes<'a>(
@@ -417,7 +415,7 @@ fn matching_processes<'a>(
 ) -> Vec<&'a ProcessInfo> {
     processes
         .iter()
-        .filter(|process| process.name.trim().eq_ignore_ascii_case(process_name))
+        .filter(|process| same_process_name(&process.name, process_name))
         .collect()
 }
 
@@ -491,7 +489,7 @@ fn canonical_watchdog_launch_path(launch_path: &str) -> Result<PathBuf, String> 
 
 fn terminate_process(process_id: u32) -> Result<(), WatchdogError> {
     let process = ProcessHandle::open(process_id)?;
-    let ok = unsafe { TerminateProcess(process.0, 1) };
+    let ok = unsafe { TerminateProcess(process.0.raw(), 1) };
     if ok == 0 {
         Err(WatchdogError::Failed(format!(
             "TerminateProcess failed with error {}.",
@@ -576,7 +574,7 @@ enum WatchdogError {
     Failed(String),
 }
 
-struct ProcessHandle(HANDLE);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, WatchdogError> {
@@ -600,17 +598,9 @@ impl ProcessHandle {
             };
         }
         if !handle.is_null() {
-            Ok(Self(handle))
+            Ok(Self(WinHandle::new(handle)))
         } else {
             Err(open_process_error(process_id, last_error()))
-        }
-    }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
         }
     }
 }
@@ -631,10 +621,6 @@ fn watchdog_error_message(error: &WatchdogError) -> String {
         WatchdogError::ProcessExited => "Process exited.".to_owned(),
         WatchdogError::Failed(message) => message.clone(),
     }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
 }
 
 #[cfg(test)]

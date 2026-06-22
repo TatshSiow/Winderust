@@ -4,9 +4,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
-    },
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME},
     System::Threading::{
         GetCurrentProcessId, GetProcessAffinityMask, GetProcessTimes, OpenProcess,
         SetProcessAffinityMask, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -19,11 +17,12 @@ use crate::{
     config::{CpuLimiterRule, CpuLimiterSettings},
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        is_process_exited_message, list_processes, process_failure_key, process_id_matches_name,
-        process_names_by_id, process_session_id, should_ignore_foreground_process,
-        unique_app_names,
+        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
+        process_id_matches_name, process_names_by_id, process_session_id, same_process_name,
+        should_ignore_foreground_process, unique_app_names,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
+    win_util::{filetime_to_u64, last_error, WinHandle},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -491,10 +490,7 @@ impl Default for CpuLimiterSnapshot {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    let process_name = process_name.trim();
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 fn matching_rule<'a>(
@@ -504,10 +500,7 @@ fn matching_rule<'a>(
     settings.rules.iter().find(|rule| {
         rule.enabled
             && !rule.process_name.trim().is_empty()
-            && rule
-                .process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
+            && same_process_name(&rule.process_name, process_name)
     })
 }
 
@@ -555,7 +548,7 @@ fn apply_cpu_limit_to_process(
     };
 
     if limited.get(&process_id).is_some_and(|limited| {
-        limited.process_name.eq_ignore_ascii_case(&process_name)
+        same_process_name(&limited.process_name, &process_name)
             && limited.applied_affinity == target_affinity
             && current_affinity == target_affinity
     }) {
@@ -564,7 +557,7 @@ fn apply_cpu_limit_to_process(
 
     let previous_affinity = limited
         .get(&process_id)
-        .filter(|limited| limited.process_name.eq_ignore_ascii_case(&process_name))
+        .filter(|limited| same_process_name(&limited.process_name, &process_name))
         .map(|limited| limited.previous_affinity)
         .unwrap_or(current_affinity);
 
@@ -677,7 +670,7 @@ fn process_failure_message(
     format!("{action} {process_name} ({process_id}): {message}")
 }
 
-struct ProcessHandle(HANDLE);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, CpuLimiterError> {
@@ -690,7 +683,7 @@ impl ProcessHandle {
         for access in access_masks {
             let handle = unsafe { OpenProcess(access, 0, process_id) };
             if !handle.is_null() {
-                return Ok(Self(handle));
+                return Ok(Self(WinHandle::new(handle)));
             }
             last_open_error = last_error();
         }
@@ -701,7 +694,7 @@ impl ProcessHandle {
     fn open_query(process_id: u32) -> Result<Self, CpuLimiterError> {
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
         if !handle.is_null() {
-            Ok(Self(handle))
+            Ok(Self(WinHandle::new(handle)))
         } else {
             Err(open_process_error(process_id, last_error()))
         }
@@ -710,8 +703,9 @@ impl ProcessHandle {
     fn affinity_mask(&self) -> Result<(usize, usize), CpuLimiterError> {
         let mut process_affinity = 0;
         let mut system_affinity = 0;
-        let ok =
-            unsafe { GetProcessAffinityMask(self.0, &mut process_affinity, &mut system_affinity) };
+        let ok = unsafe {
+            GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
+        };
         if ok == 0 {
             Err(CpuLimiterError::Failed(format!(
                 "GetProcessAffinityMask failed with error {}.",
@@ -723,7 +717,7 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), CpuLimiterError> {
-        let ok = unsafe { SetProcessAffinityMask(self.0, affinity_mask) };
+        let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
         if ok == 0 {
             Err(CpuLimiterError::Failed(format!(
                 "SetProcessAffinityMask failed with error {}.",
@@ -739,8 +733,15 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
-        let ok =
-            unsafe { GetProcessTimes(self.0, &mut creation, &mut exit, &mut kernel, &mut user) };
+        let ok = unsafe {
+            GetProcessTimes(
+                self.0.raw(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        };
         if ok == 0 {
             Err(CpuLimiterError::Failed(format!(
                 "GetProcessTimes failed with error {}.",
@@ -755,14 +756,6 @@ impl ProcessHandle {
     }
 }
 
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
-}
-
 fn open_process_error(process_id: u32, error: u32) -> CpuLimiterError {
     match error {
         ERROR_ACCESS_DENIED => CpuLimiterError::AccessDenied,
@@ -771,14 +764,6 @@ fn open_process_error(process_id: u32, error: u32) -> CpuLimiterError {
             "OpenProcess({process_id}) failed with error {error}."
         )),
     }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
-}
-
-fn filetime_to_u64(value: FILETIME) -> u64 {
-    (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
 
 #[cfg(test)]

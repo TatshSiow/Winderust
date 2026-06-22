@@ -1,6 +1,7 @@
 use chrono::{NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 
+use crate::foreground::same_process_name;
 use crate::rules::{
     normalize_execution_failure_suppression_threshold,
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
@@ -214,11 +215,11 @@ pub struct ActivityModeSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputDetectionSettings {
-    #[serde(default = "default_input_detection_enabled")]
+    #[serde(default = "default_true")]
     pub keyboard: bool,
-    #[serde(default = "default_input_detection_enabled")]
+    #[serde(default = "default_true")]
     pub mouse: bool,
-    #[serde(default = "default_input_detection_enabled")]
+    #[serde(default = "default_true")]
     pub controller: bool,
 }
 
@@ -238,7 +239,7 @@ pub struct ForegroundRules {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
@@ -258,7 +259,7 @@ pub struct ScheduleModeSettings {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub name: String,
     pub days: Vec<WeekdaySetting>,
@@ -283,10 +284,7 @@ pub struct CpuUsageModeSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EcoQosSettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true", alias = "ignore_foreground_app")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
     pub prefer_efficiency_cores: bool,
@@ -316,7 +314,7 @@ pub struct EcoQosSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EcoQosExclusionRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
 }
@@ -420,10 +418,7 @@ pub struct AppSuspensionSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuAffinitySettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true", alias = "ignore_foreground_app")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
     pub rules: Vec<CpuAffinityRule>,
@@ -432,10 +427,7 @@ pub struct CpuAffinitySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackgroundCpuRestrictionSettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true", alias = "ignore_foreground_app")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
     pub mode: EcoQosCpuRestrictionMode,
@@ -455,14 +447,14 @@ pub struct BackgroundCpuRestrictionSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessExclusionRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuAffinityRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub mode: CpuAffinityMode,
@@ -473,10 +465,7 @@ pub struct CpuAffinityRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuLimiterSettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true", alias = "ignore_foreground_app")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
     pub rules: Vec<CpuLimiterRule>,
@@ -484,7 +473,7 @@ pub struct CpuLimiterSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuLimiterRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
     #[serde(default = "default_cpu_limiter_threshold_percent")]
@@ -506,7 +495,7 @@ pub struct PerformanceModeSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PerformanceModeRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
@@ -524,7 +513,7 @@ pub struct WatchdogSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchdogRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
@@ -550,7 +539,7 @@ pub enum WatchdogAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForegroundResponsivenessSettings {
     pub enabled: bool,
-    #[serde(default = "default_lower_background_apps")]
+    #[serde(default = "default_true")]
     pub lower_background_apps: bool,
     #[serde(default)]
     pub lower_background_affinity_enabled: bool,
@@ -568,7 +557,7 @@ pub struct ForegroundResponsivenessSettings {
     pub lower_background_cpu_percent: u8,
     #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
     pub lower_background_max_logical_processors: u8,
-    #[serde(default = "default_auto_balance_auto_cpu_percent")]
+    #[serde(default = "default_true")]
     pub lower_background_auto_cpu_percent: bool,
     #[serde(default)]
     pub auto_balance_enabled: bool,
@@ -610,7 +599,7 @@ pub struct ForegroundResponsivenessSettings {
 pub struct IoPrioritySettings {
     pub enabled: bool,
     #[serde(
-        default = "default_io_priority_foreground_detection_enabled",
+        default = "default_true",
         alias = "exclude_foreground_app",
         alias = "ignore_foreground_app"
     )]
@@ -631,7 +620,7 @@ pub struct IoPrioritySettings {
 pub struct GpuPrioritySettings {
     pub enabled: bool,
     #[serde(
-        default = "default_gpu_priority_foreground_detection_enabled",
+        default = "default_true",
         alias = "exclude_foreground_app",
         alias = "ignore_foreground_app"
     )]
@@ -652,7 +641,7 @@ pub struct GpuPrioritySettings {
 pub struct MemoryPrioritySettings {
     pub enabled: bool,
     #[serde(
-        default = "default_memory_priority_foreground_detection_enabled",
+        default = "default_true",
         alias = "exclude_foreground_app",
         alias = "ignore_foreground_app"
     )]
@@ -678,7 +667,7 @@ pub struct LaunchPrioritySettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchPriorityRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
     #[serde(default)]
@@ -703,12 +692,9 @@ pub struct SmartTrimSettings {
     pub enabled: bool,
     #[serde(default = "default_smart_trim_check_interval_minutes")]
     pub check_interval_minutes: u64,
-    #[serde(
-        default = "default_exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true", alias = "ignore_foreground_app")]
     pub exclude_foreground_app: bool,
-    #[serde(default = "default_smart_trim_trim_working_sets")]
+    #[serde(default = "default_true")]
     pub trim_working_sets: bool,
     #[serde(default = "default_smart_trim_system_memory_load_threshold_percent")]
     pub system_memory_load_threshold_percent: u8,
@@ -724,7 +710,7 @@ pub struct SmartTrimSettings {
     pub purge_standby_list: bool,
     #[serde(default)]
     pub purge_system_file_cache: bool,
-    #[serde(default = "default_smart_trim_purge_only_in_performance_mode")]
+    #[serde(default = "default_true")]
     pub purge_only_in_performance_mode: bool,
     #[serde(default = "default_smart_trim_purge_free_ram_threshold_mb")]
     pub purge_free_ram_threshold_mb: u64,
@@ -734,7 +720,7 @@ pub struct SmartTrimSettings {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimerResolutionRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
     #[serde(default = "default_timer_resolution_100ns")]
@@ -942,7 +928,7 @@ impl ProcessCpuPrioritySetting {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PriorityRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
     pub priority: ProcessPriority,
@@ -985,12 +971,12 @@ impl CpuAffinityMode {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSuspensionRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
-    #[serde(default = "default_rule_network_wake_enabled")]
+    #[serde(default = "default_true")]
     pub network_wake_enabled: bool,
-    #[serde(default = "default_rule_audio_wake_enabled")]
+    #[serde(default = "default_true")]
     pub audio_wake_enabled: bool,
     #[serde(default = "default_rule_network_download_threshold_bytes")]
     pub network_download_threshold_bytes: u64,
@@ -1018,7 +1004,7 @@ pub enum NetworkThresholdUnit {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuUsageRule {
-    #[serde(default = "default_rule_enabled")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     pub name: String,
     pub comparison: CpuUsageComparison,
@@ -1147,7 +1133,7 @@ impl Default for InputDetectionSettings {
     }
 }
 
-const fn default_input_detection_enabled() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -1202,7 +1188,7 @@ impl Default for EcoQosSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_exclude_foreground_app(),
+            exclude_foreground_app: default_true(),
             prefer_efficiency_cores: true,
             limit_cpu_sets_on_non_hybrid: true,
             cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
@@ -1218,28 +1204,12 @@ impl Default for EcoQosSettings {
     }
 }
 
-const fn default_exclude_foreground_app() -> bool {
-    true
-}
-
-const fn default_rule_enabled() -> bool {
-    true
-}
-
-const fn default_io_priority_foreground_detection_enabled() -> bool {
-    true
-}
-
 const fn default_io_priority_foreground() -> ProcessIoPrioritySetting {
     ProcessIoPrioritySetting::Normal
 }
 
 const fn default_io_priority_background() -> ProcessIoPrioritySetting {
     ProcessIoPrioritySetting::VeryLow
-}
-
-const fn default_gpu_priority_foreground_detection_enabled() -> bool {
-    true
 }
 
 const fn default_gpu_priority_foreground() -> ProcessGpuPrioritySetting {
@@ -1250,20 +1220,12 @@ const fn default_gpu_priority_background() -> ProcessGpuPrioritySetting {
     ProcessGpuPrioritySetting::BelowNormal
 }
 
-const fn default_memory_priority_foreground_detection_enabled() -> bool {
-    true
-}
-
 const fn default_memory_priority_foreground() -> ProcessMemoryPrioritySetting {
     ProcessMemoryPrioritySetting::Default
 }
 
 const fn default_memory_priority_background() -> ProcessMemoryPrioritySetting {
     ProcessMemoryPrioritySetting::Low
-}
-
-const fn default_lower_background_apps() -> bool {
-    true
 }
 
 const fn default_auto_balance_threshold_percent() -> u8 {
@@ -1280,10 +1242,6 @@ const fn default_auto_balance_total_threshold_percent() -> u8 {
 
 const fn default_auto_balance_cpu_percent() -> u8 {
     75
-}
-
-const fn default_auto_balance_auto_cpu_percent() -> bool {
-    true
 }
 
 const fn default_auto_balance_sustain_seconds() -> u64 {
@@ -1342,14 +1300,6 @@ const fn default_smart_trim_check_interval_minutes() -> u64 {
     15
 }
 
-const fn default_smart_trim_trim_working_sets() -> bool {
-    true
-}
-
-const fn default_smart_trim_purge_only_in_performance_mode() -> bool {
-    true
-}
-
 const fn default_smart_trim_purge_free_ram_threshold_mb() -> u64 {
     1024
 }
@@ -1384,14 +1334,6 @@ const fn default_network_wake_duration_seconds() -> u64 {
 
 const fn default_audio_wake_duration_seconds() -> u64 {
     10
-}
-
-const fn default_rule_network_wake_enabled() -> bool {
-    true
-}
-
-const fn default_rule_audio_wake_enabled() -> bool {
-    true
 }
 
 const fn default_rule_network_download_threshold_bytes() -> u64 {
@@ -1482,7 +1424,7 @@ impl Default for CpuAffinitySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_exclude_foreground_app(),
+            exclude_foreground_app: default_true(),
             rules: Vec::new(),
         }
     }
@@ -1492,7 +1434,7 @@ impl Default for BackgroundCpuRestrictionSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_exclude_foreground_app(),
+            exclude_foreground_app: default_true(),
             mode: EcoQosCpuRestrictionMode::HardAffinity,
             strategy: EcoQosCpuRestrictionStrategy::Auto,
             control_style: EcoQosCpuRestrictionControlStyle::Percentage,
@@ -1508,7 +1450,7 @@ impl Default for CpuLimiterSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_exclude_foreground_app(),
+            exclude_foreground_app: default_true(),
             rules: Vec::new(),
         }
     }
@@ -1518,7 +1460,7 @@ impl Default for ForegroundResponsivenessSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            lower_background_apps: default_lower_background_apps(),
+            lower_background_apps: default_true(),
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
@@ -1528,7 +1470,7 @@ impl Default for ForegroundResponsivenessSettings {
             lower_background_cpu_percent: default_eco_qos_cpu_restriction_percent(),
             lower_background_max_logical_processors:
                 default_eco_qos_cpu_restriction_max_logical_processors(),
-            lower_background_auto_cpu_percent: default_auto_balance_auto_cpu_percent(),
+            lower_background_auto_cpu_percent: default_true(),
             auto_balance_enabled: false,
             auto_balance_advanced_settings_enabled: false,
             auto_balance_affinity_escalation_enabled: false,
@@ -1557,7 +1499,7 @@ impl Default for IoPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            foreground_detection_enabled: default_io_priority_foreground_detection_enabled(),
+            foreground_detection_enabled: default_true(),
             foreground_priority: default_io_priority_foreground(),
             background_priority: default_io_priority_background(),
             exclusions: Vec::new(),
@@ -1569,7 +1511,7 @@ impl Default for GpuPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            foreground_detection_enabled: default_gpu_priority_foreground_detection_enabled(),
+            foreground_detection_enabled: default_true(),
             foreground_priority: default_gpu_priority_foreground(),
             background_priority: default_gpu_priority_background(),
             exclusions: Vec::new(),
@@ -1581,7 +1523,7 @@ impl Default for MemoryPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            foreground_detection_enabled: default_memory_priority_foreground_detection_enabled(),
+            foreground_detection_enabled: default_true(),
             foreground_priority: default_memory_priority_foreground(),
             background_priority: default_memory_priority_background(),
             exclusions: Vec::new(),
@@ -1604,8 +1546,8 @@ impl Default for SmartTrimSettings {
         Self {
             enabled: false,
             check_interval_minutes: default_smart_trim_check_interval_minutes(),
-            exclude_foreground_app: default_exclude_foreground_app(),
-            trim_working_sets: default_smart_trim_trim_working_sets(),
+            exclude_foreground_app: default_true(),
+            trim_working_sets: default_true(),
             system_memory_load_threshold_percent:
                 default_smart_trim_system_memory_load_threshold_percent(),
             process_working_set_threshold_mb: default_smart_trim_process_working_set_threshold_mb(),
@@ -1615,7 +1557,7 @@ impl Default for SmartTrimSettings {
             trim_cooldown_seconds: default_smart_trim_cooldown_seconds(),
             purge_standby_list: false,
             purge_system_file_cache: false,
-            purge_only_in_performance_mode: default_smart_trim_purge_only_in_performance_mode(),
+            purge_only_in_performance_mode: default_true(),
             purge_free_ram_threshold_mb: default_smart_trim_purge_free_ram_threshold_mb(),
             exclusions: Vec::new(),
         }
@@ -1624,11 +1566,9 @@ impl Default for SmartTrimSettings {
 
 impl IoPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.exclusions
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
@@ -1640,11 +1580,9 @@ impl IoPrioritySettings {
 
 impl GpuPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.exclusions
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
@@ -1656,11 +1594,9 @@ impl GpuPrioritySettings {
 
 impl MemoryPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.exclusions
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
@@ -1686,11 +1622,9 @@ impl TimerResolutionSettings {
     }
 
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
-        self.rules.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.rules
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 }
 
@@ -1704,21 +1638,15 @@ impl SmartTrimSettings {
 
 impl AppSuspensionSettings {
     pub fn contains_suspendable_app(&self, process_name: &str) -> bool {
-        self.suspendable_apps.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.suspendable_apps
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
     pub fn suspendable_app_enabled_for(&self, process_name: &str) -> bool {
-        self.suspendable_apps.iter().any(|rule| {
-            rule.enabled
-                && rule
-                    .process_name
-                    .trim()
-                    .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.suspendable_apps
+            .iter()
+            .any(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
     }
 
     pub fn network_wake_enabled_for(&self, process_name: &str) -> bool {
@@ -1726,10 +1654,7 @@ impl AppSuspensionSettings {
             && self.suspendable_apps.iter().any(|rule| {
                 rule.enabled
                     && rule.network_wake_enabled
-                    && rule
-                        .process_name
-                        .trim()
-                        .eq_ignore_ascii_case(process_name.trim())
+                    && same_process_name(&rule.process_name, process_name)
             })
     }
 
@@ -1738,10 +1663,7 @@ impl AppSuspensionSettings {
             && self.suspendable_apps.iter().any(|rule| {
                 rule.enabled
                     && rule.audio_wake_enabled
-                    && rule
-                        .process_name
-                        .trim()
-                        .eq_ignore_ascii_case(process_name.trim())
+                    && same_process_name(&rule.process_name, process_name)
             })
     }
 
@@ -1750,10 +1672,7 @@ impl AppSuspensionSettings {
         self.suspendable_apps.iter().find_map(|rule| {
             (rule.enabled
                 && rule.network_wake_enabled
-                && rule
-                    .process_name
-                    .trim()
-                    .eq_ignore_ascii_case(process_name.trim()))
+                && same_process_name(&rule.process_name, process_name))
             .then_some((
                 rule.network_download_threshold_bytes,
                 rule.network_upload_threshold_bytes,
@@ -1764,69 +1683,51 @@ impl AppSuspensionSettings {
 
 impl EcoQosSettings {
     pub fn contains_efficiency_exclusion(&self, process_name: &str) -> bool {
-        self.efficiency_whitelist.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.efficiency_whitelist
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
     pub fn efficiency_exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.efficiency_whitelist.iter().any(|rule| {
-            rule.enabled
-                && rule
-                    .process_name
-                    .trim()
-                    .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.efficiency_whitelist
+            .iter()
+            .any(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
     }
 }
 
 impl BackgroundCpuRestrictionSettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.exclusions
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            rule.enabled
-                && rule
-                    .process_name
-                    .trim()
-                    .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.exclusions
+            .iter()
+            .any(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
     }
 }
 
 impl CpuAffinitySettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
-        self.rules.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.rules
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 }
 
 impl ForegroundResponsivenessSettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
-        self.rules.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.rules
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
     pub fn contains_auto_balance_exclusion(&self, process_name: &str) -> bool {
-        self.auto_balance_exclusions.iter().any(|rule| {
-            rule.process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-        })
+        self.auto_balance_exclusions
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
     pub fn auto_balance_exclusion_enabled_for(&self, process_name: &str) -> bool {

@@ -72,8 +72,8 @@ use crate::{
     },
     ecoqos::{self, EcoQosSnapshot},
     foreground::{
-        list_process_candidates, list_processes, ForegroundDetector, ProcessCandidateInfo,
-        ProcessInfo,
+        list_process_candidates, list_processes, same_process_name, ForegroundDetector,
+        ProcessCandidateInfo, ProcessInfo,
     },
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
@@ -569,95 +569,47 @@ enum DropdownPopupPhase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-enum ListItemRemovalTarget {
-    ForegroundRule(usize),
-    ScheduleRule(usize),
-    CpuUsageRule(usize),
-    EcoQosExclusion(usize),
-    AppSuspensionRule(usize),
-    BackgroundCpuExclusion(usize),
-    CpuLimiterRule(usize),
-    WatchdogRule(usize),
-    PerformanceModeRule(usize),
-    ResponsivenessExclusion(usize),
-    IoPriorityExclusion(usize),
-    GpuPriorityExclusion(usize),
-    MemoryPriorityExclusion(usize),
-    LaunchPriorityRule(usize),
-    TimerResolutionRule(usize),
-    SmartTrimExclusion(usize),
-    CpuAffinityRule(usize),
+struct ListItemRemovalTarget {
+    kind: ListItemRemovalKind,
+    index: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum ListItemRemovalKind {
+    ForegroundRule,
+    ScheduleRule,
+    CpuUsageRule,
+    EcoQosExclusion,
+    AppSuspensionRule,
+    BackgroundCpuExclusion,
+    CpuLimiterRule,
+    WatchdogRule,
+    PerformanceModeRule,
+    ResponsivenessExclusion,
+    IoPriorityExclusion,
+    GpuPriorityExclusion,
+    MemoryPriorityExclusion,
+    LaunchPriorityRule,
+    TimerResolutionRule,
+    SmartTrimExclusion,
+    CpuAffinityRule,
 }
 
 impl ListItemRemovalTarget {
-    fn list_order(self) -> u8 {
-        match self {
-            Self::ForegroundRule(_) => 0,
-            Self::ScheduleRule(_) => 1,
-            Self::CpuUsageRule(_) => 2,
-            Self::EcoQosExclusion(_) => 3,
-            Self::AppSuspensionRule(_) => 4,
-            Self::BackgroundCpuExclusion(_) => 5,
-            Self::CpuLimiterRule(_) => 6,
-            Self::WatchdogRule(_) => 7,
-            Self::PerformanceModeRule(_) => 8,
-            Self::ResponsivenessExclusion(_) => 9,
-            Self::IoPriorityExclusion(_) => 10,
-            Self::GpuPriorityExclusion(_) => 11,
-            Self::MemoryPriorityExclusion(_) => 12,
-            Self::LaunchPriorityRule(_) => 13,
-            Self::TimerResolutionRule(_) => 14,
-            Self::SmartTrimExclusion(_) => 15,
-            Self::CpuAffinityRule(_) => 16,
-        }
+    const fn new(kind: ListItemRemovalKind, index: usize) -> Self {
+        Self { kind, index }
     }
 
-    fn index(self) -> usize {
-        match self {
-            Self::ForegroundRule(index)
-            | Self::ScheduleRule(index)
-            | Self::CpuUsageRule(index)
-            | Self::EcoQosExclusion(index)
-            | Self::AppSuspensionRule(index)
-            | Self::BackgroundCpuExclusion(index)
-            | Self::CpuLimiterRule(index)
-            | Self::WatchdogRule(index)
-            | Self::PerformanceModeRule(index)
-            | Self::ResponsivenessExclusion(index)
-            | Self::IoPriorityExclusion(index)
-            | Self::GpuPriorityExclusion(index)
-            | Self::MemoryPriorityExclusion(index)
-            | Self::LaunchPriorityRule(index)
-            | Self::TimerResolutionRule(index)
-            | Self::SmartTrimExclusion(index)
-            | Self::CpuAffinityRule(index) => index,
-        }
+    const fn index(self) -> usize {
+        self.index
     }
 
-    fn with_index(self, index: usize) -> Self {
-        match self {
-            Self::ForegroundRule(_) => Self::ForegroundRule(index),
-            Self::ScheduleRule(_) => Self::ScheduleRule(index),
-            Self::CpuUsageRule(_) => Self::CpuUsageRule(index),
-            Self::EcoQosExclusion(_) => Self::EcoQosExclusion(index),
-            Self::AppSuspensionRule(_) => Self::AppSuspensionRule(index),
-            Self::BackgroundCpuExclusion(_) => Self::BackgroundCpuExclusion(index),
-            Self::CpuLimiterRule(_) => Self::CpuLimiterRule(index),
-            Self::WatchdogRule(_) => Self::WatchdogRule(index),
-            Self::PerformanceModeRule(_) => Self::PerformanceModeRule(index),
-            Self::ResponsivenessExclusion(_) => Self::ResponsivenessExclusion(index),
-            Self::IoPriorityExclusion(_) => Self::IoPriorityExclusion(index),
-            Self::GpuPriorityExclusion(_) => Self::GpuPriorityExclusion(index),
-            Self::MemoryPriorityExclusion(_) => Self::MemoryPriorityExclusion(index),
-            Self::LaunchPriorityRule(_) => Self::LaunchPriorityRule(index),
-            Self::TimerResolutionRule(_) => Self::TimerResolutionRule(index),
-            Self::SmartTrimExclusion(_) => Self::SmartTrimExclusion(index),
-            Self::CpuAffinityRule(_) => Self::CpuAffinityRule(index),
-        }
+    const fn with_index(self, index: usize) -> Self {
+        Self { index, ..self }
     }
 
     fn same_list(self, other: Self) -> bool {
-        self.list_order() == other.list_order()
+        self.kind == other.kind
     }
 }
 
@@ -1328,11 +1280,7 @@ impl PowerLeafApp {
             })
             .collect::<Vec<_>>();
 
-        due.sort_by(|a, b| {
-            a.list_order()
-                .cmp(&b.list_order())
-                .then_with(|| b.index().cmp(&a.index()))
-        });
+        due.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| b.index().cmp(&a.index())));
 
         for target in due {
             if self.pending_list_item_removals.remove(&target).is_some() {
@@ -1356,34 +1304,36 @@ impl PowerLeafApp {
     }
 
     fn commit_list_item_removal(&mut self, target: ListItemRemovalTarget) {
-        match target {
-            ListItemRemovalTarget::ForegroundRule(index) => {
+        let index = target.index();
+
+        match target.kind {
+            ListItemRemovalKind::ForegroundRule => {
                 if index < self.settings.foreground_rules.rules.len() {
                     self.settings.foreground_rules.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalTarget::ScheduleRule(index) => {
+            ListItemRemovalKind::ScheduleRule => {
                 if index < self.settings.schedule_mode.rules.len() {
                     self.settings.schedule_mode.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalTarget::CpuUsageRule(index) => {
+            ListItemRemovalKind::CpuUsageRule => {
                 if index < self.settings.cpu_usage_mode.rules.len() {
                     self.settings.cpu_usage_mode.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalTarget::EcoQosExclusion(index) => {
+            ListItemRemovalKind::EcoQosExclusion => {
                 if index < self.settings.eco_qos.efficiency_whitelist.len() {
                     self.settings.eco_qos.efficiency_whitelist.remove(index);
                 }
             }
-            ListItemRemovalTarget::AppSuspensionRule(index) => {
+            ListItemRemovalKind::AppSuspensionRule => {
                 if let Some(rule) = self.settings.app_suspension.suspendable_apps.get(index) {
                     self.expanded_rule_cards
                         .remove(&RuleCardTarget::Suspension(rule.process_name.clone()));
@@ -1392,7 +1342,7 @@ impl PowerLeafApp {
                     self.settings.app_suspension.suspendable_apps.remove(index);
                 }
             }
-            ListItemRemovalTarget::BackgroundCpuExclusion(index) => {
+            ListItemRemovalKind::BackgroundCpuExclusion => {
                 if index < self.settings.background_cpu_restriction.exclusions.len() {
                     self.settings
                         .background_cpu_restriction
@@ -1400,7 +1350,7 @@ impl PowerLeafApp {
                         .remove(index);
                 }
             }
-            ListItemRemovalTarget::CpuLimiterRule(index) => {
+            ListItemRemovalKind::CpuLimiterRule => {
                 if let Some(rule) = self.settings.cpu_limiter.rules.get(index) {
                     self.expanded_rule_cards
                         .remove(&RuleCardTarget::CpuLimiter(rule.process_name.clone()));
@@ -1409,7 +1359,7 @@ impl PowerLeafApp {
                     self.settings.cpu_limiter.rules.remove(index);
                 }
             }
-            ListItemRemovalTarget::WatchdogRule(index) => {
+            ListItemRemovalKind::WatchdogRule => {
                 if let Some(rule) = self.settings.watchdog.rules.get(index) {
                     self.expanded_rule_cards
                         .remove(&RuleCardTarget::Watchdog(rule.process_name.clone()));
@@ -1418,14 +1368,14 @@ impl PowerLeafApp {
                     self.settings.watchdog.rules.remove(index);
                 }
             }
-            ListItemRemovalTarget::PerformanceModeRule(index) => {
+            ListItemRemovalKind::PerformanceModeRule => {
                 if index < self.settings.performance_mode.rules.len() {
                     self.settings.performance_mode.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalTarget::ResponsivenessExclusion(index) => {
+            ListItemRemovalKind::ResponsivenessExclusion => {
                 if index
                     < self
                         .settings
@@ -1439,22 +1389,22 @@ impl PowerLeafApp {
                         .remove(index);
                 }
             }
-            ListItemRemovalTarget::IoPriorityExclusion(index) => {
+            ListItemRemovalKind::IoPriorityExclusion => {
                 if index < self.settings.io_priority.exclusions.len() {
                     self.settings.io_priority.exclusions.remove(index);
                 }
             }
-            ListItemRemovalTarget::GpuPriorityExclusion(index) => {
+            ListItemRemovalKind::GpuPriorityExclusion => {
                 if index < self.settings.gpu_priority.exclusions.len() {
                     self.settings.gpu_priority.exclusions.remove(index);
                 }
             }
-            ListItemRemovalTarget::MemoryPriorityExclusion(index) => {
+            ListItemRemovalKind::MemoryPriorityExclusion => {
                 if index < self.settings.memory_priority.exclusions.len() {
                     self.settings.memory_priority.exclusions.remove(index);
                 }
             }
-            ListItemRemovalTarget::LaunchPriorityRule(index) => {
+            ListItemRemovalKind::LaunchPriorityRule => {
                 if let Some(rule) = self.settings.launch_priority.rules.get(index) {
                     self.expanded_rule_cards
                         .remove(&RuleCardTarget::LaunchPriority(rule.process_name.clone()));
@@ -1463,17 +1413,17 @@ impl PowerLeafApp {
                     self.settings.launch_priority.rules.remove(index);
                 }
             }
-            ListItemRemovalTarget::TimerResolutionRule(index) => {
+            ListItemRemovalKind::TimerResolutionRule => {
                 if index < self.settings.timer_resolution.rules.len() {
                     self.settings.timer_resolution.rules.remove(index);
                 }
             }
-            ListItemRemovalTarget::SmartTrimExclusion(index) => {
+            ListItemRemovalKind::SmartTrimExclusion => {
                 if index < self.settings.smart_trim.exclusions.len() {
                     self.settings.smart_trim.exclusions.remove(index);
                 }
             }
-            ListItemRemovalTarget::CpuAffinityRule(index) => {
+            ListItemRemovalKind::CpuAffinityRule => {
                 if let Some(rule) = self.settings.cpu_affinity.rules.get(index) {
                     self.expanded_rule_cards
                         .remove(&RuleCardTarget::Affinity(rule.process_name.clone()));
@@ -3398,6 +3348,11 @@ impl PowerLeafApp {
         cx.notify();
     }
 
+    fn finish_process_list_edit(&mut self, cx: &mut Context<Self>) {
+        self.active_power_plan_picker = None;
+        cx.notify();
+    }
+
     fn set_process_list_foreground_power_plan(
         &mut self,
         process_name: String,
@@ -3409,8 +3364,7 @@ impl PowerLeafApp {
             &process_name,
             power_plan_guid,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_running_power_plan(
@@ -3424,8 +3378,7 @@ impl PowerLeafApp {
             &process_name,
             power_plan_guid,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_background_efficiency(
@@ -3435,8 +3388,7 @@ impl PowerLeafApp {
         cx: &mut Context<Self>,
     ) {
         set_eco_qos_efficiency_exclusion(&mut self.settings.eco_qos, &process_name, !included);
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_background_cpu_restriction(
@@ -3450,8 +3402,7 @@ impl PowerLeafApp {
             &process_name,
             !included,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_cpu_limiter(
@@ -3465,8 +3416,7 @@ impl PowerLeafApp {
             &process_name,
             max_logical_processors,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_cpu_priority(
@@ -3480,8 +3430,7 @@ impl PowerLeafApp {
             &process_name,
             priority,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_io_priority(
@@ -3495,8 +3444,7 @@ impl PowerLeafApp {
             &process_name,
             priority,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_gpu_priority_included(
@@ -3510,8 +3458,7 @@ impl PowerLeafApp {
             &process_name,
             !included,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_memory_priority(
@@ -3525,8 +3472,7 @@ impl PowerLeafApp {
             &process_name,
             priority,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_smart_trim(
@@ -3540,8 +3486,7 @@ impl PowerLeafApp {
             &process_name,
             !included,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_app_suspension(
@@ -3551,8 +3496,7 @@ impl PowerLeafApp {
         cx: &mut Context<Self>,
     ) {
         set_app_suspension_override(&mut self.settings.app_suspension, &process_name, included);
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn set_process_list_timer_resolution(
@@ -3566,8 +3510,7 @@ impl PowerLeafApp {
             &process_name,
             desired_100ns,
         );
-        self.active_power_plan_picker = None;
-        cx.notify();
+        self.finish_process_list_edit(cx);
     }
 
     fn dropdown_placement(
@@ -5322,7 +5265,7 @@ impl PowerLeafApp {
         let mut rules = rule_list();
         for (index, rule) in self.settings.foreground_rules.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
-                ListItemRemovalTarget::ForegroundRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::ForegroundRule, index),
                 SharedString::from(format!("foreground-rule-{index}")),
                 self.render_foreground_rule(index, rule, window, cx),
             ));
@@ -5370,7 +5313,10 @@ impl PowerLeafApp {
                 ))))
                 .label(t!("common.remove").to_string())
                 .on_click(cx.listener(move |app, _, _, cx| {
-                    app.request_list_item_removal(ListItemRemovalTarget::ForegroundRule(index), cx);
+                    app.request_list_item_removal(
+                        ListItemRemovalTarget::new(ListItemRemovalKind::ForegroundRule, index),
+                        cx,
+                    );
                 }))
                 .into_any_element(),
             )
@@ -5500,7 +5446,7 @@ impl PowerLeafApp {
         let mut rules = rule_list();
         for (index, rule) in self.settings.schedule_mode.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
-                ListItemRemovalTarget::ScheduleRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::ScheduleRule, index),
                 SharedString::from(format!("schedule-rule-{index}")),
                 self.render_schedule_rule(index, rule, window, cx),
             ));
@@ -5648,7 +5594,10 @@ impl PowerLeafApp {
                         .label(t!("common.remove").to_string())
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.request_list_item_removal(
-                                ListItemRemovalTarget::ScheduleRule(index),
+                                ListItemRemovalTarget::new(
+                                    ListItemRemovalKind::ScheduleRule,
+                                    index,
+                                ),
                                 cx,
                             );
                         }))
@@ -5714,7 +5663,7 @@ impl PowerLeafApp {
         let mut rules = rule_list();
         for (index, rule) in self.settings.cpu_usage_mode.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
-                ListItemRemovalTarget::CpuUsageRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::CpuUsageRule, index),
                 SharedString::from(format!("cpu-rule-{index}")),
                 self.render_cpu_rule(index, rule, enabled, window, cx),
             ));
@@ -5982,7 +5931,10 @@ impl PowerLeafApp {
                         .label(t!("common.remove").to_string())
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.request_list_item_removal(
-                                ListItemRemovalTarget::CpuUsageRule(index),
+                                ListItemRemovalTarget::new(
+                                    ListItemRemovalKind::CpuUsageRule,
+                                    index,
+                                ),
                                 cx,
                             );
                         }))
@@ -6506,13 +6458,13 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::EcoQosExclusion(index),
+                            ListItemRemovalTarget::new(ListItemRemovalKind::EcoQosExclusion, index),
                             cx,
                         );
                     })),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::EcoQosExclusion(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::EcoQosExclusion, index),
                 SharedString::from(format!("eco-qos-exclusion-{index}")),
                 row.into_any_element(),
             ));
@@ -6929,7 +6881,10 @@ impl PowerLeafApp {
                             .on_click(cx.listener({
                                 move |app, _, _, cx| {
                                     app.request_list_item_removal(
-                                        ListItemRemovalTarget::AppSuspensionRule(index),
+                                        ListItemRemovalTarget::new(
+                                            ListItemRemovalKind::AppSuspensionRule,
+                                            index,
+                                        ),
                                         cx,
                                     );
                                 }
@@ -6939,7 +6894,7 @@ impl PowerLeafApp {
                     ));
             }
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::AppSuspensionRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::AppSuspensionRule, index),
                 SharedString::from(format!("suspension-rule-{index}")),
                 card.into_any_element(),
             ));
@@ -7327,13 +7282,16 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::BackgroundCpuExclusion(index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::BackgroundCpuExclusion,
+                                index,
+                            ),
                             cx,
                         );
                     })),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::BackgroundCpuExclusion(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::BackgroundCpuExclusion, index),
                 SharedString::from(format!("background-cpu-exclusion-{index}")),
                 row.into_any_element(),
             ));
@@ -7522,7 +7480,10 @@ impl PowerLeafApp {
                             .on_click(cx.listener({
                                 move |app, _, _, cx| {
                                     app.request_list_item_removal(
-                                        ListItemRemovalTarget::CpuLimiterRule(index),
+                                        ListItemRemovalTarget::new(
+                                            ListItemRemovalKind::CpuLimiterRule,
+                                            index,
+                                        ),
                                         cx,
                                     );
                                 }
@@ -7532,7 +7493,7 @@ impl PowerLeafApp {
                     ));
             }
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::CpuLimiterRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::CpuLimiterRule, index),
                 SharedString::from(format!("cpu-limiter-rule-{index}")),
                 card.into_any_element(),
             ));
@@ -7759,7 +7720,10 @@ impl PowerLeafApp {
                         .on_click(cx.listener({
                             move |app, _, _, cx| {
                                 app.request_list_item_removal(
-                                    ListItemRemovalTarget::WatchdogRule(index),
+                                    ListItemRemovalTarget::new(
+                                        ListItemRemovalKind::WatchdogRule,
+                                        index,
+                                    ),
                                     cx,
                                 );
                             }
@@ -7769,7 +7733,7 @@ impl PowerLeafApp {
                 ));
             }
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::WatchdogRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::WatchdogRule, index),
                 SharedString::from(format!("watchdog-rule-{index}")),
                 card.into_any_element(),
             ));
@@ -7944,14 +7908,17 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::PerformanceModeRule(index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::PerformanceModeRule,
+                                index,
+                            ),
                             cx,
                         );
                     }))
                     .into_any_element(),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::PerformanceModeRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::PerformanceModeRule, index),
                 SharedString::from(format!("performance-mode-rule-{index}")),
                 row.into_any_element(),
             ));
@@ -8810,13 +8777,16 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::ResponsivenessExclusion(index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::ResponsivenessExclusion,
+                                index,
+                            ),
                             cx,
                         );
                     })),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::ResponsivenessExclusion(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::ResponsivenessExclusion, index),
                 SharedString::from(format!("responsiveness-exclusion-{index}")),
                 row.into_any_element(),
             ));
@@ -8975,14 +8945,17 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::IoPriorityExclusion(index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::IoPriorityExclusion,
+                                index,
+                            ),
                             cx,
                         );
                     }))
                     .into_any_element(),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::IoPriorityExclusion(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::IoPriorityExclusion, index),
                 SharedString::from(format!("io-priority-exclusion-{index}")),
                 card.into_any_element(),
             ));
@@ -9196,14 +9169,17 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::GpuPriorityExclusion(index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::GpuPriorityExclusion,
+                                index,
+                            ),
                             cx,
                         );
                     }))
                     .into_any_element(),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::GpuPriorityExclusion(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::GpuPriorityExclusion, index),
                 SharedString::from(format!("gpu-priority-exclusion-{index}")),
                 card.into_any_element(),
             ));
@@ -9469,14 +9445,17 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::MemoryPriorityExclusion(index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::MemoryPriorityExclusion,
+                                index,
+                            ),
                             cx,
                         );
                     }))
                     .into_any_element(),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::MemoryPriorityExclusion(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::MemoryPriorityExclusion, index),
                 SharedString::from(format!("memory-priority-exclusion-{index}")),
                 row.into_any_element(),
             ));
@@ -9726,7 +9705,10 @@ impl PowerLeafApp {
                             .label(t!("common.remove").to_string())
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 app.request_list_item_removal(
-                                    ListItemRemovalTarget::LaunchPriorityRule(index),
+                                    ListItemRemovalTarget::new(
+                                        ListItemRemovalKind::LaunchPriorityRule,
+                                        index,
+                                    ),
                                     cx,
                                 );
                             }))
@@ -9735,7 +9717,7 @@ impl PowerLeafApp {
                     ));
             }
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::LaunchPriorityRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::LaunchPriorityRule, index),
                 SharedString::from(format!("launch-priority-rule-{index}")),
                 card.into_any_element(),
             ));
@@ -10372,13 +10354,16 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::SmartTrimExclusion(index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::SmartTrimExclusion,
+                                index,
+                            ),
                             cx,
                         );
                     })),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::SmartTrimExclusion(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::SmartTrimExclusion, index),
                 SharedString::from(format!("smart-trim-exclusion-{index}")),
                 row.into_any_element(),
             ));
@@ -10551,7 +10536,10 @@ impl PowerLeafApp {
                         .on_click(cx.listener({
                             move |app, _, _, cx| {
                                 app.request_list_item_removal(
-                                    ListItemRemovalTarget::CpuAffinityRule(index),
+                                    ListItemRemovalTarget::new(
+                                        ListItemRemovalKind::CpuAffinityRule,
+                                        index,
+                                    ),
                                     cx,
                                 );
                             }
@@ -10561,7 +10549,7 @@ impl PowerLeafApp {
                 ));
             }
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::CpuAffinityRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::CpuAffinityRule, index),
                 SharedString::from(format!("affinity-rule-{index}")),
                 card.into_any_element(),
             ));
@@ -11679,14 +11667,17 @@ impl PowerLeafApp {
                     .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::TimerResolutionRule(index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::TimerResolutionRule,
+                                index,
+                            ),
                             cx,
                         );
                     }))
                     .into_any_element(),
                 );
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::TimerResolutionRule(index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::TimerResolutionRule, index),
                 SharedString::from(format!("timer-resolution-rule-{index}")),
                 row.into_any_element(),
             ));
@@ -13089,7 +13080,7 @@ impl PowerLeafApp {
         let process = process.trim();
         self.process_candidates
             .iter()
-            .find(|candidate| candidate.name.eq_ignore_ascii_case(process))
+            .find(|candidate| same_process_name(&candidate.name, process))
             .and_then(|candidate| candidate.icon.as_ref())
     }
 
@@ -21777,13 +21768,26 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
     }
 }
 
-fn can_add_foreground_process(settings: &ForegroundRules, process: &str) -> bool {
+fn can_add_process_candidate(
+    process: &str,
+    contains_process: impl FnOnce(&str) -> bool,
+    is_builtin_excluded: impl FnOnce(&str) -> bool,
+) -> bool {
     let process = process.trim();
-    !process.is_empty()
-        && !settings
-            .rules
-            .iter()
-            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+    !process.is_empty() && !contains_process(process) && !is_builtin_excluded(process)
+}
+
+fn can_add_foreground_process(settings: &ForegroundRules, process: &str) -> bool {
+    can_add_process_candidate(
+        process,
+        |process| {
+            settings
+                .rules
+                .iter()
+                .any(|rule| same_process_name(&rule.process_name, process))
+        },
+        |_| false,
+    )
 }
 
 fn foreground_power_plan_override_guid(
@@ -21833,31 +21837,36 @@ fn new_foreground_rule(process: &str, power_plan_guid: Option<String>) -> Foregr
 }
 
 fn can_add_eco_qos_process(settings: &EcoQosSettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !ecoqos::is_builtin_excluded(process)
-        && !settings.contains_efficiency_exclusion(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_efficiency_exclusion(process),
+        ecoqos::is_builtin_excluded,
+    )
 }
 
 fn can_add_background_cpu_exclusion(
     settings: &BackgroundCpuRestrictionSettings,
     process: &str,
 ) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !affinity::is_builtin_excluded(process)
-        && !settings.contains_exclusion(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_exclusion(process),
+        affinity::is_builtin_excluded,
+    )
 }
 
 fn can_add_smart_trim_exclusion(settings: &SmartTrimSettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !smart_trim::is_builtin_excluded(process)
-        && !settings.exclusion_enabled_for(process)
-        && !settings
-            .exclusions
-            .iter()
-            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
+    can_add_process_candidate(
+        process,
+        |process| {
+            settings.exclusion_enabled_for(process)
+                || settings
+                    .exclusions
+                    .iter()
+                    .any(|rule| same_process_name(&rule.process_name, process))
+        },
+        smart_trim::is_builtin_excluded,
+    )
 }
 
 fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
@@ -21918,48 +21927,54 @@ fn set_process_exclusion(
 }
 
 fn can_add_suspension_process(settings: &AppSuspensionSettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !settings.contains_suspendable_app(process)
-        && !suspension::is_builtin_excluded(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_suspendable_app(process),
+        suspension::is_builtin_excluded,
+    )
 }
 
 fn can_add_affinity_process(settings: &CpuAffinitySettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !settings.contains_rule_for(process)
-        && !affinity::is_builtin_excluded(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_rule_for(process),
+        affinity::is_builtin_excluded,
+    )
 }
 
 fn can_add_responsiveness_process(
     settings: &ForegroundResponsivenessSettings,
     process: &str,
 ) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !settings.contains_rule_for(process)
-        && !responsiveness::is_builtin_excluded(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_rule_for(process),
+        responsiveness::is_builtin_excluded,
+    )
 }
 
 fn can_add_io_priority_exclusion(settings: &IoPrioritySettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !io_priority::is_builtin_excluded(process)
-        && !settings.contains_exclusion(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_exclusion(process),
+        io_priority::is_builtin_excluded,
+    )
 }
 
 fn can_add_gpu_priority_exclusion(settings: &GpuPrioritySettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !gpu_priority::is_builtin_excluded(process)
-        && !settings.contains_exclusion(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_exclusion(process),
+        gpu_priority::is_builtin_excluded,
+    )
 }
 
 fn can_add_memory_priority_exclusion(settings: &MemoryPrioritySettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !memory_priority::is_builtin_excluded(process)
-        && !settings.contains_exclusion(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_exclusion(process),
+        memory_priority::is_builtin_excluded,
+    )
 }
 
 fn can_add_launch_priority_process(settings: &LaunchPrioritySettings, process: &str) -> bool {
@@ -21969,50 +21984,65 @@ fn can_add_launch_priority_process(settings: &LaunchPrioritySettings, process: &
     !settings
         .rules
         .iter()
-        .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(&process))
+        .any(|rule| same_process_name(&rule.process_name, &process))
 }
 
 fn can_add_timer_resolution_process(settings: &TimerResolutionSettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty() && !settings.contains_rule_for(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_rule_for(process),
+        |_| false,
+    )
 }
 
 fn can_add_responsiveness_exclusion(
     settings: &ForegroundResponsivenessSettings,
     process: &str,
 ) -> bool {
-    let process = process.trim();
-    !process.is_empty() && !settings.contains_auto_balance_exclusion(process)
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_auto_balance_exclusion(process),
+        |_| false,
+    )
 }
 
 fn can_add_cpu_limiter_process(settings: &CpuLimiterSettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !settings
-            .rules
-            .iter()
-            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
-        && !cpu_limiter::is_builtin_excluded(process)
+    can_add_process_candidate(
+        process,
+        |process| {
+            settings
+                .rules
+                .iter()
+                .any(|rule| same_process_name(&rule.process_name, process))
+        },
+        cpu_limiter::is_builtin_excluded,
+    )
 }
 
 fn can_add_watchdog_process(settings: &WatchdogSettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !settings
-            .rules
-            .iter()
-            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
-        && !watchdog::is_builtin_excluded(process)
+    can_add_process_candidate(
+        process,
+        |process| {
+            settings
+                .rules
+                .iter()
+                .any(|rule| same_process_name(&rule.process_name, process))
+        },
+        watchdog::is_builtin_excluded,
+    )
 }
 
 fn can_add_performance_mode_process(settings: &PerformanceModeSettings, process: &str) -> bool {
-    let process = process.trim();
-    !process.is_empty()
-        && !settings
-            .rules
-            .iter()
-            .any(|rule| rule.process_name.trim().eq_ignore_ascii_case(process))
-        && !performance_mode::is_builtin_excluded(process)
+    can_add_process_candidate(
+        process,
+        |process| {
+            settings
+                .rules
+                .iter()
+                .any(|rule| same_process_name(&rule.process_name, process))
+        },
+        performance_mode::is_builtin_excluded,
+    )
 }
 
 fn new_suspension_rule(process: &str) -> AppSuspensionRule {
@@ -22094,7 +22124,7 @@ fn launch_priority_rule_for<'a>(
     settings
         .rules
         .iter()
-        .find(|rule| rule.enabled && rule.process_name.trim().eq_ignore_ascii_case(&process_name))
+        .find(|rule| rule.enabled && same_process_name(&rule.process_name, &process_name))
 }
 
 fn launch_priority_cpu_override(
@@ -22132,7 +22162,7 @@ fn ensure_launch_priority_rule<'a>(
     if let Some(index) = settings
         .rules
         .iter()
-        .position(|rule| rule.process_name.trim().eq_ignore_ascii_case(&process_name))
+        .position(|rule| same_process_name(&rule.process_name, &process_name))
     {
         let rule = &mut settings.rules[index];
         rule.enabled = true;
@@ -22153,7 +22183,7 @@ fn ensure_launch_priority_rule<'a>(
 fn prune_default_launch_priority_rule(settings: &mut LaunchPrioritySettings, process_name: &str) {
     let process_name = launch_priority_process_name(process_name);
     settings.rules.retain(|rule| {
-        !rule.process_name.trim().eq_ignore_ascii_case(&process_name)
+        !same_process_name(&rule.process_name, &process_name)
             || rule.cpu_priority != ProcessCpuPrioritySetting::Default
             || rule.io_priority != ProcessIoPrioritySetting::Default
             || rule.memory_priority != ProcessMemoryPrioritySetting::Default
@@ -22654,7 +22684,7 @@ fn default_process_policy_summary() -> ProcessPolicySummary {
 
 fn process_setting_matches(configured_process: &str, process_name: &str) -> bool {
     let configured_process = configured_process.trim();
-    !configured_process.is_empty() && configured_process.eq_ignore_ascii_case(process_name.trim())
+    !configured_process.is_empty() && same_process_name(configured_process, process_name)
 }
 
 fn foreground_power_plan_policy_label(

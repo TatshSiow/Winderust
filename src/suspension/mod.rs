@@ -20,8 +20,8 @@ use windows::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER,
-        ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
+        ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
     },
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, GetPerTcp6ConnectionEStats,
@@ -44,10 +44,12 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::win_util::last_error;
+
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    is_process_exited_message, list_processes, process_name_key, process_session_id,
-    unique_app_names,
+    contains_process_name, is_process_exited_message, list_processes, process_name_key,
+    process_session_id, unique_app_names,
 };
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
@@ -1509,14 +1511,11 @@ impl Default for AppSuspensionSnapshot {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name.trim()))
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 pub fn contains_process(list: &[String], process_name: &str) -> bool {
-    list.iter()
-        .any(|process| process.trim().eq_ignore_ascii_case(process_name.trim()))
+    contains_process_name(list, process_name)
 }
 
 fn network_wake_duration(settings: &AppSuspensionSettings) -> Option<Duration> {
@@ -2263,10 +2262,6 @@ fn job_freeze_error(frozen: bool, error: u32) -> SuspensionError {
             "SetInformationJobObject freeze={frozen} failed with error {error}."
         )),
     }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
 }
 
 #[cfg(test)]

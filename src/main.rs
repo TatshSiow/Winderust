@@ -36,6 +36,7 @@ mod timer_resolution;
 mod tray;
 mod ui;
 mod watchdog;
+mod win_util;
 mod windows_events;
 
 rust_i18n::i18n!("locales", fallback = "en");

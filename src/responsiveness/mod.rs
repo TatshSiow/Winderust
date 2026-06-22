@@ -5,9 +5,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
-    },
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME},
     System::{
         SystemInformation::GetSystemTimeAsFileTime,
         Threading::{
@@ -31,12 +29,13 @@ use crate::{
     },
     cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
     foreground::{
-        is_process_exited_message, list_processes, process_count_label, process_failure_key,
-        process_id_matches_name, process_names_by_id, process_session_id, unique_app_names,
-        ProcessInfo,
+        contains_process_name, is_process_exited_message, list_processes, process_count_label,
+        process_failure_key, process_id_matches_name, process_names_by_id, process_session_id,
+        same_process_name, unique_app_names, ProcessInfo,
     },
     memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
+    win_util::{filetime_to_u64, last_error, WinHandle},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -917,7 +916,7 @@ impl ForegroundResponsivenessManager {
         match &mut self.foreground_candidate {
             Some(candidate)
                 if candidate.process_id == process_id
-                    && candidate.process_name.eq_ignore_ascii_case(process_name) =>
+                    && same_process_name(&candidate.process_name, process_name) =>
             {
                 now.duration_since(candidate.first_seen).as_millis()
                     >= u128::from(stability_delay_ms)
@@ -1060,7 +1059,7 @@ impl ForegroundResponsivenessManager {
         action_log: &mut ActionLog,
     ) -> Result<(), PriorityError> {
         if self.boosted.get(&process_id).is_some_and(|boosted| {
-            boosted.process_name.eq_ignore_ascii_case(process_name)
+            same_process_name(&boosted.process_name, process_name)
                 && boosted.applied_priority == priority_class
         }) {
             return Ok(());
@@ -1352,10 +1351,7 @@ impl Default for ForegroundResponsivenessSnapshot {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    let process_name = process_name.trim();
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 fn percent_tenths(usage: f32) -> u16 {
@@ -1426,13 +1422,10 @@ fn matching_rule<'a>(
     settings: &'a ForegroundResponsivenessSettings,
     process_name: &str,
 ) -> Option<&'a PriorityRule> {
-    settings.rules.iter().find(|rule| {
-        rule.enabled
-            && rule
-                .process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
-    })
+    settings
+        .rules
+        .iter()
+        .find(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
 }
 
 fn should_skip_foreground_process(
@@ -1444,8 +1437,7 @@ fn should_skip_foreground_process(
 ) -> bool {
     foreground_process_id.is_some_and(|id| id == process_id)
         || foreground_process_group_ids.contains(&process_id)
-        || foreground_process_name
-            .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim()))
+        || foreground_process_name.is_some_and(|name| same_process_name(name, process_name))
 }
 
 fn foreground_boost_eligible(
@@ -1819,10 +1811,10 @@ fn apply_priority(
     let mut changed = false;
     let process = ProcessHandle::open(process_id)?;
     let reusable_existing =
-        existing.filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name));
+        existing.filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
 
     if let Some(adjusted) = existing {
-        if !adjusted.process_name.eq_ignore_ascii_case(&process_name) {
+        if !same_process_name(&adjusted.process_name, &process_name) {
             restore_adjusted_process(&process, adjusted)?;
             action_log.record(
                 ActionLogFeature::ForegroundResponsiveness,
@@ -2142,7 +2134,7 @@ fn priority_class_label(priority_class: u32) -> &'static str {
     }
 }
 
-struct ProcessHandle(HANDLE);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, PriorityError> {
@@ -2154,7 +2146,7 @@ impl ProcessHandle {
             )
         };
         if !handle.is_null() {
-            Ok(Self(handle))
+            Ok(Self(WinHandle::new(handle)))
         } else {
             Err(open_process_error(process_id, last_error()))
         }
@@ -2163,14 +2155,14 @@ impl ProcessHandle {
     fn open_query(process_id: u32) -> Result<Self, PriorityError> {
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
         if !handle.is_null() {
-            Ok(Self(handle))
+            Ok(Self(WinHandle::new(handle)))
         } else {
             Err(open_process_error(process_id, last_error()))
         }
     }
 
     fn priority_class(&self) -> Result<u32, PriorityError> {
-        let priority = unsafe { GetPriorityClass(self.0) };
+        let priority = unsafe { GetPriorityClass(self.0.raw()) };
         if priority == 0 {
             Err(PriorityError::Failed(format!(
                 "GetPriorityClass failed with error {}.",
@@ -2182,7 +2174,7 @@ impl ProcessHandle {
     }
 
     fn set_priority_class(&self, priority_class: u32) -> Result<(), PriorityError> {
-        let ok = unsafe { SetPriorityClass(self.0, priority_class) };
+        let ok = unsafe { SetPriorityClass(self.0.raw(), priority_class) };
         if ok == 0 {
             Err(PriorityError::Failed(format!(
                 "SetPriorityClass failed with error {}.",
@@ -2197,7 +2189,7 @@ impl ProcessHandle {
         let mut state = PROCESS_POWER_THROTTLING_STATE::default();
         let ok = unsafe {
             GetProcessInformation(
-                self.0,
+                self.0.raw(),
                 ProcessPowerThrottling,
                 &mut state as *mut _ as *mut c_void,
                 std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
@@ -2219,7 +2211,7 @@ impl ProcessHandle {
     ) -> Result<(), PriorityError> {
         let ok = unsafe {
             SetProcessInformation(
-                self.0,
+                self.0.raw(),
                 ProcessPowerThrottling,
                 &state as *const _ as *const c_void,
                 std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
@@ -2240,8 +2232,15 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
-        let ok =
-            unsafe { GetProcessTimes(self.0, &mut creation, &mut exit, &mut kernel, &mut user) };
+        let ok = unsafe {
+            GetProcessTimes(
+                self.0.raw(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        };
         if ok == 0 {
             Err(PriorityError::Failed(format!(
                 "GetProcessTimes failed with error {}.",
@@ -2260,8 +2259,15 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
-        let ok =
-            unsafe { GetProcessTimes(self.0, &mut creation, &mut exit, &mut kernel, &mut user) };
+        let ok = unsafe {
+            GetProcessTimes(
+                self.0.raw(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        };
         if ok == 0 {
             Err(PriorityError::Failed(format!(
                 "GetProcessTimes failed with error {}.",
@@ -2269,14 +2275,6 @@ impl ProcessHandle {
             )))
         } else {
             Ok(filetime_to_u64(creation))
-        }
-    }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
         }
     }
 }
@@ -2289,14 +2287,6 @@ fn open_process_error(process_id: u32, error: u32) -> PriorityError {
             "OpenProcess({process_id}) failed with error {error}."
         )),
     }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
-}
-
-fn filetime_to_u64(value: FILETIME) -> u64 {
-    (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
 
 #[cfg(test)]

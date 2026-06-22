@@ -4,19 +4,22 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
     System::Threading::{
         GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         PROCESS_SET_INFORMATION,
     },
 };
 
+use crate::win_util::{last_error, WinHandle};
+
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{GpuPrioritySettings, ProcessGpuPriority},
     foreground::{
-        is_foreground_process, is_process_exited_message, list_processes, process_count_label,
-        process_failure_key, process_names_by_id, process_session_id, unique_app_names,
+        contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
+        process_count_label, process_failure_key, process_names_by_id, process_session_id,
+        same_process_name, unique_app_names,
     },
     rules::ExecutionFailureTracker,
 };
@@ -307,7 +310,7 @@ impl GpuPriorityManager {
         let reusable_existing = self
             .adjusted
             .get(&process_id)
-            .filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name));
+            .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
         let current_priority_raw = process.gpu_priority_raw()?;
         let desired_priority_raw = gpu_priority_raw(priority);
         let changed = current_priority_raw != desired_priority_raw;
@@ -561,7 +564,7 @@ impl GpuPriorityFailures {
     }
 }
 
-struct ProcessHandle(HANDLE);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, GpuPriorityError> {
@@ -573,7 +576,7 @@ impl ProcessHandle {
             )
         };
         if !handle.is_null() {
-            Ok(Self(handle))
+            Ok(Self(WinHandle::new(handle)))
         } else {
             Err(open_process_error(process_id, last_error()))
         }
@@ -581,22 +584,15 @@ impl ProcessHandle {
 
     fn gpu_priority_raw(&self) -> Result<u32, GpuPriorityError> {
         let mut priority = 0_u32;
-        let status =
-            unsafe { D3DKMTGetProcessSchedulingPriorityClass(self.0, &mut priority as *mut _) };
+        let status = unsafe {
+            D3DKMTGetProcessSchedulingPriorityClass(self.0.raw(), &mut priority as *mut _)
+        };
         ntstatus_result(status).map(|()| priority)
     }
 
     fn set_gpu_priority_raw(&self, priority: u32) -> Result<(), GpuPriorityError> {
-        let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(self.0, priority) };
+        let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(self.0.raw(), priority) };
         ntstatus_result(status)
-    }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
     }
 }
 
@@ -738,13 +734,7 @@ fn gpu_priority_status_message(
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name.trim()))
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 #[link(name = "gdi32")]

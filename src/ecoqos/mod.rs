@@ -7,10 +7,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER,
-        ERROR_NOT_SUPPORTED, HANDLE,
-    },
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED},
     System::{
         SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION},
         Threading::{
@@ -25,6 +22,8 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::win_util::{last_error, WinHandle};
+
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     affinity::{self, LogicalProcessorKind},
@@ -33,8 +32,8 @@ use crate::{
         EcoQosCpuRestrictionStrategy, EcoQosSettings,
     },
     foreground::{
-        is_process_exited_message, list_processes, process_failure_key, process_session_id,
-        should_ignore_foreground_process,
+        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
+        process_session_id, should_ignore_foreground_process,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -487,10 +486,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 }
 
 fn is_builtin_excluded_for(process_name: &str, aggressiveness: EcoQosAggressiveness) -> bool {
-    let process_name = process_name.trim();
-    built_in_exclusions_for(aggressiveness)
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+    contains_process_name(built_in_exclusions_for(aggressiveness), process_name)
 }
 
 fn built_in_exclusions_for(aggressiveness: EcoQosAggressiveness) -> &'static [&'static str] {
@@ -1193,7 +1189,7 @@ fn cpu_set_target_ids_from_records(
     ids
 }
 
-struct ProcessHandle(HANDLE);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, EcoQosError> {
@@ -1206,7 +1202,7 @@ impl ProcessHandle {
         for access in access_masks {
             let handle = unsafe { OpenProcess(access, 0, process_id) };
             if !handle.is_null() {
-                return Ok(Self(handle));
+                return Ok(Self(WinHandle::new(handle)));
             }
             last_open_error = last_error();
         }
@@ -1218,7 +1214,7 @@ impl ProcessHandle {
         let mut state = PROCESS_POWER_THROTTLING_STATE::default();
         let ok = unsafe {
             GetProcessInformation(
-                self.0,
+                self.0.raw(),
                 ProcessPowerThrottling,
                 &mut state as *mut _ as *mut c_void,
                 std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
@@ -1235,7 +1231,7 @@ impl ProcessHandle {
     }
 
     fn priority_class(&self) -> Result<u32, EcoQosError> {
-        let priority = unsafe { GetPriorityClass(self.0) };
+        let priority = unsafe { GetPriorityClass(self.0.raw()) };
         if priority == 0 {
             Err(EcoQosError::Failed(format!(
                 "GetPriorityClass failed with error {}.",
@@ -1252,7 +1248,7 @@ impl ProcessHandle {
     ) -> Result<(), EcoQosError> {
         let ok = unsafe {
             SetProcessInformation(
-                self.0,
+                self.0.raw(),
                 ProcessPowerThrottling,
                 &state as *const _ as *const c_void,
                 std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
@@ -1269,7 +1265,7 @@ impl ProcessHandle {
     }
 
     fn set_priority_class(&self, priority_class: u32) -> Result<(), EcoQosError> {
-        let ok = unsafe { SetPriorityClass(self.0, priority_class) };
+        let ok = unsafe { SetPriorityClass(self.0.raw(), priority_class) };
         if ok == 0 {
             Err(EcoQosError::Failed(format!(
                 "SetPriorityClass failed with error {}.",
@@ -1283,8 +1279,9 @@ impl ProcessHandle {
     fn affinity_mask(&self) -> Result<(usize, usize), EcoQosError> {
         let mut process_affinity = 0;
         let mut system_affinity = 0;
-        let ok =
-            unsafe { GetProcessAffinityMask(self.0, &mut process_affinity, &mut system_affinity) };
+        let ok = unsafe {
+            GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
+        };
         if ok == 0 {
             Err(EcoQosError::Failed(format!(
                 "GetProcessAffinityMask failed with error {}.",
@@ -1296,7 +1293,7 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), EcoQosError> {
-        let ok = unsafe { SetProcessAffinityMask(self.0, affinity_mask) };
+        let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
         if ok == 0 {
             Err(EcoQosError::Failed(format!(
                 "SetProcessAffinityMask failed with error {}.",
@@ -1310,7 +1307,7 @@ impl ProcessHandle {
     fn default_cpu_set_ids(&self) -> Result<Vec<u32>, EcoQosError> {
         let mut required_id_count = 0;
         unsafe {
-            GetProcessDefaultCpuSets(self.0, null_mut(), 0, &mut required_id_count);
+            GetProcessDefaultCpuSets(self.0.raw(), null_mut(), 0, &mut required_id_count);
         }
         if required_id_count == 0 {
             return Ok(Vec::new());
@@ -1319,7 +1316,7 @@ impl ProcessHandle {
         let mut ids = vec![0_u32; required_id_count as usize];
         let ok = unsafe {
             GetProcessDefaultCpuSets(
-                self.0,
+                self.0.raw(),
                 ids.as_mut_ptr(),
                 ids.len() as u32,
                 &mut required_id_count,
@@ -1342,7 +1339,7 @@ impl ProcessHandle {
         } else {
             (ids.as_ptr() as *mut u32, ids.len() as u32)
         };
-        let ok = unsafe { SetProcessDefaultCpuSets(self.0, ptr, count) };
+        let ok = unsafe { SetProcessDefaultCpuSets(self.0.raw(), ptr, count) };
         if ok == 0 {
             Err(EcoQosError::Failed(format!(
                 "SetProcessDefaultCpuSets failed with error {}.",
@@ -1350,14 +1347,6 @@ impl ProcessHandle {
             )))
         } else {
             Ok(())
-        }
-    }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
         }
     }
 }
@@ -1377,10 +1366,6 @@ fn open_process_error(process_id: u32, error: u32) -> EcoQosError {
             "OpenProcess({process_id}) failed with error {error}."
         )),
     }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
 }
 
 #[cfg(test)]

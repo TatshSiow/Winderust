@@ -117,7 +117,7 @@ pub fn process_id_matches_name(
     current_process_names.is_none_or(|names| {
         names
             .get(&process_id)
-            .is_some_and(|name| name.eq_ignore_ascii_case(process_name))
+            .is_some_and(|name| same_process_name(name, process_name))
     })
 }
 
@@ -129,7 +129,7 @@ pub fn is_foreground_process(
 ) -> bool {
     Some(process_id) == foreground_process_id
         || foreground_process_name
-            .is_some_and(|foreground| foreground.trim().eq_ignore_ascii_case(process_name.trim()))
+            .is_some_and(|foreground| same_process_name(foreground, process_name))
 }
 
 pub fn should_ignore_foreground_process(
@@ -141,12 +141,20 @@ pub fn should_ignore_foreground_process(
 ) -> bool {
     exclude_foreground_app
         && (foreground_process_id.is_some_and(|id| id == process_id)
-            || foreground_process_name
-                .is_some_and(|name| name.eq_ignore_ascii_case(process_name.trim())))
+            || foreground_process_name.is_some_and(|name| same_process_name(name, process_name)))
 }
 
 pub fn process_name_key(process_name: &str) -> String {
     process_name.trim().to_ascii_lowercase()
+}
+
+pub fn same_process_name(left: &str, right: &str) -> bool {
+    left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+pub fn contains_process_name<T: AsRef<str>>(list: &[T], process_name: &str) -> bool {
+    list.iter()
+        .any(|name| same_process_name(name.as_ref(), process_name))
 }
 
 pub fn process_failure_key(process_name: &str) -> String {

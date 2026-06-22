@@ -5,9 +5,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{
-        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE,
-    },
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE},
     System::{
         SystemInformation::{GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO},
         Threading::{
@@ -22,11 +20,12 @@ use crate::{
     config::SmartTrimSettings,
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        is_process_exited_message, list_processes, process_failure_key, process_session_id,
-        should_ignore_foreground_process,
+        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
+        process_session_id, should_ignore_foreground_process,
     },
     privilege::{enable_increase_quota_privilege, enable_profile_single_process_privilege},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
+    win_util::{filetime_to_u64, last_error, WinHandle},
 };
 
 const MB: u64 = 1024 * 1024;
@@ -747,7 +746,7 @@ fn nt_status_result(status: i32) -> Result<(), u32> {
     }
 }
 
-struct ProcessHandle(HANDLE);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, SmartTrimError> {
@@ -759,7 +758,7 @@ impl ProcessHandle {
             )
         };
         if !handle.is_null() {
-            Ok(Self(handle))
+            Ok(Self(WinHandle::new(handle)))
         } else {
             Err(open_process_error(process_id, last_error()))
         }
@@ -772,7 +771,7 @@ impl ProcessHandle {
         };
         let ok = unsafe {
             K32GetProcessMemoryInfo(
-                self.0,
+                self.0.raw(),
                 &mut counters,
                 std::mem::size_of::<ProcessMemoryCounters>() as u32,
             )
@@ -794,8 +793,15 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
-        let ok =
-            unsafe { GetProcessTimes(self.0, &mut creation, &mut exit, &mut kernel, &mut user) };
+        let ok = unsafe {
+            GetProcessTimes(
+                self.0.raw(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        };
         if ok == 0 {
             Err(SmartTrimError::Failed(format!(
                 "GetProcessTimes failed with error {}.",
@@ -810,7 +816,7 @@ impl ProcessHandle {
     }
 
     fn empty_working_set(&self) -> Result<(), SmartTrimError> {
-        let ok = unsafe { SetProcessWorkingSetSize(self.0, usize::MAX, usize::MAX) };
+        let ok = unsafe { SetProcessWorkingSetSize(self.0.raw(), usize::MAX, usize::MAX) };
         if ok == 0 {
             Err(SmartTrimError::Failed(format!(
                 "SetProcessWorkingSetSize failed with error {}.",
@@ -818,14 +824,6 @@ impl ProcessHandle {
             )))
         } else {
             Ok(())
-        }
-    }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
         }
     }
 }
@@ -847,9 +845,7 @@ fn system_memory_load_percent() -> Result<u8, String> {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name.trim()))
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 fn open_process_error(process_id: u32, error: u32) -> SmartTrimError {
@@ -870,20 +866,12 @@ fn smart_trim_error_message(error: SmartTrimError) -> String {
     }
 }
 
-fn filetime_to_u64(value: FILETIME) -> u64 {
-    (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
-}
-
 fn size_label(bytes: u64) -> String {
     if bytes >= MB {
         format!("{} MiB", bytes / MB)
     } else {
         format!("{} KiB", bytes / 1024)
     }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
 }
 
 fn system_page_size() -> u32 {

@@ -26,6 +26,8 @@ use windows_sys::{
     },
 };
 
+use crate::win_util::filetime_to_u64;
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CpuUsageSnapshot {
     pub percent: Option<f32>,
@@ -405,10 +407,6 @@ fn processor_usage_percent(previous: ProcessorCpuTimes, current: ProcessorCpuTim
         let used = total_delta.saturating_sub(idle_delta);
         ((used as f32 / total_delta as f32) * 100.0).clamp(0.0, 100.0)
     }
-}
-
-fn filetime_to_u64(value: FILETIME) -> u64 {
-    (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
 
 #[cfg(test)]

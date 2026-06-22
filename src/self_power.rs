@@ -1,14 +1,13 @@
 use std::{ffi::c_void, mem::size_of, sync::Mutex};
 
-use windows_sys::Win32::{
-    Foundation::GetLastError,
-    System::Threading::{
-        GetCurrentProcess, GetPriorityClass, GetProcessInformation, ProcessPowerThrottling,
-        SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        PROCESS_POWER_THROTTLING_STATE,
-    },
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, GetPriorityClass, GetProcessInformation, ProcessPowerThrottling,
+    SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+    PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+    PROCESS_POWER_THROTTLING_STATE,
 };
+
+use crate::win_util::last_error;
 
 static SELF_POWER_STATE: Mutex<Option<SelfPowerState>> = Mutex::new(None);
 
@@ -162,10 +161,6 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
         ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         StateMask: 0,
     }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
 }
 
 #[cfg(test)]

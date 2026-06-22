@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
     System::Threading::{
         GetCurrentProcessId, GetProcessInformation, OpenProcess,
         ProcessMemoryPriority as ProcessMemoryPriorityClass, SetProcessInformation,
@@ -11,12 +11,15 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::win_util::{last_error, WinHandle};
+
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{MemoryPrioritySettings, ProcessMemoryPriority},
     foreground::{
-        is_foreground_process, is_process_exited_message, list_processes, process_count_label,
-        process_failure_key, process_session_id, unique_app_names,
+        contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
+        process_count_label, process_failure_key, process_session_id, same_process_name,
+        unique_app_names,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -343,7 +346,7 @@ impl MemoryPriorityManager {
         let reusable_existing = self
             .adjusted
             .get(&process_id)
-            .filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name));
+            .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
         let current_priority = process.memory_priority()?;
 
         if reusable_existing.is_some_and(|adjusted| {
@@ -555,7 +558,7 @@ impl MemoryPriorityFailures {
     }
 }
 
-struct ProcessHandle(HANDLE);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, MemoryPriorityError> {
@@ -567,7 +570,7 @@ impl ProcessHandle {
             )
         };
         if !handle.is_null() {
-            Ok(Self(handle))
+            Ok(Self(WinHandle::new(handle)))
         } else {
             Err(open_process_error(process_id, last_error()))
         }
@@ -577,7 +580,7 @@ impl ProcessHandle {
         let mut priority = MEMORY_PRIORITY_INFORMATION::default();
         let ok = unsafe {
             GetProcessInformation(
-                self.0,
+                self.0.raw(),
                 ProcessMemoryPriorityClass,
                 (&mut priority as *mut MEMORY_PRIORITY_INFORMATION).cast(),
                 std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
@@ -599,7 +602,7 @@ impl ProcessHandle {
         };
         let ok = unsafe {
             SetProcessInformation(
-                self.0,
+                self.0.raw(),
                 ProcessMemoryPriorityClass,
                 (&info as *const MEMORY_PRIORITY_INFORMATION).cast(),
                 std::mem::size_of::<MEMORY_PRIORITY_INFORMATION>() as u32,
@@ -609,14 +612,6 @@ impl ProcessHandle {
             Err(open_process_error(0, last_error()))
         } else {
             Ok(())
-        }
-    }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
         }
     }
 }
@@ -680,10 +675,7 @@ pub fn memory_priority_label(priority: ProcessMemoryPriority) -> &'static str {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    let process_name = process_name.trim();
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 fn should_skip_process(
@@ -724,10 +716,6 @@ fn memory_priority_summary_process_name(action_log_feature: ActionLogFeature) ->
         ActionLogFeature::ForegroundResponsiveness => "Auto Balance",
         _ => "Memory Priority",
     }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
 }
 
 #[cfg(test)]

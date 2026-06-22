@@ -5,7 +5,9 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings},
-    foreground::{list_processes, process_session_id, ProcessInfo},
+    foreground::{
+        contains_process_name, list_processes, process_session_id, same_process_name, ProcessInfo,
+    },
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = &[
@@ -192,9 +194,7 @@ impl PerformanceModeManager {
     fn active_matches(&self, matched: &PerformanceModeMatch) -> bool {
         self.active.as_ref().is_some_and(|active| {
             active.process_id == matched.process_id
-                && active
-                    .process_name
-                    .eq_ignore_ascii_case(&matched.process_name)
+                && same_process_name(&active.process_name, &matched.process_name)
                 && active
                     .target_guid
                     .eq_ignore_ascii_case(&matched.target_guid)
@@ -278,10 +278,7 @@ impl Default for PerformanceModeSnapshot {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    let process_name = process_name.trim();
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 fn matching_rule_process(
@@ -300,12 +297,10 @@ fn matching_rule_process(
         else {
             continue;
         };
-        let Some(process) = processes.iter().find(|process| {
-            process
-                .name
-                .trim()
-                .eq_ignore_ascii_case(rule.process_name.trim())
-        }) else {
+        let Some(process) = processes
+            .iter()
+            .find(|process| same_process_name(&process.name, &rule.process_name))
+        else {
             continue;
         };
 
@@ -330,10 +325,7 @@ fn matching_process_names(
             settings.rules.iter().any(|rule| {
                 rule.enabled
                     && !rule.process_name.trim().is_empty()
-                    && process
-                        .name
-                        .trim()
-                        .eq_ignore_ascii_case(rule.process_name.trim())
+                    && same_process_name(&process.name, &rule.process_name)
             })
         })
         .map(|process| process.name.clone())

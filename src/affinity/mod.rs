@@ -7,7 +7,7 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
+    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
     System::{
         SystemInformation::{
             GetLogicalProcessorInformationEx, GetSystemCpuSetInformation, RelationProcessorCore,
@@ -25,13 +25,15 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::win_util::{last_error, WinHandle};
+
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings},
     foreground::{
-        is_process_exited_message, list_processes, process_failure_key, process_id_matches_name,
-        process_names_by_id, process_session_id, should_ignore_foreground_process,
-        unique_app_names,
+        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
+        process_id_matches_name, process_names_by_id, process_session_id, same_process_name,
+        should_ignore_foreground_process, unique_app_names,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -515,15 +517,11 @@ impl Default for CpuAffinitySnapshot {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    let process_name = process_name.trim();
-    BUILT_IN_EXCLUSIONS
-        .iter()
-        .any(|excluded| excluded.eq_ignore_ascii_case(process_name))
+    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 pub fn contains_process(list: &[String], process_name: &str) -> bool {
-    list.iter()
-        .any(|name| name.trim().eq_ignore_ascii_case(process_name.trim()))
+    contains_process_name(list, process_name)
 }
 
 pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
@@ -711,12 +709,7 @@ fn matching_rule<'a>(
     process_name: &str,
 ) -> Option<&'a CpuAffinityRule> {
     settings.rules.iter().find(|rule| {
-        rule.enabled
-            && rule_has_target(rule)
-            && rule
-                .process_name
-                .trim()
-                .eq_ignore_ascii_case(process_name.trim())
+        rule.enabled && rule_has_target(rule) && same_process_name(&rule.process_name, process_name)
     })
 }
 
@@ -741,11 +734,11 @@ fn apply_affinity(
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let process = ProcessHandle::open(process_id)?;
     let reusable_existing = existing
-        .filter(|adjusted| adjusted.process_name.eq_ignore_ascii_case(&process_name))
+        .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name))
         .filter(|adjusted| adjusted.adjustment.mode() == mode);
 
     if let Some(adjusted) = existing {
-        if !adjusted.process_name.eq_ignore_ascii_case(&process_name)
+        if !same_process_name(&adjusted.process_name, &process_name)
             || adjusted.adjustment.mode() != mode
         {
             restore_adjustment(&process, &adjusted.adjustment)?;
@@ -1091,7 +1084,7 @@ fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
     ids
 }
 
-struct ProcessHandle(HANDLE);
+struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, AffinityError> {
@@ -1104,7 +1097,7 @@ impl ProcessHandle {
         for access in access_masks {
             let handle = unsafe { OpenProcess(access, 0, process_id) };
             if !handle.is_null() {
-                return Ok(Self(handle));
+                return Ok(Self(WinHandle::new(handle)));
             }
             last_open_error = last_error();
         }
@@ -1115,8 +1108,9 @@ impl ProcessHandle {
     fn affinity_mask(&self) -> Result<(usize, usize), AffinityError> {
         let mut process_affinity = 0;
         let mut system_affinity = 0;
-        let ok =
-            unsafe { GetProcessAffinityMask(self.0, &mut process_affinity, &mut system_affinity) };
+        let ok = unsafe {
+            GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
+        };
         if ok == 0 {
             Err(AffinityError::Failed(format!(
                 "GetProcessAffinityMask failed with error {}.",
@@ -1128,7 +1122,7 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), AffinityError> {
-        let ok = unsafe { SetProcessAffinityMask(self.0, affinity_mask) };
+        let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
         if ok == 0 {
             Err(AffinityError::Failed(format!(
                 "SetProcessAffinityMask failed with error {}.",
@@ -1142,7 +1136,7 @@ impl ProcessHandle {
     fn default_cpu_set_ids(&self) -> Result<Vec<u32>, AffinityError> {
         let mut required_id_count = 0;
         unsafe {
-            GetProcessDefaultCpuSets(self.0, null_mut(), 0, &mut required_id_count);
+            GetProcessDefaultCpuSets(self.0.raw(), null_mut(), 0, &mut required_id_count);
         }
         if required_id_count == 0 {
             return Ok(Vec::new());
@@ -1151,7 +1145,7 @@ impl ProcessHandle {
         let mut ids = vec![0_u32; required_id_count as usize];
         let ok = unsafe {
             GetProcessDefaultCpuSets(
-                self.0,
+                self.0.raw(),
                 ids.as_mut_ptr(),
                 ids.len() as u32,
                 &mut required_id_count,
@@ -1174,7 +1168,7 @@ impl ProcessHandle {
         } else {
             (ids.as_ptr() as *mut u32, ids.len() as u32)
         };
-        let ok = unsafe { SetProcessDefaultCpuSets(self.0, ptr, count) };
+        let ok = unsafe { SetProcessDefaultCpuSets(self.0.raw(), ptr, count) };
         if ok == 0 {
             Err(AffinityError::Failed(format!(
                 "SetProcessDefaultCpuSets failed with error {}.",
@@ -1189,7 +1183,7 @@ impl ProcessHandle {
         let mut state = PROCESS_POWER_THROTTLING_STATE::default();
         let ok = unsafe {
             GetProcessInformation(
-                self.0,
+                self.0.raw(),
                 ProcessPowerThrottling,
                 &mut state as *mut _ as *mut c_void,
                 size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
@@ -1211,7 +1205,7 @@ impl ProcessHandle {
     ) -> Result<(), AffinityError> {
         let ok = unsafe {
             SetProcessInformation(
-                self.0,
+                self.0.raw(),
                 ProcessPowerThrottling,
                 &state as *const _ as *const c_void,
                 size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
@@ -1226,18 +1220,6 @@ impl ProcessHandle {
             Ok(())
         }
     }
-}
-
-impl Drop for ProcessHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
-}
-
-fn last_error() -> u32 {
-    unsafe { GetLastError() }
 }
 
 fn open_process_error(process_id: u32, error: u32) -> AffinityError {
