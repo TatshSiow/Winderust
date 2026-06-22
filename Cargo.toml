@@ -47,3 +47,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Input_XboxController",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

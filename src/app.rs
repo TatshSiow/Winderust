@@ -1925,7 +1925,11 @@ impl PowerLeafApp {
 
         let decision_settings = self.runtime_settings();
         self.activity = self.activity_snapshot(&decision_settings);
-        self.refresh_dashboard_resource_samples();
+        if self.page == Page::Dashboard {
+            self.refresh_dashboard_resource_samples();
+        } else if decision_settings.cpu_usage_mode.enabled {
+            self.refresh_cpu_usage_sample();
+        }
         self.foreground_app = self.foreground_detector.process_name();
         let schedule = self
             .scheduler
@@ -2003,6 +2007,17 @@ impl PowerLeafApp {
         };
 
         merge_activity_snapshot(snapshot, controller_idle_for, idle_timeout)
+    }
+
+    fn refresh_cpu_usage_sample(&mut self) -> bool {
+        if Instant::now() < self.next_cpu_usage_refresh {
+            return false;
+        }
+
+        let previous_cpu_usage = self.cpu_usage;
+        self.cpu_usage = self.cpu_monitor.sample();
+        self.next_cpu_usage_refresh = Instant::now() + CPU_USAGE_REFRESH_INTERVAL;
+        self.cpu_usage != previous_cpu_usage
     }
 
     fn refresh_dashboard_resource_samples(&mut self) -> bool {
