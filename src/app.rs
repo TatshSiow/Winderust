@@ -1930,7 +1930,9 @@ impl PowerLeafApp {
         } else if decision_settings.cpu_usage_mode.enabled {
             self.refresh_cpu_usage_sample();
         }
-        self.foreground_app = self.foreground_detector.process_name();
+        self.foreground_app = foreground_lookup_required(&decision_settings)
+            .then(|| self.foreground_detector.process_name())
+            .flatten();
         let schedule = self
             .scheduler
             .current_decision(&decision_settings.schedule_mode);
@@ -22749,6 +22751,13 @@ fn new_performance_mode_rule(
     }
 }
 
+fn foreground_lookup_required(settings: &Settings) -> bool {
+    settings.foreground_rules.enabled
+        && (!settings.foreground_rules.rules.is_empty()
+            || !settings.foreground_rules.whitelist.is_empty()
+            || !settings.foreground_rules.force_power_save.is_empty())
+}
+
 fn performance_mode_decision(status: &PerformanceModeSnapshot) -> Option<PerformanceModeDecision> {
     Some(PerformanceModeDecision {
         rule_name: status.active_rule.clone()?,
@@ -24843,6 +24852,22 @@ mod tests {
                 mouse: true,
             }
         );
+    }
+
+    #[test]
+    fn foreground_lookup_runs_only_for_configured_foreground_rules() {
+        let mut settings = Settings::default();
+
+        assert!(!foreground_lookup_required(&settings));
+
+        settings.foreground_rules.enabled = true;
+        assert!(!foreground_lookup_required(&settings));
+
+        settings
+            .foreground_rules
+            .force_power_save
+            .push("backup.exe".to_owned());
+        assert!(foreground_lookup_required(&settings));
     }
 
     #[test]

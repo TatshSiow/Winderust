@@ -1205,6 +1205,13 @@ fn foreground_rules_required(settings: &Settings) -> bool {
                 && has_idle_plan(&settings.foreground_rules.power_plans, settings)))
 }
 
+fn foreground_lookup_required(settings: &Settings) -> bool {
+    settings.foreground_rules.enabled
+        && (!settings.foreground_rules.rules.is_empty()
+            || !settings.foreground_rules.whitelist.is_empty()
+            || !settings.foreground_rules.force_power_save.is_empty())
+}
+
 fn schedule_rules_required(settings: &Settings) -> bool {
     settings.schedule_mode.enabled
         && settings
@@ -1694,7 +1701,9 @@ impl HiddenAutomationRunner {
 
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
-        let foreground_app = self.foreground_detector.process_name();
+        let foreground_app = foreground_lookup_required(settings)
+            .then(|| self.foreground_detector.process_name())
+            .flatten();
         let schedule = self.scheduler.current_decision(&settings.schedule_mode);
         let cpu_usage_decision = self
             .cpu_usage_scheduler
@@ -1849,6 +1858,22 @@ mod tests {
         let settings = Settings::default();
 
         assert!(!process_appearance_scan_required(&settings));
+    }
+
+    #[test]
+    fn foreground_lookup_runs_only_for_configured_foreground_rules() {
+        let mut settings = Settings::default();
+
+        assert!(!foreground_lookup_required(&settings));
+
+        settings.foreground_rules.enabled = true;
+        assert!(!foreground_lookup_required(&settings));
+
+        settings
+            .foreground_rules
+            .whitelist
+            .push("editor.exe".to_owned());
+        assert!(foreground_lookup_required(&settings));
     }
 
     #[test]
