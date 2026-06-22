@@ -87,7 +87,7 @@ pub struct AutomationStatusSnapshot {
     pub memory_priority: MemoryPrioritySnapshot,
     pub smart_trim: SmartTrimSnapshot,
     pub timer_resolution: TimerResolutionSnapshot,
-    pub action_log_entries: Vec<ActionLogEntry>,
+    pub action_log_entries: Arc<Vec<ActionLogEntry>>,
 }
 
 struct SharedAutomationState {
@@ -111,7 +111,7 @@ struct AutomationWorkerState {
     memory_priority_status: MemoryPrioritySnapshot,
     smart_trim_status: SmartTrimSnapshot,
     timer_resolution_status: TimerResolutionSnapshot,
-    action_log_entries: Vec<ActionLogEntry>,
+    action_log_entries: Arc<Vec<ActionLogEntry>>,
     pending_auto_exclusions: PendingAutoExclusions,
     app_suspension_freeze_requests: Vec<String>,
     smart_trim_now_requested: bool,
@@ -169,7 +169,7 @@ impl BackgroundAutomation {
                 memory_priority_status: MemoryPrioritySnapshot::default(),
                 smart_trim_status: SmartTrimSnapshot::default(),
                 timer_resolution_status: TimerResolutionSnapshot::default(),
-                action_log_entries: Vec::new(),
+                action_log_entries: Arc::new(Vec::new()),
                 pending_auto_exclusions: PendingAutoExclusions::default(),
                 app_suspension_freeze_requests: Vec::new(),
                 smart_trim_now_requested: false,
@@ -234,7 +234,7 @@ impl BackgroundAutomation {
 
     pub fn clear_action_log(&self) {
         if let Ok(mut state) = self.shared.state.lock() {
-            state.action_log_entries.clear();
+            state.action_log_entries = Arc::new(Vec::new());
             state.action_log_clear_requested = true;
             state.change_generation = state.change_generation.wrapping_add(1);
             self.shared.changed.notify_one();
@@ -374,7 +374,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let smart_trim_now_requested = snapshot.smart_trim_now_requested;
         if snapshot.action_log_clear_requested {
             runner.action_log.clear();
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
         }
         let wake_events = snapshot.wake_events;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
@@ -479,7 +479,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 };
                 if let Some(app_suspension_status) = app_suspension_status {
                     update_app_suspension_status(&shared, app_suspension_status);
-                    update_action_log_entries(&shared, runner.action_log.entries());
+                    runner.publish_action_log_if_changed(&shared);
                 }
             }
         }
@@ -557,7 +557,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         {
             if let Some(app_suspension_status) = runner.run_app_suspension_foreground_release() {
                 update_app_suspension_status(&shared, app_suspension_status);
-                update_action_log_entries(&shared, runner.action_log.entries());
+                runner.publish_action_log_if_changed(&shared);
             }
             next_app_suspension_foreground_release =
                 Instant::now() + APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL;
@@ -566,7 +566,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         if eco_qos_refresh_required && Instant::now() >= next_eco_qos_refresh {
             let eco_qos_status = runner.run_eco_qos_update(&settings);
             update_eco_qos_status(&shared, eco_qos_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_eco_qos_refresh = Instant::now() + eco_qos_refresh_interval;
         }
         if foreground_responsiveness_refresh_required
@@ -583,33 +583,33 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                     foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
             }
             update_foreground_responsiveness_status(&shared, foreground_responsiveness_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_foreground_responsiveness_refresh =
                 Instant::now() + foreground_responsiveness_refresh_interval;
         }
         if io_priority_refresh_required && Instant::now() >= next_io_priority_refresh {
             let io_priority_status = runner.run_io_priority_update(&settings);
             update_io_priority_status(&shared, io_priority_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_io_priority_refresh = Instant::now() + io_priority_refresh_interval;
         }
         if gpu_priority_refresh_required && Instant::now() >= next_gpu_priority_refresh {
             let gpu_priority_status = runner.run_gpu_priority_update(&settings);
             update_gpu_priority_status(&shared, gpu_priority_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_gpu_priority_refresh = Instant::now() + gpu_priority_refresh_interval;
         }
         if memory_priority_refresh_required && Instant::now() >= next_memory_priority_refresh {
             let memory_priority_status = runner.run_memory_priority_update(&settings);
             update_memory_priority_status(&shared, memory_priority_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_memory_priority_refresh = Instant::now() + memory_priority_refresh_interval;
         }
         if app_suspension_refresh_required && Instant::now() >= next_app_suspension_refresh {
             let app_suspension_status =
                 runner.run_app_suspension_update(&settings, &app_suspension_freeze_requests);
             update_app_suspension_status(&shared, app_suspension_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_app_suspension_refresh = Instant::now() + app_suspension_refresh_interval;
             if runner.app_suspension_manager.has_suspended_processes() {
                 next_app_suspension_foreground_release = Instant::now();
@@ -618,7 +618,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         if cpu_affinity_refresh_required && Instant::now() >= next_cpu_affinity_refresh {
             let cpu_affinity_status = runner.run_cpu_affinity_update(&settings);
             update_cpu_affinity_status(&shared, cpu_affinity_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_cpu_affinity_refresh = Instant::now() + cpu_affinity_refresh_interval;
         }
         if background_cpu_restriction_refresh_required
@@ -626,26 +626,26 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         {
             let status = runner.run_background_cpu_restriction_update(&settings);
             update_background_cpu_restriction_status(&shared, status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_background_cpu_restriction_refresh =
                 Instant::now() + background_cpu_restriction_refresh_interval;
         }
         if cpu_limiter_refresh_required && Instant::now() >= next_cpu_limiter_refresh {
             let cpu_limiter_status = runner.run_cpu_limiter_update(&settings);
             update_cpu_limiter_status(&shared, cpu_limiter_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_cpu_limiter_refresh = Instant::now() + cpu_limiter_refresh_interval;
         }
         if performance_mode_refresh_required && Instant::now() >= next_performance_mode_refresh {
             let performance_mode_status = runner.run_performance_mode_update(&settings);
             update_performance_mode_status(&shared, performance_mode_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_performance_mode_refresh = Instant::now() + performance_mode_refresh_interval;
         }
         if watchdog_refresh_required && Instant::now() >= next_watchdog_refresh {
             let watchdog_status = runner.run_watchdog_update(&settings);
             update_watchdog_status(&shared, watchdog_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_watchdog_refresh = Instant::now() + watchdog_refresh_interval;
         }
         if smart_trim_refresh_required && Instant::now() >= next_smart_trim_refresh {
@@ -655,13 +655,13 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 runner.run_smart_trim_update(&settings)
             };
             update_smart_trim_status(&shared, smart_trim_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_smart_trim_refresh = Instant::now() + smart_trim_refresh_interval;
         }
         if timer_resolution_refresh_required && Instant::now() >= next_timer_resolution_refresh {
             let timer_resolution_status = runner.run_timer_resolution_update(&settings);
             update_timer_resolution_status(&shared, timer_resolution_status);
-            update_action_log_entries(&shared, runner.action_log.entries());
+            runner.publish_action_log_if_changed(&shared);
             next_timer_resolution_refresh = Instant::now() + timer_resolution_refresh_interval;
         }
 
@@ -1016,7 +1016,7 @@ fn update_timer_resolution_status(shared: &SharedAutomationState, status: TimerR
 
 fn update_action_log_entries(shared: &SharedAutomationState, entries: Vec<ActionLogEntry>) {
     if let Ok(mut state) = shared.state.lock() {
-        state.action_log_entries = entries;
+        state.action_log_entries = Arc::new(entries);
     }
 }
 
@@ -1390,6 +1390,7 @@ struct HiddenAutomationRunner {
     smart_trim_manager: SmartTrimManager,
     timer_resolution_manager: TimerResolutionManager,
     known_process_ids: BTreeSet<u32>,
+    published_action_log_sequence: Option<u64>,
 }
 
 impl HiddenAutomationRunner {
@@ -1425,6 +1426,16 @@ impl HiddenAutomationRunner {
 
     fn clear_controller_activity(&mut self) {
         self.controller_activity_detector.clear();
+    }
+
+    fn publish_action_log_if_changed(&mut self, shared: &SharedAutomationState) {
+        let latest_sequence = self.action_log.latest_sequence();
+        if self.published_action_log_sequence == latest_sequence {
+            return;
+        }
+
+        update_action_log_entries(shared, self.action_log.entries());
+        self.published_action_log_sequence = latest_sequence;
     }
 
     fn activity_snapshot(

@@ -108,8 +108,13 @@ impl ActionLog {
         self.entries.iter().cloned().collect()
     }
 
+    pub fn latest_sequence(&self) -> Option<u64> {
+        self.entries.back().map(|entry| entry.sequence)
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.entries.shrink_to_fit();
     }
 
     #[cfg(test)]
@@ -208,6 +213,25 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].sequence, 2);
+    }
+
+    #[test]
+    fn action_log_latest_sequence_tracks_clear() {
+        let mut log = ActionLog::new(8);
+        assert_eq!(log.latest_sequence(), None);
+
+        log.record(
+            ActionLogFeature::CpuLimiter,
+            Some(1),
+            "a.exe",
+            ActionLogAction::Apply,
+            ActionLogResult::Applied,
+            "ok",
+        );
+        assert_eq!(log.latest_sequence(), Some(1));
+
+        log.clear();
+        assert_eq!(log.latest_sequence(), None);
     }
 
     #[test]

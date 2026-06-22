@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+    Foundation::{CloseHandle, GetLastError, ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE},
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -14,6 +14,9 @@ use windows_sys::Win32::{
         },
     },
 };
+
+const PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN: usize = 512;
+const PROCESS_IMAGE_PATH_MAX_BUFFER_LEN: usize = 32_768;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessInfo {
@@ -213,21 +216,31 @@ fn process_image_path(process_id: u32) -> Option<PathBuf> {
         return None;
     }
 
-    let mut buffer = vec![0u16; 32_768];
-    let mut len = buffer.len() as u32;
-    let ok = unsafe {
-        QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut len)
-    };
+    let mut buffer = vec![0u16; PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN];
+    loop {
+        let mut len = buffer.len() as u32;
+        let ok = unsafe {
+            QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut len)
+        };
 
-    unsafe {
-        CloseHandle(process);
+        if ok != 0 {
+            unsafe {
+                CloseHandle(process);
+            }
+            return (len != 0).then(|| PathBuf::from(OsString::from_wide(&buffer[..len as usize])));
+        }
+
+        if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
+            || buffer.len() >= PROCESS_IMAGE_PATH_MAX_BUFFER_LEN
+        {
+            unsafe {
+                CloseHandle(process);
+            }
+            return None;
+        }
+
+        buffer.resize((buffer.len() * 2).min(PROCESS_IMAGE_PATH_MAX_BUFFER_LEN), 0);
     }
-
-    if ok == 0 || len == 0 {
-        return None;
-    }
-
-    Some(PathBuf::from(OsString::from_wide(&buffer[..len as usize])))
 }
 
 #[cfg(test)]

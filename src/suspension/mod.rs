@@ -410,6 +410,7 @@ impl AppSuspensionManager {
             .collect::<BTreeSet<_>>();
         let active_network_wake_names = self.active_network_wake_names(now);
         let (network_snapshot, network_event_names) = if settings.network_wake_enabled
+            && network_wake_scan_needed(&suspended_process_names, &active_network_wake_names)
             && !self.is_action_suppressed(
                 NETWORK_DETECTION_FAILURE_KEY,
                 "network activity detection",
@@ -1735,6 +1736,13 @@ fn eligible_network_wake_names(
         .collect()
 }
 
+fn network_wake_scan_needed(
+    suspended_process_names: &BTreeSet<String>,
+    active_network_wake_names: &BTreeSet<String>,
+) -> bool {
+    !suspended_process_names.is_empty() || !active_network_wake_names.is_empty()
+}
+
 fn manual_freeze_requests_by_name(process_names: &[String]) -> BTreeMap<String, usize> {
     let mut requests = BTreeMap::new();
     for process_name in process_names {
@@ -2960,6 +2968,17 @@ mod tests {
             names,
             BTreeSet::from(["chat.exe".to_owned(), "mail.exe".to_owned()])
         );
+    }
+
+    #[test]
+    fn network_wake_scan_is_needed_only_for_suspended_or_active_wake_apps() {
+        let empty = BTreeSet::new();
+        let suspended = BTreeSet::from(["chat.exe".to_owned()]);
+        let active_wake = BTreeSet::from(["mail.exe".to_owned()]);
+
+        assert!(!network_wake_scan_needed(&empty, &empty));
+        assert!(network_wake_scan_needed(&suspended, &empty));
+        assert!(network_wake_scan_needed(&empty, &active_wake));
     }
 
     #[test]

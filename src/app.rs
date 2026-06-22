@@ -466,6 +466,7 @@ pub struct PowerLeafApp {
     expanded_process_list_groups: HashSet<String>,
     hidden_process_list_columns: HashSet<ProcessListColumn>,
     process_list_sort: ProcessListSort,
+    process_list_revision: u64,
     process_list_render_cache: RefCell<Option<ProcessListRenderCache>>,
     breadcrumb_transition: Option<BreadcrumbTransition>,
     unsaved_popup_was_visible: bool,
@@ -1106,6 +1107,7 @@ impl PowerLeafApp {
             expanded_process_list_groups: HashSet::new(),
             hidden_process_list_columns: HashSet::new(),
             process_list_sort: ProcessListSort::default(),
+            process_list_revision: 0,
             process_list_render_cache: RefCell::new(None),
             breadcrumb_transition: None,
             unsaved_popup_was_visible: false,
@@ -1148,6 +1150,7 @@ impl PowerLeafApp {
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
+        self.bump_process_list_revision_for_page(page);
         self.forward_stack.clear();
         cx.notify();
     }
@@ -1160,6 +1163,7 @@ impl PowerLeafApp {
         Self::push_navigation_page(&mut self.forward_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
+        self.bump_process_list_revision_for_page(page);
         cx.notify();
     }
 
@@ -1171,7 +1175,18 @@ impl PowerLeafApp {
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
+        self.bump_process_list_revision_for_page(page);
         cx.notify();
+    }
+
+    fn bump_process_list_revision_for_page(&mut self, page: Page) {
+        if page == Page::ProcessList {
+            self.bump_process_list_revision();
+        }
+    }
+
+    fn bump_process_list_revision(&mut self) {
+        self.process_list_revision = self.process_list_revision.wrapping_add(1);
     }
 
     fn begin_breadcrumb_transition(&mut self, previous: Page, current: Page) {
@@ -1471,6 +1486,7 @@ impl PowerLeafApp {
     fn refresh_power_plans(&mut self) {
         match self.power.list_plans() {
             Ok(plans) => {
+                let old_plans = self.plans.clone();
                 self.plans = plans;
                 self.current_plan = self.plans.iter().find(|plan| plan.active).cloned();
                 self.next_active_plan_refresh = Instant::now() + ACTIVE_PLAN_REFRESH_INTERVAL;
@@ -1478,6 +1494,9 @@ impl PowerLeafApp {
                     t!("status.loaded_power_plans", count = self.plans.len()).to_string();
                 self.ensure_processor_power_target_plan();
                 self.sync_processor_power_values_from_target_plan(false);
+                if self.plans != old_plans {
+                    self.bump_process_list_revision();
+                }
             }
             Err(err) => self.status_message = err,
         }
@@ -1489,6 +1508,7 @@ impl PowerLeafApp {
         match self.power.active_plan() {
             Ok(active) => {
                 if let Some(active) = active {
+                    let old_plans = self.plans.clone();
                     let active_guid = active.guid.clone();
                     for plan in &mut self.plans {
                         plan.active = plan.guid.eq_ignore_ascii_case(&active_guid);
@@ -1501,6 +1521,9 @@ impl PowerLeafApp {
                         .or(Some(active));
                     self.ensure_processor_power_target_plan();
                     self.sync_processor_power_values_from_target_plan(false);
+                    if self.plans != old_plans {
+                        self.bump_process_list_revision();
+                    }
                 }
             }
             Err(err) => self.status_message = err,
@@ -2205,6 +2228,7 @@ impl PowerLeafApp {
             Ok(Some(path)) => match config::storage::import_toml_from(&path) {
                 Ok(settings) => {
                     self.settings = settings;
+                    self.bump_process_list_revision();
                     apply_language(self.settings.general.language);
                     apply_appearance_settings(&self.settings.general, window, cx);
                     match config::storage::save(&self.settings) {
@@ -2264,6 +2288,21 @@ impl PowerLeafApp {
         self.process_icon_cache.get(path).and_then(Clone::clone)
     }
 
+    fn retain_current_process_icons(
+        cache: &mut HashMap<PathBuf, Option<Arc<Image>>>,
+        candidates: &[ProcessCandidate],
+    ) {
+        let current_paths = candidates
+            .iter()
+            .filter_map(|candidate| candidate.image_path.clone())
+            .collect::<HashSet<_>>();
+        let old_len = cache.len();
+        cache.retain(|path, _| current_paths.contains(path));
+        if cache.len() != old_len {
+            cache.shrink_to_fit();
+        }
+    }
+
     fn refresh_process_candidates(&mut self, report_status: bool) -> bool {
         self.next_process_refresh = Instant::now() + PROCESS_REFRESH_INTERVAL;
         match list_process_candidates() {
@@ -2271,6 +2310,13 @@ impl PowerLeafApp {
                 let processes = self.process_candidates_from_info(processes);
                 let changed = self.process_candidates != processes;
                 self.process_candidates = processes;
+                Self::retain_current_process_icons(
+                    &mut self.process_icon_cache,
+                    &self.process_candidates,
+                );
+                if changed {
+                    self.bump_process_list_revision();
+                }
                 if report_status {
                     let message = t!(
                         "status.loaded_running_apps",
@@ -2303,6 +2349,7 @@ impl PowerLeafApp {
                 });
                 let changed = self.running_processes != processes;
                 self.running_processes = processes;
+                let expanded_group_count = self.expanded_process_list_groups.len();
                 let active_group_keys = self
                     .running_processes
                     .iter()
@@ -2310,6 +2357,11 @@ impl PowerLeafApp {
                     .collect::<HashSet<_>>();
                 self.expanded_process_list_groups
                     .retain(|key| active_group_keys.contains(key));
+                let groups_changed =
+                    self.expanded_process_list_groups.len() != expanded_group_count;
+                if changed || groups_changed {
+                    self.bump_process_list_revision();
+                }
                 if report_status {
                     let message = t!(
                         "status.loaded_running_processes",
@@ -2318,9 +2370,9 @@ impl PowerLeafApp {
                     .to_string();
                     let status_changed = self.status_message != message;
                     self.status_message = message;
-                    changed || status_changed
+                    changed || groups_changed || status_changed
                 } else {
-                    changed
+                    changed || groups_changed
                 }
             }
             Err(err) => {
@@ -2490,8 +2542,8 @@ impl PowerLeafApp {
             }
         }
 
-        if self.action_log_entries != background_status.action_log_entries {
-            self.action_log_entries = background_status.action_log_entries;
+        if self.action_log_entries.as_slice() != background_status.action_log_entries.as_slice() {
+            self.action_log_entries = background_status.action_log_entries.as_ref().clone();
             changed = true;
         }
 
@@ -2503,9 +2555,8 @@ impl PowerLeafApp {
             }
         }
 
-        let resource_samples_changed = self.refresh_dashboard_resource_samples();
         if self.page == Page::Dashboard {
-            changed |= resource_samples_changed;
+            changed |= self.refresh_dashboard_resource_samples();
         }
 
         let should_check_now = Instant::now() >= self.next_check;
@@ -2587,6 +2638,7 @@ impl PowerLeafApp {
     fn cancel_settings_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let had_unsaved_changes = self.settings != self.saved_settings;
         self.settings = self.saved_settings.clone();
+        self.bump_process_list_revision();
         apply_language(self.settings.general.language);
         apply_appearance_settings(&self.settings.general, window, cx);
         self.status_message = t!("status.unsaved_canceled").to_string();
@@ -3326,6 +3378,7 @@ impl PowerLeafApp {
             true
         };
         begin_expandable_motion(format!("process-list-group-{key}"), expanded);
+        self.bump_process_list_revision();
         cx.notify();
     }
 
@@ -3341,22 +3394,27 @@ impl PowerLeafApp {
             self.hidden_process_list_columns.insert(column)
         };
 
-        if !visible && self.process_list_sort.column == ProcessListSortColumn::Column(column) {
+        let sort_changed =
+            !visible && self.process_list_sort.column == ProcessListSortColumn::Column(column);
+        if sort_changed {
             self.process_list_sort = ProcessListSort::default();
         }
 
-        if changed {
+        if changed || sort_changed {
+            self.bump_process_list_revision();
             cx.notify();
         }
     }
 
     fn toggle_process_list_sort(&mut self, column: ProcessListSortColumn, cx: &mut Context<Self>) {
         self.process_list_sort = self.process_list_sort.toggled_for(column);
+        self.bump_process_list_revision();
         cx.notify();
     }
 
     fn finish_process_list_edit(&mut self, cx: &mut Context<Self>) {
         self.active_power_plan_picker = None;
+        self.bump_process_list_revision();
         cx.notify();
     }
 
@@ -3841,20 +3899,10 @@ impl Render for PowerLeafApp {
             self.page_header(self.page, cx).into_any_element()
         };
         let page_uses_inner_scroll = !search_active && self.page == Page::ProcessList;
-        let page_animation_key = if search_active {
-            SharedString::from("SearchResults")
-        } else {
-            SharedString::from(format!("{:?}", self.page))
-        };
         let unsaved = self.settings != self.saved_settings;
         let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
         let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
-        let page_content = page_content_frame(
-            page_header,
-            page_body,
-            page_animation_key,
-            page_uses_inner_scroll,
-        );
+        let page_content = page_content_frame(page_header, page_body, page_uses_inner_scroll);
         let page_scroll_area = if page_uses_inner_scroll {
             v_flex()
                 .flex_1()
@@ -12751,6 +12799,7 @@ impl PowerLeafApp {
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.background_automation.clear_action_log();
                         app.action_log_entries.clear();
+                        app.action_log_entries.shrink_to_fit();
                         app.action_log_page = 0;
                         cx.notify();
                     })),
@@ -15331,12 +15380,7 @@ fn search_results_page_header(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
         )
 }
 
-fn page_content_frame(
-    header: AnyElement,
-    body: AnyElement,
-    animation_key: SharedString,
-    fill_height: bool,
-) -> gpui::Div {
+fn page_content_frame(header: AnyElement, body: AnyElement, fill_height: bool) -> gpui::Div {
     let body_frame = v_flex()
         .w_full()
         .min_w(px(0.0))
@@ -15344,13 +15388,6 @@ fn page_content_frame(
         .when(fill_height, |body| {
             body.flex_1().h_full().min_h(px(0.0)).overflow_hidden()
         });
-    let body = with_optional_motion(
-        body_frame,
-        SharedString::from(format!("page-content-{animation_key}")),
-        MotionSpeed::Standard,
-        |frame| frame,
-        |frame, delta| frame.opacity(0.24 + 0.76 * delta),
-    );
     let content = v_flex()
         .w_full()
         .max_w(px(CONTENT_MAX_WIDTH))
@@ -15360,7 +15397,7 @@ fn page_content_frame(
             content.flex_1().h_full().min_h(px(0.0)).overflow_hidden()
         })
         .child(header)
-        .child(body);
+        .child(body_frame);
 
     h_flex()
         .w_full()
@@ -17720,13 +17757,7 @@ enum ProcessListRenderedRow {
 }
 
 struct ProcessListRenderCache {
-    settings: Settings,
-    plans: Vec<PowerPlan>,
-    running_processes: Vec<ProcessInfo>,
-    process_candidates: Vec<ProcessCandidate>,
-    expanded_process_list_groups: HashSet<String>,
-    hidden_process_list_columns: HashSet<ProcessListColumn>,
-    sort: ProcessListSort,
+    revision: u64,
     process_count: usize,
     column_layout: ProcessListColumnLayout,
     table_width: Pixels,
@@ -17744,13 +17775,7 @@ struct ProcessListRenderSnapshot {
 
 impl ProcessListRenderCache {
     fn matches(&self, app: &PowerLeafApp) -> bool {
-        self.settings == app.settings
-            && self.plans == app.plans
-            && self.running_processes == app.running_processes
-            && self.process_candidates == app.process_candidates
-            && self.expanded_process_list_groups == app.expanded_process_list_groups
-            && self.hidden_process_list_columns == app.hidden_process_list_columns
-            && self.sort == app.process_list_sort
+        self.revision == app.process_list_revision
     }
 
     fn snapshot(&self) -> ProcessListRenderSnapshot {
@@ -17904,13 +17929,7 @@ fn process_list_render_cache(app: &PowerLeafApp) -> ProcessListRenderCache {
     ]);
 
     ProcessListRenderCache {
-        settings: app.settings.clone(),
-        plans: app.plans.clone(),
-        running_processes: app.running_processes.clone(),
-        process_candidates: app.process_candidates.clone(),
-        expanded_process_list_groups: app.expanded_process_list_groups.clone(),
-        hidden_process_list_columns: app.hidden_process_list_columns.clone(),
-        sort: app.process_list_sort,
+        revision: app.process_list_revision,
         process_count,
         column_layout,
         table_width,
@@ -18003,8 +18022,9 @@ fn process_list_group_sort_pid(
 }
 
 fn process_list_text_sort_cmp(left: &str, right: &str) -> CmpOrdering {
-    left.to_ascii_lowercase()
-        .cmp(&right.to_ascii_lowercase())
+    left.bytes()
+        .map(|byte| byte.to_ascii_lowercase())
+        .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
         .then_with(|| left.cmp(right))
 }
 
@@ -24006,6 +24026,23 @@ mod tests {
     }
 
     #[test]
+    fn process_icon_cache_drops_stale_paths() {
+        let kept_path = PathBuf::from("C:\\Apps\\kept.exe");
+        let stale_path = PathBuf::from("C:\\Apps\\stale.exe");
+        let mut cache = HashMap::from([(kept_path.clone(), None), (stale_path.clone(), None)]);
+        let candidates = vec![ProcessCandidate {
+            name: "kept.exe".to_owned(),
+            image_path: Some(kept_path.clone()),
+            icon: None,
+        }];
+
+        PowerLeafApp::retain_current_process_icons(&mut cache, &candidates);
+
+        assert!(cache.contains_key(&kept_path));
+        assert!(!cache.contains_key(&stale_path));
+    }
+
+    #[test]
     fn process_list_sort_orders_groups_by_name_direction() {
         let processes = vec![
             ProcessInfo {
@@ -24035,6 +24072,21 @@ mod tests {
 
         assert_eq!(rows[0].0.display_name, "worker.exe");
         assert_eq!(rows[1].0.display_name, "editor.exe");
+    }
+
+    #[test]
+    fn process_list_text_sort_cmp_matches_ascii_lowercase_sorting() {
+        for (left, right) in [
+            ("Alpha.exe", "alpha.exe"),
+            ("worker.exe", "Editor.exe"),
+            ("z.exe", "é.exe"),
+        ] {
+            let expected = left
+                .to_ascii_lowercase()
+                .cmp(&right.to_ascii_lowercase())
+                .then_with(|| left.cmp(right));
+            assert_eq!(process_list_text_sort_cmp(left, right), expected);
+        }
     }
 
     #[test]
