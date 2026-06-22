@@ -20,10 +20,10 @@ use rust_i18n::t;
 
 use chrono::{Local, TimeZone};
 use gpui::{
-    canvas, deferred, div, img, percentage, prelude::*, px, relative, rgb, Animation, AnimationExt,
-    AnyElement, App, Bounds, Context, DragMoveEvent, Empty, Entity, EntityId, Focusable, Hsla,
-    Image, IntoElement, MouseButton, NavigationDirection, Pixels, Point, Render, ScrollHandle,
-    SharedString, Subscription, Task, Timer, Window, WindowControlArea,
+    canvas, deferred, div, img, percentage, prelude::*, px, relative, rgb, size, Animation,
+    AnimationExt, AnyElement, App, Bounds, Context, DragMoveEvent, Empty, Entity, EntityId,
+    Focusable, Hsla, Image, IntoElement, MouseButton, NavigationDirection, Pixels, Point, Render,
+    ScrollHandle, SharedString, Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
     animation::cubic_bezier,
@@ -38,7 +38,8 @@ use gpui_component::{
     slider::{SliderEvent, SliderState, SliderValue},
     tag::Tag,
     theme::Colorize,
-    v_flex, ActiveTheme, Disableable, Icon, IconNamed, Sizable,
+    v_flex, v_virtual_list, ActiveTheme, Disableable, Icon, IconNamed, Sizable,
+    VirtualListScrollHandle,
 };
 
 use crate::{
@@ -465,6 +466,7 @@ pub struct PowerLeafApp {
     expanded_process_list_groups: HashSet<String>,
     hidden_process_list_columns: HashSet<ProcessListColumn>,
     process_list_sort: ProcessListSort,
+    process_list_render_cache: RefCell<Option<ProcessListRenderCache>>,
     breadcrumb_transition: Option<BreadcrumbTransition>,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
@@ -1104,6 +1106,7 @@ impl PowerLeafApp {
             expanded_process_list_groups: HashSet::new(),
             hidden_process_list_columns: HashSet::new(),
             process_list_sort: ProcessListSort::default(),
+            process_list_render_cache: RefCell::new(None),
             breadcrumb_transition: None,
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
@@ -1933,7 +1936,6 @@ impl PowerLeafApp {
         let memory_usage = self.memory_usage;
         let io_usage = self.io_usage;
         let network_usage = self.network_usage;
-        let foreground_app = self.foreground_app.clone();
         let decision_target_guid = self.decision.target_guid.clone();
         let decision_state = self.decision.state;
         let decision_reason = self.decision.reason.clone();
@@ -1945,13 +1947,15 @@ impl PowerLeafApp {
 
         self.run_check();
 
-        self.activity.state != activity_state
-            || self.activity.idle_for != activity_idle_for
-            || self.cpu_usage != cpu_usage
+        let resource_samples_changed = self.cpu_usage != cpu_usage
             || self.memory_usage != memory_usage
             || self.io_usage != io_usage
-            || self.network_usage != network_usage
-            || self.foreground_app != foreground_app
+            || self.network_usage != network_usage;
+        let resource_samples_visible = self.page == Page::Dashboard;
+
+        self.activity.state != activity_state
+            || self.activity.idle_for != activity_idle_for
+            || (resource_samples_visible && resource_samples_changed)
             || self.decision.target_guid != decision_target_guid
             || self.decision.state != decision_state
             || self.decision.reason != decision_reason
@@ -2491,14 +2495,18 @@ impl PowerLeafApp {
             changed = true;
         }
 
-        if self.page_uses_process_candidates() && Instant::now() >= self.next_process_refresh {
-            changed |= self.refresh_process_candidates(false);
+        if Instant::now() >= self.next_process_refresh {
             if self.page == Page::ProcessList {
                 changed |= self.refresh_running_processes(false);
+            } else if self.page_uses_process_candidates() {
+                changed |= self.refresh_process_candidates(false);
             }
         }
 
-        changed |= self.refresh_dashboard_resource_samples();
+        let resource_samples_changed = self.refresh_dashboard_resource_samples();
+        if self.page == Page::Dashboard {
+            changed |= resource_samples_changed;
+        }
 
         let should_check_now = Instant::now() >= self.next_check;
 
@@ -2560,7 +2568,6 @@ impl PowerLeafApp {
         matches!(
             self.page,
             Page::ForegroundRules
-                | Page::ProcessList
                 | Page::EfficiencyMode
                 | Page::AppSuspension
                 | Page::CpuLimiter
@@ -4748,27 +4755,31 @@ impl PowerLeafApp {
             .child(chart.tick_margin(DASHBOARD_LINE_CHART_TICK_MARGIN))
     }
 
-    fn render_process_list_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let process_count = self.running_processes.len();
-        let table_scroll_height = process_list_scroll_height(window);
-        let mut process_groups = process_list_groups(&self.running_processes);
-        for group in &mut process_groups {
-            process_list_sort_group_processes(group, self.process_list_sort);
+    fn process_list_render_snapshot(&self) -> ProcessListRenderSnapshot {
+        let needs_rebuild = self
+            .process_list_render_cache
+            .borrow()
+            .as_ref()
+            .map_or(true, |cache| !cache.matches(self));
+        if needs_rebuild {
+            *self.process_list_render_cache.borrow_mut() = Some(process_list_render_cache(self));
         }
-        let process_summaries = process_groups
-            .iter()
-            .map(|group| process_policy_summary(&self.settings, &self.plans, &group.display_name))
-            .collect::<Vec<_>>();
-        let column_layout =
-            process_list_column_layout(&self.settings, &process_groups, &process_summaries);
-        let process_rows =
-            process_list_sorted_rows(process_groups, process_summaries, self.process_list_sort);
-        let table_width =
-            process_list_table_width(&self.hidden_process_list_columns, &column_layout);
-        let row_layout = ProcessListRenderLayout {
-            hidden_columns: &self.hidden_process_list_columns,
-            column_layout: &column_layout,
-        };
+
+        self.process_list_render_cache
+            .borrow()
+            .as_ref()
+            .expect("process list render cache should exist after rebuild")
+            .snapshot()
+    }
+
+    fn render_process_list_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let render_snapshot = self.process_list_render_snapshot();
+        let process_count = render_snapshot.process_count;
+        let table_scroll_height = process_list_scroll_height(window);
+        let column_layout = render_snapshot.column_layout;
+        let table_width = render_snapshot.table_width;
+        let rendered_rows = render_snapshot.rows;
+        let item_sizes = render_snapshot.item_sizes;
         let horizontal_scroll_handle = window
             .use_keyed_state("process-list-horizontal-scroll", cx, |_, _| {
                 ScrollHandle::default()
@@ -4776,8 +4787,8 @@ impl PowerLeafApp {
             .read(cx)
             .clone();
         let vertical_scroll_handle = window
-            .use_keyed_state("process-list-vertical-scroll", cx, |_, _| {
-                ScrollHandle::default()
+            .use_keyed_state("process-list-virtual-scroll", cx, |_, _| {
+                VirtualListScrollHandle::new()
             })
             .read(cx)
             .clone();
@@ -4800,71 +4811,40 @@ impl PowerLeafApp {
             self.process_list_sort,
             cx,
         ));
-        let mut rows = process_list_scroll_content(table_width);
-        let edit_context = ProcessListEditContext { app: self, window };
-        if process_rows.is_empty() {
-            rows = rows.child(process_list_empty_row(
-                t!("common.no_running_apps_loaded").to_string(),
-            ));
+        let rows = if rendered_rows.is_empty() {
+            process_list_scroll_content(table_width)
+                .child(process_list_empty_row(
+                    t!("common.no_running_apps_loaded").to_string(),
+                ))
+                .into_any_element()
         } else {
-            let mut row_index = 0usize;
-            for (group, summary) in process_rows.iter() {
-                let icon = self.process_icon_for_name(&group.display_name);
-                let divided = row_index > 0;
+            let hidden_columns = self.hidden_process_list_columns.clone();
+            let column_layout = column_layout.clone();
+            let rows = Rc::clone(&rendered_rows);
 
-                if group.processes.len() == 1 {
-                    rows = rows.child(process_list_entry_row(
-                        group.processes[0],
-                        summary,
-                        icon,
-                        ProcessListEntryRowState {
-                            divided,
-                            nested: false,
-                            editable: true,
-                        },
-                        row_layout,
-                        edit_context,
-                        cx,
-                    ));
-                    row_index += 1;
-                    continue;
-                }
+            v_virtual_list(
+                cx.entity(),
+                "process-list-rows",
+                item_sizes,
+                move |app, visible_range, window, cx| {
+                    let row_layout = ProcessListRenderLayout {
+                        hidden_columns: &hidden_columns,
+                        column_layout: &column_layout,
+                    };
+                    let edit_context = ProcessListEditContext { app, window };
 
-                let collapsed = self.is_process_list_group_collapsed(&group.display_name);
-                rows = rows.child(process_list_group_row(
-                    ProcessListGroupRowData {
-                        process_name: &group.display_name,
-                        process_count: group.processes.len(),
-                    },
-                    summary,
-                    icon,
-                    ProcessListGroupRowState { collapsed, divided },
-                    row_layout,
-                    edit_context,
-                    cx,
-                ));
-                row_index += 1;
-
-                if !collapsed {
-                    for process in &group.processes {
-                        rows = rows.child(process_list_entry_row(
-                            process,
-                            summary,
-                            icon,
-                            ProcessListEntryRowState {
-                                divided: true,
-                                nested: true,
-                                editable: false,
-                            },
-                            row_layout,
-                            edit_context,
-                            cx,
-                        ));
-                        row_index += 1;
-                    }
-                }
-            }
-        }
+                    visible_range
+                        .filter_map(|row_index| {
+                            rows.get(row_index).map(|row| {
+                                process_list_rendered_row(row, row_layout, edit_context, cx)
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .track_scroll(&vertical_scroll_handle)
+            .into_any_element()
+        };
 
         self.page_shell(Page::ProcessList, cx)
             .flex_1()
@@ -4930,8 +4910,6 @@ impl PowerLeafApp {
                                                     .min_w(table_width)
                                                     .h_full()
                                                     .min_h(px(0.0))
-                                                    .overflow_scroll()
-                                                    .track_scroll(&vertical_scroll_handle)
                                                     .child(rows),
                                             ),
                                     ),
@@ -17584,6 +17562,7 @@ const PROCESS_LIST_CELL_EDITOR_WIDTH: f32 = 220.0;
 const PROCESS_LIST_ROW_HORIZONTAL_PADDING: f32 = 32.0;
 const PROCESS_LIST_COLUMN_GAP: f32 = 12.0;
 const PROCESS_LIST_HEADER_HEIGHT: f32 = 32.0;
+const PROCESS_LIST_ROW_HEIGHT: f32 = 52.0;
 const PROCESS_LIST_TOOLBAR_HEIGHT: f32 = 40.0;
 const PROCESS_LIST_VERTICAL_GAP_TOTAL: f32 = 8.0;
 const PROCESS_LIST_SCROLLBAR_GUTTER: f32 = 16.0;
@@ -17683,6 +17662,7 @@ struct ProcessListGroup<'a> {
     processes: Vec<&'a ProcessInfo>,
 }
 
+#[derive(Clone)]
 struct ProcessListColumnLayout {
     name_width: f32,
     column_widths: HashMap<ProcessListColumn, f32>,
@@ -17720,6 +17700,68 @@ struct ProcessListEntryRowState {
 struct ProcessListGroupRowData<'a> {
     process_name: &'a str,
     process_count: usize,
+}
+
+#[derive(Clone)]
+enum ProcessListRenderedRow {
+    Entry {
+        process: ProcessInfo,
+        summary: Arc<ProcessPolicySummary>,
+        icon: Option<Arc<Image>>,
+        state: ProcessListEntryRowState,
+    },
+    Group {
+        process_name: String,
+        process_count: usize,
+        summary: Arc<ProcessPolicySummary>,
+        icon: Option<Arc<Image>>,
+        state: ProcessListGroupRowState,
+    },
+}
+
+struct ProcessListRenderCache {
+    settings: Settings,
+    plans: Vec<PowerPlan>,
+    running_processes: Vec<ProcessInfo>,
+    process_candidates: Vec<ProcessCandidate>,
+    expanded_process_list_groups: HashSet<String>,
+    hidden_process_list_columns: HashSet<ProcessListColumn>,
+    sort: ProcessListSort,
+    process_count: usize,
+    column_layout: ProcessListColumnLayout,
+    table_width: Pixels,
+    rows: Rc<Vec<ProcessListRenderedRow>>,
+    item_sizes: Rc<Vec<gpui::Size<Pixels>>>,
+}
+
+struct ProcessListRenderSnapshot {
+    process_count: usize,
+    column_layout: ProcessListColumnLayout,
+    table_width: Pixels,
+    rows: Rc<Vec<ProcessListRenderedRow>>,
+    item_sizes: Rc<Vec<gpui::Size<Pixels>>>,
+}
+
+impl ProcessListRenderCache {
+    fn matches(&self, app: &PowerLeafApp) -> bool {
+        self.settings == app.settings
+            && self.plans == app.plans
+            && self.running_processes == app.running_processes
+            && self.process_candidates == app.process_candidates
+            && self.expanded_process_list_groups == app.expanded_process_list_groups
+            && self.hidden_process_list_columns == app.hidden_process_list_columns
+            && self.sort == app.process_list_sort
+    }
+
+    fn snapshot(&self) -> ProcessListRenderSnapshot {
+        ProcessListRenderSnapshot {
+            process_count: self.process_count,
+            column_layout: self.column_layout.clone(),
+            table_width: self.table_width,
+            rows: Rc::clone(&self.rows),
+            item_sizes: Rc::clone(&self.item_sizes),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -17765,6 +17807,116 @@ fn process_list_sorted_rows<'a>(
         process_list_group_sort_cmp(left_group, left_summary, right_group, right_summary, sort)
     });
     rows
+}
+
+fn process_list_rendered_rows(
+    rows: &[(ProcessListGroup<'_>, ProcessPolicySummary)],
+    process_icons_by_name: &HashMap<&str, &Arc<Image>>,
+    is_group_collapsed: impl Fn(&str) -> bool,
+) -> Vec<ProcessListRenderedRow> {
+    let mut rendered_rows = Vec::new();
+    let mut row_index = 0usize;
+
+    for (group, summary) in rows {
+        let icon = process_icons_by_name
+            .get(group.display_name.as_str())
+            .copied()
+            .map(Arc::clone);
+        let summary = Arc::new(summary.clone());
+        let divided = row_index > 0;
+
+        if group.processes.len() == 1 {
+            rendered_rows.push(ProcessListRenderedRow::Entry {
+                process: group.processes[0].to_owned(),
+                summary,
+                icon,
+                state: ProcessListEntryRowState {
+                    divided,
+                    nested: false,
+                    editable: true,
+                },
+            });
+            row_index += 1;
+            continue;
+        }
+
+        let collapsed = is_group_collapsed(&group.display_name);
+        rendered_rows.push(ProcessListRenderedRow::Group {
+            process_name: group.display_name.clone(),
+            process_count: group.processes.len(),
+            summary: Arc::clone(&summary),
+            icon: icon.clone(),
+            state: ProcessListGroupRowState { collapsed, divided },
+        });
+        row_index += 1;
+
+        if !collapsed {
+            for process in &group.processes {
+                rendered_rows.push(ProcessListRenderedRow::Entry {
+                    process: (*process).to_owned(),
+                    summary: Arc::clone(&summary),
+                    icon: icon.clone(),
+                    state: ProcessListEntryRowState {
+                        divided: true,
+                        nested: true,
+                        editable: false,
+                    },
+                });
+                row_index += 1;
+            }
+        }
+    }
+
+    rendered_rows
+}
+
+fn process_list_render_cache(app: &PowerLeafApp) -> ProcessListRenderCache {
+    let process_count = app.running_processes.len();
+    let mut process_groups = process_list_groups(&app.running_processes);
+    for group in &mut process_groups {
+        process_list_sort_group_processes(group, app.process_list_sort);
+    }
+    let process_summaries = process_groups
+        .iter()
+        .map(|group| process_policy_summary(&app.settings, &app.plans, &group.display_name))
+        .collect::<Vec<_>>();
+    let column_layout =
+        process_list_column_layout(&app.settings, &process_groups, &process_summaries);
+    let process_rows =
+        process_list_sorted_rows(process_groups, process_summaries, app.process_list_sort);
+    let table_width = process_list_table_width(&app.hidden_process_list_columns, &column_layout);
+    let process_icons_by_name = app
+        .process_candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate
+                .icon
+                .as_ref()
+                .map(|icon| (candidate.name.as_str(), icon))
+        })
+        .collect::<HashMap<_, _>>();
+    let rows = process_list_rendered_rows(&process_rows, &process_icons_by_name, |process_name| {
+        app.is_process_list_group_collapsed(process_name)
+    });
+    let item_sizes = Rc::new(vec![
+        size(table_width, px(PROCESS_LIST_ROW_HEIGHT));
+        rows.len()
+    ]);
+
+    ProcessListRenderCache {
+        settings: app.settings.clone(),
+        plans: app.plans.clone(),
+        running_processes: app.running_processes.clone(),
+        process_candidates: app.process_candidates.clone(),
+        expanded_process_list_groups: app.expanded_process_list_groups.clone(),
+        hidden_process_list_columns: app.hidden_process_list_columns.clone(),
+        sort: app.process_list_sort,
+        process_count,
+        column_layout,
+        table_width,
+        rows: Rc::new(rows),
+        item_sizes,
+    }
 }
 
 fn process_list_sort_group_processes(group: &mut ProcessListGroup<'_>, sort: ProcessListSort) {
@@ -18320,6 +18472,48 @@ fn process_list_empty_row(message: impl Into<SharedString>) -> gpui::Div {
         .child(text_muted(message.into()))
 }
 
+fn process_list_rendered_row(
+    row: &ProcessListRenderedRow,
+    layout: ProcessListRenderLayout<'_>,
+    edit_context: ProcessListEditContext<'_>,
+    cx: &mut Context<PowerLeafApp>,
+) -> gpui::Stateful<gpui::Div> {
+    match row {
+        ProcessListRenderedRow::Entry {
+            process,
+            summary,
+            icon,
+            state,
+        } => process_list_entry_row(
+            process,
+            summary.as_ref(),
+            icon.as_ref(),
+            *state,
+            layout,
+            edit_context,
+            cx,
+        ),
+        ProcessListRenderedRow::Group {
+            process_name,
+            process_count,
+            summary,
+            icon,
+            state,
+        } => process_list_group_row(
+            ProcessListGroupRowData {
+                process_name: process_name.as_str(),
+                process_count: *process_count,
+            },
+            summary.as_ref(),
+            icon.as_ref(),
+            *state,
+            layout,
+            edit_context,
+            cx,
+        ),
+    }
+}
+
 fn process_list_entry_row(
     process: &ProcessInfo,
     summary: &ProcessPolicySummary,
@@ -18334,7 +18528,7 @@ fn process_list_entry_row(
         .id(row_id)
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(42.0))
+        .h(px(PROCESS_LIST_ROW_HEIGHT))
         .items_center()
         .gap_3()
         .px_4()
@@ -18390,7 +18584,7 @@ fn process_list_group_row(
         .id(row_id)
         .w_full()
         .min_w(px(0.0))
-        .min_h(px(42.0))
+        .h(px(PROCESS_LIST_ROW_HEIGHT))
         .items_center()
         .gap_3()
         .px_4()
@@ -18711,7 +18905,7 @@ fn process_list_editable_policy_cell(
     let toggle_id = id.clone();
     let popup_id = id.clone();
 
-    v_flex()
+    let cell = v_flex()
         .id(SharedString::from(format!("{id}-cell")))
         .w(px(width))
         .min_w(px(0.0))
@@ -18741,24 +18935,29 @@ fn process_list_editable_policy_cell(
                     emphasized,
                     text_color,
                 )),
-        )
-        .child(dropdown_anchor_sensor(
+        );
+    let cell = if is_open {
+        cell.child(dropdown_anchor_sensor(
             id.clone(),
             Rc::clone(&app.dropdown_anchor_bounds),
         ))
-        .child(dropdown_popup_or_empty_lazy(
-            is_open,
-            SharedString::from(id),
-            || {
-                let option_count = process_list_cell_editor_option_count(column, app);
-                app.dropdown_placement(&popup_id, dropdown_list_height(option_count), window)
-            },
-            |max_height, cx| {
-                process_list_cell_editor_options(process_name, column, app, max_height, cx)
-            },
-            cx,
-        ))
-        .into_any_element()
+    } else {
+        cell
+    };
+
+    cell.child(dropdown_popup_or_empty_lazy(
+        is_open,
+        SharedString::from(id),
+        || {
+            let option_count = process_list_cell_editor_option_count(column, app);
+            app.dropdown_placement(&popup_id, dropdown_list_height(option_count), window)
+        },
+        |max_height, cx| {
+            process_list_cell_editor_options(process_name, column, app, max_height, cx)
+        },
+        cx,
+    ))
+    .into_any_element()
 }
 
 fn process_list_column_editable(column: ProcessListColumn) -> bool {
