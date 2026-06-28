@@ -20,7 +20,7 @@ use windows::{
 };
 use windows_sys::Win32::{
     Foundation::{
-        CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
+        ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
         ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
     },
     NetworkManagement::IpHelper::{
@@ -44,7 +44,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::win_util::last_error;
+use crate::win_util::{last_error, WinHandle};
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
@@ -2107,8 +2107,8 @@ impl JobObjectFreezeInformation {
 }
 
 struct ProcessFreezer {
-    job_handle: HANDLE,
-    process_handle: HANDLE,
+    job_handle: Option<WinHandle>,
+    process_handle: Option<WinHandle>,
     can_wait_for_process: bool,
 }
 
@@ -2119,39 +2119,37 @@ impl ProcessFreezer {
         let job_handle = unsafe { CreateJobObjectW(null(), null()) };
         if job_handle.is_null() {
             let error = last_error();
-            unsafe {
-                CloseHandle(process_handle);
-            }
             return Err(SuspensionError::Failed(format!(
                 "CreateJobObjectW failed with error {error}."
             )));
         }
+        let job_handle = WinHandle::new(job_handle);
 
-        let assigned = unsafe { AssignProcessToJobObject(job_handle, process_handle) != 0 };
+        let assigned =
+            unsafe { AssignProcessToJobObject(job_handle.raw(), process_handle.raw()) != 0 };
         if !assigned {
             let error = last_error();
             let assignment_error =
-                assign_process_to_job_error_with_context(process_id, process_handle, error);
-            unsafe {
-                CloseHandle(job_handle);
-                CloseHandle(process_handle);
-            }
+                assign_process_to_job_error_with_context(process_id, process_handle.raw(), error);
             return Err(assignment_error);
         }
 
         Ok(Self {
-            job_handle,
-            process_handle,
+            job_handle: Some(job_handle),
+            process_handle: Some(process_handle),
             can_wait_for_process,
         })
     }
 
     fn set_frozen(&self, frozen: bool) -> Result<(), SuspensionError> {
         let mut info = JobObjectFreezeInformation::new(frozen);
+        let Some(job_handle) = &self.job_handle else {
+            return Ok(());
+        };
 
         let ok = unsafe {
             SetInformationJobObject(
-                self.job_handle,
+                job_handle.raw(),
                 JOB_OBJECT_FREEZE_INFORMATION_CLASS,
                 &mut info as *mut _ as *mut c_void,
                 std::mem::size_of::<JobObjectFreezeInformation>() as u32,
@@ -2167,28 +2165,23 @@ impl ProcessFreezer {
 
     fn is_process_alive(&self) -> bool {
         !self.can_wait_for_process
-            || unsafe { WaitForSingleObject(self.process_handle, 0) } == WAIT_TIMEOUT
+            || self
+                .process_handle
+                .as_ref()
+                .is_some_and(|process_handle| unsafe {
+                    WaitForSingleObject(process_handle.raw(), 0) == WAIT_TIMEOUT
+                })
     }
 
     fn close(&mut self) {
-        if !self.job_handle.is_null() {
-            unsafe {
-                CloseHandle(self.job_handle);
-            }
-            self.job_handle = null_mut_handle();
-        }
-        if !self.process_handle.is_null() {
-            unsafe {
-                CloseHandle(self.process_handle);
-            }
-            self.process_handle = null_mut_handle();
-        }
+        self.job_handle = None;
+        self.process_handle = None;
     }
 }
 
 impl Drop for ProcessFreezer {
     fn drop(&mut self) {
-        if !self.job_handle.is_null() {
+        if self.job_handle.is_some() {
             let _ = self.set_frozen(false);
         }
         self.close();
@@ -2199,7 +2192,7 @@ fn null_mut_handle() -> HANDLE {
     std::ptr::null_mut()
 }
 
-fn open_process_for_job_assignment(process_id: u32) -> Result<(HANDLE, bool), SuspensionError> {
+fn open_process_for_job_assignment(process_id: u32) -> Result<(WinHandle, bool), SuspensionError> {
     let access_masks = [
         PROCESS_SET_QUOTA
             | PROCESS_TERMINATE
@@ -2214,7 +2207,7 @@ fn open_process_for_job_assignment(process_id: u32) -> Result<(HANDLE, bool), Su
     for (index, access) in access_masks.into_iter().enumerate() {
         let handle = unsafe { OpenProcess(access, 0, process_id) };
         if !handle.is_null() {
-            return Ok((handle, index == 0));
+            return Ok((WinHandle::new(handle), index == 0));
         }
         last_open_error = last_error();
     }
@@ -2305,8 +2298,8 @@ mod tests {
 
     fn inert_freezer() -> ProcessFreezer {
         ProcessFreezer {
-            job_handle: null_mut_handle(),
-            process_handle: null_mut_handle(),
+            job_handle: None,
+            process_handle: None,
             can_wait_for_process: false,
         }
     }

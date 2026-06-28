@@ -3,11 +3,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use windows_sys::Win32::{
-    Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
-    System::Threading::{
-        GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SET_INFORMATION,
+use windows_sys::{
+    Wdk::Graphics::Direct3D::{
+        D3DKMTGetProcessSchedulingPriorityClass, D3DKMTSetProcessSchedulingPriorityClass,
+        D3DKMT_SCHEDULINGPRIORITYCLASS,
+    },
+    Win32::{
+        Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
+        System::Threading::{
+            GetCurrentProcessId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SET_INFORMATION,
+        },
     },
 };
 
@@ -583,14 +589,20 @@ impl ProcessHandle {
     }
 
     fn gpu_priority_raw(&self) -> Result<u32, GpuPriorityError> {
-        let mut priority = 0_u32;
+        let mut priority = 0;
         let status = unsafe {
             D3DKMTGetProcessSchedulingPriorityClass(self.0.raw(), &mut priority as *mut _)
         };
-        ntstatus_result(status).map(|()| priority)
+        ntstatus_result(status).and_then(|()| {
+            u32::try_from(priority).map_err(|_| {
+                GpuPriorityError::Failed(format!("Unexpected GPU priority {priority}."))
+            })
+        })
     }
 
     fn set_gpu_priority_raw(&self, priority: u32) -> Result<(), GpuPriorityError> {
+        let priority = D3DKMT_SCHEDULINGPRIORITYCLASS::try_from(priority)
+            .map_err(|_| GpuPriorityError::Failed(format!("Invalid GPU priority {priority}.")))?;
         let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(self.0.raw(), priority) };
         ntstatus_result(status)
     }
@@ -735,19 +747,6 @@ fn gpu_priority_status_message(
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
-}
-
-#[link(name = "gdi32")]
-unsafe extern "system" {
-    fn D3DKMTGetProcessSchedulingPriorityClass(
-        Process: HANDLE,
-        SchedulingPriorityClass: *mut u32,
-    ) -> i32;
-
-    fn D3DKMTSetProcessSchedulingPriorityClass(
-        Process: HANDLE,
-        SchedulingPriorityClass: u32,
-    ) -> i32;
 }
 
 #[cfg(test)]

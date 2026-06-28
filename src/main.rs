@@ -76,12 +76,14 @@ fn main() {
         });
 }
 
-struct SingleInstanceGuard(windows_sys::Win32::Foundation::HANDLE);
+struct SingleInstanceGuard {
+    _handle: win_util::WinHandle,
+}
 
 impl SingleInstanceGuard {
     fn acquire() -> Option<Self> {
         use windows_sys::Win32::{
-            Foundation::{CloseHandle, WAIT_TIMEOUT},
+            Foundation::WAIT_TIMEOUT,
             System::Threading::{CreateMutexW, WaitForSingleObject},
         };
 
@@ -96,13 +98,13 @@ impl SingleInstanceGuard {
                 return None;
             }
 
-            let wait_status = WaitForSingleObject(handle, 0);
+            let handle = win_util::WinHandle::new(handle);
+            let wait_status = WaitForSingleObject(handle.raw(), 0);
             if wait_status == WAIT_TIMEOUT || wait_status == 0xFFFFFFFF {
-                CloseHandle(handle);
                 return None;
             }
 
-            Some(Self(handle))
+            Some(Self { _handle: handle })
         }
     }
 }
@@ -125,14 +127,4 @@ fn fnv1a64(input: impl AsRef<str>) -> u64 {
         hash = hash.wrapping_mul(0x00000100000001b3);
     }
     hash
-}
-
-impl Drop for SingleInstanceGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                windows_sys::Win32::Foundation::CloseHandle(self.0);
-            }
-        }
-    }
 }

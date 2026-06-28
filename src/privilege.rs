@@ -1,5 +1,5 @@
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_NOT_ALL_ASSIGNED, LUID},
+    Foundation::{ERROR_NOT_ALL_ASSIGNED, LUID},
     Security::{
         AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME,
         SE_INCREASE_QUOTA_NAME, SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME,
@@ -8,7 +8,7 @@ use windows_sys::Win32::{
     System::Threading::{GetCurrentProcess, OpenProcessToken},
 };
 
-use crate::win_util::last_error;
+use crate::win_util::{last_error, WinHandle};
 
 pub fn enable_debug_privilege() -> bool {
     enable_privilege(SE_DEBUG_NAME)
@@ -35,11 +35,8 @@ fn enable_privilege(name: windows_sys::core::PCWSTR) -> bool {
         return false;
     }
 
-    let enabled = enable_privilege_for_token(token, name);
-    unsafe {
-        CloseHandle(token);
-    }
-    enabled
+    let token = WinHandle::new(token);
+    enable_privilege_for_token(token.raw(), name)
 }
 
 fn enable_privilege_for_token(

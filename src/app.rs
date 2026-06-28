@@ -29,14 +29,11 @@ use gpui_component::{
     animation::cubic_bezier,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     chart::AreaChart,
-    description_list::DescriptionList,
-    group_box::{GroupBox, GroupBoxVariants},
     h_flex,
     input::{Escape as InputEscape, Input, InputEvent, InputState},
     label::Label,
     scroll::{Scrollable, ScrollableElement, Scrollbar},
     slider::{SliderEvent, SliderState, SliderValue},
-    tag::Tag,
     theme::Colorize,
     v_flex, v_virtual_list, ActiveTheme, Disableable, Icon, IconNamed, Sizable,
     VirtualListScrollHandle,
@@ -105,7 +102,7 @@ use crate::{
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_BINARY, REG_DWORD,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD,
     REG_OPTION_NON_VOLATILE,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -142,13 +139,15 @@ const MOTION_EXPAND_MIN_SECONDS: f64 = 0.1;
 const UNSAVED_POPUP_VANISH_SECONDS: f64 = 0.18;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TITLE_BAR_HEIGHT: f32 = 40.0;
-const STATUS_BAR_HEIGHT: f32 = 38.0;
 const PAGE_HEADER_HEIGHT: f32 = 48.0;
 const PAGE_CONTENT_VERTICAL_PADDING: f32 = 24.0;
 const CONTENT_MAX_WIDTH: f32 = 1040.0;
 const NAV_PANE_WIDTH: f32 = 276.0;
-const FLUENT_RADIUS_CONTROL: f32 = 4.0;
-const FLUENT_RADIUS_OVERLAY: f32 = 8.0;
+const BRAND_RADIUS_CONTROL: f32 = 5.0;
+const BRAND_RADIUS_SURFACE: f32 = 7.0;
+const BRAND_RADIUS_OVERLAY: f32 = 8.0;
+const FONT_UI: &str = "Bahnschrift";
+const FONT_BRAND: &str = "Bahnschrift";
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const DROPDOWN_OPTION_ROW_HEIGHT: f32 = 40.0;
 const DROPDOWN_CONTROL_HEIGHT: f32 = 32.0;
@@ -196,20 +195,33 @@ const TEXT_LABEL_LINE_HEIGHT: f32 = 16.0;
 const TEXT_CAPTION_SIZE: f32 = 12.0;
 const TEXT_CAPTION_LINE_HEIGHT: f32 = 16.0;
 
-const COLOR_SETTINGS_CARD: u32 = 0x2b2b2b;
-const COLOR_SETTINGS_CARD_HOVER: u32 = 0x333333;
-const COLOR_SIDEBAR_SELECTED: u32 = 0x303030;
-const COLOR_SIDEBAR_HOVER: u32 = 0x2a2a2a;
-const COLOR_PANEL_ACTIVE: u32 = 0x3a3a3a;
-const COLOR_BORDER: u32 = 0x3f3f3f;
-const COLOR_TEXT: u32 = 0xf3f3f3;
-const COLOR_MUTED: u32 = 0xc8c8c8;
-const COLOR_DIM: u32 = 0x8f8f8f;
-const COLOR_ACCENT: u32 = 0x0078d4;
-const COLOR_SUCCESS: u32 = 0x8fd17f;
-const COLOR_SUCCESS_BG: u32 = 0x263b22;
-const COLOR_WARNING: u32 = 0xf2cc60;
-const COLOR_WARNING_BG: u32 = 0x4a3b18;
+const COLOR_APP_BG: u32 = 0x101112;
+const COLOR_TITLE_BAR: u32 = 0x0c0d0f;
+const COLOR_SETTINGS_CARD: u32 = 0x191b1f;
+const COLOR_SETTINGS_CARD_HOVER: u32 = 0x23262b;
+const COLOR_SIDEBAR_SELECTED: u32 = 0x272b31;
+const COLOR_SIDEBAR_HOVER: u32 = 0x202329;
+const COLOR_PANEL_ACTIVE: u32 = 0x2d3239;
+const COLOR_BORDER: u32 = 0x363b43;
+const COLOR_TEXT: u32 = 0xf4f4f5;
+const COLOR_MUTED: u32 = 0xc7ccd1;
+const COLOR_DIM: u32 = 0x8b929a;
+const COLOR_ACCENT: u32 = 0xa7e957;
+const COLOR_SUCCESS: u32 = 0x9ee069;
+const COLOR_SUCCESS_BG: u32 = 0x1f3418;
+const COLOR_WARNING: u32 = 0xffc857;
+const COLOR_WARNING_BG: u32 = 0x3d2e14;
+const COLOR_LIGHT_APP_BG: u32 = 0xf4f4f5;
+const COLOR_LIGHT_TITLE_BAR: u32 = 0xebedef;
+const COLOR_LIGHT_SETTINGS_CARD: u32 = 0xffffff;
+const COLOR_LIGHT_SETTINGS_CARD_HOVER: u32 = 0xf0f2f4;
+const COLOR_LIGHT_SIDEBAR_SELECTED: u32 = 0xe1e5e9;
+const COLOR_LIGHT_SIDEBAR_HOVER: u32 = 0xe9ecef;
+const COLOR_LIGHT_PANEL_ACTIVE: u32 = 0xe3e7eb;
+const COLOR_LIGHT_BORDER: u32 = 0xc7ccd2;
+const COLOR_LIGHT_TEXT: u32 = 0x171a1d;
+const COLOR_LIGHT_MUTED: u32 = 0x565d64;
+const COLOR_LIGHT_DIM: u32 = 0x747c84;
 
 #[derive(Clone, Copy)]
 struct DropdownPlacement {
@@ -281,13 +293,14 @@ impl ActionLogFeatureFilter {
 const ACTION_LOG_PAGE_SIZE: usize = 15;
 
 const ACCENT_PALETTE: [u32; 48] = [
-    0xffb900, 0xff8c00, 0xf7630c, 0xca5010, 0xda3b01, 0xef6950, 0xd13438, 0xff4343, 0xe74856,
-    0xe81123, 0xea005e, 0xc30052, 0xe3008c, 0xbf0077, 0xc239b3, 0x9a0089, 0x0078d4, 0x0063b1,
-    0x8e8cd8, 0x6b69d6, 0x8764b8, 0x744da9, 0xb146c2, 0x881798, 0x0099bc, 0x2d7d9a, 0x00b7c3,
-    0x038387, 0x00b294, 0x018574, 0x00cc6a, 0x10893e, 0x107c10, 0x797775, 0x5d5a58, 0x68768a,
-    0x567c73, 0x486860, 0x498205, 0x0b6a0b, 0x7a7574, 0x4c4a48, 0x69797e, 0x4a5459, 0x647c64,
-    0x525e54, 0x5d5a4f, 0x847545,
+    0xa7e957, 0xc7f36d, 0x8fd14f, 0x65b741, 0x3f8f34, 0x2f6f34, 0xd8c75b, 0xffc857, 0xe0a93a,
+    0xb9802f, 0x8d6128, 0xff8f5a, 0xe46845, 0xbb4c38, 0x8d382f, 0x6a2f2a, 0x4fc3a5, 0x2aa889,
+    0x167c68, 0x0f5f54, 0x76d0b2, 0xa8d6a1, 0xd1e3a4, 0xf2e5a0, 0xe8d7b2, 0xc7b58f, 0xa8946d,
+    0x786a50, 0x9bbf74, 0x7fa15d, 0x5d8048, 0x3f6038, 0xd9a441, 0xbf8033, 0xa45f31, 0x7d452e,
+    0xd96f6a, 0xb85b58, 0x8d4645, 0x633839, 0x8aa49a, 0x6f877d, 0x53665f, 0x3d4d47, 0xc1b897,
+    0xa8a07d, 0x837c61, 0x625d48,
 ];
+const ACCENT_SWATCHES_PER_ROW: usize = 8;
 
 static UI_ACCENT_COLOR: AtomicU32 = AtomicU32::new(COLOR_ACCENT);
 static UI_DARK_MODE: AtomicBool = AtomicBool::new(true);
@@ -405,7 +418,7 @@ pub struct PowerLeafApp {
     launch_priority_status: LaunchPrioritySnapshot,
     smart_trim_status: SmartTrimSnapshot,
     timer_resolution_status: TimerResolutionSnapshot,
-    action_log_entries: Vec<ActionLogEntry>,
+    action_log_entries: Arc<Vec<ActionLogEntry>>,
     action_log_result_filter: ActionLogResultFilter,
     action_log_feature_filter: ActionLogFeatureFilter,
     action_log_page: usize,
@@ -466,8 +479,6 @@ pub struct PowerLeafApp {
     expanded_process_list_groups: HashSet<String>,
     hidden_process_list_columns: HashSet<ProcessListColumn>,
     process_list_sort: ProcessListSort,
-    process_list_revision: u64,
-    process_list_render_cache: RefCell<Option<ProcessListRenderCache>>,
     breadcrumb_transition: Option<BreadcrumbTransition>,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
@@ -1034,7 +1045,7 @@ impl PowerLeafApp {
             launch_priority_status: LaunchPrioritySnapshot::default(),
             smart_trim_status: SmartTrimSnapshot::default(),
             timer_resolution_status: initial_timer_resolution_status,
-            action_log_entries: Vec::new(),
+            action_log_entries: Arc::new(Vec::new()),
             action_log_result_filter: ActionLogResultFilter::All,
             action_log_feature_filter: ActionLogFeatureFilter::All,
             action_log_page: 0,
@@ -1107,8 +1118,6 @@ impl PowerLeafApp {
             expanded_process_list_groups: HashSet::new(),
             hidden_process_list_columns: HashSet::new(),
             process_list_sort: ProcessListSort::default(),
-            process_list_revision: 0,
-            process_list_render_cache: RefCell::new(None),
             breadcrumb_transition: None,
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
@@ -1147,10 +1156,10 @@ impl PowerLeafApp {
             return;
         }
 
+        clear_navigation_hovered();
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
-        self.bump_process_list_revision_for_page(page);
         self.forward_stack.clear();
         cx.notify();
     }
@@ -1160,10 +1169,10 @@ impl PowerLeafApp {
             return;
         };
 
+        clear_navigation_hovered();
         Self::push_navigation_page(&mut self.forward_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
-        self.bump_process_list_revision_for_page(page);
         cx.notify();
     }
 
@@ -1172,21 +1181,11 @@ impl PowerLeafApp {
             return;
         };
 
+        clear_navigation_hovered();
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
-        self.bump_process_list_revision_for_page(page);
         cx.notify();
-    }
-
-    fn bump_process_list_revision_for_page(&mut self, page: Page) {
-        if page == Page::ProcessList {
-            self.bump_process_list_revision();
-        }
-    }
-
-    fn bump_process_list_revision(&mut self) {
-        self.process_list_revision = self.process_list_revision.wrapping_add(1);
     }
 
     fn begin_breadcrumb_transition(&mut self, previous: Page, current: Page) {
@@ -1486,7 +1485,6 @@ impl PowerLeafApp {
     fn refresh_power_plans(&mut self) {
         match self.power.list_plans() {
             Ok(plans) => {
-                let old_plans = self.plans.clone();
                 self.plans = plans;
                 self.current_plan = self.plans.iter().find(|plan| plan.active).cloned();
                 self.next_active_plan_refresh = Instant::now() + ACTIVE_PLAN_REFRESH_INTERVAL;
@@ -1494,9 +1492,6 @@ impl PowerLeafApp {
                     t!("status.loaded_power_plans", count = self.plans.len()).to_string();
                 self.ensure_processor_power_target_plan();
                 self.sync_processor_power_values_from_target_plan(false);
-                if self.plans != old_plans {
-                    self.bump_process_list_revision();
-                }
             }
             Err(err) => self.status_message = err,
         }
@@ -1508,7 +1503,6 @@ impl PowerLeafApp {
         match self.power.active_plan() {
             Ok(active) => {
                 if let Some(active) = active {
-                    let old_plans = self.plans.clone();
                     let active_guid = active.guid.clone();
                     for plan in &mut self.plans {
                         plan.active = plan.guid.eq_ignore_ascii_case(&active_guid);
@@ -1521,9 +1515,6 @@ impl PowerLeafApp {
                         .or(Some(active));
                     self.ensure_processor_power_target_plan();
                     self.sync_processor_power_values_from_target_plan(false);
-                    if self.plans != old_plans {
-                        self.bump_process_list_revision();
-                    }
                 }
             }
             Err(err) => self.status_message = err,
@@ -2222,7 +2213,10 @@ impl PowerLeafApp {
 
         match choose_action_log_export_file(self.hwnd) {
             Ok(Some(path)) => {
-                match fs::write(&path, action_log_entries_to_csv(&self.action_log_entries)) {
+                match fs::write(
+                    &path,
+                    action_log_entries_to_csv(self.action_log_entries.as_slice()),
+                ) {
                     Ok(()) => {
                         self.status_message =
                             t!("status.exported_action_log", path = path.display()).to_string();
@@ -2245,7 +2239,6 @@ impl PowerLeafApp {
             Ok(Some(path)) => match config::storage::import_toml_from(&path) {
                 Ok(settings) => {
                     self.settings = settings;
-                    self.bump_process_list_revision();
                     apply_language(self.settings.general.language);
                     apply_appearance_settings(&self.settings.general, window, cx);
                     match config::storage::save(&self.settings) {
@@ -2331,9 +2324,6 @@ impl PowerLeafApp {
                     &mut self.process_icon_cache,
                     &self.process_candidates,
                 );
-                if changed {
-                    self.bump_process_list_revision();
-                }
                 if report_status {
                     let message = t!(
                         "status.loaded_running_apps",
@@ -2376,9 +2366,6 @@ impl PowerLeafApp {
                     .retain(|key| active_group_keys.contains(key));
                 let groups_changed =
                     self.expanded_process_list_groups.len() != expanded_group_count;
-                if changed || groups_changed {
-                    self.bump_process_list_revision();
-                }
                 if report_status {
                     let message = t!(
                         "status.loaded_running_processes",
@@ -2559,8 +2546,11 @@ impl PowerLeafApp {
             }
         }
 
-        if self.action_log_entries.as_slice() != background_status.action_log_entries.as_slice() {
-            self.action_log_entries = background_status.action_log_entries.as_ref().clone();
+        if !Arc::ptr_eq(
+            &self.action_log_entries,
+            &background_status.action_log_entries,
+        ) {
+            self.action_log_entries = background_status.action_log_entries;
             changed = true;
         }
 
@@ -2655,7 +2645,6 @@ impl PowerLeafApp {
     fn cancel_settings_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let had_unsaved_changes = self.settings != self.saved_settings;
         self.settings = self.saved_settings.clone();
-        self.bump_process_list_revision();
         apply_language(self.settings.general.language);
         apply_appearance_settings(&self.settings.general, window, cx);
         self.status_message = t!("status.unsaved_canceled").to_string();
@@ -3395,7 +3384,6 @@ impl PowerLeafApp {
             true
         };
         begin_expandable_motion(format!("process-list-group-{key}"), expanded);
-        self.bump_process_list_revision();
         cx.notify();
     }
 
@@ -3418,20 +3406,17 @@ impl PowerLeafApp {
         }
 
         if changed || sort_changed {
-            self.bump_process_list_revision();
             cx.notify();
         }
     }
 
     fn toggle_process_list_sort(&mut self, column: ProcessListSortColumn, cx: &mut Context<Self>) {
         self.process_list_sort = self.process_list_sort.toggled_for(column);
-        self.bump_process_list_revision();
         cx.notify();
     }
 
     fn finish_process_list_edit(&mut self, cx: &mut Context<Self>) {
         self.active_power_plan_picker = None;
-        self.bump_process_list_revision();
         cx.notify();
     }
 
@@ -3643,31 +3628,31 @@ impl PowerLeafApp {
         let is_open = enabled && self.active_power_plan_picker.as_deref() == Some(id.as_str());
         let placement = self.dropdown_placement(&id, dropdown_list_height(option_count), window);
         let options = build_options(placement.max_height, cx);
+        let phase = dropdown_popup_phase(id.as_str(), is_open, cx);
         let control_id = SharedString::from(format!("{id}-control"));
         let toggle_id = id.clone();
 
         dropdown_select_container(width)
             .child(
-                dropdown_select_control(control_id, selected_label, enabled, is_open, cx).when(
-                    enabled,
-                    |control| {
+                dropdown_select_control(control_id, selected_label, enabled, is_open, phase, cx)
+                    .when(enabled, |control| {
                         control.on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.active_power_plan_picker =
                                 (app.active_power_plan_picker.as_deref()
                                     != Some(toggle_id.as_str()))
                                 .then_some(toggle_id.clone());
+                            cx.stop_propagation();
                             cx.notify();
                         }))
-                    },
-                ),
+                    }),
             )
             .child(dropdown_anchor_sensor(
                 id.clone(),
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
             .child(dropdown_popup_or_empty(
-                is_open,
                 SharedString::from(id),
+                phase,
                 placement,
                 options,
                 cx,
@@ -3737,158 +3722,6 @@ impl PowerLeafApp {
         settings.smart_trim = self.saved_settings.smart_trim.clone();
         settings
     }
-
-    fn section_nav_status(&self, pages: &[Page]) -> Option<NavStatus> {
-        let mut has_failed = false;
-        let mut has_unsupported = false;
-        let mut has_needs_rules = false;
-        let mut has_enabled = false;
-        let mut has_disabled = false;
-
-        for page in pages {
-            match self.nav_status(*page) {
-                Some(NavStatus::Failed) => has_failed = true,
-                Some(NavStatus::Unsupported) => has_unsupported = true,
-                Some(NavStatus::NeedsRules) => has_needs_rules = true,
-                Some(NavStatus::Enabled) => has_enabled = true,
-                Some(NavStatus::Disabled) => has_disabled = true,
-                None => {}
-            }
-        }
-
-        if has_failed {
-            Some(NavStatus::Failed)
-        } else if has_unsupported {
-            Some(NavStatus::Unsupported)
-        } else if has_needs_rules {
-            Some(NavStatus::NeedsRules)
-        } else if has_enabled {
-            Some(NavStatus::Enabled)
-        } else if has_disabled {
-            Some(NavStatus::Disabled)
-        } else {
-            None
-        }
-    }
-
-    fn nav_status(&self, page: Page) -> Option<NavStatus> {
-        let settings = &self.saved_settings;
-
-        match page {
-            Page::Dashboard => None,
-            Page::PowerPlanAutomation
-            | Page::ProcessorControls
-            | Page::ProcessPolicies
-            | Page::MemoryControl
-            | Page::AppHome
-            | Page::AdvancedHome => page
-                .child_pages()
-                .and_then(|pages| self.section_nav_status(pages)),
-            Page::Activity => {
-                if !settings.activity_mode.enabled
-                    || !settings.activity_mode.input_detection.any_enabled()
-                {
-                    Some(NavStatus::Disabled)
-                } else {
-                    Some(NavStatus::Enabled)
-                }
-            }
-            Page::CpuUsage => Some(rule_based_nav_status(
-                settings.cpu_usage_mode.enabled,
-                settings.cpu_usage_mode.rules.len(),
-            )),
-            Page::CoreParking => None,
-            Page::ProcessList => None,
-            Page::CpuLimiter => Some(process_nav_status(
-                settings.cpu_limiter.enabled,
-                self.cpu_limiter_status.failed_processes,
-                self.cpu_limiter_status.last_error.is_some(),
-            )),
-            Page::BackgroundCpuRestriction => Some(process_nav_status(
-                settings.background_cpu_restriction.enabled,
-                self.background_cpu_restriction_status.failed_processes,
-                self.background_cpu_restriction_status.last_error.is_some(),
-            )),
-            Page::EfficiencyMode => Some(feature_nav_status(
-                settings.eco_qos.enabled,
-                self.eco_qos_status.unsupported,
-                self.eco_qos_status.failed_processes,
-                self.eco_qos_status.last_error.is_some(),
-            )),
-            Page::AppSuspension => Some(feature_nav_status(
-                settings.app_suspension.enabled,
-                self.app_suspension_status.unsupported,
-                self.app_suspension_status.failed_actions,
-                self.app_suspension_status.last_error.is_some(),
-            )),
-            Page::PerformanceMode => Some(process_rule_nav_status(
-                settings.performance_mode.enabled,
-                settings.performance_mode.rules.len(),
-                0,
-                self.performance_mode_status.last_error.is_some(),
-            )),
-            Page::Watchdog => Some(process_nav_status(
-                settings.watchdog.enabled,
-                self.watchdog_status.failed_actions,
-                self.watchdog_status.last_error.is_some(),
-            )),
-            Page::CpuAffinity => Some(process_nav_status(
-                settings.cpu_affinity.enabled,
-                self.cpu_affinity_status.failed_processes,
-                self.cpu_affinity_status.last_error.is_some(),
-            )),
-            Page::ForegroundResponsiveness => Some(process_nav_status(
-                settings.foreground_responsiveness.enabled,
-                self.foreground_responsiveness_status.failed_processes,
-                self.foreground_responsiveness_status.last_error.is_some(),
-            )),
-            Page::IoPriority => Some(process_nav_status(
-                settings.io_priority.enabled,
-                self.io_priority_status.failed_processes,
-                self.io_priority_status.last_error.is_some(),
-            )),
-            Page::GpuPriority => Some(process_nav_status(
-                settings.gpu_priority.enabled,
-                self.gpu_priority_status.failed_processes,
-                self.gpu_priority_status.last_error.is_some(),
-            )),
-            Page::MemoryPriority => Some(process_nav_status(
-                settings.memory_priority.enabled,
-                self.memory_priority_status.failed_processes,
-                self.memory_priority_status.last_error.is_some(),
-            )),
-            Page::LaunchPriority => Some(process_rule_nav_status(
-                settings.launch_priority.enabled,
-                settings.launch_priority.rules.len(),
-                self.launch_priority_status.failed_actions,
-                self.launch_priority_status.last_error.is_some(),
-            )),
-            Page::SmartTrim => Some(process_nav_status(
-                settings.smart_trim.enabled,
-                self.smart_trim_status.failed_processes,
-                self.smart_trim_status.last_error.is_some(),
-            )),
-            Page::ForegroundRules => Some(rule_based_nav_status(
-                settings.foreground_rules.enabled,
-                settings.foreground_rules.rules.len(),
-            )),
-            Page::Schedule => Some(rule_based_nav_status(
-                settings.schedule_mode.enabled,
-                settings.schedule_mode.rules.len(),
-            )),
-            Page::ActionLog => None,
-            Page::TimerResolution => Some(process_rule_nav_status(
-                settings.timer_resolution.enabled,
-                settings.timer_resolution.rules.len(),
-                self.timer_resolution_status.failed_actions,
-                self.timer_resolution_status.last_error.is_some(),
-            )),
-            Page::Settings
-            | Page::SettingsAppearance
-            | Page::Win32PrioritySeparation
-            | Page::About => None,
-        }
-    }
 }
 
 impl Render for PowerLeafApp {
@@ -3947,7 +3780,7 @@ impl Render for PowerLeafApp {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .font_family("Segoe UI Variable")
+            .font_family(FONT_UI)
             .capture_any_mouse_down(cx.listener(|app, event: &gpui::MouseDownEvent, _, cx| {
                 handle_navigation_mouse_button(app, event.button, cx);
             }))
@@ -3981,7 +3814,7 @@ impl Render for PowerLeafApp {
                     .min_h(px(0.0))
                     .items_start()
                     .overflow_hidden()
-                    .child(self.render_navigation(cx))
+                    .child(self.render_navigation(window, cx))
                     .child(
                         v_flex()
                             .flex_1()
@@ -3989,8 +3822,7 @@ impl Render for PowerLeafApp {
                             .min_w(px(0.0))
                             .min_h(px(0.0))
                             .overflow_hidden()
-                            .child(page_scroll_area)
-                            .child(self.render_status_bar(cx)),
+                            .child(page_scroll_area),
                     ),
             )
             .child(if show_unsaved_popup {
@@ -4026,6 +3858,7 @@ impl PowerLeafApp {
                     .child(
                         div()
                             .flex_none()
+                            .font_family(FONT_BRAND)
                             .text_size(px(TEXT_CONTROL_SIZE))
                             .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -4042,7 +3875,6 @@ impl PowerLeafApp {
                             .child(t!("app.description").to_string()),
                     ),
             )
-            .child(self.render_title_bar_search(window, cx))
             .child(
                 h_flex()
                     .h_full()
@@ -4055,7 +3887,7 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_title_bar_search(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_sidebar_search(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let search_focused = self
             .inputs
             .dashboard_search
@@ -4064,11 +3896,13 @@ impl PowerLeafApp {
             .is_focused(window);
 
         div()
-            .id("titlebar-search")
+            .id("sidebar-search")
             .occlude()
-            .flex_1()
-            .min_w(px(160.0))
-            .max_w(px(420.0))
+            .w_full()
+            .h(px(CARD_ROW_HEIGHT))
+            .min_w(px(0.0))
+            .flex()
+            .items_center()
             .on_mouse_down_out(cx.listener(|_, _: &gpui::MouseDownEvent, window, cx| {
                 window.blur();
                 cx.notify();
@@ -4077,7 +3911,7 @@ impl PowerLeafApp {
             .into_any_element()
     }
 
-    fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_navigation(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut nav = v_flex()
             .w(px(NAV_PANE_WIDTH))
             .min_w(px(NAV_PANE_WIDTH))
@@ -4087,11 +3921,14 @@ impl PowerLeafApp {
             .bg(cx.theme().sidebar);
 
         let drawer = v_flex().flex_1().min_h(px(0.0)).overflow_y_scrollbar();
-        let mut drawer_items = v_flex().gap_1().p_2();
+        let mut drawer_items = v_flex()
+            .gap_1()
+            .p_3()
+            .child(self.render_sidebar_search(window, cx));
         let mut footer = v_flex()
             .flex_shrink_0()
             .gap_1()
-            .p_2()
+            .p_3()
             .border_t_1()
             .border_color(cx.theme().sidebar_border);
 
@@ -4099,8 +3936,7 @@ impl PowerLeafApp {
             let page = section.landing_page;
             let selected = self.page.section_landing_page() == page;
             let target = page;
-            let status = self.section_nav_status(section.pages);
-            let row = nav_row(page, selected, status, cx)
+            let row = nav_row(page, selected, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                     app.navigate_to(target, cx);
                 }))
@@ -4115,23 +3951,6 @@ impl PowerLeafApp {
 
         nav = nav.child(drawer.child(drawer_items)).child(footer);
         nav.into_any_element()
-    }
-
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        h_flex()
-            .h(px(STATUS_BAR_HEIGHT))
-            .items_center()
-            .gap_2()
-            .px_4()
-            .border_t_1()
-            .border_color(cx.theme().title_bar_border)
-            .bg(cx.theme().title_bar)
-            .text_size(px(TEXT_BODY_SIZE))
-            .line_height(px(TEXT_BODY_LINE_HEIGHT))
-            .child(text_muted(&self.status_message))
-            .child(div().text_color(cx.theme().muted_foreground).child("|"))
-            .child(text_muted(&self.decision.reason))
-            .into_any_element()
     }
 
     fn render_unsaved_popup(
@@ -4150,7 +3969,7 @@ impl PowerLeafApp {
             })
             .gap_2()
             .p_3()
-            .rounded(px(FLUENT_RADIUS_OVERLAY))
+            .rounded(px(BRAND_RADIUS_OVERLAY))
             .border_1()
             .border_color(rgb(accent_color()))
             .bg(cx.theme().popover)
@@ -4276,9 +4095,8 @@ impl PowerLeafApp {
                 Page::Activity,
                 Page::Schedule,
             ] {
-                let status = self.nav_status(target);
                 cards = cards.child(
-                    section_landing_card(target, status, cx)
+                    section_landing_card(target, cx)
                         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.navigate_to(target, cx);
                         }))
@@ -4288,9 +4106,8 @@ impl PowerLeafApp {
 
             cards = cards.child(section_title_text(t!("nav.advanced_group").to_string()));
             let target = Page::CoreParking;
-            let status = self.nav_status(target);
             cards = cards.child(
-                section_landing_card(target, status, cx)
+                section_landing_card(target, cx)
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                         app.navigate_to(target, cx);
                     }))
@@ -4299,9 +4116,8 @@ impl PowerLeafApp {
         } else if let Some(pages) = section_page.child_pages() {
             for page in pages {
                 let target = *page;
-                let status = self.nav_status(target);
                 cards = cards.child(
-                    section_landing_card(target, status, cx)
+                    section_landing_card(target, cx)
                         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.navigate_to(target, cx);
                         }))
@@ -4316,13 +4132,8 @@ impl PowerLeafApp {
     }
 
     fn render_dashboard_page_card(&self, target: Page, cx: &mut Context<Self>) -> gpui::Div {
-        let status = target
-            .child_pages()
-            .and_then(|pages| self.section_nav_status(pages))
-            .or_else(|| self.nav_status(target));
-
         dashboard_card_slot(
-            section_landing_card(target, status, cx)
+            section_landing_card(target, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                     app.navigate_to(target, cx);
                 }))
@@ -4331,13 +4142,8 @@ impl PowerLeafApp {
     }
 
     fn render_search_result_page_card(&self, target: Page, cx: &mut Context<Self>) -> gpui::Div {
-        let status = target
-            .child_pages()
-            .and_then(|pages| self.section_nav_status(pages))
-            .or_else(|| self.nav_status(target));
-
         dashboard_card_slot(
-            section_landing_card(target, status, cx)
+            section_landing_card(target, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
                     clear_input(&app.inputs.dashboard_search, window, cx);
                     window.blur();
@@ -4820,31 +4626,14 @@ impl PowerLeafApp {
             .child(chart.tick_margin(DASHBOARD_LINE_CHART_TICK_MARGIN))
     }
 
-    fn process_list_render_snapshot(&self) -> ProcessListRenderSnapshot {
-        let needs_rebuild = self
-            .process_list_render_cache
-            .borrow()
-            .as_ref()
-            .map_or(true, |cache| !cache.matches(self));
-        if needs_rebuild {
-            *self.process_list_render_cache.borrow_mut() = Some(process_list_render_cache(self));
-        }
-
-        self.process_list_render_cache
-            .borrow()
-            .as_ref()
-            .expect("process list render cache should exist after rebuild")
-            .snapshot()
-    }
-
     fn render_process_list_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let render_snapshot = self.process_list_render_snapshot();
-        let process_count = render_snapshot.process_count;
+        let render_data = process_list_render_data(self);
+        let process_count = render_data.process_count;
         let table_scroll_height = process_list_scroll_height(window);
-        let column_layout = render_snapshot.column_layout;
-        let table_width = render_snapshot.table_width;
-        let rendered_rows = render_snapshot.rows;
-        let item_sizes = render_snapshot.item_sizes;
+        let column_layout = render_data.column_layout;
+        let table_width = render_data.table_width;
+        let rendered_rows = render_data.rows;
+        let item_sizes = render_data.item_sizes;
         let horizontal_scroll_handle = window
             .use_keyed_state("process-list-horizontal-scroll", cx, |_, _| {
                 ScrollHandle::default()
@@ -5014,20 +4803,24 @@ impl PowerLeafApp {
             dropdown_list_height(PROCESS_LIST_OPTIONAL_COLUMNS.len()),
             window,
         );
+        let phase = dropdown_popup_phase(id, is_open, cx);
         let button_id = SharedString::from(format!("{id}-button"));
         let toggle_id = id.to_owned();
-        let button = control_button(Button::new(button_id))
-            .label(t!("process_list.column_visibility").to_string())
-            .icon(Icon::new(NavIcon::ChevronDown).with_size(px(14.0)))
-            .when(is_open, |button| {
-                button.primary().text_color(cx.theme().primary_foreground)
-            })
-            .on_click(cx.listener(move |app, _, _, cx| {
-                app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                    != Some(toggle_id.as_str()))
-                .then_some(toggle_id.clone());
-                cx.notify();
-            }));
+        let button = dropdown_select_control(
+            button_id,
+            t!("process_list.column_visibility").to_string(),
+            true,
+            is_open,
+            phase,
+            cx,
+        )
+        .on_click(cx.listener(move |app, _, _, cx| {
+            app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                != Some(toggle_id.as_str()))
+            .then_some(toggle_id.clone());
+            cx.stop_propagation();
+            cx.notify();
+        }));
         let options = process_list_column_visibility_dropdown_options(
             &self.hidden_process_list_columns,
             &self.settings,
@@ -5048,8 +4841,8 @@ impl PowerLeafApp {
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
             .child(dropdown_popup_or_empty(
-                is_open,
                 SharedString::from(id),
+                phase,
                 placement,
                 options,
                 cx,
@@ -9233,7 +9026,7 @@ impl PowerLeafApp {
         list.into_any_element()
     }
 
-    fn render_gpu_priority_status_card(&self) -> GroupBox {
+    fn render_gpu_priority_status_card(&self) -> gpui::Div {
         let status = &self.gpu_priority_status;
         let message = if status.message.is_empty() {
             t!("gpu_priority.not_checked").to_string()
@@ -9891,7 +9684,7 @@ impl PowerLeafApp {
         )
     }
 
-    fn render_launch_priority_status_card(&self) -> GroupBox {
+    fn render_launch_priority_status_card(&self) -> gpui::Div {
         let status_message = if self.launch_priority_status.message.is_empty() {
             t!("launch_priority.not_applied").to_string()
         } else {
@@ -11079,6 +10872,7 @@ impl PowerLeafApp {
 
         let control_id = SharedString::from(format!("{picker_id}-control"));
         let toggle_picker_id = picker_id.clone();
+        let phase = dropdown_popup_phase(picker_id.as_str(), is_open, cx);
 
         dropdown_select_container(DropdownSelectWidth::Compact)
             .child(
@@ -11087,6 +10881,7 @@ impl PowerLeafApp {
                     selected.label().to_string(),
                     enabled,
                     is_open,
+                    phase,
                     cx,
                 )
                 .when(enabled, |control| {
@@ -11103,8 +10898,8 @@ impl PowerLeafApp {
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
             .child(dropdown_popup_or_empty(
-                is_open,
                 SharedString::from(picker_id),
+                phase,
                 placement,
                 options,
                 cx,
@@ -11279,23 +11074,36 @@ impl PowerLeafApp {
                 options
             },
         );
-        let mut color_palette = h_flex().gap_2().flex_wrap();
+        let mut color_palette = v_flex().gap_2();
+        let mut color_row = h_flex().gap_2();
+        let mut color_row_len = 0;
         for color in ACCENT_PALETTE {
             let selected = self.settings.general.accent.source == AccentColorSource::Custom
                 && self.settings.general.accent.custom_color == color;
-            color_palette = color_palette.child(accent_swatch(color, selected).on_click(
-                cx.listener(move |app, _, window, cx| {
+            color_row = color_row.child(accent_swatch(color, selected).on_click(cx.listener(
+                move |app, _, window, cx| {
                     app.settings.general.accent.source = AccentColorSource::Custom;
                     app.settings.general.accent.custom_color = color;
                     app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
                     apply_appearance_settings(&app.settings.general, window, cx);
                     cx.notify();
-                }),
-            ));
+                },
+            )));
+            color_row_len += 1;
+            if color_row_len == ACCENT_SWATCHES_PER_ROW {
+                color_palette = color_palette.child(color_row);
+                color_row = h_flex().gap_2();
+                color_row_len = 0;
+            }
+        }
+        if color_row_len > 0 {
+            color_palette = color_palette.child(color_row);
         }
 
-        let mut recent_colors = h_flex().gap_2().flex_wrap();
-        let mut has_recent_colors = false;
+        let mut recent_colors = v_flex().gap_2();
+        let mut recent_row = h_flex().gap_2();
+        let mut recent_row_len = 0;
+        let mut recent_color_count = 0;
         for color in self
             .settings
             .general
@@ -11305,22 +11113,31 @@ impl PowerLeafApp {
             .copied()
             .filter(|color| !ACCENT_PALETTE.contains(color))
         {
-            has_recent_colors = true;
+            recent_color_count += 1;
             let selected = self.settings.general.accent.source == AccentColorSource::Custom
                 && self.settings.general.accent.custom_color == color;
-            recent_colors = recent_colors.child(accent_swatch(color, selected).on_click(
-                cx.listener(move |app, _, window, cx| {
+            recent_row = recent_row.child(accent_swatch(color, selected).on_click(cx.listener(
+                move |app, _, window, cx| {
                     app.settings.general.accent.source = AccentColorSource::Custom;
                     app.settings.general.accent.custom_color = color;
                     app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
                     apply_appearance_settings(&app.settings.general, window, cx);
                     cx.notify();
-                }),
-            ));
+                },
+            )));
+            recent_row_len += 1;
+            if recent_row_len == ACCENT_SWATCHES_PER_ROW {
+                recent_colors = recent_colors.child(recent_row);
+                recent_row = h_flex().gap_2();
+                recent_row_len = 0;
+            }
+        }
+        if recent_row_len > 0 {
+            recent_colors = recent_colors.child(recent_row);
         }
 
         let mut palette_content = v_flex().w_full().min_w(px(0.0)).gap_4();
-        if has_recent_colors {
+        if recent_color_count > 0 {
             palette_content = palette_content.child(accent_color_group(
                 t!("accent.recent_colors").to_string(),
                 recent_colors.into_any_element(),
@@ -11338,7 +11155,7 @@ impl PowerLeafApp {
             .w_full()
             .min_w(px(0.0))
             .overflow_hidden()
-            .rounded_sm()
+            .rounded(px(BRAND_RADIUS_CONTROL))
             .border_1()
             .border_color(rgb(border_color()))
             .bg(rgb(settings_card_color()))
@@ -11399,12 +11216,16 @@ impl PowerLeafApp {
                                     .items_center()
                                     .justify_center()
                                     .flex_shrink_0()
-                                    .rounded_sm()
+                                    .rounded(px(BRAND_RADIUS_CONTROL))
                                     .text_color(rgb(dim_text_color()))
                                     .opacity(0.72)
                                     .hover(|style| style.opacity(1.0))
                                     .cursor_pointer()
-                                    .child(collapsible_chevron_icon("accent-color", collapsed)),
+                                    .child(collapsible_chevron_icon_with_progress(
+                                        "accent-color",
+                                        collapsed,
+                                        accent_motion_progress,
+                                    )),
                             ),
                     ),
             );
@@ -11421,12 +11242,14 @@ impl PowerLeafApp {
                 .child(palette_content)
                 .into_any_element();
             accent_card = accent_card.child(if let Some(progress) = accent_motion_progress {
-                expanded_child_at_progress(palette, None, progress)
+                expanded_child_at_progress(
+                    palette,
+                    Some(accent_palette_animation_height(recent_color_count)),
+                    progress,
+                )
             } else {
-                animated_expanded_child("accent-palette-subcard", palette)
+                palette
             });
-        } else {
-            remember_expanded_child_hidden("accent-palette-subcard");
         }
 
         accent_card.into_any_element()
@@ -11755,7 +11578,7 @@ impl PowerLeafApp {
             .w_full()
             .min_w(px(0.0))
             .overflow_hidden()
-            .rounded_sm()
+            .rounded(px(BRAND_RADIUS_CONTROL))
             .border_1()
             .border_color(rgb(border_color()))
             .bg(rgb(settings_card_color()))
@@ -11956,7 +11779,7 @@ impl PowerLeafApp {
             .w_full()
             .min_w(px(0.0))
             .overflow_hidden()
-            .rounded_sm()
+            .rounded(px(BRAND_RADIUS_CONTROL))
             .border_1()
             .border_color(rgb(border_color()))
             .bg(rgb(settings_card_color()))
@@ -12014,6 +11837,7 @@ impl PowerLeafApp {
 
         let current_label =
             win32_priority_separation_field_label(field, self.win32_priority_separation_edit_value);
+        let phase = dropdown_popup_phase(picker_id, is_open, cx);
         dropdown_select_container(DropdownSelectWidth::Standard)
             .child(
                 dropdown_select_control(
@@ -12021,6 +11845,7 @@ impl PowerLeafApp {
                     current_label,
                     true,
                     is_open,
+                    phase,
                     cx,
                 )
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
@@ -12035,8 +11860,8 @@ impl PowerLeafApp {
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
             .child(dropdown_popup_or_empty(
-                is_open,
                 SharedString::from(picker_id),
+                phase,
                 placement,
                 options,
                 cx,
@@ -12607,6 +12432,7 @@ impl PowerLeafApp {
             );
         }
 
+        let phase = dropdown_popup_phase(picker_id, is_open, cx);
         dropdown_select_container(DropdownSelectWidth::Wide)
             .child(
                 dropdown_select_control(
@@ -12614,6 +12440,7 @@ impl PowerLeafApp {
                     processor_boost_mode_label(selected),
                     true,
                     is_open,
+                    phase,
                     cx,
                 )
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
@@ -12628,8 +12455,8 @@ impl PowerLeafApp {
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
             .child(dropdown_popup_or_empty(
-                is_open,
                 SharedString::from(picker_id),
+                phase,
                 placement,
                 options,
                 cx,
@@ -12681,6 +12508,7 @@ impl PowerLeafApp {
             }
         }
 
+        let phase = dropdown_popup_phase(id, is_open, cx);
         let target_plan_select = dropdown_select_container(DropdownSelectWidth::Wide)
             .child(
                 dropdown_select_control(
@@ -12688,6 +12516,7 @@ impl PowerLeafApp {
                     selected_text,
                     true,
                     is_open,
+                    phase,
                     cx,
                 )
                 .on_click(cx.listener(|app, _: &gpui::ClickEvent, _, cx| {
@@ -12703,8 +12532,8 @@ impl PowerLeafApp {
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
             .child(dropdown_popup_or_empty(
-                is_open,
                 SharedString::from(id),
+                phase,
                 placement,
                 options,
                 cx,
@@ -12722,7 +12551,7 @@ impl PowerLeafApp {
                 .px_4()
                 .relative()
                 .overflow_hidden()
-                .rounded_sm()
+                .rounded(px(BRAND_RADIUS_CONTROL))
                 .border_1()
                 .border_color(rgb(border_color()))
                 .bg(rgb(settings_card_color()))
@@ -12776,7 +12605,7 @@ impl PowerLeafApp {
 
     fn render_action_log_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let visible_entries = action_log_filtered_entries(
-            &self.action_log_entries,
+            self.action_log_entries.as_slice(),
             self.action_log_result_filter,
             self.action_log_feature_filter,
         );
@@ -12815,8 +12644,7 @@ impl PowerLeafApp {
                     .disabled(self.action_log_entries.is_empty())
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.background_automation.clear_action_log();
-                        app.action_log_entries.clear();
-                        app.action_log_entries.shrink_to_fit();
+                        app.action_log_entries = Arc::new(Vec::new());
                         app.action_log_page = 0;
                         cx.notify();
                     })),
@@ -12994,6 +12822,7 @@ impl PowerLeafApp {
         }
 
         let control_id = id.clone();
+        let phase = dropdown_popup_phase(id.as_str(), is_open, cx);
         dropdown_select_container(DropdownSelectWidth::Standard)
             .child(
                 dropdown_select_control(
@@ -13001,6 +12830,7 @@ impl PowerLeafApp {
                     selected_text,
                     true,
                     is_open,
+                    phase,
                     cx,
                 )
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
@@ -13016,8 +12846,8 @@ impl PowerLeafApp {
                 Rc::clone(&self.dropdown_anchor_bounds),
             ))
             .child(dropdown_popup_or_empty(
-                is_open,
                 SharedString::from(id),
+                phase,
                 placement,
                 options,
                 cx,
@@ -13464,19 +13294,13 @@ fn dropdown_popup_layer(placement: DropdownPlacement, interactive: bool) -> gpui
 }
 
 fn dropdown_popup_or_empty(
-    is_open: bool,
     id: SharedString,
+    phase: DropdownPopupPhase,
     placement: DropdownPlacement,
     options: Scrollable<gpui::Div>,
     cx: &mut Context<PowerLeafApp>,
 ) -> AnyElement {
-    dropdown_popup_for_phase(
-        dropdown_popup_phase(id.as_ref(), is_open, cx),
-        id,
-        placement,
-        options,
-        cx,
-    )
+    dropdown_popup_for_phase(phase, id, placement, options, cx)
 }
 
 fn dropdown_popup_or_empty_lazy(
@@ -13573,6 +13397,7 @@ fn dropdown_select_control(
     label: impl Into<SharedString>,
     enabled: bool,
     open: bool,
+    phase: DropdownPopupPhase,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let id: SharedString = id.into();
@@ -13597,7 +13422,7 @@ fn dropdown_select_control(
         .justify_between()
         .gap_2()
         .px_3()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .border_1()
         .border_color(border_color)
         .bg(rgb(dropdown_control_color()))
@@ -13619,7 +13444,7 @@ fn dropdown_select_control(
             cx.stop_propagation();
         })
         .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
-        .child(dropdown_chevron(id, open, cx))
+        .child(dropdown_chevron(id, open, phase, cx))
 }
 
 fn dropdown_surface(cx: &mut Context<PowerLeafApp>, max_height: Pixels) -> Scrollable<gpui::Div> {
@@ -13629,7 +13454,7 @@ fn dropdown_surface(cx: &mut Context<PowerLeafApp>, max_height: Pixels) -> Scrol
         .overflow_y_scrollbar()
         .gap_1()
         .p_2()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .border_1()
         .border_color(cx.theme().border)
         .bg(rgb(dropdown_surface_color()))
@@ -13648,7 +13473,7 @@ fn dropdown_option_row(
         .items_center()
         .pl_3()
         .pr_3()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .text_size(px(TEXT_CONTROL_SIZE))
         .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
         .text_color(cx.theme().popover_foreground)
@@ -13660,7 +13485,7 @@ fn dropdown_option_row(
                     .top(px(11.0))
                     .bottom(px(11.0))
                     .w(px(3.0))
-                    .rounded_sm()
+                    .rounded(px(BRAND_RADIUS_CONTROL))
                     .bg(cx.theme().accent),
             )
         })
@@ -13683,7 +13508,7 @@ fn dropdown_process_option_row(
         .gap_2()
         .pl_3()
         .pr_3()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .text_size(px(TEXT_CONTROL_SIZE))
         .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
         .text_color(cx.theme().popover_foreground)
@@ -13695,7 +13520,7 @@ fn dropdown_process_option_row(
                     .top(px(11.0))
                     .bottom(px(11.0))
                     .w(px(3.0))
-                    .rounded_sm()
+                    .rounded(px(BRAND_RADIUS_CONTROL))
                     .bg(cx.theme().accent),
             )
         })
@@ -13719,7 +13544,7 @@ fn process_icon_cell(icon: Option<&Arc<Image>>, cx: &mut Context<PowerLeafApp>) 
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_sm()
+                .rounded(px(BRAND_RADIUS_CONTROL))
                 .border_1()
                 .border_color(cx.theme().border)
                 .child(Icon::new(NavIcon::Frame).with_size(px(13.0)))
@@ -13741,23 +13566,44 @@ fn dropdown_empty_row(message: String, cx: &mut Context<PowerLeafApp>) -> gpui::
         .child(message)
 }
 
-fn dropdown_chevron(id: SharedString, open: bool, cx: &mut Context<PowerLeafApp>) -> AnyElement {
+fn dropdown_chevron(
+    id: SharedString,
+    open: bool,
+    phase: DropdownPopupPhase,
+    cx: &mut Context<PowerLeafApp>,
+) -> AnyElement {
     let start_turns = if open { 0.0 } else { 180.0 / 360.0 };
     let end_turns = if open { 180.0 / 360.0 } else { 0.0 };
     let icon = Icon::new(NavIcon::ChevronDown)
         .with_size(px(16.0))
         .text_color(cx.theme().muted_foreground);
-    let icon = with_state_change_motion(
-        icon,
-        SharedString::from(format!("dropdown-chevron-{id}")),
-        SharedString::from(open.to_string()),
-        MotionSpeed::Fast,
-        move |icon| icon.rotate(percentage(end_turns)),
-        move |icon, delta| {
-            let turns = start_turns + (end_turns - start_turns) * delta;
-            icon.rotate(percentage(turns))
-        },
-    );
+    let icon = match phase {
+        DropdownPopupPhase::Open(generation) => with_optional_motion(
+            icon,
+            SharedString::from(format!("dropdown-chevron-open-{id}-{generation}")),
+            MotionSpeed::Fast,
+            move |icon| icon.rotate(percentage(180.0 / 360.0)),
+            move |icon, delta| icon.rotate(percentage(delta * 180.0 / 360.0)),
+        ),
+        DropdownPopupPhase::Closing(generation) => with_optional_motion(
+            icon,
+            SharedString::from(format!("dropdown-chevron-close-{id}-{generation}")),
+            MotionSpeed::Fast,
+            move |icon| icon.rotate(percentage(0.0)),
+            move |icon, delta| icon.rotate(percentage((1.0 - delta) * 180.0 / 360.0)),
+        ),
+        DropdownPopupPhase::Hidden => with_state_change_motion(
+            icon,
+            SharedString::from(format!("dropdown-chevron-{id}")),
+            SharedString::from(open.to_string()),
+            MotionSpeed::Fast,
+            move |icon| icon.rotate(percentage(end_turns)),
+            move |icon, delta| {
+                let turns = start_turns + (end_turns - start_turns) * delta;
+                icon.rotate(percentage(turns))
+            },
+        ),
+    };
 
     div()
         .flex_none()
@@ -13770,11 +13616,7 @@ fn dropdown_chevron(id: SharedString, open: bool, cx: &mut Context<PowerLeafApp>
 }
 
 fn dropdown_control_color() -> u32 {
-    if ui_is_dark() {
-        0x2f2f2f
-    } else {
-        0xffffff
-    }
+    settings_card_color()
 }
 
 fn dropdown_control_border_color() -> u32 {
@@ -13786,11 +13628,7 @@ fn dropdown_control_border_color() -> u32 {
 }
 
 fn dropdown_control_hover_color() -> u32 {
-    if ui_is_dark() {
-        0x333333
-    } else {
-        0xf5f5f5
-    }
+    settings_card_hover_color()
 }
 
 fn dropdown_control_hover_border_color() -> u32 {
@@ -13802,27 +13640,15 @@ fn dropdown_control_hover_border_color() -> u32 {
 }
 
 fn dropdown_surface_color() -> u32 {
-    if ui_is_dark() {
-        0x2b2b2b
-    } else {
-        0xffffff
-    }
+    settings_card_color()
 }
 
 fn dropdown_selected_color() -> u32 {
-    if ui_is_dark() {
-        0x303030
-    } else {
-        0xeaeaea
-    }
+    panel_active_color()
 }
 
 fn dropdown_option_hover_color() -> u32 {
-    if ui_is_dark() {
-        0x333333
-    } else {
-        0xf5f5f5
-    }
+    settings_card_hover_color()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -14230,50 +14056,50 @@ fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
     };
 
     if is_dark {
-        theme.background = rgb(0x202020).into();
+        theme.background = rgb(accent_surface_color(COLOR_APP_BG, 0.04)).into();
         theme.foreground = rgb(COLOR_TEXT).into();
         theme.muted_foreground = rgb(COLOR_MUTED).into();
-        theme.title_bar = rgb(0x202020).into();
-        theme.title_bar_border = rgb(0x303030).into();
-        theme.sidebar = rgb(0x202020).into();
+        theme.title_bar = rgb(accent_surface_color(COLOR_TITLE_BAR, 0.05)).into();
+        theme.title_bar_border = rgb(COLOR_BORDER).into();
+        theme.sidebar = rgb(accent_surface_color(COLOR_TITLE_BAR, 0.06)).into();
         theme.sidebar_foreground = rgb(COLOR_TEXT).into();
-        theme.sidebar_border = rgb(0x303030).into();
-        theme.group_box = rgb(COLOR_SETTINGS_CARD).into();
+        theme.sidebar_border = rgb(COLOR_BORDER).into();
+        theme.group_box = rgb(settings_card_color()).into();
         theme.border = rgb(COLOR_BORDER).into();
-        theme.popover = rgb(0x2b2b2b).into();
+        theme.popover = rgb(settings_card_color()).into();
         theme.popover_foreground = rgb(COLOR_TEXT).into();
         theme.success_foreground = rgb(COLOR_SUCCESS).into();
-        theme.danger_foreground = rgb(0xff8a8a).into();
+        theme.danger_foreground = rgb(0xff8a73).into();
     } else {
-        theme.background = rgb(0xf9f9f9).into();
-        theme.foreground = rgb(0x1f1f1f).into();
-        theme.muted_foreground = rgb(0x616161).into();
-        theme.title_bar = rgb(0xf3f3f3).into();
-        theme.title_bar_border = rgb(0xe5e5e5).into();
-        theme.sidebar = rgb(0xf3f3f3).into();
-        theme.sidebar_foreground = rgb(0x1f1f1f).into();
-        theme.sidebar_border = rgb(0xe5e5e5).into();
-        theme.group_box = rgb(0xffffff).into();
-        theme.border = rgb(0xdedede).into();
-        theme.popover = rgb(0xffffff).into();
-        theme.popover_foreground = rgb(0x1f1f1f).into();
-        theme.success_foreground = rgb(0x107c10).into();
-        theme.danger_foreground = rgb(0xc42b1c).into();
+        theme.background = rgb(accent_surface_color(COLOR_LIGHT_APP_BG, 0.04)).into();
+        theme.foreground = rgb(COLOR_LIGHT_TEXT).into();
+        theme.muted_foreground = rgb(COLOR_LIGHT_MUTED).into();
+        theme.title_bar = rgb(accent_surface_color(COLOR_LIGHT_TITLE_BAR, 0.05)).into();
+        theme.title_bar_border = rgb(COLOR_LIGHT_BORDER).into();
+        theme.sidebar = rgb(accent_surface_color(COLOR_LIGHT_TITLE_BAR, 0.06)).into();
+        theme.sidebar_foreground = rgb(COLOR_LIGHT_TEXT).into();
+        theme.sidebar_border = rgb(COLOR_LIGHT_BORDER).into();
+        theme.group_box = rgb(settings_card_color()).into();
+        theme.border = rgb(COLOR_LIGHT_BORDER).into();
+        theme.popover = rgb(settings_card_color()).into();
+        theme.popover_foreground = rgb(COLOR_LIGHT_TEXT).into();
+        theme.success_foreground = rgb(0x366b22).into();
+        theme.danger_foreground = rgb(0x9b2f1f).into();
     }
     theme.primary = accent;
     theme.primary_hover = hover;
     theme.primary_active = active;
     theme.primary_foreground = foreground;
     if is_dark {
-        theme.secondary = rgb(0x3a3a3a).into();
-        theme.secondary_hover = rgb(0x454545).into();
-        theme.secondary_active = rgb(0x505050).into();
-        theme.secondary_foreground = rgb(0xf2f2f2).into();
+        theme.secondary = rgb(panel_active_color()).into();
+        theme.secondary_hover = rgb(settings_card_hover_color()).into();
+        theme.secondary_active = rgb(accent_surface_color(COLOR_PANEL_ACTIVE, 0.28)).into();
+        theme.secondary_foreground = rgb(COLOR_TEXT).into();
     } else {
-        theme.secondary = rgb(0xf3f3f3).into();
-        theme.secondary_hover = rgb(0xe9e9e9).into();
-        theme.secondary_active = rgb(0xdedede).into();
-        theme.secondary_foreground = rgb(0x1f1f1f).into();
+        theme.secondary = rgb(panel_active_color()).into();
+        theme.secondary_hover = rgb(settings_card_hover_color()).into();
+        theme.secondary_active = rgb(accent_surface_color(COLOR_LIGHT_PANEL_ACTIVE, 0.22)).into();
+        theme.secondary_foreground = rgb(COLOR_LIGHT_TEXT).into();
     }
     theme.accent = accent;
     theme.accent_foreground = foreground;
@@ -14289,47 +14115,9 @@ fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
 
 fn resolve_accent_color(settings: &AccentSettings) -> u32 {
     match settings.source {
-        AccentColorSource::Windows => windows_switch_accent_color().unwrap_or(COLOR_ACCENT),
+        AccentColorSource::Windows => COLOR_ACCENT,
         AccentColorSource::Custom => settings.custom_color,
     }
-}
-
-fn windows_accent_color() -> Option<u32> {
-    read_registry_dword(
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
-        "AccentColorMenu",
-    )
-    .or_else(|| read_registry_dword(r"Software\Microsoft\Windows\DWM", "AccentColor"))
-    .map(bgr_dword_to_rgb)
-    .or_else(|| {
-        read_registry_dword(r"Software\Microsoft\Windows\DWM", "ColorizationColor")
-            .map(|color| color & 0x00ff_ffff)
-    })
-    .filter(|color| *color != 0)
-}
-
-fn windows_switch_accent_color() -> Option<u32> {
-    read_registry_bytes(
-        r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent",
-        "AccentPalette",
-    )
-    .and_then(|palette| accent_palette_rgb(&palette, 1))
-    .or_else(windows_accent_color)
-}
-
-fn bgr_dword_to_rgb(color: u32) -> u32 {
-    let red = color & 0xff;
-    let green = (color >> 8) & 0xff;
-    let blue = (color >> 16) & 0xff;
-    (red << 16) | (green << 8) | blue
-}
-
-fn accent_palette_rgb(palette: &[u8], index: usize) -> Option<u32> {
-    let offset = index.checked_mul(4)?;
-    let red = *palette.get(offset)? as u32;
-    let green = *palette.get(offset + 1)? as u32;
-    let blue = *palette.get(offset + 2)? as u32;
-    Some((red << 16) | (green << 8) | blue).filter(|color| *color != 0)
 }
 
 fn accent_contrast_prefers_light(color: u32) -> bool {
@@ -14376,17 +14164,17 @@ fn ui_animations_enabled() -> bool {
 
 fn settings_card_color() -> u32 {
     if ui_is_dark() {
-        COLOR_SETTINGS_CARD
+        accent_surface_color(COLOR_SETTINGS_CARD, 0.06)
     } else {
-        0xffffff
+        accent_surface_color(COLOR_LIGHT_SETTINGS_CARD, 0.05)
     }
 }
 
 fn settings_card_hover_color() -> u32 {
     if ui_is_dark() {
-        COLOR_SETTINGS_CARD_HOVER
+        accent_surface_color(COLOR_SETTINGS_CARD_HOVER, 0.1)
     } else {
-        0xf5f5f5
+        accent_surface_color(COLOR_LIGHT_SETTINGS_CARD_HOVER, 0.08)
     }
 }
 
@@ -14418,7 +14206,7 @@ fn border_color() -> u32 {
     if ui_is_dark() {
         COLOR_BORDER
     } else {
-        0xdedede
+        COLOR_LIGHT_BORDER
     }
 }
 
@@ -14426,7 +14214,7 @@ fn primary_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_TEXT
     } else {
-        0x1f1f1f
+        COLOR_LIGHT_TEXT
     }
 }
 
@@ -14434,7 +14222,7 @@ fn muted_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_MUTED
     } else {
-        0x616161
+        COLOR_LIGHT_MUTED
     }
 }
 
@@ -14442,31 +14230,31 @@ fn dim_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_DIM
     } else {
-        0x777777
+        COLOR_LIGHT_DIM
     }
 }
 
 fn sidebar_selected_color() -> u32 {
     if ui_is_dark() {
-        COLOR_SIDEBAR_SELECTED
+        accent_surface_color(COLOR_SIDEBAR_SELECTED, 0.18)
     } else {
-        0xeaeaea
+        accent_surface_color(COLOR_LIGHT_SIDEBAR_SELECTED, 0.16)
     }
 }
 
 fn sidebar_hover_color() -> u32 {
     if ui_is_dark() {
-        COLOR_SIDEBAR_HOVER
+        accent_surface_color(COLOR_SIDEBAR_HOVER, 0.1)
     } else {
-        0xf5f5f5
+        accent_surface_color(COLOR_LIGHT_SIDEBAR_HOVER, 0.08)
     }
 }
 
 fn panel_active_color() -> u32 {
     if ui_is_dark() {
-        COLOR_PANEL_ACTIVE
+        accent_surface_color(COLOR_PANEL_ACTIVE, 0.2)
     } else {
-        0xf3f3f3
+        accent_surface_color(COLOR_LIGHT_PANEL_ACTIVE, 0.16)
     }
 }
 
@@ -14474,7 +14262,7 @@ fn success_bg_color() -> u32 {
     if ui_is_dark() {
         COLOR_SUCCESS_BG
     } else {
-        0xe7f3df
+        0xdfeccb
     }
 }
 
@@ -14482,7 +14270,7 @@ fn success_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_SUCCESS
     } else {
-        0x0f6c0f
+        0x356b22
     }
 }
 
@@ -14490,7 +14278,7 @@ fn warning_bg_color() -> u32 {
     if ui_is_dark() {
         COLOR_WARNING_BG
     } else {
-        0xfff4ce
+        0xf8e6b8
     }
 }
 
@@ -14498,7 +14286,7 @@ fn warning_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_WARNING
     } else {
-        0x8a6d1d
+        0x87611c
     }
 }
 
@@ -14525,12 +14313,12 @@ fn lerp_rgb(from: u32, to: u32, delta: f32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
-fn switch_accent_color() -> u32 {
-    accent_color()
+fn accent_surface_color(base: u32, amount: f32) -> u32 {
+    lerp_rgb(base, accent_color(), amount)
 }
 
-fn read_registry_dword(sub_key: &str, value_name: &str) -> Option<u32> {
-    read_registry_dword_root(HKEY_CURRENT_USER, sub_key, value_name)
+fn switch_accent_color() -> u32 {
+    accent_color()
 }
 
 fn read_registry_dword_root(root: HKEY, sub_key: &str, value_name: &str) -> Option<u32> {
@@ -14834,60 +14622,6 @@ fn registry_error_message(action: &str, status: u32) -> String {
     format!("Failed to {action}: Windows error {status}.")
 }
 
-fn read_registry_bytes(sub_key: &str, value_name: &str) -> Option<Vec<u8>> {
-    let sub_key = wide_null(sub_key);
-    let value_name = wide_null(value_name);
-    let mut key: HKEY = null_mut();
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            sub_key.as_ptr(),
-            0,
-            KEY_QUERY_VALUE,
-            &mut key,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return None;
-    }
-
-    let key = RegistryKey(key);
-    let mut value_type = 0;
-    let mut value_size = 0_u32;
-    let status = unsafe {
-        RegQueryValueExW(
-            key.0,
-            value_name.as_ptr(),
-            null_mut(),
-            &mut value_type,
-            null_mut(),
-            &mut value_size,
-        )
-    };
-    if status != ERROR_SUCCESS || value_type != REG_BINARY || value_size == 0 {
-        return None;
-    }
-
-    let mut value = vec![0_u8; value_size as usize];
-    let status = unsafe {
-        RegQueryValueExW(
-            key.0,
-            value_name.as_ptr(),
-            null_mut(),
-            &mut value_type,
-            value.as_mut_ptr(),
-            &mut value_size,
-        )
-    };
-
-    if status == ERROR_SUCCESS && value_type == REG_BINARY {
-        value.truncate(value_size as usize);
-        Some(value)
-    } else {
-        None
-    }
-}
-
 struct RegistryKey(HKEY);
 
 impl Drop for RegistryKey {
@@ -14928,7 +14662,7 @@ fn breadcrumb_label_base(label: String, max_width: Option<f32>) -> gpui::Div {
         .overflow_hidden()
         .px_1()
         .py(px(2.0))
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .text_size(px(TEXT_PAGE_TITLE_SIZE))
         .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
         .font_weight(gpui::FontWeight::SEMIBOLD);
@@ -15792,6 +15526,19 @@ fn set_card_hovered(id: String, hovered: bool, cx: &mut App) {
     }
 }
 
+fn clear_navigation_hovered() {
+    let Ok(mut state) = CARD_HOVER_STATE.lock() else {
+        return;
+    };
+
+    state
+        .hovered
+        .retain(|id| !id.starts_with("nav-row-") && !id.starts_with("section-card-"));
+    state
+        .changes
+        .retain(|id, _| !id.starts_with("nav-row-") && !id.starts_with("section-card-"));
+}
+
 fn animated_card_hover_layer(id: &str) -> AnyElement {
     let (hovered, animation_generation) = card_hover_snapshot(id);
     let target_opacity = if hovered { 1.0 } else { 0.0 };
@@ -15822,21 +15569,30 @@ fn animated_card_hover_layer(id: &str) -> AnyElement {
 
 fn collapsible_chevron_icon(id: impl Into<SharedString>, collapsed: bool) -> AnyElement {
     let id = id.into();
-    let start_turns = if collapsed { 90.0 / 360.0 } else { 0.0 };
-    let end_turns = if collapsed { 0.0 } else { 90.0 / 360.0 };
-    let icon = Icon::new(NavIcon::ChevronRight).with_size(px(16.0));
+    if let Some(progress) = expandable_motion_progress_snapshot(id.as_ref()) {
+        return chevron_right_at_progress(progress);
+    }
 
-    with_state_change_motion(
-        icon,
-        SharedString::from(format!("collapse-chevron-{id}")),
-        SharedString::from(collapsed.to_string()),
-        MotionSpeed::Fast,
-        move |icon| icon.rotate(percentage(end_turns)),
-        move |icon, delta| {
-            let turns = start_turns + (end_turns - start_turns) * delta;
-            icon.rotate(percentage(turns))
-        },
-    )
+    chevron_right_at_progress(if collapsed { 0.0 } else { 1.0 })
+}
+
+fn collapsible_chevron_icon_with_progress(
+    id: impl Into<SharedString>,
+    collapsed: bool,
+    progress: Option<f32>,
+) -> AnyElement {
+    if let Some(progress) = progress {
+        return chevron_right_at_progress(progress);
+    }
+
+    collapsible_chevron_icon(id, collapsed)
+}
+
+fn chevron_right_at_progress(progress: f32) -> AnyElement {
+    Icon::new(NavIcon::ChevronRight)
+        .with_size(px(16.0))
+        .rotate(percentage(progress.clamp(0.0, 1.0) * 90.0 / 360.0))
+        .into_any_element()
 }
 
 fn handle_navigation_mouse_button(
@@ -16164,10 +15920,24 @@ fn tooltip_lines(lines: impl IntoIterator<Item = impl Into<SharedString>>) -> Sh
     tooltip.into()
 }
 
-fn section_card(title: &str) -> GroupBox {
-    GroupBox::new()
-        .outline()
-        .title(section_title_label(title.to_owned()))
+fn branded_panel() -> gpui::Div {
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .relative()
+        .overflow_hidden()
+        .rounded(px(BRAND_RADIUS_SURFACE))
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .text_color(rgb(primary_text_color()))
+}
+
+fn section_card(title: &str) -> gpui::Div {
+    branded_panel()
+        .gap_3()
+        .p_4()
+        .child(section_title_text(title.to_owned()))
 }
 
 fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
@@ -16296,8 +16066,9 @@ fn rule_card_with_header_action(
         .id(card_id)
         .w_full()
         .min_w(px(0.0))
+        .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -16357,7 +16128,7 @@ fn rule_card_collapse_indicator(card_target: RuleCardTarget, collapsed: bool) ->
         .opacity(0.72)
         .cursor_pointer()
         .child(collapsible_chevron_icon(
-            SharedString::from(format!("rule-card-{card_target:?}")),
+            rule_card_body_motion_id(&card_target),
             collapsed,
         ))
         .into_any_element()
@@ -16483,7 +16254,7 @@ fn compact_rule_row(id: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
         .px_4()
         .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -16642,8 +16413,9 @@ fn setting_group_with_title_element_with_body_height(
         .id(SharedString::from(format!("setting-group-{target:?}")))
         .w_full()
         .min_w(px(0.0))
+        .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -16793,7 +16565,7 @@ fn setting_group_collapse_button(
         .items_center()
         .justify_center()
         .flex_shrink_0()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .text_color(rgb(dim_text_color()))
         .opacity(0.72)
         .hover(|style| style.opacity(1.0))
@@ -17207,7 +16979,7 @@ fn setting_action_card_element(
         .px_4()
         .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -17309,15 +17081,43 @@ fn setting_notice_card(
     rule_notice_row(id, notice)
 }
 
-fn stat_grid(rows: Vec<(String, String)>) -> GroupBox {
-    let mut list = DescriptionList::vertical()
-        .columns(1)
-        .bordered(false)
-        .label_width(px(160.0));
-    for (label, value) in rows {
-        list = list.item(label, text_muted(value).into_any_element(), 1);
+fn stat_grid(rows: Vec<(String, String)>) -> gpui::Div {
+    let mut list = v_flex().w_full().min_w(px(0.0));
+    for (index, (label, value)) in rows.into_iter().enumerate() {
+        list = list.child(
+            h_flex()
+                .w_full()
+                .min_w(px(0.0))
+                .min_h(px(36.0))
+                .items_center()
+                .gap_3()
+                .px_4()
+                .when(index > 0, |row| {
+                    row.border_t_1().border_color(rgb(border_color()))
+                })
+                .child(
+                    div()
+                        .w(px(172.0))
+                        .flex_shrink_0()
+                        .truncate()
+                        .text_color(rgb(dim_text_color()))
+                        .text_size(px(TEXT_BODY_SIZE))
+                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_color(rgb(primary_text_color()))
+                        .text_size(px(TEXT_BODY_SIZE))
+                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                        .child(value),
+                ),
+        );
     }
-    GroupBox::new().outline().child(list)
+    branded_panel().py_1().child(list)
 }
 
 fn dashboard_card_slot(card: AnyElement) -> gpui::Div {
@@ -17355,11 +17155,14 @@ fn dashboard_summary_card(
         .w_full()
         .min_w(px(0.0))
         .h(px(DASHBOARD_SUMMARY_CARD_HEIGHT))
+        .relative()
+        .overflow_hidden()
         .p_3()
         .gap_2()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
         .child(header)
         .child(
             div()
@@ -17773,37 +17576,12 @@ enum ProcessListRenderedRow {
     },
 }
 
-struct ProcessListRenderCache {
-    revision: u64,
+struct ProcessListRenderData {
     process_count: usize,
     column_layout: ProcessListColumnLayout,
     table_width: Pixels,
     rows: Rc<Vec<ProcessListRenderedRow>>,
     item_sizes: Rc<Vec<gpui::Size<Pixels>>>,
-}
-
-struct ProcessListRenderSnapshot {
-    process_count: usize,
-    column_layout: ProcessListColumnLayout,
-    table_width: Pixels,
-    rows: Rc<Vec<ProcessListRenderedRow>>,
-    item_sizes: Rc<Vec<gpui::Size<Pixels>>>,
-}
-
-impl ProcessListRenderCache {
-    fn matches(&self, app: &PowerLeafApp) -> bool {
-        self.revision == app.process_list_revision
-    }
-
-    fn snapshot(&self) -> ProcessListRenderSnapshot {
-        ProcessListRenderSnapshot {
-            process_count: self.process_count,
-            column_layout: self.column_layout.clone(),
-            table_width: self.table_width,
-            rows: Rc::clone(&self.rows),
-            item_sizes: Rc::clone(&self.item_sizes),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -17912,7 +17690,7 @@ fn process_list_rendered_rows(
     rendered_rows
 }
 
-fn process_list_render_cache(app: &PowerLeafApp) -> ProcessListRenderCache {
+fn process_list_render_data(app: &PowerLeafApp) -> ProcessListRenderData {
     let process_count = app.running_processes.len();
     let mut process_groups = process_list_groups(&app.running_processes);
     for group in &mut process_groups {
@@ -17945,8 +17723,7 @@ fn process_list_render_cache(app: &PowerLeafApp) -> ProcessListRenderCache {
         rows.len()
     ]);
 
-    ProcessListRenderCache {
-        revision: app.process_list_revision,
+    ProcessListRenderData {
         process_count,
         column_layout,
         table_width,
@@ -18272,7 +18049,6 @@ fn process_list_table_width(
 
 fn process_list_scroll_height(window: &Window) -> Pixels {
     let reserved_height = TITLE_BAR_HEIGHT
-        + STATUS_BAR_HEIGHT
         + PAGE_HEADER_HEIGHT
         + PAGE_CONTENT_VERTICAL_PADDING * 2.0
         + PROCESS_LIST_TOOLBAR_HEIGHT
@@ -18286,8 +18062,9 @@ fn process_list_surface() -> gpui::Div {
         .size_full()
         .min_w(px(0.0))
         .min_h(px(0.0))
+        .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -18387,7 +18164,7 @@ fn process_list_header_cell(
         .flex_shrink_0()
         .items_center()
         .gap(px(PROCESS_LIST_SORT_HEADER_GAP))
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .text_color(rgb(if active {
             accent_color()
         } else {
@@ -18479,7 +18256,7 @@ fn process_list_column_visibility_dropdown_options(
                 .min_h(px(DROPDOWN_OPTION_ROW_HEIGHT))
                 .items_center()
                 .px_2()
-                .rounded_sm()
+                .rounded(px(BRAND_RADIUS_CONTROL))
                 .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
                 .child(checkbox(
                     SharedString::from(format!(
@@ -19559,8 +19336,9 @@ fn action_log_list_surface() -> gpui::Div {
     v_flex()
         .w_full()
         .min_w(px(0.0))
+        .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -19706,7 +19484,7 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
             div()
                 .w(px(ACTION_LOG_RESULT_WIDTH))
                 .flex_shrink_0()
-                .child(action_log_result_tag(entry.result).into_any_element()),
+                .child(action_log_result_tag(entry.result)),
         )
         .child(
             div()
@@ -19751,14 +19529,18 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
         )
 }
 
-fn action_log_result_tag(result: ActionLogResult) -> Tag {
+fn action_log_result_tag(result: ActionLogResult) -> AnyElement {
     let label = action_log_result_label(result);
     match result {
         ActionLogResult::Applied | ActionLogResult::Restored => {
-            Tag::success().outline().child(label)
+            status_pill(label, success_bg_color(), success_text_color())
         }
-        ActionLogResult::Skipped => Tag::warning().outline().child(label),
-        ActionLogResult::Failed => Tag::danger().outline().child(label),
+        ActionLogResult::Skipped => status_pill(label, warning_bg_color(), warning_text_color()),
+        ActionLogResult::Failed => status_pill(
+            label,
+            if ui_is_dark() { 0x4a211b } else { 0xf5d2c7 },
+            if ui_is_dark() { 0xff8a73 } else { 0x9b2f1f },
+        ),
     }
 }
 
@@ -20001,7 +19783,7 @@ fn app_input(
         .flex_col()
         .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .border_1()
         .border_color(rgb(app_input_border_color(focused)))
         .bg(rgb(app_input_color(focused)))
@@ -20032,14 +19814,10 @@ fn app_input(
 }
 
 fn app_input_color(focused: bool) -> u32 {
-    if ui_is_dark() {
-        if focused {
-            0x1f1f1f
-        } else {
-            0x2f2f2f
-        }
+    if focused {
+        settings_card_hover_color()
     } else {
-        0xffffff
+        settings_card_color()
     }
 }
 
@@ -20095,7 +19873,7 @@ fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
         .flex_shrink_0()
         .px_2()
         .py(px(2.0))
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .bg(rgb(bg))
         .text_color(rgb(fg))
         .text_size(px(TEXT_LABEL_SIZE))
@@ -20141,7 +19919,7 @@ fn checkbox_box(
         .items_center()
         .justify_center()
         .flex_shrink_0()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .border_1()
         .border_color(rgb(border))
         .bg(rgb(bg));
@@ -20172,7 +19950,7 @@ fn rule_enable_checkbox(
         .items_center()
         .justify_center()
         .flex_shrink_0()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .hover(|style| style.opacity(0.86))
         .cursor_pointer()
         .child(checkbox_box(
@@ -20230,7 +20008,7 @@ fn checkbox(
                 .gap_2()
                 .py_1()
                 .px_1()
-                .rounded_sm()
+                .rounded(px(BRAND_RADIUS_CONTROL))
                 .text_color(rgb(text_color))
                 .text_size(px(TEXT_BODY_SIZE))
                 .line_height(px(TEXT_BODY_LINE_HEIGHT))
@@ -20270,30 +20048,21 @@ fn checkbox(
         .into_any_element()
 }
 
-#[derive(Clone, Copy)]
-enum NavStatus {
-    Enabled,
-    Disabled,
-    NeedsRules,
-    Failed,
-    Unsupported,
-}
-
 fn title_bar_controls(window: &Window, cx: &mut Context<PowerLeafApp>) -> AnyElement {
     let (maximize_id, maximize_icon) = if window.is_maximized() {
-        ("titlebar-restore", "\u{e923}")
+        ("titlebar-restore", "\u{25a3}")
     } else {
-        ("titlebar-maximize", "\u{e922}")
+        ("titlebar-maximize", "\u{25a1}")
     };
 
     h_flex()
         .id("titlebar-controls")
         .h_full()
         .flex_none()
-        .font_family("Segoe MDL2 Assets")
+        .font_family(FONT_UI)
         .child(title_bar_control_button(
             "titlebar-minimize",
-            "\u{e921}",
+            "\u{2212}",
             WindowControlArea::Min,
             false,
             cx,
@@ -20307,7 +20076,7 @@ fn title_bar_controls(window: &Window, cx: &mut Context<PowerLeafApp>) -> AnyEle
         ))
         .child(title_bar_control_button(
             "titlebar-close",
-            "\u{e8bb}",
+            "\u{00d7}",
             WindowControlArea::Close,
             true,
             cx,
@@ -20351,24 +20120,17 @@ fn title_bar_control_button(
         .into_any_element()
 }
 
-fn section_landing_card(
-    page: Page,
-    status: Option<NavStatus>,
-    cx: &mut Context<PowerLeafApp>,
-) -> gpui::Stateful<gpui::Div> {
-    let mut trailing = h_flex()
+fn section_landing_card(page: Page, cx: &mut Context<PowerLeafApp>) -> gpui::Stateful<gpui::Div> {
+    let trailing = h_flex()
         .items_center()
         .justify_end()
         .gap_2()
-        .flex_shrink_0();
-    if let Some(status) = status {
-        trailing = trailing.child(nav_status_indicator(status));
-    }
-    trailing = trailing.child(
-        Icon::new(NavIcon::ChevronRight)
-            .with_size(px(16.0))
-            .text_color(cx.theme().muted_foreground),
-    );
+        .flex_shrink_0()
+        .child(
+            Icon::new(NavIcon::ChevronRight)
+                .with_size(px(16.0))
+                .text_color(cx.theme().muted_foreground),
+        );
     let id = SharedString::from(format!("section-card-{page:?}"));
     let hover_id = id.to_string();
 
@@ -20384,7 +20146,7 @@ fn section_landing_card(
         .px_4()
         .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -20414,58 +20176,95 @@ fn section_landing_card(
 fn nav_row(
     page: Page,
     selected: bool,
-    status: Option<NavStatus>,
     cx: &mut Context<PowerLeafApp>,
 ) -> gpui::Stateful<gpui::Div> {
-    let row_bg = if selected {
-        rgb(sidebar_selected_color()).into()
-    } else {
-        cx.theme().transparent
-    };
-    let text_color = cx.theme().sidebar_foreground;
-    let hover_bg: gpui::Hsla = if selected {
-        rgb(sidebar_selected_color()).into()
-    } else {
-        rgb(sidebar_hover_color()).into()
-    };
+    let row_id = SharedString::from(format!("nav-row-{page:?}"));
+    let hover_id = row_id.to_string();
+    let (hovered, _) = card_hover_snapshot(&hover_id);
+    let bg_layer = animated_nav_row_bg(&hover_id, selected);
+    let content_opacity = if selected || hovered { 1.0 } else { 0.86 };
+    let hover_row_id = (!selected).then_some(hover_id.clone());
 
-    let row = h_flex()
-        .id(SharedString::from(format!("nav-row-{:?}", page)))
+    h_flex()
+        .id(row_id)
         .h(px(40.0))
         .w_full()
         .items_center()
         .gap_3()
         .pl(px(0.0))
         .pr(px(12.0))
-        .rounded(px(FLUENT_RADIUS_CONTROL))
-        .bg(row_bg)
-        .text_color(text_color)
-        .hover(move |style| style.bg(hover_bg))
+        .relative()
+        .overflow_hidden()
+        .rounded(px(BRAND_RADIUS_CONTROL))
+        .text_color(cx.theme().sidebar_foreground)
+        .on_hover({
+            let hover_row_id = hover_row_id.clone();
+            move |hovered, _, cx| {
+                if let Some(hover_id) = hover_row_id.as_ref() {
+                    set_card_hovered(hover_id.clone(), *hovered, cx);
+                }
+            }
+        })
         .cursor_pointer()
+        .child(bg_layer)
         .child(nav_selection_indicator(page, selected))
         .child(nav_icon(page, selected, cx))
         .child(
             div()
                 .flex_1()
                 .min_w(px(0.0))
+                .opacity(content_opacity)
                 .text_size(px(TEXT_CONTROL_SIZE))
                 .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
                 .truncate()
                 .child(page.label()),
-        );
+        )
+}
 
-    if let Some(status) = status {
-        row.child(nav_status_indicator(status))
-    } else {
-        row
-    }
+fn animated_nav_row_bg(id: &str, selected: bool) -> AnyElement {
+    let (hovered, _) = card_hover_snapshot(id);
+    let hover_active = !selected && hovered;
+    let selected_layer = div()
+        .absolute()
+        .inset_0()
+        .rounded(px(BRAND_RADIUS_CONTROL))
+        .bg(rgb(sidebar_selected_color()))
+        .opacity(if selected { 1.0 } else { 0.0 });
+    let hover_layer = div()
+        .absolute()
+        .inset_0()
+        .rounded(px(BRAND_RADIUS_CONTROL))
+        .bg(rgb(sidebar_hover_color()))
+        .opacity(if hover_active { 0.86 } else { 0.0 });
+
+    div()
+        .absolute()
+        .inset_0()
+        .child(with_optional_motion(
+            selected_layer,
+            SharedString::from(format!("nav-row-selected-{id}-{selected}")),
+            MotionSpeed::Fast,
+            |layer| layer,
+            move |layer, delta| layer.opacity(if selected { delta } else { 1.0 - delta }),
+        ))
+        .child(with_optional_motion(
+            hover_layer,
+            SharedString::from(format!("nav-row-hover-{id}-{hover_active}")),
+            MotionSpeed::Fast,
+            |layer| layer,
+            move |layer, delta| {
+                let progress = if hover_active { delta } else { 1.0 - delta };
+                layer.opacity(0.86 * progress)
+            },
+        ))
+        .into_any_element()
 }
 
 fn nav_selection_indicator(page: Page, selected: bool) -> AnyElement {
     let indicator = div()
         .w(px(3.0))
         .h(px(20.0))
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .bg(rgb(accent_color()))
         .opacity(if selected { 1.0 } else { 0.0 });
 
@@ -20480,107 +20279,6 @@ fn nav_selection_indicator(page: Page, selected: bool) -> AnyElement {
             indicator.h(px(height)).opacity(progress)
         },
     )
-}
-
-fn nav_status_indicator(status: NavStatus) -> AnyElement {
-    let (label, bg, fg, border) = match status {
-        NavStatus::Enabled => (
-            "ON".to_owned(),
-            success_bg_color(),
-            success_text_color(),
-            success_text_color(),
-        ),
-        NavStatus::Failed => (
-            "ERR".to_owned(),
-            if ui_is_dark() { 0x4a1f1f } else { 0xfde7e9 },
-            if ui_is_dark() { 0xff8a8a } else { 0xc42b1c },
-            if ui_is_dark() { 0x8f2f2f } else { 0xf1aeb5 },
-        ),
-        NavStatus::Disabled => (
-            "OFF".to_owned(),
-            if ui_is_dark() { 0x343434 } else { 0xf3f3f3 },
-            dim_text_color(),
-            border_color(),
-        ),
-        NavStatus::NeedsRules => (
-            "?".to_owned(),
-            warning_bg_color(),
-            warning_text_color(),
-            warning_text_color(),
-        ),
-        NavStatus::Unsupported => (
-            "N/A".to_owned(),
-            warning_bg_color(),
-            warning_text_color(),
-            warning_text_color(),
-        ),
-    };
-
-    h_flex()
-        .h(px(20.0))
-        .min_w(px(38.0))
-        .items_center()
-        .justify_center()
-        .rounded(px(10.0))
-        .border_1()
-        .border_color(rgb(border))
-        .bg(rgb(bg))
-        .px_2()
-        .text_size(px(TEXT_CAPTION_SIZE))
-        .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
-        .text_color(rgb(fg))
-        .child(label)
-        .into_any_element()
-}
-
-fn enabled_nav_status(enabled: bool) -> NavStatus {
-    if enabled {
-        NavStatus::Enabled
-    } else {
-        NavStatus::Disabled
-    }
-}
-
-fn rule_based_nav_status(enabled: bool, rule_count: usize) -> NavStatus {
-    if enabled && rule_count == 0 {
-        NavStatus::NeedsRules
-    } else {
-        enabled_nav_status(enabled)
-    }
-}
-
-fn process_nav_status(enabled: bool, failed_count: usize, has_error: bool) -> NavStatus {
-    if failed_count > 0 || has_error {
-        NavStatus::Failed
-    } else {
-        enabled_nav_status(enabled)
-    }
-}
-
-fn process_rule_nav_status(
-    enabled: bool,
-    rule_count: usize,
-    failed_count: usize,
-    has_error: bool,
-) -> NavStatus {
-    if failed_count > 0 || has_error {
-        NavStatus::Failed
-    } else {
-        rule_based_nav_status(enabled, rule_count)
-    }
-}
-
-fn feature_nav_status(
-    enabled: bool,
-    unsupported: bool,
-    failed_count: usize,
-    has_error: bool,
-) -> NavStatus {
-    if unsupported {
-        NavStatus::Unsupported
-    } else {
-        process_nav_status(enabled, failed_count, has_error)
-    }
 }
 
 fn nav_icon(page: Page, selected: bool, cx: &mut Context<PowerLeafApp>) -> AnyElement {
@@ -20730,7 +20428,7 @@ fn accent_swatch(color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
         .id(SharedString::from(format!("accent-swatch-{color:06x}")))
         .size(px(42.0))
         .flex_shrink_0()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .border_1()
         .border_color(rgb(border))
         .bg(rgb(color))
@@ -20746,6 +20444,30 @@ fn accent_color_group(title: impl Into<SharedString>, swatches: AnyElement) -> g
         .gap_2()
         .child(section_title_label(title))
         .child(swatches)
+}
+
+fn accent_palette_animation_height(recent_color_count: usize) -> f32 {
+    let palette_rows = accent_swatch_row_count(ACCENT_PALETTE.len());
+    let mut height = px_spacing(6) + accent_color_group_height(palette_rows);
+
+    if recent_color_count > 0 {
+        height +=
+            px_spacing(4) + accent_color_group_height(accent_swatch_row_count(recent_color_count));
+    }
+
+    height
+}
+
+fn accent_color_group_height(row_count: usize) -> f32 {
+    let row_count = row_count.max(1);
+    TEXT_BODY_LINE_HEIGHT
+        + px_spacing(2)
+        + 42.0 * row_count as f32
+        + px_spacing(2) * row_count.saturating_sub(1) as f32
+}
+
+fn accent_swatch_row_count(swatch_count: usize) -> usize {
+    swatch_count.div_ceil(ACCENT_SWATCHES_PER_ROW)
 }
 
 fn feature_toggle_switch(
@@ -20800,7 +20522,7 @@ fn feature_toggle_switch_inner(
         .px_4()
         .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -20901,7 +20623,7 @@ fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
         .flex()
         .items_center()
         .justify_center()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_CONTROL))
         .border_1()
         .border_color(rgb(app_input_border_color(false)))
         .bg(rgb(app_input_color(false)))
@@ -20970,12 +20692,17 @@ fn text_warning(value: impl Into<SharedString>) -> gpui::Div {
 }
 
 fn text_danger(value: impl Into<SharedString>) -> gpui::Div {
-    div().child(
-        Tag::danger()
-            .outline()
-            .text_size(px(TEXT_BODY_SIZE))
-            .child(value.into()),
-    )
+    div()
+        .px_2()
+        .py_1()
+        .rounded(px(BRAND_RADIUS_CONTROL))
+        .border_1()
+        .border_color(rgb(if ui_is_dark() { 0x6a2a22 } else { 0xd19a88 }))
+        .bg(rgb(if ui_is_dark() { 0x321a16 } else { 0xf8dfd5 }))
+        .text_color(rgb(if ui_is_dark() { 0xff8a73 } else { 0x9b2f1f }))
+        .text_size(px(TEXT_BODY_SIZE))
+        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+        .child(value.into())
 }
 
 fn processor_power_column_header(value: impl Into<SharedString>) -> gpui::Div {
@@ -21032,7 +20759,7 @@ fn processor_power_setting_row(
         .px_4()
         .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -21140,7 +20867,7 @@ fn win32_priority_row(
         .px_4()
         .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
@@ -21580,7 +21307,7 @@ where
         .px_4()
         .relative()
         .overflow_hidden()
-        .rounded_sm()
+        .rounded(px(BRAND_RADIUS_SURFACE))
         .border_1()
         .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))

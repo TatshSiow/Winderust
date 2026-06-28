@@ -1,7 +1,9 @@
 use std::{collections::BTreeSet, path::Path};
 
+use crate::win_util::WinHandle;
+
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HWND, LPARAM, MAX_PATH, POINT},
+    Foundation::{HWND, LPARAM, MAX_PATH, POINT},
     System::{
         ProcessStatus::K32GetModuleFileNameExW,
         Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
@@ -82,15 +84,15 @@ unsafe fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
     if process.is_null() {
         return None;
     }
+    let process = WinHandle::new(process);
 
     let mut buffer = [0u16; MAX_PATH as usize];
     let len = K32GetModuleFileNameExW(
-        process,
+        process.raw(),
         std::ptr::null_mut(),
         buffer.as_mut_ptr(),
         buffer.len() as u32,
     );
-    CloseHandle(process);
 
     if len == 0 {
         return None;

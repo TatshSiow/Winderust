@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use crate::foreground::list_processes;
+use crate::{foreground::list_process_ids, win_util::WinHandle};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE},
+    Foundation::HANDLE,
     NetworkManagement::{
         IpHelper::{FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2},
         Ndis::{IfOperStatusUp, MediaConnectStateConnected},
@@ -195,8 +195,8 @@ fn read_system_io_counters() -> Option<IoCounterSample> {
     let mut write_bytes = 0u64;
     let mut sampled_any = false;
 
-    for process in list_processes().ok()? {
-        let Some(counters) = process_io_counters(process.id) else {
+    for process_id in list_process_ids().ok()? {
+        let Some(counters) = process_io_counters(process_id) else {
             continue;
         };
         read_bytes = read_bytes.saturating_add(counters.ReadTransferCount);
@@ -221,11 +221,8 @@ fn process_io_counters(process_id: u32) -> Option<IO_COUNTERS> {
         return None;
     }
 
-    let counters = process_io_counters_for_handle(process);
-    unsafe {
-        CloseHandle(process);
-    }
-    counters
+    let process = WinHandle::new(process);
+    process_io_counters_for_handle(process.raw())
 }
 
 fn process_io_counters_for_handle(process: HANDLE) -> Option<IO_COUNTERS> {
