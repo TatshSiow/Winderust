@@ -102,7 +102,7 @@ use crate::{
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND};
 use windows_sys::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD,
+    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_BINARY, REG_DWORD,
     REG_OPTION_NON_VOLATILE,
 };
 use windows_sys::Win32::UI::Controls::Dialogs::{
@@ -178,6 +178,11 @@ const WIN32_PRIORITY_CONTROL_SUB_KEY: &str = "SYSTEM\\CurrentControlSet\\Control
 const WIN32_PRIORITY_SEPARATION_VALUE: &str = "Win32PrioritySeparation";
 const POWERLEAF_REGISTRY_SUB_KEY: &str = "Software\\PowerLeaf";
 const WIN32_PRIORITY_SEPARATION_BACKUP_VALUE: &str = "Win32PrioritySeparationBackup";
+const DWM_REGISTRY_SUB_KEY: &str = "Software\\Microsoft\\Windows\\DWM";
+const DWM_ACCENT_COLOR_VALUE: &str = "AccentColor";
+const EXPLORER_ACCENT_REGISTRY_SUB_KEY: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Accent";
+const EXPLORER_ACCENT_PALETTE_VALUE: &str = "AccentPalette";
 const RULE_TITLE_TEXT_SIZE: f32 = 14.0;
 const RULE_TITLE_LINE_HEIGHT: f32 = 20.0;
 const TEXT_PAGE_TITLE_SIZE: f32 = 28.0;
@@ -303,6 +308,7 @@ const ACCENT_PALETTE: [u32; 48] = [
 const ACCENT_SWATCHES_PER_ROW: usize = 8;
 
 static UI_ACCENT_COLOR: AtomicU32 = AtomicU32::new(COLOR_ACCENT);
+static UI_ACCENT_TINT_SURFACES: AtomicBool = AtomicBool::new(false);
 static UI_DARK_MODE: AtomicBool = AtomicBool::new(true);
 static UI_ANIMATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -419,6 +425,7 @@ pub struct PowerLeafApp {
     smart_trim_status: SmartTrimSnapshot,
     timer_resolution_status: TimerResolutionSnapshot,
     action_log_entries: Arc<Vec<ActionLogEntry>>,
+    last_appearance_change_generation: u64,
     action_log_result_filter: ActionLogResultFilter,
     action_log_feature_filter: ActionLogFeatureFilter,
     action_log_page: usize,
@@ -1046,6 +1053,7 @@ impl PowerLeafApp {
             smart_trim_status: SmartTrimSnapshot::default(),
             timer_resolution_status: initial_timer_resolution_status,
             action_log_entries: Arc::new(Vec::new()),
+            last_appearance_change_generation: 0,
             action_log_result_filter: ActionLogResultFilter::All,
             action_log_feature_filter: ActionLogFeatureFilter::All,
             action_log_page: 0,
@@ -1468,7 +1476,7 @@ impl PowerLeafApp {
             Timer::after(APP_TICK_INTERVAL).await;
             let _ = cx.update(move |window, app_cx| {
                 if let Some(this) = this.upgrade() {
-                    this.update(app_cx, |app, cx| match app.tick(window) {
+                    this.update(app_cx, |app, cx| match app.tick(window, cx) {
                         TickOutcome::Continue { changed } => {
                             app.schedule_tick(window, cx);
                             if changed {
@@ -2441,7 +2449,7 @@ impl PowerLeafApp {
 
     fn refresh_after_tray_restore(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.next_check = Instant::now();
-        match self.tick(window) {
+        match self.tick(window, cx) {
             TickOutcome::Continue { changed } => {
                 self.schedule_tick(window, cx);
                 if changed {
@@ -2452,7 +2460,7 @@ impl PowerLeafApp {
         }
     }
 
-    fn tick(&mut self, window: &mut Window) -> TickOutcome {
+    fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) -> TickOutcome {
         if tray::take_quit_requested() {
             tray::set_hide_on_close(false);
             self.tray_icon = None;
@@ -2551,6 +2559,13 @@ impl PowerLeafApp {
             &background_status.action_log_entries,
         ) {
             self.action_log_entries = background_status.action_log_entries;
+            changed = true;
+        }
+
+        if self.last_appearance_change_generation != background_status.appearance_change_generation
+        {
+            self.last_appearance_change_generation = background_status.appearance_change_generation;
+            apply_appearance_settings(&self.settings.general, window, cx);
             changed = true;
         }
 
@@ -14033,6 +14048,10 @@ fn apply_appearance_settings(general: &config::GeneralSettings, window: &mut Win
 fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
     let accent_color = resolve_accent_color(settings);
     UI_ACCENT_COLOR.store(accent_color, Ordering::Relaxed);
+    UI_ACCENT_TINT_SURFACES.store(
+        settings.source == AccentColorSource::Custom,
+        Ordering::Relaxed,
+    );
     let accent: gpui::Hsla = rgb(accent_color).into();
 
     let theme = gpui_component::Theme::global_mut(cx);
@@ -14115,9 +14134,38 @@ fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
 
 fn resolve_accent_color(settings: &AccentSettings) -> u32 {
     match settings.source {
-        AccentColorSource::Windows => COLOR_ACCENT,
+        AccentColorSource::Windows => read_windows_accent_color().unwrap_or(COLOR_ACCENT),
         AccentColorSource::Custom => settings.custom_color,
     }
+}
+
+fn read_windows_accent_color() -> Option<u32> {
+    read_windows_accent_palette_tint().or_else(|| {
+        read_registry_dword_root(
+            HKEY_CURRENT_USER,
+            DWM_REGISTRY_SUB_KEY,
+            DWM_ACCENT_COLOR_VALUE,
+        )
+        .map(windows_abgr_to_rgb)
+    })
+}
+
+fn read_windows_accent_palette_tint() -> Option<u32> {
+    read_registry_binary_root(
+        HKEY_CURRENT_USER,
+        EXPLORER_ACCENT_REGISTRY_SUB_KEY,
+        EXPLORER_ACCENT_PALETTE_VALUE,
+    )
+    .and_then(|palette| windows_accent_palette_tint(&palette))
+}
+
+fn windows_accent_palette_tint(palette: &[u8]) -> Option<u32> {
+    let color = palette.get(4..8)?;
+    Some(((color[0] as u32) << 16) | ((color[1] as u32) << 8) | color[2] as u32)
+}
+
+fn windows_abgr_to_rgb(color: u32) -> u32 {
+    ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff)
 }
 
 fn accent_contrast_prefers_light(color: u32) -> bool {
@@ -14129,6 +14177,10 @@ fn accent_contrast_prefers_light(color: u32) -> bool {
 
 fn accent_color() -> u32 {
     UI_ACCENT_COLOR.load(Ordering::Relaxed)
+}
+
+fn accent_tints_surfaces() -> bool {
+    UI_ACCENT_TINT_SURFACES.load(Ordering::Relaxed)
 }
 
 fn ui_is_dark() -> bool {
@@ -14314,7 +14366,15 @@ fn lerp_rgb(from: u32, to: u32, delta: f32) -> u32 {
 }
 
 fn accent_surface_color(base: u32, amount: f32) -> u32 {
-    lerp_rgb(base, accent_color(), amount)
+    accent_surface_color_with_tint(base, amount, accent_color(), accent_tints_surfaces())
+}
+
+fn accent_surface_color_with_tint(base: u32, amount: f32, accent: u32, tint: bool) -> u32 {
+    if tint {
+        lerp_rgb(base, accent, amount)
+    } else {
+        base
+    }
 }
 
 fn switch_accent_color() -> u32 {
@@ -14346,6 +14406,51 @@ fn read_registry_dword_root(root: HKEY, sub_key: &str, value_name: &str) -> Opti
     };
 
     if status == ERROR_SUCCESS && value_type == REG_DWORD && value_size == size_of::<u32>() as u32 {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn read_registry_binary_root(root: HKEY, sub_key: &str, value_name: &str) -> Option<Vec<u8>> {
+    let sub_key = wide_null(sub_key);
+    let value_name = wide_null(value_name);
+    let mut key: HKEY = null_mut();
+    let status = unsafe { RegOpenKeyExW(root, sub_key.as_ptr(), 0, KEY_QUERY_VALUE, &mut key) };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+
+    let key = RegistryKey(key);
+    let mut value_type = 0;
+    let mut value_size = 0_u32;
+    let status = unsafe {
+        RegQueryValueExW(
+            key.0,
+            value_name.as_ptr(),
+            null_mut(),
+            &mut value_type,
+            null_mut(),
+            &mut value_size,
+        )
+    };
+    if status != ERROR_SUCCESS || value_type != REG_BINARY || value_size == 0 {
+        return None;
+    }
+
+    let mut value = vec![0; value_size as usize];
+    let status = unsafe {
+        RegQueryValueExW(
+            key.0,
+            value_name.as_ptr(),
+            null_mut(),
+            &mut value_type,
+            value.as_mut_ptr(),
+            &mut value_size,
+        )
+    };
+    if status == ERROR_SUCCESS && value_type == REG_BINARY {
+        value.truncate(value_size as usize);
         Some(value)
     } else {
         None
@@ -23709,6 +23814,32 @@ fn wide_nulls(value: &str) -> Vec<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_accent_abgr_converts_to_rgb() {
+        assert_eq!(windows_abgr_to_rgb(0xffb16300), 0x0063b1);
+    }
+
+    #[test]
+    fn windows_accent_palette_uses_second_tint() {
+        let palette = [
+            0xc6, 0xe7, 0xeb, 0x00, 0xa5, 0xc7, 0xd1, 0x00, 0x66, 0x8f, 0xa7, 0x00,
+        ];
+        assert_eq!(windows_accent_palette_tint(&palette), Some(0xa5c7d1));
+        assert_eq!(windows_accent_palette_tint(&palette[..4]), None);
+    }
+
+    #[test]
+    fn system_accent_keeps_neutral_surfaces() {
+        assert_eq!(
+            accent_surface_color_with_tint(COLOR_APP_BG, 0.5, 0xffffff, false),
+            COLOR_APP_BG
+        );
+        assert_ne!(
+            accent_surface_color_with_tint(COLOR_APP_BG, 0.5, 0xffffff, true),
+            COLOR_APP_BG
+        );
+    }
 
     #[test]
     fn cpu_frequency_graph_uses_base_clock_as_floor() {

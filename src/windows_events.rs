@@ -28,11 +28,11 @@ use windows_sys::Win32::{
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
             PeekMessageW, PostThreadMessageW, RegisterClassW, TranslateMessage,
-            DEVICE_NOTIFY_WINDOW_HANDLE, EVENT_OBJECT_CREATE, EVENT_SYSTEM_FOREGROUND,
-            HWND_MESSAGE, MSG, OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
-            PBT_APMRESUMESTANDBY, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE,
-            PM_NOREMOVE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_POWERBROADCAST,
-            WM_QUIT, WM_WTSSESSION_CHANGE, WNDCLASSW,
+            DEVICE_NOTIFY_WINDOW_HANDLE, EVENT_OBJECT_CREATE, EVENT_SYSTEM_FOREGROUND, MSG,
+            OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL, PBT_APMRESUMESTANDBY,
+            PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE, PM_NOREMOVE,
+            WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_POWERBROADCAST, WM_QUIT,
+            WM_SETTINGCHANGE, WM_WTSSESSION_CHANGE, WNDCLASSW,
         },
     },
 };
@@ -43,6 +43,7 @@ pub enum WindowsAutomationEvent {
     WindowCreated,
     PowerChanged,
     SessionChanged,
+    AppearanceChanged,
 }
 
 type EventCallback = Arc<dyn Fn(WindowsAutomationEvent) + Send + Sync>;
@@ -191,7 +192,7 @@ fn create_event_window() -> HWND {
             0,
             0,
             0,
-            HWND_MESSAGE,
+            std::ptr::null_mut(),
             std::ptr::null_mut(),
             module as _,
             std::ptr::null(),
@@ -246,6 +247,10 @@ unsafe extern "system" fn event_window_proc(
         }
         WM_WTSSESSION_CHANGE => {
             notify_event(WindowsAutomationEvent::SessionChanged);
+            0
+        }
+        WM_SETTINGCHANGE => {
+            notify_event(WindowsAutomationEvent::AppearanceChanged);
             0
         }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },

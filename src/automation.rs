@@ -13,7 +13,10 @@ use crate::{
     },
     affinity::{CpuAffinityManager, CpuAffinitySnapshot},
     background_cpu::BackgroundCpuRestrictionManager,
-    config::{PowerPlanSettings, ProcessIoPriority, Settings},
+    config::{
+        AccentColorSource, AnimationMode, AppThemeMode, PowerPlanSettings, ProcessIoPriority,
+        Settings,
+    },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
@@ -88,6 +91,7 @@ pub struct AutomationStatusSnapshot {
     pub smart_trim: SmartTrimSnapshot,
     pub timer_resolution: TimerResolutionSnapshot,
     pub action_log_entries: Arc<Vec<ActionLogEntry>>,
+    pub appearance_change_generation: u64,
 }
 
 struct SharedAutomationState {
@@ -112,6 +116,7 @@ struct AutomationWorkerState {
     smart_trim_status: SmartTrimSnapshot,
     timer_resolution_status: TimerResolutionSnapshot,
     action_log_entries: Arc<Vec<ActionLogEntry>>,
+    appearance_change_generation: u64,
     pending_auto_exclusions: PendingAutoExclusions,
     app_suspension_freeze_requests: Vec<String>,
     smart_trim_now_requested: bool,
@@ -134,6 +139,7 @@ struct AutomationWakeEvents {
     window_created: bool,
     power_changed: bool,
     session_changed: bool,
+    appearance_changed: bool,
     input_activity: bool,
     app_switch: bool,
     app_switch_mouse_click: bool,
@@ -146,6 +152,7 @@ impl AutomationWakeEvents {
             WindowsAutomationEvent::WindowCreated => self.window_created = true,
             WindowsAutomationEvent::PowerChanged => self.power_changed = true,
             WindowsAutomationEvent::SessionChanged => self.session_changed = true,
+            WindowsAutomationEvent::AppearanceChanged => self.appearance_changed = true,
         }
     }
 }
@@ -170,6 +177,7 @@ impl BackgroundAutomation {
                 smart_trim_status: SmartTrimSnapshot::default(),
                 timer_resolution_status: TimerResolutionSnapshot::default(),
                 action_log_entries: Arc::new(Vec::new()),
+                appearance_change_generation: 0,
                 pending_auto_exclusions: PendingAutoExclusions::default(),
                 app_suspension_freeze_requests: Vec::new(),
                 smart_trim_now_requested: false,
@@ -228,6 +236,7 @@ impl BackgroundAutomation {
                 smart_trim: state.smart_trim_status.clone(),
                 timer_resolution: state.timer_resolution_status.clone(),
                 action_log_entries: state.action_log_entries.clone(),
+                appearance_change_generation: state.appearance_change_generation,
             })
             .unwrap_or_default()
     }
@@ -883,6 +892,9 @@ fn notify_windows_event(shared: &SharedAutomationState, event: WindowsAutomation
             return;
         }
 
+        if event == WindowsAutomationEvent::AppearanceChanged {
+            state.appearance_change_generation = state.appearance_change_generation.wrapping_add(1);
+        }
         state.pending_events.insert_windows_event(event);
         state.change_generation = state.change_generation.wrapping_add(1);
         shared.changed.notify_one();
@@ -1151,29 +1163,41 @@ fn automation_worker_required(settings: &Settings) -> bool {
 }
 
 fn windows_event_watcher_required(settings: &Settings) -> bool {
-    settings.general.enabled
-        && (power_plan_checks_required(settings)
-            || settings.app_suspension.enabled
-            || process_appearance_scan_required(settings))
+    appearance_events_required(settings)
+        || (settings.general.enabled
+            && (power_plan_checks_required(settings)
+                || settings.app_suspension.enabled
+                || process_appearance_scan_required(settings)))
 }
 
 fn windows_event_wake_required(settings: &Settings, event: WindowsAutomationEvent) -> bool {
-    if !settings.general.enabled {
-        return false;
+    if event == WindowsAutomationEvent::AppearanceChanged {
+        return appearance_events_required(settings);
     }
 
-    match event {
-        WindowsAutomationEvent::ForegroundChanged => {
-            power_plan_checks_required(settings)
-                || settings.app_suspension.enabled
-                || process_appearance_scan_required(settings)
+    if settings.general.enabled {
+        match event {
+            WindowsAutomationEvent::ForegroundChanged => {
+                power_plan_checks_required(settings)
+                    || settings.app_suspension.enabled
+                    || process_appearance_scan_required(settings)
+            }
+            WindowsAutomationEvent::WindowCreated => {
+                settings.app_suspension.enabled || process_appearance_scan_required(settings)
+            }
+            WindowsAutomationEvent::PowerChanged => power_plan_checks_required(settings),
+            WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),
+            WindowsAutomationEvent::AppearanceChanged => false,
         }
-        WindowsAutomationEvent::WindowCreated => {
-            settings.app_suspension.enabled || process_appearance_scan_required(settings)
-        }
-        WindowsAutomationEvent::PowerChanged => power_plan_checks_required(settings),
-        WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),
+    } else {
+        false
     }
+}
+
+fn appearance_events_required(settings: &Settings) -> bool {
+    settings.general.theme_mode == AppThemeMode::System
+        || settings.general.accent.source == AccentColorSource::Windows
+        || settings.general.animation_mode == AnimationMode::System
 }
 
 fn activity_power_plan_required(settings: &Settings) -> bool {
@@ -1988,6 +2012,23 @@ mod tests {
             WindowsAutomationEvent::WindowCreated
         ));
         assert!(!process_appearance_scan_required(&settings));
+    }
+
+    #[test]
+    fn system_appearance_uses_windows_events_without_power_automation() {
+        let mut settings = Settings::default();
+        settings.general.enabled = false;
+        settings.general.accent.source = AccentColorSource::Windows;
+
+        assert!(windows_event_watcher_required(&settings));
+        assert!(windows_event_wake_required(
+            &settings,
+            WindowsAutomationEvent::AppearanceChanged
+        ));
+        assert!(!windows_event_wake_required(
+            &settings,
+            WindowsAutomationEvent::PowerChanged
+        ));
     }
 
     #[test]
