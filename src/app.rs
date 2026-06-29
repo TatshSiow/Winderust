@@ -139,6 +139,9 @@ const MOTION_EXPAND_MIN_SECONDS: f64 = 0.1;
 const UNSAVED_POPUP_VANISH_SECONDS: f64 = 0.18;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const TITLE_BAR_HEIGHT: f32 = 40.0;
+const TITLE_BAR_CONTROL_WIDTH: f32 = 46.0;
+const TITLE_BAR_CONTROL_ICON_SIZE: f32 = 12.0;
+const TITLE_BAR_CONTROL_ICON_LINE_HEIGHT: f32 = 12.0;
 const PAGE_HEADER_HEIGHT: f32 = 48.0;
 const PAGE_CONTENT_VERTICAL_PADDING: f32 = 24.0;
 const CONTENT_MAX_WIDTH: f32 = 1040.0;
@@ -148,6 +151,7 @@ const BRAND_RADIUS_SURFACE: f32 = 7.0;
 const BRAND_RADIUS_OVERLAY: f32 = 8.0;
 const FONT_UI: &str = "Bahnschrift";
 const FONT_BRAND: &str = "Bahnschrift";
+const FONT_WINDOW_CONTROLS: &str = "Segoe Fluent Icons";
 const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const DROPDOWN_OPTION_ROW_HEIGHT: f32 = 40.0;
 const DROPDOWN_CONTROL_HEIGHT: f32 = 32.0;
@@ -3894,7 +3898,7 @@ impl PowerLeafApp {
                 h_flex()
                     .h_full()
                     .flex_1()
-                    .min_w(px(138.0))
+                    .min_w(px(TITLE_BAR_CONTROL_WIDTH * 3.0))
                     .items_center()
                     .justify_end()
                     .child(title_bar_controls(window, cx)),
@@ -20155,19 +20159,19 @@ fn checkbox(
 
 fn title_bar_controls(window: &Window, cx: &mut Context<PowerLeafApp>) -> AnyElement {
     let (maximize_id, maximize_icon) = if window.is_maximized() {
-        ("titlebar-restore", "\u{25a3}")
+        ("titlebar-restore", "\u{e923}")
     } else {
-        ("titlebar-maximize", "\u{25a1}")
+        ("titlebar-maximize", "\u{e922}")
     };
 
     h_flex()
         .id("titlebar-controls")
         .h_full()
         .flex_none()
-        .font_family(FONT_UI)
+        .font_family(FONT_WINDOW_CONTROLS)
         .child(title_bar_control_button(
             "titlebar-minimize",
-            "\u{2212}",
+            "\u{e921}",
             WindowControlArea::Min,
             false,
             cx,
@@ -20181,7 +20185,7 @@ fn title_bar_controls(window: &Window, cx: &mut Context<PowerLeafApp>) -> AnyEle
         ))
         .child(title_bar_control_button(
             "titlebar-close",
-            "\u{00d7}",
+            "\u{e8bb}",
             WindowControlArea::Close,
             true,
             cx,
@@ -20212,12 +20216,12 @@ fn title_bar_control_button(
         .window_control_area(control_area)
         .occlude()
         .flex_none()
-        .w(px(46.0))
+        .w(px(TITLE_BAR_CONTROL_WIDTH))
         .h(px(TITLE_BAR_HEIGHT))
         .items_center()
         .justify_center()
-        .text_size(px(TEXT_CAPTION_SIZE))
-        .line_height(px(TEXT_CAPTION_LINE_HEIGHT))
+        .text_size(px(TITLE_BAR_CONTROL_ICON_SIZE))
+        .line_height(px(TITLE_BAR_CONTROL_ICON_LINE_HEIGHT))
         .text_color(cx.theme().muted_foreground)
         .hover(move |style| style.bg(hover_bg))
         .active(move |style| style.bg(active_bg))
