@@ -210,7 +210,7 @@ const WIN32_PRIORITY_SEPARATION_MAX: u64 = 63;
 const WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT: u32 = 0x26;
 const WIN32_PRIORITY_CONTROL_SUB_KEY: &str = "SYSTEM\\CurrentControlSet\\Control\\PriorityControl";
 const WIN32_PRIORITY_SEPARATION_VALUE: &str = "Win32PrioritySeparation";
-const POWERLEAF_REGISTRY_SUB_KEY: &str = "Software\\PowerLeaf";
+const WINDERUST_REGISTRY_SUB_KEY: &str = "Software\\Winderust";
 const WIN32_PRIORITY_SEPARATION_BACKUP_VALUE: &str = "Win32PrioritySeparationBackup";
 const DWM_REGISTRY_SUB_KEY: &str = "Software\\Microsoft\\Windows\\DWM";
 const DWM_ACCENT_COLOR_VALUE: &str = "AccentColor";
@@ -432,7 +432,7 @@ struct MemoryCapacityParts {
     unit: &'static str,
 }
 
-pub struct PowerLeafApp {
+pub struct WinderustApp {
     settings: Settings,
     saved_settings: Settings,
     last_background_settings: Arc<Settings>,
@@ -502,6 +502,7 @@ pub struct PowerLeafApp {
     status_message: String,
     process_candidates: Vec<ProcessCandidate>,
     running_processes: Vec<ProcessInfo>,
+    app_icon: Option<Arc<Image>>,
     process_icon_cache: HashMap<PathBuf, Option<Arc<Image>>>,
     active_power_plan_picker: Option<String>,
     processor_power_ac_core_parking_min: u64,
@@ -532,6 +533,7 @@ pub struct PowerLeafApp {
     hidden_process_list_columns: HashSet<ProcessListColumn>,
     process_list_sort: ProcessListSort,
     breadcrumb_transition: Option<BreadcrumbTransition>,
+    page_transition_generation: u64,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
     pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
@@ -559,6 +561,7 @@ struct BreadcrumbTransition {
     previous: Vec<BreadcrumbSegment>,
     current: Vec<BreadcrumbSegment>,
     started: Instant,
+    generation: u64,
 }
 
 #[derive(Default)]
@@ -762,7 +765,7 @@ struct Win32PrioritySeparationFieldOption {
 impl UiInputs {
     fn new(
         window: &mut Window,
-        cx: &mut Context<PowerLeafApp>,
+        cx: &mut Context<WinderustApp>,
         settings: &Settings,
         processor_power_values: ProcessorPowerAcDcValues,
     ) -> Self {
@@ -899,7 +902,7 @@ impl UiInputs {
     fn ensure_for_settings(
         &mut self,
         window: &mut Window,
-        cx: &mut Context<PowerLeafApp>,
+        cx: &mut Context<WinderustApp>,
         settings: &Settings,
     ) {
         sync_input_vec(
@@ -1034,7 +1037,7 @@ fn load_initial_processor_power_state(power: &PowerPlanManager) -> InitialProces
     }
 }
 
-impl PowerLeafApp {
+impl WinderustApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let hwnd = tray::hwnd_from_window(window);
         let settings = config::storage::load().unwrap_or_else(|err| {
@@ -1066,6 +1069,9 @@ impl PowerLeafApp {
         let win32_priority_separation_backup = read_win32_priority_separation_backup();
         let initial_timer_resolution_status =
             timer_resolution::query_snapshot(settings.timer_resolution.enabled);
+        let app_icon = std::env::current_exe()
+            .ok()
+            .and_then(|path| load_process_icon(&path));
         let accent_color_picker = cx.new(|cx| {
             ColorPickerState::new(window, cx)
                 .default_value(rgb(settings.general.accent.custom_color))
@@ -1167,6 +1173,7 @@ impl PowerLeafApp {
             status_message: initial_processor_power.status_message,
             process_candidates: Vec::new(),
             running_processes: Vec::new(),
+            app_icon,
             process_icon_cache: HashMap::new(),
             active_power_plan_picker: None,
             processor_power_ac_core_parking_min: initial_processor_power.values.ac.core_parking_min
@@ -1205,6 +1212,7 @@ impl PowerLeafApp {
             hidden_process_list_columns: HashSet::new(),
             process_list_sort: ProcessListSort::default(),
             breadcrumb_transition: None,
+            page_transition_generation: 0,
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
             pending_list_item_removals: HashMap::new(),
@@ -1244,7 +1252,7 @@ impl PowerLeafApp {
             return;
         }
 
-        clear_navigation_hovered();
+        clear_page_hovered();
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
@@ -1257,7 +1265,7 @@ impl PowerLeafApp {
             return;
         };
 
-        clear_navigation_hovered();
+        clear_page_hovered();
         Self::push_navigation_page(&mut self.forward_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
@@ -1269,7 +1277,7 @@ impl PowerLeafApp {
             return;
         };
 
-        clear_navigation_hovered();
+        clear_page_hovered();
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
@@ -1289,10 +1297,12 @@ impl PowerLeafApp {
             return;
         }
 
+        self.page_transition_generation = self.page_transition_generation.wrapping_add(1);
         self.breadcrumb_transition = Some(BreadcrumbTransition {
             previous,
             current,
             started: Instant::now(),
+            generation: self.page_transition_generation,
         });
     }
 
@@ -3948,7 +3958,7 @@ fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Set
         && settings.timer_resolution == current.timer_resolution
 }
 
-impl Render for PowerLeafApp {
+impl Render for WinderustApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.inputs.ensure_for_settings(window, cx, &self.settings);
         self.ensure_rule_title_input_subscriptions(window, cx);
@@ -3976,7 +3986,15 @@ impl Render for PowerLeafApp {
         let unsaved = self.settings != self.saved_settings;
         let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
         let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
-        let page_content = page_content_frame(page_header, page_body, page_uses_inner_scroll);
+        let page_content = animated_page_content_frame(
+            page_content_frame(
+                page_header,
+                page_body,
+                page_uses_inner_scroll,
+                !search_active && self.page == Page::ProcessList,
+            ),
+            self.active_breadcrumb_transition(self.page),
+        );
         let page_scroll_area = if page_uses_inner_scroll {
             v_flex()
                 .flex_1()
@@ -4058,10 +4076,27 @@ impl Render for PowerLeafApp {
     }
 }
 
-impl PowerLeafApp {
+impl WinderustApp {
     fn render_title_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let title = h_flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .when_some(self.app_icon.as_ref(), |title, icon| {
+                title.child(img(Arc::clone(icon)).size(px(18.0)))
+            })
+            .child(
+                div()
+                    .font_family(FONT_BRAND)
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground)
+                    .child(t!("app.name").to_string()),
+            );
+
         h_flex()
-            .id("powerleaf-title-bar")
+            .id("winderust-title-bar")
             .window_control_area(WindowControlArea::Drag)
             .flex_none()
             .w_full()
@@ -4079,16 +4114,7 @@ impl PowerLeafApp {
                     .gap_2()
                     .px_3()
                     .overflow_hidden()
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(FONT_BRAND)
-                            .text_size(px(TEXT_CONTROL_SIZE))
-                            .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().foreground)
-                            .child(t!("app.name").to_string()),
-                    )
+                    .child(title)
                     .child(
                         div()
                             .text_size(px(TEXT_LABEL_SIZE))
@@ -4295,7 +4321,7 @@ impl PowerLeafApp {
             Page::SmartTrim => self.render_smart_trim_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::ActionLog => self.render_action_log_page(window, cx),
-            Page::Settings => self.render_powerleaf_behaviour_page(window, cx),
+            Page::Settings => self.render_winderust_behaviour_page(window, cx),
             Page::SettingsAppearance => self.render_settings_appearance_page(window, cx),
             Page::TimerResolution => self.render_timer_resolution_page(window, cx),
             Page::Win32PrioritySeparation => self.render_win32_priority_separation_page(window, cx),
@@ -4985,6 +5011,10 @@ impl PowerLeafApp {
                                     .id("process-list-header-scroll-area")
                                     .w_full()
                                     .h(px(PROCESS_LIST_HEADER_HEIGHT))
+                                    .rounded_t(px(BRAND_RADIUS_SURFACE))
+                                    .bg(rgb(panel_active_color()))
+                                    .border_b_1()
+                                    .border_color(rgb(border_color()))
                                     .overflow_scroll()
                                     .track_scroll(&horizontal_scroll_handle)
                                     .child(header),
@@ -5389,10 +5419,9 @@ impl PowerLeafApp {
                 cx,
             ))
             .child(
-                danger_control_button(Button::new(SharedString::from(format!(
+                remove_control_button(Button::new(SharedString::from(format!(
                     "remove-foreground-rule-{index}"
                 ))))
-                .label(t!("common.remove").to_string())
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.request_list_item_removal(
                         ListItemRemovalTarget::new(ListItemRemovalKind::ForegroundRule, index),
@@ -5444,11 +5473,12 @@ impl PowerLeafApp {
                 }))
                 .child(app_input(input, true, cx))
                 .child(
-                    Button::new(SharedString::from(format!(
-                        "finish-rule-title-edit-{target:?}"
-                    )))
-                    .small()
-                    .primary()
+                    primary_control_button(
+                        Button::new(SharedString::from(format!(
+                            "finish-rule-title-edit-{target:?}"
+                        ))),
+                        cx,
+                    )
                     .label(t!("common.done").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.finish_rule_title_edit(target, cx);
@@ -5669,10 +5699,9 @@ impl PowerLeafApp {
                     1,
                     rule_card_body_actions(vec![
                         rename_rule_button(title_target, cx),
-                        danger_control_button(Button::new(SharedString::from(format!(
+                        remove_control_button(Button::new(SharedString::from(format!(
                             "remove-schedule-rule-{index}"
                         ))))
-                        .label(t!("common.remove").to_string())
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.request_list_item_removal(
                                 ListItemRemovalTarget::new(
@@ -6006,10 +6035,9 @@ impl PowerLeafApp {
                     1,
                     rule_card_body_actions(vec![
                         rename_rule_button(title_target, cx),
-                        danger_control_button(Button::new(SharedString::from(format!(
+                        remove_control_button(Button::new(SharedString::from(format!(
                             "remove-cpu-rule-{index}"
                         ))))
-                        .label(t!("common.remove").to_string())
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.request_list_item_removal(
                                 ListItemRemovalTarget::new(
@@ -6533,10 +6561,9 @@ impl PowerLeafApp {
                 ))
                 .child(self.process_rule_title(&process, cx))
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-eco-qos-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(ListItemRemovalKind::EcoQosExclusion, index),
@@ -6955,10 +6982,9 @@ impl PowerLeafApp {
                         2,
                         1,
                         rule_card_body_action(
-                            danger_control_button(Button::new(SharedString::from(format!(
+                            remove_control_button(Button::new(SharedString::from(format!(
                                 "remove-suspension-{index}"
                             ))))
-                            .label(t!("common.remove").to_string())
                             .on_click(cx.listener({
                                 move |app, _, _, cx| {
                                     app.request_list_item_removal(
@@ -7357,10 +7383,9 @@ impl PowerLeafApp {
                 ))
                 .child(self.process_rule_title(&process, cx))
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-background-cpu-exclusion-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
@@ -7554,10 +7579,9 @@ impl PowerLeafApp {
                         3,
                         1,
                         rule_card_body_action(
-                            danger_control_button(Button::new(SharedString::from(format!(
+                            remove_control_button(Button::new(SharedString::from(format!(
                                 "remove-cpu-limiter-{index}"
                             ))))
-                            .label(t!("common.remove").to_string())
                             .on_click(cx.listener({
                                 move |app, _, _, cx| {
                                     app.request_list_item_removal(
@@ -7794,10 +7818,9 @@ impl PowerLeafApp {
                     body_index,
                     1,
                     rule_card_body_action(
-                        danger_control_button(Button::new(SharedString::from(format!(
+                        remove_control_button(Button::new(SharedString::from(format!(
                             "remove-watchdog-{index}"
                         ))))
-                        .label(t!("common.remove").to_string())
                         .on_click(cx.listener({
                             move |app, _, _, cx| {
                                 app.request_list_item_removal(
@@ -7983,10 +8006,9 @@ impl PowerLeafApp {
                     cx,
                 ))
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-performance-mode-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
@@ -8854,10 +8876,9 @@ impl PowerLeafApp {
                 ))
                 .child(self.process_rule_title(&process, cx))
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-responsiveness-exclusion-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
@@ -9022,10 +9043,9 @@ impl PowerLeafApp {
                 ))
                 .child(self.process_rule_title(&process, cx))
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-io-priority-exclusion-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
@@ -9246,10 +9266,9 @@ impl PowerLeafApp {
                 ))
                 .child(self.process_rule_title(&process, cx))
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-gpu-priority-exclusion-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
@@ -9522,10 +9541,9 @@ impl PowerLeafApp {
                 ))
                 .child(self.process_rule_title(&process, cx))
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-memory-priority-exclusion-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
@@ -9782,10 +9800,9 @@ impl PowerLeafApp {
                         3,
                         1,
                         rule_card_body_action(
-                            danger_control_button(Button::new(SharedString::from(format!(
+                            remove_control_button(Button::new(SharedString::from(format!(
                                 "remove-launch-priority-rule-{index}"
                             ))))
-                            .label(t!("common.remove").to_string())
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 app.request_list_item_removal(
                                     ListItemRemovalTarget::new(
@@ -10431,10 +10448,9 @@ impl PowerLeafApp {
                         .child(process),
                 )
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-smart-trim-exclusion-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
@@ -10612,10 +10628,9 @@ impl PowerLeafApp {
                     body_index,
                     1,
                     rule_card_body_action(
-                        danger_control_button(Button::new(SharedString::from(format!(
+                        remove_control_button(Button::new(SharedString::from(format!(
                             "remove-affinity-{index}"
                         ))))
-                        .label(t!("common.remove").to_string())
                         .on_click(cx.listener({
                             move |app, _, _, cx| {
                                 app.request_list_item_removal(
@@ -11522,7 +11537,7 @@ impl PowerLeafApp {
         accent_card.into_any_element()
     }
 
-    fn render_powerleaf_behaviour_page(
+    fn render_winderust_behaviour_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -11794,10 +11809,9 @@ impl PowerLeafApp {
                     cx,
                 ))
                 .child(
-                    danger_control_button(Button::new(SharedString::from(format!(
+                    remove_control_button(Button::new(SharedString::from(format!(
                         "remove-timer-resolution-rule-{index}"
                     ))))
-                    .label(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
@@ -12011,18 +12025,14 @@ impl PowerLeafApp {
                             })),
                     )
                     .child(
-                        control_button(
-                            Button::new("apply-win32-priority-separation")
-                                .primary()
-                                .text_color(cx.theme().primary_foreground),
-                        )
-                        .label(t!("settings.apply").to_string())
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.apply_win32_priority_separation(
-                                app.win32_priority_separation_edit_value,
-                            );
-                            cx.notify();
-                        })),
+                        primary_control_button(Button::new("apply-win32-priority-separation"), cx)
+                            .label(t!("settings.apply").to_string())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.apply_win32_priority_separation(
+                                    app.win32_priority_separation_edit_value,
+                                );
+                                cx.notify();
+                            })),
                     ),
             )
             .child(text_muted(self.win32_priority_separation_status.clone()))
@@ -12609,17 +12619,13 @@ impl PowerLeafApp {
                             })),
                     )
                     .child(
-                        control_button(
-                            Button::new("processor-power-apply-custom")
-                                .primary()
-                                .text_color(cx.theme().primary_foreground),
-                        )
-                        .label(t!("processor_power.apply_custom").to_string())
-                        .disabled(!has_current_plan)
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.apply_processor_power_custom();
-                            cx.notify();
-                        })),
+                        primary_control_button(Button::new("processor-power-apply-custom"), cx)
+                            .label(t!("processor_power.apply_custom").to_string())
+                            .disabled(!has_current_plan)
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.apply_processor_power_custom();
+                                cx.notify();
+                            })),
                     ),
             )
             .into_any_element()
@@ -12844,17 +12850,69 @@ impl PowerLeafApp {
 
     fn render_about_page(&self, cx: &mut Context<Self>) -> AnyElement {
         self.page_shell(Page::About, cx)
-            .child(section_header(
-                &t!("app.name"),
-                t!("app.description").to_string(),
-            ))
-            .child(stat_grid(vec![
-                (t!("about.author").to_string(), "Tatsh Siow".to_owned()),
-                (
-                    t!("about.version").to_string(),
-                    env!("CARGO_PKG_VERSION").to_owned(),
-                ),
-            ]))
+            .child(
+                branded_panel()
+                    .p_4()
+                    .gap_3()
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .child(section_title_text(t!("app.name").to_string()))
+                                    .child(
+                                        div()
+                                            .text_size(px(TEXT_LABEL_SIZE))
+                                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                                            .text_color(rgb(dim_text_color()))
+                                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                                    ),
+                            )
+                            .child(text_muted("A Rust-based Windows tuning controller.")),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .flex_wrap()
+                            .text_size(px(TEXT_BODY_SIZE))
+                            .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                            .text_color(rgb(dim_text_color()))
+                            .child("Inspired by ")
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child("Wanderlust"),
+                            )
+                            .child(" and ")
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::BOLD)
+                                    .child("Windows Derust"),
+                            ),
+                    )
+                    .child(
+                        h_flex().w_full().justify_end().child(
+                            v_flex()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_color(rgb(dim_text_color()))
+                                        .text_size(px(TEXT_LABEL_SIZE))
+                                        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                                        .child(t!("about.author").to_string()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(TEXT_BODY_SIZE))
+                                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                                        .child("Tatsh Siow"),
+                                ),
+                        ),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -13401,7 +13459,7 @@ fn power_plan_option_row(
     selected: bool,
     guid: Option<String>,
     field: PowerPlanField,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     dropdown_option_row(SharedString::from(id), label, selected, cx)
         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
@@ -13422,7 +13480,7 @@ fn dropdown_list_height(row_count: usize) -> Pixels {
 fn dropdown_popup_phase(
     id: &str,
     is_open: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> DropdownPopupPhase {
     let mut schedule_cleanup = false;
     let phase = {
@@ -13553,7 +13611,7 @@ fn dropdown_popup_or_empty(
     phase: DropdownPopupPhase,
     placement: DropdownPlacement,
     options: Scrollable<gpui::Div>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     dropdown_popup_for_phase(phase, id, placement, options, cx)
 }
@@ -13562,8 +13620,8 @@ fn dropdown_popup_or_empty_lazy(
     is_open: bool,
     id: SharedString,
     placement: impl FnOnce() -> DropdownPlacement,
-    options: impl FnOnce(Pixels, &mut Context<PowerLeafApp>) -> Scrollable<gpui::Div>,
-    cx: &mut Context<PowerLeafApp>,
+    options: impl FnOnce(Pixels, &mut Context<WinderustApp>) -> Scrollable<gpui::Div>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let phase = dropdown_popup_phase(id.as_ref(), is_open, cx);
     if matches!(phase, DropdownPopupPhase::Hidden) {
@@ -13580,7 +13638,7 @@ fn dropdown_popup_for_phase(
     id: SharedString,
     placement: DropdownPlacement,
     options: Scrollable<gpui::Div>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     match phase {
         DropdownPopupPhase::Hidden => Empty.into_any_element(),
@@ -13653,7 +13711,7 @@ fn dropdown_select_control(
     enabled: bool,
     open: bool,
     phase: DropdownPopupPhase,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let id: SharedString = id.into();
     let label: SharedString = label.into();
@@ -13702,7 +13760,7 @@ fn dropdown_select_control(
         .child(dropdown_chevron(id, open, phase, cx))
 }
 
-fn dropdown_surface(cx: &mut Context<PowerLeafApp>, max_height: Pixels) -> Scrollable<gpui::Div> {
+fn dropdown_surface(cx: &mut Context<WinderustApp>, max_height: Pixels) -> Scrollable<gpui::Div> {
     v_flex()
         .w_full()
         .max_h(max_height)
@@ -13719,7 +13777,7 @@ fn dropdown_option_row(
     id: SharedString,
     label: String,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(id)
@@ -13753,7 +13811,7 @@ fn dropdown_process_option_row(
     id: SharedString,
     process: &ProcessCandidate,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(id)
@@ -13785,7 +13843,7 @@ fn dropdown_process_option_row(
         .child(div().min_w(px(0.0)).truncate().child(process.name.clone()))
 }
 
-fn process_icon_cell(icon: Option<&Arc<Image>>, cx: &mut Context<PowerLeafApp>) -> AnyElement {
+fn process_icon_cell(icon: Option<&Arc<Image>>, cx: &mut Context<WinderustApp>) -> AnyElement {
     div()
         .size(px(20.0))
         .flex()
@@ -13802,13 +13860,13 @@ fn process_icon_cell(icon: Option<&Arc<Image>>, cx: &mut Context<PowerLeafApp>) 
                 .rounded(px(BRAND_RADIUS_CONTROL))
                 .border_1()
                 .border_color(cx.theme().border)
-                .child(Icon::new(NavIcon::Frame).with_size(px(13.0)))
+                .child(Icon::new(NavIcon::AppWindow).with_size(px(13.0)))
                 .into_any_element(),
         })
         .into_any_element()
 }
 
-fn dropdown_empty_row(message: String, cx: &mut Context<PowerLeafApp>) -> gpui::Div {
+fn dropdown_empty_row(message: String, cx: &mut Context<WinderustApp>) -> gpui::Div {
     div()
         .min_h(px(40.0))
         .px_3()
@@ -13825,7 +13883,7 @@ fn dropdown_chevron(
     id: SharedString,
     open: bool,
     phase: DropdownPopupPhase,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let start_turns = if open { 0.0 } else { 180.0 / 360.0 };
     let end_turns = if open { 180.0 / 360.0 } else { 0.0 };
@@ -14154,7 +14212,7 @@ struct SettingGroupBody {
 
 fn make_input(
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     value: &str,
     placeholder: &str,
 ) -> Entity<InputState> {
@@ -14167,12 +14225,12 @@ fn make_input(
     })
 }
 
-fn make_percent_slider(cx: &mut Context<PowerLeafApp>, value: u64) -> Entity<SliderState> {
+fn make_percent_slider(cx: &mut Context<WinderustApp>, value: u64) -> Entity<SliderState> {
     make_range_slider(cx, value, 0, 100, 1)
 }
 
 fn make_range_slider(
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     value: u64,
     min: u64,
     max: u64,
@@ -14189,7 +14247,7 @@ fn make_range_slider(
     })
 }
 
-fn make_processor_power_slider(cx: &mut Context<PowerLeafApp>, value: u64) -> Entity<SliderState> {
+fn make_processor_power_slider(cx: &mut Context<WinderustApp>, value: u64) -> Entity<SliderState> {
     make_percent_slider(cx, value)
 }
 
@@ -14228,7 +14286,7 @@ fn sync_input_vec(
     inputs: &mut Vec<Entity<InputState>>,
     len: usize,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     value_at: impl Fn(usize) -> String,
     placeholder: &str,
 ) {
@@ -14242,7 +14300,7 @@ fn sync_input_vec(
 fn sync_slider_vec(
     inputs: &mut Vec<Entity<SliderState>>,
     len: usize,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     value_at: impl Fn(usize) -> u64,
 ) {
     while inputs.len() < len {
@@ -14252,7 +14310,7 @@ fn sync_slider_vec(
     inputs.truncate(len);
 }
 
-fn clear_input(input: &Entity<InputState>, window: &mut Window, cx: &mut Context<PowerLeafApp>) {
+fn clear_input(input: &Entity<InputState>, window: &mut Window, cx: &mut Context<WinderustApp>) {
     clear_input_to(input, "", window, cx);
 }
 
@@ -14260,7 +14318,7 @@ fn clear_input_to(
     input: &Entity<InputState>,
     value: &str,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) {
     let value = SharedString::from(value.to_owned());
     input.update(cx, |input, cx| input.set_value(value, window, cx));
@@ -14657,7 +14715,7 @@ fn write_win32_priority_separation(value: u32) -> Result<(), String> {
 fn read_win32_priority_separation_backup() -> Option<u32> {
     read_registry_dword_root(
         HKEY_CURRENT_USER,
-        POWERLEAF_REGISTRY_SUB_KEY,
+        WINDERUST_REGISTRY_SUB_KEY,
         WIN32_PRIORITY_SEPARATION_BACKUP_VALUE,
     )
 }
@@ -14665,7 +14723,7 @@ fn read_win32_priority_separation_backup() -> Option<u32> {
 fn write_win32_priority_separation_backup(value: u32) -> Result<(), String> {
     write_registry_dword_create_root(
         HKEY_CURRENT_USER,
-        POWERLEAF_REGISTRY_SUB_KEY,
+        WINDERUST_REGISTRY_SUB_KEY,
         WIN32_PRIORITY_SEPARATION_BACKUP_VALUE,
         value,
     )
@@ -14811,7 +14869,7 @@ fn breadcrumb_button(
     id: SharedString,
     target: Page,
     label: String,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let hover_bg: Hsla = rgb(settings_card_hover_color()).into();
 
@@ -14918,7 +14976,7 @@ fn breadcrumb_segment_element(
     segment: &BreadcrumbSegment,
     current: bool,
     interactive: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     if interactive && !current {
         breadcrumb_button(
@@ -14938,7 +14996,7 @@ fn breadcrumb_segment_group(
     segment: &BreadcrumbSegment,
     current: bool,
     interactive: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     let flexible = current && interactive;
 
@@ -14980,7 +15038,7 @@ fn breadcrumb_transition_group(id: SharedString, entering: bool, group: gpui::Di
 fn breadcrumb_exit_overlay(
     transition: &BreadcrumbTransition,
     current_trail_len: usize,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     let mut overlay = h_flex()
         .absolute()
@@ -15088,7 +15146,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             "log action history details csv export skipped failed applied restored reason".to_string(),
         ],
         Page::AppHome => vec![
-            "settings powerleaf behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette about".to_string(),
+            "settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette about".to_string(),
         ],
         Page::AdvancedHome => vec![
             "advanced app suspension windows scheduler win32 priority separation quantum foreground boost registry".to_string(),
@@ -15244,7 +15302,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("settings.intro_2").to_string(),
             t!("settings.action_log_mode_full_help").to_string(),
             t!("settings.failure_suppression_threshold_help").to_string(),
-            "powerleaf behaviour startup tray automation toggle action log detail fail failure suppression export import".to_string(),
+            "winderust behaviour startup tray automation toggle action log detail fail failure suppression export import".to_string(),
         ],
         Page::SettingsAppearance => vec![
             "language appearance theme dark light system accent color palette localization display ui".to_string(),
@@ -15264,7 +15322,7 @@ fn dashboard_page_search_text(page: Page) -> String {
         Page::About => vec![
             t!("about.intro_1").to_string(),
             t!("about.intro_2").to_string(),
-            "about version project powerleaf".to_string(),
+            "about version project winderust".to_string(),
         ],
     };
 
@@ -15284,7 +15342,7 @@ fn page_body_shell() -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
-fn search_results_page_header(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
+fn search_results_page_header(_cx: &mut Context<WinderustApp>) -> gpui::Div {
     h_flex()
         .w_full()
         .min_h(px(PAGE_HEADER_HEIGHT))
@@ -15302,7 +15360,12 @@ fn search_results_page_header(_cx: &mut Context<PowerLeafApp>) -> gpui::Div {
         )
 }
 
-fn page_content_frame(header: AnyElement, body: AnyElement, fill_height: bool) -> gpui::Div {
+fn page_content_frame(
+    header: AnyElement,
+    body: AnyElement,
+    fill_height: bool,
+    full_width: bool,
+) -> gpui::Div {
     let body_frame = v_flex()
         .w_full()
         .min_w(px(0.0))
@@ -15312,9 +15375,9 @@ fn page_content_frame(header: AnyElement, body: AnyElement, fill_height: bool) -
         });
     let content = v_flex()
         .w_full()
-        .max_w(px(CONTENT_MAX_WIDTH))
         .min_w(px(0.0))
         .gap_2()
+        .when(!full_width, |content| content.max_w(px(CONTENT_MAX_WIDTH)))
         .when(fill_height, |content| {
             content.flex_1().h_full().min_h(px(0.0)).overflow_hidden()
         })
@@ -15336,6 +15399,61 @@ fn page_content_frame(header: AnyElement, body: AnyElement, fill_height: bool) -
                 .overflow_hidden()
         })
         .child(content)
+}
+
+#[derive(Clone, Copy)]
+enum PageTransitionMotion {
+    EnterSubPage,
+    ExitSubPage,
+    SameLevelPage,
+}
+
+fn animated_page_content_frame(
+    frame: gpui::Div,
+    transition: Option<&BreadcrumbTransition>,
+) -> AnyElement {
+    let Some(transition) = transition else {
+        return frame.into_any_element();
+    };
+    let Some(motion) = page_transition_motion(transition) else {
+        return frame.into_any_element();
+    };
+    let (x, y) = match motion {
+        PageTransitionMotion::EnterSubPage => (18.0, 0.0),
+        PageTransitionMotion::ExitSubPage => (-18.0, 0.0),
+        PageTransitionMotion::SameLevelPage => (0.0, 14.0),
+    };
+
+    with_optional_motion(
+        frame,
+        SharedString::from(format!("page-transition-{}", transition.generation)),
+        MotionSpeed::Fast,
+        |frame| frame,
+        move |frame, delta| {
+            frame
+                .relative()
+                .left(px(x * (1.0 - delta)))
+                .top(px(y * (1.0 - delta)))
+                .opacity(0.2 + 0.8 * delta)
+        },
+    )
+}
+
+fn page_transition_motion(transition: &BreadcrumbTransition) -> Option<PageTransitionMotion> {
+    let previous = transition.previous.as_slice();
+    let current = transition.current.as_slice();
+    if previous == current {
+        return None;
+    }
+
+    if current.len() > previous.len() {
+        return Some(PageTransitionMotion::EnterSubPage);
+    }
+    if current.len() < previous.len() {
+        return Some(PageTransitionMotion::ExitSubPage);
+    }
+
+    Some(PageTransitionMotion::SameLevelPage)
 }
 
 #[derive(Clone, Copy)]
@@ -15697,17 +15815,13 @@ fn set_card_hovered(id: String, hovered: bool, cx: &mut App) {
     }
 }
 
-fn clear_navigation_hovered() {
+fn clear_page_hovered() {
     let Ok(mut state) = CARD_HOVER_STATE.lock() else {
         return;
     };
 
-    state
-        .hovered
-        .retain(|id| !id.starts_with("nav-row-") && !id.starts_with("section-card-"));
-    state
-        .changes
-        .retain(|id, _| !id.starts_with("nav-row-") && !id.starts_with("section-card-"));
+    state.hovered.clear();
+    state.changes.clear();
 }
 
 fn animated_card_hover_layer(id: &str) -> AnyElement {
@@ -15767,9 +15881,9 @@ fn chevron_right_at_progress(progress: f32) -> AnyElement {
 }
 
 fn handle_navigation_mouse_button(
-    app: &mut PowerLeafApp,
+    app: &mut WinderustApp,
     button: MouseButton,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> bool {
     match button {
         MouseButton::Navigate(NavigationDirection::Back) => {
@@ -15987,13 +16101,7 @@ fn animated_list_item_child(
             |container, delta| container.opacity(1.0 - delta),
         )
     } else {
-        with_optional_motion(
-            container,
-            SharedString::from(format!("presence-{id}")),
-            MotionSpeed::Fast,
-            |container| container,
-            |container, delta| container.opacity(0.18 + 0.82 * delta),
-        )
+        container.into_any_element()
     }
 }
 
@@ -16008,7 +16116,7 @@ fn page_header_with_help(
     page: Page,
     help: Option<SharedString>,
     transition: Option<&BreadcrumbTransition>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     let mut header = h_flex()
         .w_full()
@@ -16179,7 +16287,7 @@ fn rule_card(
     collapse_indicator: AnyElement,
     card_target: RuleCardTarget,
     collapsed: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     rule_card_with_header_action(
         title,
@@ -16199,7 +16307,7 @@ fn rule_card_with_header_action(
     collapse_indicator: AnyElement,
     card_target: RuleCardTarget,
     _collapsed: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let header_padding = if header_action.is_some() {
         px(134.0)
@@ -16322,7 +16430,7 @@ fn disabled_feature_body(
     id: impl Into<SharedString>,
     body: gpui::Div,
     enabled: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     const DISABLED_FEATURE_DIM_OPACITY: f32 = 0.58;
 
@@ -16368,7 +16476,7 @@ fn disabled_feature_body(
     body.into_any_element()
 }
 
-fn disabled_interaction_shield(cx: &mut Context<PowerLeafApp>) -> AnyElement {
+fn disabled_interaction_shield(cx: &mut Context<WinderustApp>) -> AnyElement {
     div()
         .absolute()
         .inset_0()
@@ -16415,15 +16523,17 @@ fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
         .child(row)
 }
 
-fn rename_rule_button(target: RuleTitleTarget, cx: &mut Context<PowerLeafApp>) -> AnyElement {
-    Button::new(SharedString::from(format!("rename-rule-{target:?}")))
-        .small()
-        .label("Rename")
-        .tooltip(t!("common.rename_rule").to_string())
-        .on_click(cx.listener(move |app, _, window, cx| {
-            app.begin_rule_title_edit(target, window, cx);
-        }))
-        .into_any_element()
+fn rename_rule_button(target: RuleTitleTarget, cx: &mut Context<WinderustApp>) -> AnyElement {
+    control_button(Button::new(SharedString::from(format!(
+        "rename-rule-{target:?}"
+    ))))
+    .icon(Icon::new(NavIcon::SquarePen).with_size(px(14.0)))
+    .label("Rename")
+    .tooltip(t!("common.rename_rule").to_string())
+    .on_click(cx.listener(move |app, _, window, cx| {
+        app.begin_rule_title_edit(target, window, cx);
+    }))
+    .into_any_element()
 }
 
 fn compact_rule_row(id: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
@@ -16461,7 +16571,7 @@ fn setting_group(
     collapsed: bool,
     rows: Vec<AnyElement>,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let title: SharedString = title.into();
     setting_group_with_title_element(
@@ -16487,7 +16597,7 @@ fn setting_group_with_help(
     collapsed: bool,
     rows: Vec<AnyElement>,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let (title, help) = title_help;
     let title: SharedString = title.into();
@@ -16519,7 +16629,7 @@ fn setting_group_with_title_element(
     collapsed: bool,
     rows: Vec<AnyElement>,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     setting_group_with_title_element_with_body_height(
         target,
@@ -16541,7 +16651,7 @@ fn setting_group_with_title_element_with_body_height(
     action: AnyElement,
     body: SettingGroupBody,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let SettingGroupBody {
         collapsed,
@@ -16685,7 +16795,7 @@ fn setting_group_body_animation_height(
 fn setting_group_collapse_button(
     target: SettingGroupTarget,
     collapsed: bool,
-    _cx: &mut Context<PowerLeafApp>,
+    _cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     div()
         .id(SharedString::from(format!(
@@ -17122,7 +17232,7 @@ fn setting_input_card(
     title: impl Into<SharedString>,
     input: Entity<InputState>,
     focused: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     rule_action_row(
         id,
@@ -17696,7 +17806,7 @@ struct ProcessListRenderData {
 
 #[derive(Clone, Copy)]
 struct ProcessListEditContext<'a> {
-    app: &'a PowerLeafApp,
+    app: &'a WinderustApp,
     window: &'a Window,
 }
 
@@ -17813,7 +17923,7 @@ fn process_list_rendered_rows(
     rendered_rows
 }
 
-fn process_list_render_data(app: &PowerLeafApp) -> ProcessListRenderData {
+fn process_list_render_data(app: &WinderustApp) -> ProcessListRenderData {
     let process_count = app.running_processes.len();
     let mut process_groups = process_list_groups(&app.running_processes);
     for group in &mut process_groups {
@@ -18207,7 +18317,7 @@ fn process_list_header_row(
     hidden_columns: &HashSet<ProcessListColumn>,
     layout: &ProcessListColumnLayout,
     sort: ProcessListSort,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     let mut row = h_flex()
         .w_full()
@@ -18217,9 +18327,6 @@ fn process_list_header_row(
         .gap_3()
         .px_4()
         .py_2()
-        .border_b_1()
-        .border_color(rgb(border_color()))
-        .bg(rgb(panel_active_color()))
         .text_size(px(TEXT_LABEL_SIZE))
         .line_height(px(TEXT_LABEL_LINE_HEIGHT))
         .text_color(rgb(muted_text_color()))
@@ -18275,7 +18382,7 @@ fn process_list_header_cell(
     label: String,
     column: ProcessListSortColumn,
     sort: ProcessListSort,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let active = sort.column == column;
 
@@ -18334,7 +18441,7 @@ fn process_list_sort_column_id(column: ProcessListSortColumn) -> &'static str {
 fn process_list_sort_icon(
     active: bool,
     direction: ProcessListSortDirection,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     let turns = match direction {
         ProcessListSortDirection::Ascending => 180.0 / 360.0,
@@ -18364,7 +18471,7 @@ fn process_list_column_visibility_dropdown_options(
     hidden_columns: &HashSet<ProcessListColumn>,
     settings: &Settings,
     max_height: Pixels,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> Scrollable<gpui::Div> {
     let mut options = dropdown_surface(cx, max_height);
 
@@ -18415,7 +18522,7 @@ fn process_list_rendered_row(
     row: &ProcessListRenderedRow,
     layout: ProcessListRenderLayout<'_>,
     edit_context: ProcessListEditContext<'_>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     match row {
         ProcessListRenderedRow::Entry {
@@ -18460,7 +18567,7 @@ fn process_list_entry_row(
     state: ProcessListEntryRowState,
     layout: ProcessListRenderLayout<'_>,
     edit_context: ProcessListEditContext<'_>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let row_id = SharedString::from(format!("process-list-entry-{}", process.id));
     let mut row = h_flex()
@@ -18510,7 +18617,7 @@ fn process_list_group_row(
     state: ProcessListGroupRowState,
     layout: ProcessListRenderLayout<'_>,
     edit_context: ProcessListEditContext<'_>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let process_name = data.process_name.to_string();
     let row_id = SharedString::from(format!(
@@ -18569,7 +18676,7 @@ fn process_list_name_cell(
     icon: Option<&Arc<Image>>,
     nested: bool,
     width: f32,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     h_flex()
         .w(px(width))
@@ -18589,7 +18696,7 @@ fn process_list_group_name_cell(
     icon: Option<&Arc<Image>>,
     collapsed: bool,
     width: f32,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     h_flex()
         .w(px(width))
@@ -18630,7 +18737,7 @@ fn process_list_policy_cells(
     layout: ProcessListRenderLayout<'_>,
     editable: bool,
     edit_context: ProcessListEditContext<'_>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> Vec<AnyElement> {
     PROCESS_LIST_OPTIONAL_COLUMNS
         .iter()
@@ -18787,7 +18894,7 @@ fn process_list_policy_cell(
     value: impl Into<SharedString>,
     emphasized: bool,
     edit_context: ProcessListEditContext<'_>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let value = value.into();
     let text_color = if process_list_policy_value_active(value.as_ref(), emphasized) {
@@ -18835,9 +18942,9 @@ fn process_list_editable_policy_cell(
     value: SharedString,
     emphasized: bool,
     text_color: u32,
-    app: &PowerLeafApp,
+    app: &WinderustApp,
     window: &Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let id = process_list_cell_editor_id(process_name, column);
     let is_open = app.active_power_plan_picker.as_deref() == Some(id.as_str());
@@ -18929,7 +19036,7 @@ fn process_list_cell_editor_id(process_name: &str, column: ProcessListColumn) ->
     )
 }
 
-fn process_list_cell_editor_option_count(column: ProcessListColumn, app: &PowerLeafApp) -> usize {
+fn process_list_cell_editor_option_count(column: ProcessListColumn, app: &WinderustApp) -> usize {
     match column {
         ProcessListColumn::PowerPlanForeground | ProcessListColumn::PowerPlanRunning => {
             1 + app.plans.len()
@@ -18951,9 +19058,9 @@ fn process_list_cell_editor_option_count(column: ProcessListColumn, app: &PowerL
 fn process_list_cell_editor_options(
     process_name: &str,
     column: ProcessListColumn,
-    app: &PowerLeafApp,
+    app: &WinderustApp,
     max_height: Pixels,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> Scrollable<gpui::Div> {
     let mut options = dropdown_surface(cx, max_height)
         .w(px(PROCESS_LIST_CELL_EDITOR_WIDTH))
@@ -19156,7 +19263,7 @@ fn process_list_include_exclude_editor_options(
     process_name: &str,
     column: ProcessListColumn,
     included: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> Scrollable<gpui::Div> {
     options = options.child(process_list_include_exclude_editor_option(
         process_name,
@@ -19191,7 +19298,7 @@ fn process_list_power_plan_editor_option(
     label: String,
     selected: bool,
     guid: Option<String>,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let process_name = process_name.to_owned();
     let option_id =
@@ -19216,7 +19323,7 @@ fn process_list_include_exclude_editor_option(
     column: ProcessListColumn,
     included: bool,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let process_name = process_name.to_owned();
     let label = process_list_include_exclude_label(included);
@@ -19253,7 +19360,7 @@ fn process_list_cpu_limiter_editor_option(
     process_name: &str,
     percent: Option<u8>,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let process_name = process_name.to_owned();
     let label = percent
@@ -19278,7 +19385,7 @@ fn process_list_cpu_priority_editor_option(
     process_name: &str,
     priority: ProcessCpuPrioritySetting,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let process_name = process_name.to_owned();
     dropdown_option_row(
@@ -19302,7 +19409,7 @@ fn process_list_io_priority_editor_option(
     process_name: &str,
     priority: ProcessIoPrioritySetting,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let process_name = process_name.to_owned();
     dropdown_option_row(
@@ -19326,7 +19433,7 @@ fn process_list_memory_priority_editor_option(
     process_name: &str,
     priority: ProcessMemoryPrioritySetting,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let process_name = process_name.to_owned();
     dropdown_option_row(
@@ -19350,7 +19457,7 @@ fn process_list_timer_resolution_editor_option(
     process_name: &str,
     desired_100ns: Option<u32>,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let process_name = process_name.to_owned();
     let label = desired_100ns
@@ -19430,7 +19537,7 @@ fn action_log_page_controls(
     total_entries: usize,
     current_page: usize,
     page_count: usize,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     let has_entries = total_entries > 0;
     h_flex()
@@ -19890,7 +19997,7 @@ fn yes_no_label(value: bool) -> String {
 fn app_input(
     input: &Entity<InputState>,
     focused: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     div()
         .w_full()
@@ -20143,7 +20250,7 @@ fn checkbox(
         .into_any_element()
 }
 
-fn title_bar_controls(window: &Window, cx: &mut Context<PowerLeafApp>) -> AnyElement {
+fn title_bar_controls(window: &Window, cx: &mut Context<WinderustApp>) -> AnyElement {
     let (maximize_id, maximize_icon) = if window.is_maximized() {
         ("titlebar-restore", "\u{e923}")
     } else {
@@ -20184,7 +20291,7 @@ fn title_bar_control_button(
     icon: &'static str,
     control_area: WindowControlArea,
     is_close: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let hover_bg = if is_close {
         cx.theme().danger_hover
@@ -20215,7 +20322,7 @@ fn title_bar_control_button(
         .into_any_element()
 }
 
-fn section_landing_card(page: Page, cx: &mut Context<PowerLeafApp>) -> gpui::Stateful<gpui::Div> {
+fn section_landing_card(page: Page, cx: &mut Context<WinderustApp>) -> gpui::Stateful<gpui::Div> {
     let trailing = h_flex()
         .items_center()
         .justify_end()
@@ -20269,7 +20376,7 @@ fn section_landing_card(page: Page, cx: &mut Context<PowerLeafApp>) -> gpui::Sta
 fn nav_row(
     page: Page,
     selected: bool,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let row_id = SharedString::from(format!("nav-row-{page:?}"));
     let hover_id = row_id.to_string();
@@ -20374,7 +20481,7 @@ fn nav_selection_indicator(page: Page, selected: bool) -> AnyElement {
     )
 }
 
-fn nav_icon(page: Page, selected: bool, cx: &mut Context<PowerLeafApp>) -> AnyElement {
+fn nav_icon(page: Page, selected: bool, cx: &mut Context<WinderustApp>) -> AnyElement {
     let color = if selected {
         rgb(accent_color()).into()
     } else {
@@ -20394,88 +20501,120 @@ fn nav_icon(page: Page, selected: bool, cx: &mut Context<PowerLeafApp>) -> AnyEl
                 .text_color(color),
         );
 
-    if selected {
-        with_optional_motion(
-            icon,
-            SharedString::from(format!("nav-icon-{page:?}-{selected}")),
-            MotionSpeed::Fast,
-            |icon| icon,
-            |icon, delta| icon.opacity(0.68 + 0.32 * delta),
-        )
-    } else {
-        icon.into_any_element()
-    }
+    icon.into_any_element()
 }
 
 fn nav_icon_name(page: Page) -> NavIcon {
     match page {
-        Page::Dashboard => NavIcon::Dashboard,
+        Page::Dashboard => NavIcon::House,
         Page::PowerPlanAutomation => NavIcon::Zap,
-        Page::ProcessorControls => NavIcon::Chip,
-        Page::ProcessPolicies => NavIcon::Frame,
-        Page::MemoryControl => NavIcon::Chip,
+        Page::ProcessorControls => NavIcon::Cpu,
+        Page::ProcessPolicies => NavIcon::AppWindow,
+        Page::MemoryControl => NavIcon::MemoryStick,
         Page::AppHome => NavIcon::Settings,
-        Page::AdvancedHome => NavIcon::Chip,
-        Page::Activity => NavIcon::Activity,
-        Page::CpuUsage => NavIcon::Chart,
-        Page::CoreParking => NavIcon::Chip,
-        Page::CpuLimiter => NavIcon::Chart,
-        Page::BackgroundCpuRestriction => NavIcon::Chip,
-        Page::ProcessList => NavIcon::Frame,
-        Page::EfficiencyMode => NavIcon::Zap,
-        Page::AppSuspension => NavIcon::PauseCircle,
-        Page::Watchdog => NavIcon::Frame,
-        Page::PerformanceMode => NavIcon::Zap,
-        Page::ForegroundResponsiveness => NavIcon::Zap,
-        Page::IoPriority => NavIcon::Chip,
-        Page::GpuPriority => NavIcon::Chip,
-        Page::MemoryPriority => NavIcon::Chip,
-        Page::LaunchPriority => NavIcon::Frame,
-        Page::SmartTrim => NavIcon::Chip,
-        Page::CpuAffinity => NavIcon::Chip,
-        Page::ForegroundRules => NavIcon::Frame,
-        Page::Schedule => NavIcon::Calendar,
+        Page::AdvancedHome => NavIcon::Cog,
+        Page::Activity => NavIcon::SquareActivity,
+        Page::CpuUsage => NavIcon::ChartColumn,
+        Page::CoreParking => NavIcon::Drill,
+        Page::CpuLimiter => NavIcon::OctagonMinus,
+        Page::BackgroundCpuRestriction => NavIcon::MonitorX,
+        Page::ProcessList => NavIcon::List,
+        Page::EfficiencyMode => NavIcon::Leaf,
+        Page::AppSuspension => NavIcon::MonitorPause,
+        Page::Watchdog => NavIcon::ScanEye,
+        Page::PerformanceMode => NavIcon::Footprints,
+        Page::ForegroundResponsiveness => NavIcon::BrainCog,
+        Page::IoPriority => NavIcon::Rotate3d,
+        Page::GpuPriority => NavIcon::Gpu,
+        Page::MemoryPriority => NavIcon::CircleFadingArrowUp,
+        Page::LaunchPriority => NavIcon::Rocket,
+        Page::SmartTrim => NavIcon::Scissors,
+        Page::CpuAffinity => NavIcon::LifeBuoy,
+        Page::ForegroundRules => NavIcon::BringToFront,
+        Page::Schedule => NavIcon::CalendarDays,
         Page::ActionLog => NavIcon::Info,
         Page::Settings => NavIcon::Settings,
         Page::SettingsAppearance => NavIcon::Palette,
-        Page::TimerResolution => NavIcon::Chip,
-        Page::Win32PrioritySeparation => NavIcon::Chip,
+        Page::TimerResolution => NavIcon::Hourglass,
+        Page::Win32PrioritySeparation => NavIcon::Wrench,
         Page::About => NavIcon::Info,
     }
 }
 
 #[derive(Clone, Copy)]
 enum NavIcon {
-    Activity,
-    Calendar,
-    Chart,
+    AppWindow,
+    BrainCog,
+    BringToFront,
+    CalendarDays,
+    ChartColumn,
     ChevronDown,
     ChevronRight,
-    Chip,
-    Dashboard,
-    Frame,
+    CircleFadingArrowUp,
+    Cog,
+    Cpu,
+    Drill,
+    Footprints,
+    Gpu,
+    Hourglass,
+    House,
     Info,
+    Leaf,
+    LifeBuoy,
+    List,
+    MemoryStick,
+    MonitorPause,
+    MonitorX,
+    OctagonMinus,
     Palette,
-    PauseCircle,
+    Rocket,
+    Rotate3d,
+    ScanEye,
+    Scissors,
     Settings,
+    SquareActivity,
+    SquarePen,
+    Trash2,
+    Wrench,
     Zap,
 }
 
 impl IconNamed for NavIcon {
     fn path(self) -> SharedString {
         match self {
-            Self::Activity => "icons/activity.svg",
-            Self::Calendar => "icons/calendar.svg",
-            Self::Chart => "icons/chart.svg",
+            Self::AppWindow => "icons/app-window.svg",
+            Self::BrainCog => "icons/brain-cog.svg",
+            Self::BringToFront => "icons/bring-to-front.svg",
+            Self::CalendarDays => "icons/calendar-days.svg",
+            Self::ChartColumn => "icons/chart-column.svg",
             Self::ChevronDown => "icons/chevron-down.svg",
             Self::ChevronRight => "icons/chevron-right.svg",
-            Self::Chip => "icons/chip.svg",
-            Self::Dashboard => "icons/dashboard.svg",
-            Self::Frame => "icons/frame.svg",
+            Self::CircleFadingArrowUp => "icons/circle-fading-arrow-up.svg",
+            Self::Cog => "icons/cog.svg",
+            Self::Cpu => "icons/cpu.svg",
+            Self::Drill => "icons/drill.svg",
+            Self::Footprints => "icons/footprints.svg",
+            Self::Gpu => "icons/gpu.svg",
+            Self::Hourglass => "icons/hourglass.svg",
+            Self::House => "icons/house.svg",
             Self::Info => "icons/info.svg",
+            Self::Leaf => "icons/leaf.svg",
+            Self::LifeBuoy => "icons/life-buoy.svg",
+            Self::List => "icons/list.svg",
+            Self::MemoryStick => "icons/memory-stick.svg",
+            Self::MonitorPause => "icons/monitor-pause.svg",
+            Self::MonitorX => "icons/monitor-x.svg",
+            Self::OctagonMinus => "icons/octagon-minus.svg",
             Self::Palette => "icons/palette.svg",
-            Self::PauseCircle => "icons/pause-circle.svg",
+            Self::Rocket => "icons/rocket.svg",
+            Self::Rotate3d => "icons/rotate-3d.svg",
+            Self::ScanEye => "icons/scan-eye.svg",
+            Self::Scissors => "icons/scissors.svg",
             Self::Settings => "icons/settings.svg",
+            Self::SquareActivity => "icons/square-activity.svg",
+            Self::SquarePen => "icons/square-pen.svg",
+            Self::Trash2 => "icons/trash-2.svg",
+            Self::Wrench => "icons/wrench.svg",
             Self::Zap => "icons/zap.svg",
         }
         .into()
@@ -20502,12 +20641,18 @@ fn control_button(button: Button) -> Button {
         .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
 }
 
-fn primary_control_button(button: Button, cx: &mut Context<PowerLeafApp>) -> Button {
+fn primary_control_button(button: Button, cx: &mut Context<WinderustApp>) -> Button {
     control_button(button.primary()).text_color(cx.theme().primary_foreground)
 }
 
 fn danger_control_button(button: Button) -> Button {
     control_button(button.danger()).text_color(rgb(0xffffff))
+}
+
+fn remove_control_button(button: Button) -> Button {
+    danger_control_button(button)
+        .icon(Icon::new(NavIcon::Trash2).with_size(px(14.0)))
+        .label(t!("common.remove").to_string())
 }
 
 fn accent_swatch(id_prefix: &'static str, color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
@@ -20833,7 +20978,7 @@ fn processor_power_slider(
     value_element: AnyElement,
     state: &Entity<SliderState>,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     percent_slider_row(
@@ -20979,7 +21124,7 @@ fn win32_priority_row(
 fn threshold_level_slider(
     spec: SliderRowSpec<'_, u8>,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     handler: impl Fn(&StepChange<u8>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     rule_percent_slider_row(spec, window, cx, handler)
@@ -20989,7 +21134,7 @@ fn stable_slider(
     state: &Entity<SliderState>,
     spec: StableSliderSpec,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let StableSliderSpec {
         range,
@@ -21141,7 +21286,7 @@ fn update_stable_slider_from_position(
 fn activity_slider_card(
     spec: ActivitySliderCardSpec<'_>,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let ActivitySliderCardSpec {
@@ -21235,7 +21380,7 @@ fn activity_slider_card(
 fn rule_percent_slider_row<T>(
     spec: SliderRowSpec<'_, T>,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     handler: impl Fn(&StepChange<T>, &mut Window, &mut App) + 'static,
 ) -> AnyElement
 where
@@ -21343,7 +21488,7 @@ where
 fn percent_slider_row<T>(
     spec: SliderRowSpec<'_, T>,
     window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
+    cx: &mut Context<WinderustApp>,
     handler: impl Fn(&StepChange<T>, &mut Window, &mut App) + 'static,
 ) -> AnyElement
 where
@@ -22373,7 +22518,7 @@ fn set_performance_mode_power_plan_override(
     }
 }
 
-fn process_list_timer_resolution_options(app: &PowerLeafApp) -> Vec<Option<u32>> {
+fn process_list_timer_resolution_options(app: &WinderustApp) -> Vec<Option<u32>> {
     let mut options = Vec::new();
     for option in [
         None,
@@ -23887,7 +24032,7 @@ mod tests {
             icon: None,
         }];
 
-        PowerLeafApp::retain_current_process_icons(&mut cache, &candidates);
+        WinderustApp::retain_current_process_icons(&mut cache, &candidates);
 
         assert!(cache.contains_key(&kept_path));
         assert!(!cache.contains_key(&stale_path));

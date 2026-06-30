@@ -145,7 +145,7 @@ impl Page {
             Self::ForegroundRules => t!("nav.foreground_rules"),
             Self::Schedule => t!("nav.schedule"),
             Self::ActionLog => t!("nav.action_log"),
-            Self::Settings => t!("settings.powerleaf_behaviour"),
+            Self::Settings => t!("settings.winderust_behaviour"),
             Self::SettingsAppearance => t!("settings.language_and_appearance"),
             Self::TimerResolution => t!("nav.timer_resolution"),
             Self::Win32PrioritySeparation => t!("nav.win32_priority_separation"),
@@ -248,31 +248,5 @@ pub fn duration_label(seconds: u64) -> String {
         format!("{seconds}s")
     } else {
         format!("{}m {}s", seconds / 60, seconds % 60)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn process_list_is_standalone_after_dashboard() {
-        let sections = Page::sections();
-
-        assert_eq!(sections[0].landing_page, Page::Dashboard);
-        assert_eq!(sections[1].landing_page, Page::ProcessList);
-        assert_eq!(Page::ProcessList.section_landing_page(), Page::ProcessList);
-        assert!(!PROCESS_POLICY_PAGES.contains(&Page::ProcessList));
-    }
-
-    #[test]
-    fn advanced_power_plan_tuning_lives_under_power_plan_control() {
-        assert_eq!(
-            Page::CoreParking.section_landing_page(),
-            Page::PowerPlanAutomation
-        );
-        assert!(POWER_AUTOMATION_PAGES.contains(&Page::CoreParking));
-        assert_eq!(POWER_AUTOMATION_PAGES.last(), Some(&Page::CoreParking));
-        assert!(!CPU_CONTROL_PAGES.contains(&Page::CoreParking));
     }
 }

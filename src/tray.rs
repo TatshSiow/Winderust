@@ -7,16 +7,17 @@ use std::{
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
+    System::LibraryLoader::GetModuleHandleW,
     UI::{
         Shell::{
             Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
         },
         WindowsAndMessaging::{
-            AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadIconW,
+            AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadImageW,
             PostMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TrackPopupMenu,
-            GWLP_WNDPROC, IDI_APPLICATION, MF_STRING, SW_HIDE, SW_RESTORE, SW_SHOWNA,
-            TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-            WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
+            GWLP_WNDPROC, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MF_STRING, SW_HIDE,
+            SW_RESTORE, SW_SHOWNA, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE,
+            WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
         },
     },
 };
@@ -49,12 +50,12 @@ impl TrayIcon {
         let mut data = notify_data(hwnd);
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = WM_TRAYICON;
-        data.hIcon = unsafe { LoadIconW(std::ptr::null_mut(), IDI_APPLICATION) };
-        write_wide_fixed(&mut data.szTip, "PowerLeaf");
+        data.hIcon = load_app_icon();
+        write_wide_fixed(&mut data.szTip, "Winderust");
 
         let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &data) };
         if ok == 0 {
-            return Err("Failed to add PowerLeaf to the system tray.".to_owned());
+            return Err("Failed to add Winderust to the system tray.".to_owned());
         }
 
         Ok(Self { hwnd })
@@ -124,6 +125,19 @@ fn write_wide_fixed<const N: usize>(target: &mut [u16; N], value: &str) {
     }
 }
 
+fn load_app_icon() -> HICON {
+    unsafe {
+        LoadImageW(
+            GetModuleHandleW(std::ptr::null()),
+            1usize as windows_sys::core::PCWSTR,
+            IMAGE_ICON,
+            0,
+            0,
+            LR_DEFAULTSIZE | LR_SHARED,
+        ) as HICON
+    }
+}
+
 fn subclass_window(hwnd: HWND) {
     if ORIGINAL_WNDPROC.load(Ordering::SeqCst) != 0 {
         return;
@@ -189,7 +203,7 @@ unsafe fn show_tray_menu(hwnd: HWND) {
         return;
     }
 
-    let show = wide_null("Show PowerLeaf");
+    let show = wide_null("Show Winderust");
     let quit = wide_null("Quit");
     AppendMenuW(menu, MF_STRING, MENU_SHOW, show.as_ptr());
     AppendMenuW(menu, MF_STRING, MENU_QUIT, quit.as_ptr());

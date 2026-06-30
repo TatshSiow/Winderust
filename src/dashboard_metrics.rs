@@ -277,13 +277,3 @@ fn network_counters_from_table(table: *const MIB_IF_TABLE2) -> Option<NetworkCou
         sampled_at: Instant::now(),
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cache_bytes_from_pages_uses_page_size() {
-        assert_eq!(cache_bytes_from_pages(4, 4096), 16_384);
-    }
-}

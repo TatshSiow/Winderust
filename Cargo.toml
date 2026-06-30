@@ -1,14 +1,17 @@
 [package]
-name = "powerleaf"
+name = "winderust"
 version = "0.1.0"
 edition = "2021"
-description = "Make your Windows more eco-friendly"
+description = "Rust-based Windows tuning controller"
 license = "MIT"
+build = "build.rs"
 
 [dependencies]
 chrono = "0.4.44"
 gpui = "0.2.2"
 gpui-component = "0.5.1"
+icondata_core = "0.1.0"
+icondata_lu = "0.1.0"
 raw-window-handle = "0.6.2"
 rust-i18n = "3"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -53,3 +56,6 @@ windows-sys = { version = "0.61.2", features = [
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[build-dependencies]
+embed-resource = "3.0.9"

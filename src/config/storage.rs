@@ -8,8 +8,7 @@ use chrono::Local;
 use super::Settings;
 
 const CONFIG_FILE: &str = "settings.toml";
-const CONFIG_DIR: &str = "PowerLeaf";
-const LEGACY_CONFIG_DIR: &str = "PowerSwitcher";
+const CONFIG_DIR: &str = "Winderust";
 
 pub fn config_path() -> PathBuf {
     config_dir().join(CONFIG_FILE)
@@ -21,7 +20,7 @@ pub fn default_export_toml_path() -> PathBuf {
 
 fn default_export_toml_filename() -> String {
     format!(
-        "powerleaf_{}_{}.toml",
+        "winderust_{}_{}.toml",
         env!("CARGO_PKG_VERSION"),
         export_date()
     )
@@ -33,10 +32,6 @@ fn export_date() -> String {
 
 fn config_dir() -> PathBuf {
     base_config_dir().join(CONFIG_DIR)
-}
-
-fn legacy_config_dir() -> PathBuf {
-    base_config_dir().join(LEGACY_CONFIG_DIR)
 }
 
 fn base_config_dir() -> PathBuf {
@@ -56,17 +51,7 @@ pub fn load() -> Result<Settings, String> {
 }
 
 fn load_config_path() -> PathBuf {
-    let path = config_path();
-    if path.exists() {
-        return path;
-    }
-
-    let legacy_path = legacy_config_dir().join(CONFIG_FILE);
-    if legacy_path.exists() {
-        legacy_path
-    } else {
-        path
-    }
+    config_path()
 }
 
 pub fn save(settings: &Settings) -> Result<(), String> {
@@ -495,7 +480,7 @@ mod tests {
     fn toml_export_uses_toml_extension() {
         let filename = default_export_toml_filename();
 
-        assert!(filename.starts_with(&format!("powerleaf_{}_", env!("CARGO_PKG_VERSION"))));
+        assert!(filename.starts_with(&format!("winderust_{}_", env!("CARGO_PKG_VERSION"))));
         assert!(filename.ends_with(".toml"));
     }
 

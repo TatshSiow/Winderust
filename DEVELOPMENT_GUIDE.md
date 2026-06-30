@@ -1,4 +1,4 @@
-# PowerLeaf Development Guide
+# Winderust Development Guide
 
 This is the working guide for code changes. Product scope and future goals live in `PROJECT_SCOPE.md`.
 
@@ -23,7 +23,7 @@ For release builds:
 cargo build --release
 ```
 
-If `target\release\powerleaf.exe` is locked because the app is running:
+If `target\release\winderust.exe` is locked because the app is running:
 
 ```powershell
 cargo build --release --target-dir target-next
@@ -55,7 +55,7 @@ Pages are grouped in `src/ui/mod.rs`:
 - Settings.
 - Advanced: App Suspension, Timer Resolution, Win32 priority separation.
 
-Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `PowerLeafApp::render_page` together.
+Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `WinderustApp::render_page` together.
 
 ## Settings
 
@@ -69,7 +69,7 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `P
 
 Process-control features must keep these defaults:
 
-- Do not target PowerLeaf itself.
+- Do not target Winderust itself.
 - Do not target protected/system/session-mismatched processes.
 - Treat access denied as skipped unless it indicates a real implementation bug.
 - Restore previous process state on disable, process exit, app shutdown, or rule mismatch when the backend can observe it.
@@ -94,4 +94,3 @@ Process-control features must keep these defaults:
 - Win32 priority separation: registry code in `src/app.rs`.
 
 Prefer native API calls already used in the repo. Do not add command spawning around `powercfg` unless the Win32 path cannot support the needed behavior.
-

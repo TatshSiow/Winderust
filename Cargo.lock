@@ -2652,6 +2652,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "icondata_core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c97be924215abd5e630d84e95a47c710138a6559b4c55039f4f33aa897fa859"
+
+[[package]]
+name = "icondata_lu"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f25663a6cc5371e9e33c98bab870f4aa2fd68c88853f1467c8fccfaf112782b1"
+dependencies = [
+ "icondata_core",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4109,21 +4124,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
 dependencies = [
  "zerovec",
-]
-
-[[package]]
-name = "powerleaf"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "gpui",
- "gpui-component",
- "raw-window-handle",
- "rust-i18n",
- "serde",
- "toml 0.8.23",
- "windows 0.61.3",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6624,6 +6624,24 @@ name = "winapi-x86_64-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+
+[[package]]
+name = "winderust"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "embed-resource",
+ "gpui",
+ "gpui-component",
+ "icondata_core",
+ "icondata_lu",
+ "raw-window-handle",
+ "rust-i18n",
+ "serde",
+ "toml 0.8.23",
+ "windows 0.61.3",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "windows"

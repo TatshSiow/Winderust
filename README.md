@@ -1,8 +1,6 @@
-# PowerLeaf
+# Winderust
 
-PowerLeaf is a rust based Windows app designed to make your device more eco-friendly.
-
-It aims to reduce power usage and carbon emissions.
+Winderust is a Rust-based Windows tuning controller.
 
 ## Features
 
@@ -50,7 +48,7 @@ cargo build --release
 The compiled executable is:
 
 ```text
-target\release\powerleaf.exe
+target\release\winderust.exe
 ```
 
 ## Notes

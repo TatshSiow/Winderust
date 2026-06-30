@@ -113,7 +113,7 @@ fn default_action_log_export_csv_path() -> PathBuf {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."))
         .join(format!(
-            "powerleaf_action_log_{}_{}.csv",
+            "winderust_action_log_{}_{}.csv",
             env!("CARGO_PKG_VERSION"),
             Local::now().format("%Y-%m-%d")
         ))

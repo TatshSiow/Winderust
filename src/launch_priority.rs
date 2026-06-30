@@ -24,7 +24,7 @@ use crate::win_util::wide_null;
 const IFEO_SUB_KEY: &str =
     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
 const PERF_OPTIONS_SUB_KEY: &str = "PerfOptions";
-const POWERLEAF_MANAGED_VALUE: &str = "PowerLeafManaged";
+const WINDERUST_MANAGED_VALUE: &str = "WinderustManaged";
 const CPU_PRIORITY_VALUE: &str = "CpuPriorityClass";
 const IO_PRIORITY_VALUE: &str = "IoPriority";
 const PAGE_PRIORITY_VALUE: &str = "PagePriority";
@@ -72,7 +72,7 @@ pub fn apply_launch_priority_settings(settings: &LaunchPrioritySettings) -> Laun
         }
     };
 
-    let managed_processes = match powerleaf_managed_processes(&root) {
+    let managed_processes = match winderust_managed_processes(&root) {
         Ok(processes) => processes,
         Err(err) => {
             snapshot.failed_actions = 1;
@@ -171,7 +171,7 @@ fn open_or_create_ifeo_root() -> Result<RegistryKey, String> {
     )
 }
 
-fn powerleaf_managed_processes(root: &RegistryKey) -> Result<BTreeSet<String>, String> {
+fn winderust_managed_processes(root: &RegistryKey) -> Result<BTreeSet<String>, String> {
     let mut names = BTreeSet::new();
     let mut index = 0;
 
@@ -196,7 +196,7 @@ fn powerleaf_managed_processes(root: &RegistryKey) -> Result<BTreeSet<String>, S
                 let process_name = String::from_utf16_lossy(&name_buffer[..name_len as usize])
                     .trim()
                     .to_ascii_lowercase();
-                if process_name_has_powerleaf_marker(&process_name) {
+                if process_name_has_winderust_marker(&process_name) {
                     names.insert(process_name);
                 }
                 index += 1;
@@ -212,9 +212,9 @@ fn powerleaf_managed_processes(root: &RegistryKey) -> Result<BTreeSet<String>, S
     }
 }
 
-fn process_name_has_powerleaf_marker(process_name: &str) -> bool {
+fn process_name_has_winderust_marker(process_name: &str) -> bool {
     let path = perf_options_path(process_name);
-    read_registry_dword(HKEY_LOCAL_MACHINE, &path, POWERLEAF_MANAGED_VALUE) == Some(1)
+    read_registry_dword(HKEY_LOCAL_MACHINE, &path, WINDERUST_MANAGED_VALUE) == Some(1)
 }
 
 fn apply_registry_rule(rule: &RegistryLaunchPriorityRule) -> Result<(), String> {
@@ -228,7 +228,7 @@ fn apply_registry_rule(rule: &RegistryLaunchPriorityRule) -> Result<(), String> 
     set_or_delete_dword(&key, CPU_PRIORITY_VALUE, rule.cpu_priority)?;
     set_or_delete_dword(&key, IO_PRIORITY_VALUE, rule.io_priority)?;
     set_or_delete_dword(&key, PAGE_PRIORITY_VALUE, rule.memory_priority)?;
-    set_or_delete_dword(&key, POWERLEAF_MANAGED_VALUE, Some(1))
+    set_or_delete_dword(&key, WINDERUST_MANAGED_VALUE, Some(1))
 }
 
 fn clear_process_launch_priority(process_name: &str) -> Result<(), String> {
@@ -241,7 +241,7 @@ fn clear_process_launch_priority(process_name: &str) -> Result<(), String> {
     delete_registry_value(&key, CPU_PRIORITY_VALUE)?;
     delete_registry_value(&key, IO_PRIORITY_VALUE)?;
     delete_registry_value(&key, PAGE_PRIORITY_VALUE)?;
-    delete_registry_value(&key, POWERLEAF_MANAGED_VALUE)
+    delete_registry_value(&key, WINDERUST_MANAGED_VALUE)
 }
 
 fn perf_options_path(process_name: &str) -> String {

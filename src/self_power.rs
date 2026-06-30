@@ -20,7 +20,7 @@ struct SelfPowerState {
 pub fn enable_hidden_mode() -> Result<(), String> {
     let mut state = SELF_POWER_STATE
         .lock()
-        .map_err(|_| "PowerLeaf self power state lock is poisoned.".to_owned())?;
+        .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
     if state.is_some() {
         return Ok(());
     }
@@ -53,7 +53,7 @@ pub fn enable_hidden_mode() -> Result<(), String> {
 pub fn disable_hidden_mode() -> Result<(), String> {
     let Some(state) = SELF_POWER_STATE
         .lock()
-        .map_err(|_| "PowerLeaf self power state lock is poisoned.".to_owned())?
+        .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?
         .take()
     else {
         return Ok(());

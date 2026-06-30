@@ -1,4 +1,5 @@
 use windows_sys::Win32::{
+    Foundation::HWND,
     Foundation::{ERROR_NOT_ALL_ASSIGNED, LUID},
     Security::{
         AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME,
@@ -6,9 +7,38 @@ use windows_sys::Win32::{
         TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
+    UI::{
+        Shell::{IsUserAnAdmin, ShellExecuteW},
+        WindowsAndMessaging::SW_SHOWNORMAL,
+    },
 };
 
 use crate::win_util::{last_error, WinHandle};
+
+pub fn relaunch_as_admin_if_needed() -> bool {
+    if unsafe { IsUserAnAdmin() } != 0 {
+        return false;
+    }
+
+    let Ok(exe) = std::env::current_exe() else {
+        return true;
+    };
+    let operation = wide("runas");
+    let file = wide(exe.as_os_str());
+
+    unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut::<std::ffi::c_void>() as HWND,
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+
+    true
+}
 
 pub fn enable_debug_privilege() -> bool {
     enable_privilege(SE_DEBUG_NAME)
@@ -68,4 +98,14 @@ fn enable_privilege_for_token(
         )
     };
     adjusted != 0 && last_error() != ERROR_NOT_ALL_ASSIGNED
+}
+
+fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    value
+        .as_ref()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }

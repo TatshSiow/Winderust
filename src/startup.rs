@@ -12,7 +12,7 @@ use windows_sys::Win32::{
 use crate::win_util::wide_null;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const VALUE_NAME: &str = "PowerLeaf";
+const VALUE_NAME: &str = "Winderust";
 const STARTUP_ALLOWED_EXTENSIONS: &[&str] = &["exe", "com"];
 
 pub fn set_startup_with_windows(enabled: bool) -> Result<(), String> {
@@ -59,7 +59,12 @@ fn disable_startup() -> Result<(), String> {
         return Ok(());
     };
 
-    let value_name = wide_null(VALUE_NAME);
+    delete_startup_value(&key, VALUE_NAME)?;
+    Ok(())
+}
+
+fn delete_startup_value(key: &RegKey, value_name: &str) -> Result<(), String> {
+    let value_name = wide_null(value_name);
     let status = unsafe { RegDeleteValueW(key.0, value_name.as_ptr()) };
     if status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND {
         Ok(())
@@ -110,7 +115,7 @@ fn open_run_key_for_write() -> Result<Option<RegKey>, String> {
 
 fn startup_command() -> Result<String, String> {
     let exe = std::env::current_exe()
-        .map_err(|err| format!("failed to read PowerLeaf executable path: {err}"))?;
+        .map_err(|err| format!("failed to read Winderust executable path: {err}"))?;
     let exe = sanitize_startup_executable(exe)?;
     Ok(format!("\"{}\"", exe.display()))
 }
@@ -118,10 +123,10 @@ fn startup_command() -> Result<String, String> {
 fn sanitize_startup_executable(exe: PathBuf) -> Result<PathBuf, String> {
     let exe = exe
         .canonicalize()
-        .map_err(|err| format!("failed to resolve PowerLeaf executable path: {err}"))?;
+        .map_err(|err| format!("failed to resolve Winderust executable path: {err}"))?;
 
     if !exe.is_file() {
-        return Err("PowerLeaf executable path is not a file.".to_owned());
+        return Err("Winderust executable path is not a file.".to_owned());
     }
     if let Some(extension) = exe.extension().and_then(|extension| extension.to_str()) {
         if !STARTUP_ALLOWED_EXTENSIONS
@@ -129,11 +134,11 @@ fn sanitize_startup_executable(exe: PathBuf) -> Result<PathBuf, String> {
             .any(|allowed| extension.eq_ignore_ascii_case(allowed))
         {
             return Err(format!(
-                "PowerLeaf executable path has unexpected extension ({extension:?})."
+                "Winderust executable path has unexpected extension ({extension:?})."
             ));
         }
     } else {
-        return Err("PowerLeaf executable path has no extension.".to_owned());
+        return Err("Winderust executable path has no extension.".to_owned());
     }
 
     Ok(exe)

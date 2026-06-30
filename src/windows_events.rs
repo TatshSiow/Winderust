@@ -174,7 +174,7 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
 }
 
 fn create_event_window() -> HWND {
-    let class_name = wide_null("PowerLeafAutomationEvents");
+    let class_name = wide_null("WinderustAutomationEvents");
     let module = unsafe { GetModuleHandleW(null()) };
     let window_class = WNDCLASSW {
         lpfnWndProc: Some(event_window_proc),

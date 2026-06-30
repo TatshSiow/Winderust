@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
 
 #[cfg(not(windows))]
-compile_error!("PowerLeaf is a Windows-only application.");
+compile_error!("Winderust is a Windows-only application.");
 
 mod action_log;
 mod activity;
@@ -49,6 +49,10 @@ fn main() {
         WindowOptions,
     };
 
+    if privilege::relaunch_as_admin_if_needed() {
+        return;
+    }
+
     let Some(_single_instance_guard) = SingleInstanceGuard::acquire() else {
         return;
     };
@@ -64,17 +68,17 @@ fn main() {
                     titlebar: None,
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(900.0), px(620.0))),
-                    app_id: Some("PowerLeaf".to_owned()),
+                    app_id: Some("Winderust".to_owned()),
                     window_decorations: Some(WindowDecorations::Client),
                     ..Default::default()
                 },
                 |window, cx| {
-                    window.set_window_title("PowerLeaf");
-                    let view = cx.new(|cx| app::PowerLeafApp::new(window, cx));
+                    window.set_window_title("Winderust");
+                    let view = cx.new(|cx| app::WinderustApp::new(window, cx));
                     cx.new(|cx| gpui_component::Root::new(view, window, cx))
                 },
             )
-            .expect("failed to open PowerLeaf window");
+            .expect("failed to open Winderust window");
         });
 }
 
@@ -119,7 +123,7 @@ fn single_instance_mutex_name() -> String {
         .map(fnv1a64)
         .unwrap_or(0x5f3f_2a4e_13a5_59f0);
 
-    format!("Local\\PowerLeaf.SingleInstance.{digest:016x}")
+    format!("Local\\Winderust.SingleInstance.{digest:016x}")
 }
 
 fn fnv1a64(input: impl AsRef<str>) -> u64 {

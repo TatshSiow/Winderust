@@ -1,7 +1,7 @@
 # Suggested commands
 
 Windows PowerShell commands used in normal development:
-- `cargo build --release` (standard build; outputs `target\release\powerleaf.exe`).
+- `cargo build --release` (standard build; outputs `target\release\winderust.exe`).
 - `cargo build --release --target-dir target-next` (fallback when output exe is locked by a running instance).
 - `cargo fmt`.
 - `cargo test`.

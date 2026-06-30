@@ -1,10 +1,10 @@
-# PowerLeaf Project Scope
+# Winderust Project Scope
 
 This is the product-scope and future-goals doc. Development mechanics live in `DEVELOPMENT_GUIDE.md`.
 
 ## Goal
 
-PowerLeaf is a Windows power and process-control app focused on power efficiency, foreground responsiveness, and conservative automation.
+Winderust is a Windows power and process-control app focused on power efficiency, foreground responsiveness, and conservative automation.
 
 Process Lasso is a useful comparison point, not the target to clone. Prefer small, explainable controls over a full process-management suite.
 

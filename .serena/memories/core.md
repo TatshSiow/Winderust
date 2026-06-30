@@ -1,6 +1,6 @@
 # Core
 
-PowerLeaf is a Windows-only Rust desktop app focused on power/efficiency controls and process behavior automation.
+Winderust is a Windows-only Rust desktop app focused on power/efficiency controls and process behavior automation.
 
 Core architecture references:
 - `src/app.rs` owns app root state, page navigation, and settings persistence wiring.

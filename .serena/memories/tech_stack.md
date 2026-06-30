@@ -1,6 +1,6 @@
 # Tech stack
 
-- Language: Rust (crate `powerleaf`, edition `2021`).
+- Language: Rust (crate `winderust`, edition `2021`).
 - Primary runtime: native Windows desktop app (Win32 + app host, no browser runtime).
 - UI/tooling: `gpui` + `gpui-component`.
 - Serialization/config: `serde` (+ derive), `toml`.
