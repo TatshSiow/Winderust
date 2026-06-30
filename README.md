@@ -2,6 +2,9 @@
 
 Winderust is a Rust-based Windows tuning controller.
 
+Naming: Wanderlust + Windows Derust
+Definition: Wander and explore Windows, polish your rusty sword and shine.
+
 ## Features
 
 ### Power Plan scheduler adjust power plan based on
