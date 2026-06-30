@@ -20,6 +20,55 @@ use windows_sys::Win32::{
 const PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN: usize = 512;
 const PROCESS_IMAGE_PATH_MAX_BUFFER_LEN: usize = 32_768;
 
+pub const CORE_BUILT_IN_PROCESS_EXCLUSIONS: &[&str] = &[
+    "audiodg.exe",
+    "conhost.exe",
+    "csrss.exe",
+    "ctfmon.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "fontdrvhost.exe",
+    "lsaiso.exe",
+    "lsass.exe",
+    "registry",
+    "services.exe",
+    "sihost.exe",
+    "smss.exe",
+    "system",
+    "taskmgr.exe",
+    "wininit.exe",
+    "winlogon.exe",
+];
+
+pub const EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS: &[&str] = &[
+    "audiodg.exe",
+    "conhost.exe",
+    "csrss.exe",
+    "ctfmon.exe",
+    "dwm.exe",
+    "explorer.exe",
+    "fontdrvhost.exe",
+    "lsaiso.exe",
+    "lsass.exe",
+    "registry",
+    "searchapp.exe",
+    "searchhost.exe",
+    "securityhealthservice.exe",
+    "securityhealthsystray.exe",
+    "services.exe",
+    "shellexperiencehost.exe",
+    "sihost.exe",
+    "smss.exe",
+    "startmenuexperiencehost.exe",
+    "system",
+    "systemsettings.exe",
+    "taskmgr.exe",
+    "textinputhost.exe",
+    "wininit.exe",
+    "winlogon.exe",
+    "wudfhost.exe",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessInfo {
     pub id: u32,

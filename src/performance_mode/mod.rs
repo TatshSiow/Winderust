@@ -7,37 +7,11 @@ use crate::{
     config::{PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings},
     foreground::{
         contains_process_name, list_processes, process_session_id, same_process_name, ProcessInfo,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "audiodg.exe",
-    "conhost.exe",
-    "csrss.exe",
-    "ctfmon.exe",
-    "dwm.exe",
-    "explorer.exe",
-    "fontdrvhost.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "searchapp.exe",
-    "searchhost.exe",
-    "securityhealthservice.exe",
-    "securityhealthsystray.exe",
-    "services.exe",
-    "shellexperiencehost.exe",
-    "sihost.exe",
-    "smss.exe",
-    "startmenuexperiencehost.exe",
-    "system",
-    "systemsettings.exe",
-    "taskmgr.exe",
-    "textinputhost.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "wudfhost.exe",
-];
+const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PerformanceModeSnapshot {

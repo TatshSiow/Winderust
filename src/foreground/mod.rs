@@ -7,5 +7,5 @@ pub use process_list::{
     list_process_candidates, list_processes, process_count_label, process_failure_key,
     process_id_matches_name, process_name_key, process_names_by_id, process_session_id,
     same_process_name, should_ignore_foreground_process, unique_app_names, ProcessCandidateInfo,
-    ProcessInfo,
+    ProcessInfo, CORE_BUILT_IN_PROCESS_EXCLUSIONS, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };

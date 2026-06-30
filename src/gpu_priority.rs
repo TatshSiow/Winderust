@@ -25,7 +25,7 @@ use crate::{
     foreground::{
         contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
         process_count_label, process_failure_key, process_names_by_id, process_session_id,
-        same_process_name, unique_app_names,
+        same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::ExecutionFailureTracker,
 };
@@ -34,25 +34,7 @@ const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
 const STATUS_INVALID_PARAMETER: u32 = 0xC000000D;
 const GPU_PRIORITY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
-const BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "audiodg.exe",
-    "conhost.exe",
-    "csrss.exe",
-    "ctfmon.exe",
-    "dwm.exe",
-    "explorer.exe",
-    "fontdrvhost.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "services.exe",
-    "sihost.exe",
-    "smss.exe",
-    "system",
-    "taskmgr.exe",
-    "wininit.exe",
-    "winlogon.exe",
-];
+const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GpuPrioritySnapshot {

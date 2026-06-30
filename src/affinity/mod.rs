@@ -33,42 +33,15 @@ use crate::{
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
         process_id_matches_name, process_names_by_id, process_session_id, same_process_name,
-        should_ignore_foreground_process, unique_app_names,
+        should_ignore_foreground_process, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
     },
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "audiodg.exe",
-    "conhost.exe",
-    "csrss.exe",
-    "ctfmon.exe",
-    "dwm.exe",
-    "explorer.exe",
-    "fontdrvhost.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "rtkauduservice64.exe",
-    "searchapp.exe",
-    "searchhost.exe",
-    "securityhealthservice.exe",
-    "securityhealthsystray.exe",
-    "services.exe",
-    "shellexperiencehost.exe",
-    "sihost.exe",
-    "smss.exe",
-    "startmenuexperiencehost.exe",
-    "systemsettings.exe",
-    "system",
-    "taskmgr.exe",
-    "textinputhost.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "wudfhost.exe",
-];
+const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
+const EXTRA_BUILT_IN_EXCLUSIONS: &[&str] = &["rtkauduservice64.exe"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuAffinitySnapshot {
@@ -518,6 +491,7 @@ impl Default for CpuAffinitySnapshot {
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
+        || contains_process_name(EXTRA_BUILT_IN_EXCLUSIONS, process_name)
 }
 
 pub fn contains_process(list: &[String], process_name: &str) -> bool {

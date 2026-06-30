@@ -977,19 +977,11 @@ fn update_eco_qos_status(shared: &SharedAutomationState, status: EcoQosSnapshot)
 }
 
 fn update_app_suspension_status(shared: &SharedAutomationState, status: AppSuspensionSnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.app_suspension_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.app_suspension_status);
 }
 
 fn update_cpu_affinity_status(shared: &SharedAutomationState, status: CpuAffinitySnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.cpu_affinity_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.cpu_affinity_status);
 }
 
 fn update_background_cpu_restriction_status(
@@ -1027,75 +1019,53 @@ fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) -> bo
 }
 
 fn update_cpu_limiter_status(shared: &SharedAutomationState, status: CpuLimiterSnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.cpu_limiter_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.cpu_limiter_status);
 }
 
 fn update_performance_mode_status(shared: &SharedAutomationState, status: PerformanceModeSnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.performance_mode_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.performance_mode_status);
 }
 
 fn update_watchdog_status(shared: &SharedAutomationState, status: WatchdogSnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.watchdog_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.watchdog_status);
 }
 
 fn update_foreground_responsiveness_status(
     shared: &SharedAutomationState,
     status: ForegroundResponsivenessSnapshot,
 ) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.foreground_responsiveness_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| {
+        &mut state.foreground_responsiveness_status
+    });
 }
 
 fn update_io_priority_status(shared: &SharedAutomationState, status: IoPrioritySnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.io_priority_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.io_priority_status);
 }
 
 fn update_gpu_priority_status(shared: &SharedAutomationState, status: GpuPrioritySnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.gpu_priority_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.gpu_priority_status);
 }
 
 fn update_memory_priority_status(shared: &SharedAutomationState, status: MemoryPrioritySnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.memory_priority_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.memory_priority_status);
 }
 
 fn update_smart_trim_status(shared: &SharedAutomationState, status: SmartTrimSnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.smart_trim_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status(shared, status, |state| &mut state.smart_trim_status);
 }
 
 fn update_timer_resolution_status(shared: &SharedAutomationState, status: TimerResolutionSnapshot) {
+    update_status(shared, status, |state| &mut state.timer_resolution_status);
+}
+
+fn update_status<T: PartialEq>(
+    shared: &SharedAutomationState,
+    status: T,
+    field: impl for<'a> FnOnce(&'a mut AutomationWorkerState) -> &'a mut T,
+) {
     if let Ok(mut state) = shared.state.lock() {
-        if set_status(&mut state.timer_resolution_status, status) {
+        if set_status(field(&mut state), status) {
             bump_status_generation(shared, &mut state);
         }
     }

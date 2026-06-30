@@ -19,40 +19,13 @@ use crate::{
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
         process_id_matches_name, process_names_by_id, process_session_id, same_process_name,
-        should_ignore_foreground_process, unique_app_names,
+        should_ignore_foreground_process, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "audiodg.exe",
-    "conhost.exe",
-    "csrss.exe",
-    "ctfmon.exe",
-    "dwm.exe",
-    "explorer.exe",
-    "fontdrvhost.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "searchapp.exe",
-    "searchhost.exe",
-    "securityhealthservice.exe",
-    "securityhealthsystray.exe",
-    "services.exe",
-    "shellexperiencehost.exe",
-    "sihost.exe",
-    "smss.exe",
-    "startmenuexperiencehost.exe",
-    "system",
-    "systemsettings.exe",
-    "taskmgr.exe",
-    "textinputhost.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "wudfhost.exe",
-];
+const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuLimiterSnapshot {
     pub enabled: bool,

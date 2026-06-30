@@ -19,30 +19,12 @@ use crate::{
     foreground::{
         contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
         process_count_label, process_failure_key, process_session_id, same_process_name,
-        unique_app_names,
+        unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "audiodg.exe",
-    "conhost.exe",
-    "csrss.exe",
-    "ctfmon.exe",
-    "dwm.exe",
-    "explorer.exe",
-    "fontdrvhost.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "services.exe",
-    "sihost.exe",
-    "smss.exe",
-    "system",
-    "taskmgr.exe",
-    "wininit.exe",
-    "winlogon.exe",
-];
+const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemoryPrioritySnapshot {

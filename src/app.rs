@@ -119,38 +119,6 @@ const DASHBOARD_SUMMARY_CARD_HEIGHT: f32 = 196.0;
 const DASHBOARD_LINE_CHART_HEIGHT: f32 = 112.0;
 const DASHBOARD_LINE_CHART_TICK_MARGIN: usize = CPU_USAGE_HISTORY_LEN + 1;
 const DASHBOARD_PERCENT_CHART_MAX: f64 = 100.0;
-const DASHBOARD_HISTORY_TICKS: [&str; CPU_USAGE_HISTORY_LEN] = [
-    "sample-00",
-    "sample-01",
-    "sample-02",
-    "sample-03",
-    "sample-04",
-    "sample-05",
-    "sample-06",
-    "sample-07",
-    "sample-08",
-    "sample-09",
-    "sample-10",
-    "sample-11",
-    "sample-12",
-    "sample-13",
-    "sample-14",
-    "sample-15",
-    "sample-16",
-    "sample-17",
-    "sample-18",
-    "sample-19",
-    "sample-20",
-    "sample-21",
-    "sample-22",
-    "sample-23",
-    "sample-24",
-    "sample-25",
-    "sample-26",
-    "sample-27",
-    "sample-28",
-    "sample-29",
-];
 const DASHBOARD_SPLIT_ITEM_WIDTH: f32 = 140.0;
 const DASHBOARD_SPLIT_VALUE_WIDTH: f32 = 90.0;
 const CARD_ROW_HEIGHT: f32 = 58.0;
@@ -419,7 +387,7 @@ struct NetworkUsageHistorySample {
 }
 
 struct DashboardDualLinePoint {
-    tick: &'static str,
+    tick: String,
     first_value: f64,
     second_value: f64,
     first_label: String,
@@ -4649,12 +4617,12 @@ impl WinderustApp {
                 dashboard_split_value(
                     t!("dashboard.cpu_load").to_string(),
                     cpu_usage_label(self.cpu_usage.percent),
-                    cpu_usage_color(),
+                    dashboard_primary_series_color(),
                 ),
                 dashboard_split_value(
                     t!("dashboard.cpu_frequency").to_string(),
                     cpu_frequency_label(self.cpu_usage.frequency_mhz),
-                    cpu_frequency_color(),
+                    dashboard_secondary_series_color(),
                 ),
             ]))
             .child(graph);
@@ -4683,12 +4651,12 @@ impl WinderustApp {
                 dashboard_split_value(
                     t!("dashboard.memory_used").to_string(),
                     memory_usage_value_label(self.memory_usage),
-                    memory_usage_color(),
+                    dashboard_primary_series_color(),
                 ),
                 dashboard_split_value(
                     t!("dashboard.memory_cache").to_string(),
                     memory_cache_value_label(self.memory_usage),
-                    memory_cache_color(),
+                    dashboard_secondary_series_color(),
                 ),
             ]))
             .child(graph);
@@ -4724,12 +4692,12 @@ impl WinderustApp {
                     io_usage_split_value(
                         t!("dashboard.io_read").to_string(),
                         self.io_usage.read_bytes_per_second,
-                        io_read_color(),
+                        dashboard_primary_series_color(),
                     ),
                     io_usage_split_value(
                         t!("dashboard.io_write").to_string(),
                         self.io_usage.write_bytes_per_second,
-                        io_write_color(),
+                        dashboard_secondary_series_color(),
                     ),
                 ]))
                 .child(graph)
@@ -4758,12 +4726,12 @@ impl WinderustApp {
                     io_usage_split_value(
                         t!("dashboard.network_download").to_string(),
                         self.network_usage.download_bytes_per_second,
-                        network_download_color(),
+                        dashboard_primary_series_color(),
                     ),
                     io_usage_split_value(
                         t!("dashboard.network_upload").to_string(),
                         self.network_usage.upload_bytes_per_second,
-                        network_upload_color(),
+                        dashboard_secondary_series_color(),
                     ),
                 ]))
                 .child(graph)
@@ -4779,8 +4747,8 @@ impl WinderustApp {
         self.render_dual_line_history_graph(
             graph_id,
             dashboard_cpu_dual_line_points(history, self.cpu_usage.base_frequency_mhz),
-            cpu_usage_color(),
-            cpu_frequency_color(),
+            dashboard_primary_series_color(),
+            dashboard_secondary_series_color(),
             t!("dashboard.cpu_load").to_string(),
             t!("dashboard.cpu_frequency").to_string(),
             Some(DASHBOARD_PERCENT_CHART_MAX),
@@ -4801,8 +4769,8 @@ impl WinderustApp {
                 |value| memory_usage_label(value),
                 |value| memory_usage_label(value),
             ),
-            memory_usage_color(),
-            memory_cache_color(),
+            dashboard_primary_series_color(),
+            dashboard_secondary_series_color(),
             t!("dashboard.memory_used").to_string(),
             t!("dashboard.memory_cache").to_string(),
             Some(DASHBOARD_PERCENT_CHART_MAX),
@@ -4823,8 +4791,8 @@ impl WinderustApp {
                 |value| io_usage_label(value.map(f64::from)),
                 |value| io_usage_label(value.map(f64::from)),
             ),
-            io_read_color(),
-            io_write_color(),
+            dashboard_primary_series_color(),
+            dashboard_secondary_series_color(),
             t!("dashboard.io_read").to_string(),
             t!("dashboard.io_write").to_string(),
             None,
@@ -4848,8 +4816,8 @@ impl WinderustApp {
                 |value| io_usage_label(value.map(f64::from)),
                 |value| io_usage_label(value.map(f64::from)),
             ),
-            network_download_color(),
-            network_upload_color(),
+            dashboard_primary_series_color(),
+            dashboard_secondary_series_color(),
             t!("dashboard.network_download").to_string(),
             t!("dashboard.network_upload").to_string(),
             None,
@@ -4868,7 +4836,7 @@ impl WinderustApp {
     ) -> gpui::Div {
         let tooltips = dashboard_graph_sample_tooltips(&data, &first_label, &second_label);
         let mut chart = AreaChart::new(data)
-            .x(|point: &DashboardDualLinePoint| point.tick)
+            .x(|point: &DashboardDualLinePoint| point.tick.clone())
             .y(|point: &DashboardDualLinePoint| point.first_value)
             .stroke(first_stroke)
             .fill(gpui::transparent_black())
@@ -17461,7 +17429,7 @@ fn dashboard_cpu_dual_line_points(
         .filter(|peak| *peak > base_frequency_mhz);
 
     let mut points = Vec::with_capacity(CPU_USAGE_HISTORY_LEN);
-    for (index, tick) in DASHBOARD_HISTORY_TICKS.iter().copied().enumerate() {
+    for index in 0..CPU_USAGE_HISTORY_LEN {
         let sample = if index < missing_samples {
             None
         } else {
@@ -17469,7 +17437,7 @@ fn dashboard_cpu_dual_line_points(
         };
 
         points.push(DashboardDualLinePoint {
-            tick,
+            tick: dashboard_history_tick(index),
             first_value: f64::from(sample.map_or(0.0, |sample| sample.percent.max(0.0))),
             second_value: f64::from(normalize_cpu_frequency_percent(
                 sample.and_then(|sample| sample.frequency_mhz),
@@ -17514,7 +17482,7 @@ fn dashboard_dual_line_points(
     let mut values = values.skip(value_count.saturating_sub(sample_count));
 
     let mut points = Vec::with_capacity(CPU_USAGE_HISTORY_LEN);
-    for (index, tick) in DASHBOARD_HISTORY_TICKS.iter().copied().enumerate() {
+    for index in 0..CPU_USAGE_HISTORY_LEN {
         let sample = if index < missing_samples {
             None
         } else {
@@ -17523,7 +17491,7 @@ fn dashboard_dual_line_points(
         let (first_value, second_value) = sample.unwrap_or((0.0, 0.0));
 
         points.push(DashboardDualLinePoint {
-            tick,
+            tick: dashboard_history_tick(index),
             first_value: f64::from(first_value.max(0.0)),
             second_value: f64::from(second_value.max(0.0)),
             first_label: first_label(sample.map(|sample| sample.0)),
@@ -17533,36 +17501,8 @@ fn dashboard_dual_line_points(
     points
 }
 
-fn cpu_usage_color() -> Hsla {
-    dashboard_primary_series_color()
-}
-
-fn cpu_frequency_color() -> Hsla {
-    dashboard_secondary_series_color()
-}
-
-fn memory_usage_color() -> Hsla {
-    dashboard_primary_series_color()
-}
-
-fn memory_cache_color() -> Hsla {
-    dashboard_secondary_series_color()
-}
-
-fn io_read_color() -> Hsla {
-    dashboard_primary_series_color()
-}
-
-fn io_write_color() -> Hsla {
-    dashboard_secondary_series_color()
-}
-
-fn network_download_color() -> Hsla {
-    dashboard_primary_series_color()
-}
-
-fn network_upload_color() -> Hsla {
-    dashboard_secondary_series_color()
+fn dashboard_history_tick(index: usize) -> String {
+    format!("sample-{index:02}")
 }
 
 fn dashboard_primary_series_color() -> Hsla {

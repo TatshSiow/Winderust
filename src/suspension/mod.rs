@@ -49,41 +49,14 @@ use crate::win_util::{last_error, WinHandle};
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
     contains_process_name, is_process_exited_message, list_processes, process_name_key,
-    process_session_id, unique_app_names,
+    process_session_id, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "audiodg.exe",
-    "conhost.exe",
-    "csrss.exe",
-    "ctfmon.exe",
-    "dwm.exe",
-    "explorer.exe",
-    "fontdrvhost.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "searchapp.exe",
-    "searchhost.exe",
-    "securityhealthservice.exe",
-    "securityhealthsystray.exe",
-    "services.exe",
-    "shellexperiencehost.exe",
-    "sihost.exe",
-    "smss.exe",
-    "startmenuexperiencehost.exe",
-    "systemsettings.exe",
-    "system",
-    "taskmgr.exe",
-    "textinputhost.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "wudfhost.exe",
-];
+const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 const NETWORK_DETECTION_FAILURE_KEY: &str = "network-detection";
 const AUDIO_DETECTION_FAILURE_KEY: &str = "audio-detection";
 #[derive(Debug, Clone, PartialEq, Eq)]

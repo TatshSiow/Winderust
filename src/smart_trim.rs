@@ -21,7 +21,7 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_session_id, should_ignore_foreground_process,
+        process_session_id, should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     privilege::{enable_increase_quota_privilege, enable_profile_single_process_privilege},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -33,34 +33,7 @@ const SYSTEM_MEMORY_LIST_INFORMATION_CLASS: u32 = 80;
 const SYSTEM_FILE_CACHE_INFORMATION_EX_CLASS: u32 = 81;
 const MEMORY_PURGE_STANDBY_LIST: u32 = 4;
 
-const BUILT_IN_EXCLUSIONS: &[&str] = &[
-    "audiodg.exe",
-    "conhost.exe",
-    "csrss.exe",
-    "ctfmon.exe",
-    "dwm.exe",
-    "explorer.exe",
-    "fontdrvhost.exe",
-    "lsaiso.exe",
-    "lsass.exe",
-    "registry",
-    "searchapp.exe",
-    "searchhost.exe",
-    "securityhealthservice.exe",
-    "securityhealthsystray.exe",
-    "services.exe",
-    "shellexperiencehost.exe",
-    "sihost.exe",
-    "smss.exe",
-    "startmenuexperiencehost.exe",
-    "system",
-    "systemsettings.exe",
-    "taskmgr.exe",
-    "textinputhost.exe",
-    "wininit.exe",
-    "winlogon.exe",
-    "wudfhost.exe",
-];
+const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SmartTrimSnapshot {
