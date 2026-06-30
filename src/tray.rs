@@ -21,7 +21,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::self_power;
+use crate::{self_power, win_util::wide_null};
 
 const TRAY_UID: u32 = 1;
 const WM_TRAYICON: u32 = WM_APP + 1;
@@ -79,24 +79,28 @@ pub fn hwnd_from_window(window: &gpui::Window) -> Option<HWND> {
 }
 
 pub fn take_quit_requested() -> bool {
-    QUIT_REQUESTED.swap(false, Ordering::SeqCst)
+    take_requested(&QUIT_REQUESTED)
 }
 
 pub fn take_restore_requested() -> bool {
-    RESTORE_REQUESTED.swap(false, Ordering::SeqCst)
+    take_requested(&RESTORE_REQUESTED)
+}
+
+fn take_requested(requested: &AtomicBool) -> bool {
+    requested.load(Ordering::Relaxed) && requested.swap(false, Ordering::Relaxed)
 }
 
 pub fn set_hide_on_close(enabled: bool) {
-    HIDE_ON_CLOSE.store(enabled, Ordering::SeqCst);
+    HIDE_ON_CLOSE.store(enabled, Ordering::Relaxed);
 }
 
 pub fn is_hidden_to_tray() -> bool {
-    HIDDEN_TO_TRAY.load(Ordering::SeqCst)
+    HIDDEN_TO_TRAY.load(Ordering::Relaxed)
 }
 
 pub fn hide_window(hwnd: HWND) {
     unsafe {
-        HIDDEN_TO_TRAY.store(true, Ordering::SeqCst);
+        HIDDEN_TO_TRAY.store(true, Ordering::Relaxed);
         let _ = self_power::enable_hidden_mode();
         ShowWindow(hwnd, SW_HIDE);
     }
@@ -120,10 +124,6 @@ fn write_wide_fixed<const N: usize>(target: &mut [u16; N], value: &str) {
     }
 }
 
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 fn subclass_window(hwnd: HWND) {
     if ORIGINAL_WNDPROC.load(Ordering::SeqCst) != 0 {
         return;
@@ -140,14 +140,14 @@ unsafe extern "system" fn tray_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    if message == WM_CLOSE && HIDE_ON_CLOSE.load(Ordering::SeqCst) {
-        HIDDEN_TO_TRAY.store(true, Ordering::SeqCst);
+    if message == WM_CLOSE && HIDE_ON_CLOSE.load(Ordering::Relaxed) {
+        HIDDEN_TO_TRAY.store(true, Ordering::Relaxed);
         let _ = self_power::enable_hidden_mode();
         ShowWindow(hwnd, SW_HIDE);
         return 0;
     }
 
-    if message == WM_SHOWWINDOW && wparam != 0 && HIDDEN_TO_TRAY.load(Ordering::SeqCst) {
+    if message == WM_SHOWWINDOW && wparam != 0 && HIDDEN_TO_TRAY.load(Ordering::Relaxed) {
         ShowWindow(hwnd, SW_HIDE);
         return 0;
     }
@@ -176,8 +176,8 @@ unsafe extern "system" fn tray_wnd_proc(
 }
 
 unsafe fn show_window(hwnd: HWND) {
-    HIDDEN_TO_TRAY.store(false, Ordering::SeqCst);
-    RESTORE_REQUESTED.store(true, Ordering::SeqCst);
+    HIDDEN_TO_TRAY.store(false, Ordering::Relaxed);
+    RESTORE_REQUESTED.store(true, Ordering::Relaxed);
     let _ = self_power::disable_hidden_mode();
     ShowWindow(hwnd, SW_RESTORE);
     SetForegroundWindow(hwnd);
@@ -219,9 +219,9 @@ unsafe fn show_tray_menu(hwnd: HWND) {
 }
 
 unsafe fn quit_window(hwnd: HWND) {
-    HIDE_ON_CLOSE.store(false, Ordering::SeqCst);
-    HIDDEN_TO_TRAY.store(false, Ordering::SeqCst);
-    QUIT_REQUESTED.store(true, Ordering::SeqCst);
+    HIDE_ON_CLOSE.store(false, Ordering::Relaxed);
+    HIDDEN_TO_TRAY.store(false, Ordering::Relaxed);
+    QUIT_REQUESTED.store(true, Ordering::Relaxed);
     let _ = self_power::disable_hidden_mode();
 
     ShowWindow(hwnd, SW_SHOWNA);

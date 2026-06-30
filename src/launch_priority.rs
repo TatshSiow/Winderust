@@ -19,6 +19,7 @@ use crate::config::{
     ProcessMemoryPrioritySetting,
 };
 use crate::foreground::process_name_key;
+use crate::win_util::wide_null;
 
 const IFEO_SUB_KEY: &str =
     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options";
@@ -373,10 +374,6 @@ fn delete_registry_value(key: &RegistryKey, value_name: &str) -> Result<(), Stri
 
 fn registry_error_message(action: &str, status: u32) -> String {
     format!("Failed to {action}: Windows error {status}.")
-}
-
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 struct RegistryKey(HKEY);

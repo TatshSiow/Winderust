@@ -15,6 +15,7 @@ mod cpu;
 mod cpu_limiter;
 mod dashboard_metrics;
 mod ecoqos;
+mod file_dialog;
 mod foreground;
 mod gpu_priority;
 mod io_priority;
@@ -36,6 +37,7 @@ mod timer_resolution;
 mod tray;
 mod ui;
 mod watchdog;
+mod win_registry;
 mod win_util;
 mod windows_events;
 

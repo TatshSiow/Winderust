@@ -37,6 +37,8 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::win_util::wide_null;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowsAutomationEvent {
     ForegroundChanged,
@@ -281,8 +283,4 @@ fn notify_event(event: WindowsAutomationEvent) {
             callback(event);
         }
     });
-}
-
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
 }

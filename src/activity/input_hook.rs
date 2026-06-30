@@ -231,7 +231,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 }
 
 fn record_input_event(event: u8) {
-    INPUT_EVENTS.fetch_or(event, Ordering::AcqRel);
+    INPUT_EVENTS.fetch_or(event, Ordering::Relaxed);
     let events = input_events_from_bits(event);
     INPUT_EVENT_CALLBACK.with(|slot| {
         if let Some(callback) = slot.borrow().as_ref() {
@@ -241,7 +241,11 @@ fn record_input_event(event: u8) {
 }
 
 pub fn take_pending_events() -> InputHookEvents {
-    let events = INPUT_EVENTS.swap(0, Ordering::AcqRel);
+    let events = if INPUT_EVENTS.load(Ordering::Relaxed) == 0 {
+        0
+    } else {
+        INPUT_EVENTS.swap(0, Ordering::Relaxed)
+    };
     input_events_from_bits(events)
 }
 

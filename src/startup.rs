@@ -9,6 +9,8 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::win_util::wide_null;
+
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE_NAME: &str = "PowerLeaf";
 const STARTUP_ALLOWED_EXTENSIONS: &[&str] = &["exe", "com"];
@@ -135,10 +137,6 @@ fn sanitize_startup_executable(exe: PathBuf) -> Result<PathBuf, String> {
     }
 
     Ok(exe)
-}
-
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 struct RegKey(HKEY);

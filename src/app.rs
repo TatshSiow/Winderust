@@ -2,12 +2,8 @@ use std::{
     cell::RefCell,
     cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet, VecDeque},
-    ffi::{OsStr, OsString},
     fs,
-    mem::size_of,
-    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
-    ptr::null_mut,
     rc::Rc,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -29,13 +25,16 @@ use gpui_component::{
     animation::cubic_bezier,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     chart::AreaChart,
+    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     h_flex,
     input::{Escape as InputEscape, Input, InputEvent, InputState},
     label::Label,
+    menu::{ContextMenuExt, PopupMenuItem},
     scroll::{Scrollable, ScrollableElement, Scrollbar},
     slider::{SliderEvent, SliderState, SliderValue},
     theme::Colorize,
-    v_flex, v_virtual_list, ActiveTheme, Disableable, Icon, IconNamed, Sizable,
+    tooltip::Tooltip,
+    v_flex, v_virtual_list, ActiveTheme, Disableable, Icon, IconName, IconNamed, Sizable,
     VirtualListScrollHandle,
 };
 
@@ -69,6 +68,7 @@ use crate::{
         NetworkUsageMonitor, NetworkUsageSnapshot,
     },
     ecoqos::{self, EcoQosSnapshot},
+    file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
         list_process_candidates, list_processes, same_process_name, ForegroundDetector,
         ProcessCandidateInfo, ProcessInfo,
@@ -98,17 +98,13 @@ use crate::{
     tray::{self, TrayIcon},
     ui::{self, Page},
     watchdog::{self, WatchdogSnapshot},
+    win_registry::{
+        read_registry_binary_root, read_registry_dword_root, write_registry_dword_create_root,
+        write_registry_dword_root,
+    },
 };
-use windows_sys::Win32::Foundation::{ERROR_SUCCESS, HWND};
-use windows_sys::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_BINARY, REG_DWORD,
-    REG_OPTION_NON_VOLATILE,
-};
-use windows_sys::Win32::UI::Controls::Dialogs::{
-    CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY,
-    OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
-};
+use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
 };
@@ -116,11 +112,45 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const DASHBOARD_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const TIMER_RESOLUTION_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const CPU_USAGE_HISTORY_LEN: usize = 30;
 const DASHBOARD_SUMMARY_CARD_HEIGHT: f32 = 196.0;
 const DASHBOARD_LINE_CHART_HEIGHT: f32 = 112.0;
 const DASHBOARD_LINE_CHART_TICK_MARGIN: usize = CPU_USAGE_HISTORY_LEN + 1;
 const DASHBOARD_PERCENT_CHART_MAX: f64 = 100.0;
+const DASHBOARD_HISTORY_TICKS: [&str; CPU_USAGE_HISTORY_LEN] = [
+    "sample-00",
+    "sample-01",
+    "sample-02",
+    "sample-03",
+    "sample-04",
+    "sample-05",
+    "sample-06",
+    "sample-07",
+    "sample-08",
+    "sample-09",
+    "sample-10",
+    "sample-11",
+    "sample-12",
+    "sample-13",
+    "sample-14",
+    "sample-15",
+    "sample-16",
+    "sample-17",
+    "sample-18",
+    "sample-19",
+    "sample-20",
+    "sample-21",
+    "sample-22",
+    "sample-23",
+    "sample-24",
+    "sample-25",
+    "sample-26",
+    "sample-27",
+    "sample-28",
+    "sample-29",
+];
 const DASHBOARD_SPLIT_ITEM_WIDTH: f32 = 140.0;
 const DASHBOARD_SPLIT_VALUE_WIDTH: f32 = 90.0;
 const CARD_ROW_HEIGHT: f32 = 58.0;
@@ -310,6 +340,9 @@ const ACCENT_PALETTE: [u32; 48] = [
     0xa8a07d, 0x837c61, 0x625d48,
 ];
 const ACCENT_SWATCHES_PER_ROW: usize = 8;
+const ACCENT_SWATCH_SIZE: f32 = 42.0;
+const ACCENT_COLOR_PICKER_INNER_SIZE: f32 = ACCENT_SWATCH_SIZE;
+const ACCENT_COLOR_PICKER_WRAPPER_SIZE: f32 = ACCENT_SWATCH_SIZE;
 
 static UI_ACCENT_COLOR: AtomicU32 = AtomicU32::new(COLOR_ACCENT);
 static UI_ACCENT_TINT_SURFACES: AtomicBool = AtomicBool::new(false);
@@ -386,9 +419,11 @@ struct NetworkUsageHistorySample {
 }
 
 struct DashboardDualLinePoint {
-    tick: String,
+    tick: &'static str,
     first_value: f64,
     second_value: f64,
+    first_label: String,
+    second_label: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -400,6 +435,7 @@ struct MemoryCapacityParts {
 pub struct PowerLeafApp {
     settings: Settings,
     saved_settings: Settings,
+    last_background_settings: Arc<Settings>,
     page: Page,
     back_stack: Vec<Page>,
     forward_stack: Vec<Page>,
@@ -430,6 +466,8 @@ pub struct PowerLeafApp {
     timer_resolution_status: TimerResolutionSnapshot,
     action_log_entries: Arc<Vec<ActionLogEntry>>,
     last_appearance_change_generation: u64,
+    last_background_status_generation: u64,
+    last_pending_auto_exclusions_generation: u64,
     action_log_result_filter: ActionLogResultFilter,
     action_log_feature_filter: ActionLogFeatureFilter,
     action_log_page: usize,
@@ -439,6 +477,8 @@ pub struct PowerLeafApp {
     next_check: Instant,
     next_active_plan_refresh: Instant,
     next_cpu_usage_refresh: Instant,
+    next_dashboard_io_refresh: Instant,
+    next_timer_resolution_status_refresh: Instant,
     next_process_refresh: Instant,
     last_switch_attempt: Option<(String, Instant)>,
     power: PowerPlanManager,
@@ -452,6 +492,7 @@ pub struct PowerLeafApp {
     idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
     input_hook: Option<InputHook>,
+    tray_hide_on_close: bool,
     foreground_detector: ForegroundDetector,
     scheduler: Scheduler,
     cpu_usage_scheduler: CpuUsageScheduler,
@@ -495,12 +536,14 @@ pub struct PowerLeafApp {
     unsaved_popup_vanish_started: Option<Instant>,
     pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    accent_color_picker: Entity<ColorPickerState>,
     _rule_title_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
     _dashboard_search_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
+    _accent_color_picker_subscription: Subscription,
     _window_activation_subscription: Subscription,
     inputs: UiInputs,
     _tick_task: Task<()>,
@@ -585,6 +628,8 @@ struct DropdownMotionState {
 
 static DROPDOWN_MOTION_STATE: LazyLock<Mutex<DropdownMotionState>> =
     LazyLock::new(|| Mutex::new(DropdownMotionState::default()));
+static DISABLED_FEATURE_STATES: LazyLock<Mutex<HashMap<String, bool>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Clone, Copy)]
 enum DropdownPopupPhase {
@@ -1021,9 +1066,33 @@ impl PowerLeafApp {
         let win32_priority_separation_backup = read_win32_priority_separation_backup();
         let initial_timer_resolution_status =
             timer_resolution::query_snapshot(settings.timer_resolution.enabled);
+        let accent_color_picker = cx.new(|cx| {
+            ColorPickerState::new(window, cx)
+                .default_value(rgb(settings.general.accent.custom_color))
+        });
+        let accent_color_picker_subscription = cx.subscribe_in(
+            &accent_color_picker,
+            window,
+            |app, _, event: &ColorPickerEvent, window, cx| {
+                let ColorPickerEvent::Change(Some(color)) = event else {
+                    return;
+                };
+                let Some(color) = hsla_to_rgb_u32(*color) else {
+                    return;
+                };
+                app.settings.general.accent.source = AccentColorSource::Custom;
+                app.settings.general.accent.custom_color = color;
+                add_custom_accent_color(&mut app.settings.general.accent, color);
+                app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
+                app.active_power_plan_picker = None;
+                apply_appearance_settings(&app.settings.general, window, cx);
+                cx.notify();
+            },
+        );
 
         let mut app = Self {
             saved_settings: settings.clone(),
+            last_background_settings: Arc::new(settings.clone()),
             settings,
             page: Page::Dashboard,
             back_stack: Vec::new(),
@@ -1058,6 +1127,8 @@ impl PowerLeafApp {
             timer_resolution_status: initial_timer_resolution_status,
             action_log_entries: Arc::new(Vec::new()),
             last_appearance_change_generation: 0,
+            last_background_status_generation: 0,
+            last_pending_auto_exclusions_generation: 0,
             action_log_result_filter: ActionLogResultFilter::All,
             action_log_feature_filter: ActionLogFeatureFilter::All,
             action_log_page: 0,
@@ -1071,6 +1142,8 @@ impl PowerLeafApp {
             next_check: Instant::now(),
             next_active_plan_refresh: Instant::now(),
             next_cpu_usage_refresh: Instant::now(),
+            next_dashboard_io_refresh: Instant::now(),
+            next_timer_resolution_status_refresh: Instant::now(),
             next_process_refresh: Instant::now(),
             last_switch_attempt: None,
             power,
@@ -1084,6 +1157,7 @@ impl PowerLeafApp {
             idle_detector: IdleDetector,
             controller_activity_detector: ControllerActivityDetector::default(),
             input_hook: None,
+            tray_hide_on_close: false,
             foreground_detector: ForegroundDetector,
             scheduler: Scheduler,
             cpu_usage_scheduler: CpuUsageScheduler::default(),
@@ -1135,12 +1209,14 @@ impl PowerLeafApp {
             unsaved_popup_vanish_started: None,
             pending_list_item_removals: HashMap::new(),
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
+            accent_color_picker,
             _rule_title_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
             _dashboard_search_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
+            _accent_color_picker_subscription: accent_color_picker_subscription,
             _window_activation_subscription: window_activation_subscription,
             inputs,
             _tick_task: Task::ready(()),
@@ -1156,7 +1232,7 @@ impl PowerLeafApp {
         app.sync_tray_icon();
         app.refresh_process_candidates(false);
         app.refresh_running_processes(false);
-        app.run_check();
+        app.run_check(true, Instant::now());
         app.sync_processor_power_slider_states(window, cx);
         app.sync_input_hook();
         app.schedule_tick(window, cx);
@@ -1921,17 +1997,18 @@ impl PowerLeafApp {
         }
     }
 
-    fn run_check(&mut self) {
-        if Instant::now() >= self.next_active_plan_refresh {
+    fn run_check(&mut self, sample_dashboard: bool, now: Instant) {
+        if now >= self.next_active_plan_refresh {
             self.refresh_active_plan();
         }
 
-        let decision_settings = self.runtime_settings();
-        self.activity = self.activity_snapshot(&decision_settings);
-        if self.page == Page::Dashboard {
+        let decision_settings = self.cached_runtime_settings();
+        let decision_settings = decision_settings.as_ref();
+        self.activity = self.activity_snapshot(decision_settings, now);
+        if sample_dashboard && self.page == Page::Dashboard {
             self.refresh_dashboard_resource_samples();
         } else if decision_settings.cpu_usage_mode.enabled {
-            self.refresh_cpu_usage_sample();
+            self.refresh_cpu_usage_sample(now);
         }
         self.foreground_app = foreground_lookup_required(&decision_settings)
             .then(|| self.foreground_detector.process_name())
@@ -1961,23 +2038,24 @@ impl PowerLeafApp {
         self.apply_decision();
     }
 
-    fn run_check_changed(&mut self) -> bool {
+    fn run_check_changed(&mut self, now: Instant) -> bool {
         let activity_state = self.activity.state;
         let activity_idle_for = self.activity.idle_for;
         let cpu_usage = self.cpu_usage;
         let memory_usage = self.memory_usage;
         let io_usage = self.io_usage;
         let network_usage = self.network_usage;
-        let decision_target_guid = self.decision.target_guid.clone();
+        let decision_target_guid = self.decision.target_guid.take();
         let decision_state = self.decision.state;
-        let decision_reason = self.decision.reason.clone();
-        let next_schedule = self.next_schedule.clone();
-        let plans = self.plans.clone();
-        let current_plan = self.current_plan.clone();
+        let decision_reason = std::mem::take(&mut self.decision.reason);
+        let next_schedule = std::mem::take(&mut self.next_schedule);
+        let plan_count = self.plans.len();
+        let previous_active_plan_guid = active_plan_guid(&self.plans).map(str::to_owned);
+        let current_plan_guid = self.current_plan.as_ref().map(|plan| plan.guid.clone());
         let processor_power_target_plan_personality = self.processor_power_target_plan_personality;
         let status_message = self.status_message.clone();
 
-        self.run_check();
+        self.run_check(false, now);
 
         let resource_samples_changed = self.cpu_usage != cpu_usage
             || self.memory_usage != memory_usage
@@ -1992,16 +2070,17 @@ impl PowerLeafApp {
             || self.decision.state != decision_state
             || self.decision.reason != decision_reason
             || self.next_schedule != next_schedule
-            || self.plans != plans
-            || self.current_plan != current_plan
+            || self.plans.len() != plan_count
+            || active_plan_guid(&self.plans) != previous_active_plan_guid.as_deref()
+            || self.current_plan.as_ref().map(|plan| plan.guid.as_str())
+                != current_plan_guid.as_deref()
             || self.processor_power_target_plan_personality
                 != processor_power_target_plan_personality
             || self.status_message != status_message
     }
 
-    fn activity_snapshot(&mut self, settings: &Settings) -> ActivitySnapshot {
+    fn activity_snapshot(&mut self, settings: &Settings, now: Instant) -> ActivitySnapshot {
         let idle_timeout = Duration::from_secs(settings.activity_mode.idle_timeout_seconds);
-        let now = Instant::now();
         let snapshot = self.idle_detector.snapshot(idle_timeout);
         let controller_idle_for = if settings.activity_mode.input_detection.controller {
             self.controller_activity_detector.poll(now);
@@ -2014,36 +2093,43 @@ impl PowerLeafApp {
         merge_activity_snapshot(snapshot, controller_idle_for, idle_timeout)
     }
 
-    fn refresh_cpu_usage_sample(&mut self) -> bool {
-        if Instant::now() < self.next_cpu_usage_refresh {
+    fn refresh_cpu_usage_sample(&mut self, now: Instant) -> bool {
+        if !refresh_due(
+            now,
+            &mut self.next_cpu_usage_refresh,
+            CPU_USAGE_REFRESH_INTERVAL,
+        ) {
             return false;
         }
 
         let previous_cpu_usage = self.cpu_usage;
-        self.cpu_usage = self.cpu_monitor.sample();
-        self.next_cpu_usage_refresh = Instant::now() + CPU_USAGE_REFRESH_INTERVAL;
+        self.cpu_usage = self.cpu_monitor.sample_usage();
         self.cpu_usage != previous_cpu_usage
     }
 
     fn refresh_dashboard_resource_samples(&mut self) -> bool {
-        if Instant::now() < self.next_cpu_usage_refresh {
+        let now = Instant::now();
+        if !refresh_due(
+            now,
+            &mut self.next_cpu_usage_refresh,
+            CPU_USAGE_REFRESH_INTERVAL,
+        ) {
             return false;
         }
 
         let previous_cpu_usage = self.cpu_usage;
         let previous_memory_usage = self.memory_usage;
-        let previous_io_usage = self.io_usage;
-        let previous_network_usage = self.network_usage;
+        let sample_io = refresh_due(
+            now,
+            &mut self.next_dashboard_io_refresh,
+            DASHBOARD_IO_REFRESH_INTERVAL,
+        );
 
         self.cpu_usage = self.cpu_monitor.sample();
         self.memory_usage = self.memory_monitor.sample();
-        self.io_usage = self.io_monitor.sample();
-        self.network_usage = self.network_monitor.sample();
 
-        let mut changed = self.cpu_usage != previous_cpu_usage
-            || self.memory_usage != previous_memory_usage
-            || self.io_usage != previous_io_usage
-            || self.network_usage != previous_network_usage;
+        let mut changed =
+            self.cpu_usage != previous_cpu_usage || self.memory_usage != previous_memory_usage;
 
         if let Some(percent) = self.cpu_usage.percent {
             if self.cpu_usage_history.len() == CPU_USAGE_HISTORY_LEN {
@@ -2066,56 +2152,62 @@ impl PowerLeafApp {
                 });
             changed = true;
         }
-        if self.io_usage.bytes_per_second.is_some() {
-            if self.io_usage_history.len() == CPU_USAGE_HISTORY_LEN {
-                self.io_usage_history.pop_front();
-            }
-            self.io_usage_history.push_back(IoUsageHistorySample {
-                read_bytes_per_second: self
-                    .io_usage
-                    .read_bytes_per_second
-                    .unwrap_or(0.0)
-                    .clamp(0.0, f32::MAX as f64) as f32,
-                write_bytes_per_second: self
-                    .io_usage
-                    .write_bytes_per_second
-                    .unwrap_or(0.0)
-                    .clamp(0.0, f32::MAX as f64) as f32,
-            });
-            changed = true;
-        }
-        if self.network_usage.bytes_per_second.is_some() {
-            if self.network_usage_history.len() == CPU_USAGE_HISTORY_LEN {
-                self.network_usage_history.pop_front();
-            }
-            self.network_usage_history
-                .push_back(NetworkUsageHistorySample {
-                    download_bytes_per_second: self
-                        .network_usage
-                        .download_bytes_per_second
+        if sample_io {
+            let previous_io_usage = self.io_usage;
+            let previous_network_usage = self.network_usage;
+            self.io_usage = self.io_monitor.sample();
+            self.network_usage = self.network_monitor.sample();
+            changed |=
+                self.io_usage != previous_io_usage || self.network_usage != previous_network_usage;
+
+            if self.io_usage.bytes_per_second.is_some() {
+                if self.io_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+                    self.io_usage_history.pop_front();
+                }
+                self.io_usage_history.push_back(IoUsageHistorySample {
+                    read_bytes_per_second: self
+                        .io_usage
+                        .read_bytes_per_second
                         .unwrap_or(0.0)
                         .clamp(0.0, f32::MAX as f64)
                         as f32,
-                    upload_bytes_per_second: self
-                        .network_usage
-                        .upload_bytes_per_second
+                    write_bytes_per_second: self
+                        .io_usage
+                        .write_bytes_per_second
                         .unwrap_or(0.0)
                         .clamp(0.0, f32::MAX as f64)
                         as f32,
                 });
-            changed = true;
+                changed = true;
+            }
+            if self.network_usage.bytes_per_second.is_some() {
+                if self.network_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+                    self.network_usage_history.pop_front();
+                }
+                self.network_usage_history
+                    .push_back(NetworkUsageHistorySample {
+                        download_bytes_per_second: self
+                            .network_usage
+                            .download_bytes_per_second
+                            .unwrap_or(0.0)
+                            .clamp(0.0, f32::MAX as f64)
+                            as f32,
+                        upload_bytes_per_second: self
+                            .network_usage
+                            .upload_bytes_per_second
+                            .unwrap_or(0.0)
+                            .clamp(0.0, f32::MAX as f64)
+                            as f32,
+                    });
+                changed = true;
+            }
         }
 
-        self.next_cpu_usage_refresh = Instant::now() + CPU_USAGE_REFRESH_INTERVAL;
         changed
     }
 
-    fn install_input_hook(&mut self) {
-        let settings = self.runtime_settings();
-        match InputHook::install(
-            input_hook_config(&settings),
-            self.background_automation.input_event_callback(),
-        ) {
+    fn install_input_hook(&mut self, config: InputHookConfig) {
+        match InputHook::install(config, self.background_automation.input_event_callback()) {
             Ok(input_hook) => {
                 self.input_hook = Some(input_hook);
             }
@@ -2126,16 +2218,15 @@ impl PowerLeafApp {
     }
 
     fn sync_input_hook(&mut self) {
-        let settings = self.runtime_settings();
-        if input_hook_required(&settings) {
-            let config = input_hook_config(&settings);
+        if input_hook_required(&self.saved_settings) {
+            let config = input_hook_config(&self.saved_settings);
             if self
                 .input_hook
                 .as_ref()
                 .is_none_or(|input_hook| input_hook.config() != config)
             {
                 self.input_hook = None;
-                self.install_input_hook();
+                self.install_input_hook(config);
             }
         } else {
             self.input_hook = None;
@@ -2180,8 +2271,7 @@ impl PowerLeafApp {
             Ok(()) => {
                 self.saved_settings = self.settings.clone();
                 self.sync_input_hook();
-                self.background_automation
-                    .update_settings(&self.background_settings());
+                self.sync_background_settings();
                 self.status_message = match startup::set_startup_with_windows(
                     self.saved_settings.general.startup_with_windows,
                 ) {
@@ -2266,8 +2356,7 @@ impl PowerLeafApp {
                             };
                             self.rebuild_inputs(window, cx);
                             self.sync_input_hook();
-                            self.background_automation
-                                .update_settings(&self.background_settings());
+                            self.sync_background_settings();
                         }
                         Err(err) => self.status_message = err,
                     }
@@ -2314,12 +2403,16 @@ impl PowerLeafApp {
         cache: &mut HashMap<PathBuf, Option<Arc<Image>>>,
         candidates: &[ProcessCandidate],
     ) {
+        if cache.is_empty() {
+            return;
+        }
+
         let current_paths = candidates
             .iter()
-            .filter_map(|candidate| candidate.image_path.clone())
+            .filter_map(|candidate| candidate.image_path.as_deref())
             .collect::<HashSet<_>>();
         let old_len = cache.len();
-        cache.retain(|path, _| current_paths.contains(path));
+        cache.retain(|path, _| current_paths.contains(path.as_path()));
         if cache.len() != old_len {
             cache.shrink_to_fit();
         }
@@ -2369,13 +2462,15 @@ impl PowerLeafApp {
                 let changed = self.running_processes != processes;
                 self.running_processes = processes;
                 let expanded_group_count = self.expanded_process_list_groups.len();
-                let active_group_keys = self
-                    .running_processes
-                    .iter()
-                    .map(|process| process_list_group_key(&process.name))
-                    .collect::<HashSet<_>>();
-                self.expanded_process_list_groups
-                    .retain(|key| active_group_keys.contains(key));
+                if expanded_group_count != 0 {
+                    let active_group_keys = self
+                        .running_processes
+                        .iter()
+                        .map(|process| process_list_group_key(&process.name))
+                        .collect::<HashSet<_>>();
+                    self.expanded_process_list_groups
+                        .retain(|key| active_group_keys.contains(key));
+                }
                 let groups_changed =
                     self.expanded_process_list_groups.len() != expanded_group_count;
                 if report_status {
@@ -2399,33 +2494,67 @@ impl PowerLeafApp {
         }
     }
 
-    fn sync_tray_icon(&mut self) {
+    fn sync_tray_icon(&mut self) -> bool {
         let tray_required =
             self.settings.general.hide_to_tray || self.saved_settings.general.start_minimized;
+        let tray_present = self.tray_icon.is_some();
+        let mut changed = false;
 
         if tray_required {
             if self.tray_icon.is_none() {
                 let Some(hwnd) = self.hwnd else {
-                    tray::set_hide_on_close(false);
-                    self.status_message = t!("status.system_tray_unavailable").to_string();
-                    return;
+                    self.set_tray_hide_on_close(false);
+                    let message = t!("status.system_tray_unavailable").to_string();
+                    if self.status_message != message {
+                        self.status_message = message;
+                        changed = true;
+                    }
+                    return changed;
                 };
 
                 match TrayIcon::install(hwnd) {
                     Ok(icon) => {
                         self.tray_icon = Some(icon);
-                        self.status_message = t!("status.system_tray_enabled").to_string();
+                        changed = true;
+                        let message = t!("status.system_tray_enabled").to_string();
+                        if self.status_message != message {
+                            self.status_message = message;
+                            changed = true;
+                        }
                     }
-                    Err(err) => self.status_message = err,
+                    Err(err) => {
+                        if self.status_message != err {
+                            self.status_message = err;
+                            changed = true;
+                        }
+                    }
                 }
             }
-            tray::set_hide_on_close(self.settings.general.hide_to_tray && self.tray_icon.is_some());
+            self.set_tray_hide_on_close(
+                self.settings.general.hide_to_tray && self.tray_icon.is_some(),
+            );
         } else if self.tray_icon.take().is_some() {
-            tray::set_hide_on_close(false);
-            self.status_message = t!("status.system_tray_disabled").to_string();
+            self.set_tray_hide_on_close(false);
+            changed = true;
+            let message = t!("status.system_tray_disabled").to_string();
+            if self.status_message != message {
+                self.status_message = message;
+                changed = true;
+            }
         } else {
-            tray::set_hide_on_close(false);
+            self.set_tray_hide_on_close(false);
         }
+
+        changed || tray_present != self.tray_icon.is_some()
+    }
+
+    fn set_tray_hide_on_close(&mut self, enabled: bool) {
+        if self.tray_hide_on_close == enabled {
+            return;
+        }
+
+        self.tray_hide_on_close = enabled;
+        tray::set_hide_on_close(enabled);
     }
 
     fn apply_start_minimized(&mut self, window: &mut Window) -> bool {
@@ -2466,7 +2595,7 @@ impl PowerLeafApp {
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) -> TickOutcome {
         if tray::take_quit_requested() {
-            tray::set_hide_on_close(false);
+            self.set_tray_hide_on_close(false);
             self.tray_icon = None;
             window.remove_window();
             return TickOutcome::Stop;
@@ -2476,80 +2605,115 @@ impl PowerLeafApp {
         changed |= self.apply_pending_auto_exclusions();
         if tray::is_hidden_to_tray() {
             self.sync_input_hook();
-            self.background_automation
-                .update_settings(&self.background_settings());
+            self.sync_background_settings();
             return TickOutcome::Stop;
         }
 
-        let background_status = self.background_automation.status_snapshot();
-        if self.eco_qos_status != background_status.eco_qos {
-            self.eco_qos_status = background_status.eco_qos;
-            changed = true;
-        }
+        if let Some(background_status) = self
+            .background_automation
+            .status_snapshot_since(self.last_background_status_generation)
+        {
+            self.last_background_status_generation = background_status.generation;
 
-        if self.app_suspension_status != background_status.app_suspension {
-            self.app_suspension_status = background_status.app_suspension;
-            changed = true;
-        }
+            if self.eco_qos_status != background_status.eco_qos {
+                self.eco_qos_status = background_status.eco_qos;
+                changed = true;
+            }
 
-        if self.cpu_limiter_status != background_status.cpu_limiter {
-            self.cpu_limiter_status = background_status.cpu_limiter;
-            changed = true;
-        }
+            if self.app_suspension_status != background_status.app_suspension {
+                self.app_suspension_status = background_status.app_suspension;
+                changed = true;
+            }
 
-        if self.cpu_affinity_status != background_status.cpu_affinity {
-            self.cpu_affinity_status = background_status.cpu_affinity;
-            changed = true;
-        }
+            if self.cpu_limiter_status != background_status.cpu_limiter {
+                self.cpu_limiter_status = background_status.cpu_limiter;
+                changed = true;
+            }
 
-        if self.background_cpu_restriction_status != background_status.background_cpu_restriction {
-            self.background_cpu_restriction_status = background_status.background_cpu_restriction;
-            changed = true;
-        }
+            if self.cpu_affinity_status != background_status.cpu_affinity {
+                self.cpu_affinity_status = background_status.cpu_affinity;
+                changed = true;
+            }
 
-        if self.performance_mode_status != background_status.performance_mode {
-            self.performance_mode_status = background_status.performance_mode;
-            changed = true;
-        }
+            if self.background_cpu_restriction_status
+                != background_status.background_cpu_restriction
+            {
+                self.background_cpu_restriction_status =
+                    background_status.background_cpu_restriction;
+                changed = true;
+            }
 
-        if self.watchdog_status != background_status.watchdog {
-            self.watchdog_status = background_status.watchdog;
-            changed = true;
-        }
+            if self.performance_mode_status != background_status.performance_mode {
+                self.performance_mode_status = background_status.performance_mode;
+                changed = true;
+            }
 
-        if self.foreground_responsiveness_status != background_status.foreground_responsiveness {
-            self.foreground_responsiveness_status = background_status.foreground_responsiveness;
-            changed = true;
-        }
+            if self.watchdog_status != background_status.watchdog {
+                self.watchdog_status = background_status.watchdog;
+                changed = true;
+            }
 
-        if self.io_priority_status != background_status.io_priority {
-            self.io_priority_status = background_status.io_priority;
-            changed = true;
-        }
+            if self.foreground_responsiveness_status != background_status.foreground_responsiveness
+            {
+                self.foreground_responsiveness_status = background_status.foreground_responsiveness;
+                changed = true;
+            }
 
-        if self.gpu_priority_status != background_status.gpu_priority {
-            self.gpu_priority_status = background_status.gpu_priority;
-            changed = true;
-        }
+            if self.io_priority_status != background_status.io_priority {
+                self.io_priority_status = background_status.io_priority;
+                changed = true;
+            }
 
-        if self.memory_priority_status != background_status.memory_priority {
-            self.memory_priority_status = background_status.memory_priority;
-            changed = true;
-        }
+            if self.gpu_priority_status != background_status.gpu_priority {
+                self.gpu_priority_status = background_status.gpu_priority;
+                changed = true;
+            }
 
-        if self.smart_trim_status != background_status.smart_trim {
-            self.smart_trim_status = background_status.smart_trim;
-            changed = true;
-        }
+            if self.memory_priority_status != background_status.memory_priority {
+                self.memory_priority_status = background_status.memory_priority;
+                changed = true;
+            }
 
-        if self.timer_resolution_status != background_status.timer_resolution {
-            self.timer_resolution_status = background_status.timer_resolution;
-            changed = true;
+            if self.smart_trim_status != background_status.smart_trim {
+                self.smart_trim_status = background_status.smart_trim;
+                changed = true;
+            }
+
+            if self.timer_resolution_status != background_status.timer_resolution {
+                self.timer_resolution_status = background_status.timer_resolution;
+                changed = true;
+            }
+
+            if !Arc::ptr_eq(
+                &self.action_log_entries,
+                &background_status.action_log_entries,
+            ) {
+                self.action_log_entries = background_status.action_log_entries;
+                changed = true;
+            }
+
+            if self.last_appearance_change_generation
+                != background_status.appearance_change_generation
+            {
+                self.last_appearance_change_generation =
+                    background_status.appearance_change_generation;
+                apply_appearance_settings(&self.settings.general, window, cx);
+                changed = true;
+            }
         }
 
         changed |= self.refresh_effective_power_mode();
 
-        if self.page == Page::TimerResolution && !self.settings.timer_resolution.enabled {
+        let now = Instant::now();
+
+        if self.page == Page::TimerResolution
+            && !self.settings.timer_resolution.enabled
+            && refresh_due(
+                now,
+                &mut self.next_timer_resolution_status_refresh,
+                TIMER_RESOLUTION_STATUS_REFRESH_INTERVAL,
+            )
+        {
             let timer_resolution_status =
                 timer_resolution::query_snapshot(self.settings.timer_resolution.enabled);
             if self.timer_resolution_status != timer_resolution_status {
@@ -2558,22 +2722,7 @@ impl PowerLeafApp {
             }
         }
 
-        if !Arc::ptr_eq(
-            &self.action_log_entries,
-            &background_status.action_log_entries,
-        ) {
-            self.action_log_entries = background_status.action_log_entries;
-            changed = true;
-        }
-
-        if self.last_appearance_change_generation != background_status.appearance_change_generation
-        {
-            self.last_appearance_change_generation = background_status.appearance_change_generation;
-            apply_appearance_settings(&self.settings.general, window, cx);
-            changed = true;
-        }
-
-        if Instant::now() >= self.next_process_refresh {
+        if now >= self.next_process_refresh {
             if self.page == Page::ProcessList {
                 changed |= self.refresh_running_processes(false);
             } else if self.page_uses_process_candidates() {
@@ -2585,11 +2734,11 @@ impl PowerLeafApp {
             changed |= self.refresh_dashboard_resource_samples();
         }
 
-        let should_check_now = Instant::now() >= self.next_check;
+        let should_check_now = now >= self.next_check;
 
         if should_check_now {
-            changed |= self.run_check_changed();
-            self.next_check = Instant::now()
+            changed |= self.run_check_changed(now);
+            self.next_check = now
                 + Duration::from_millis(
                     self.settings
                         .general
@@ -2598,19 +2747,21 @@ impl PowerLeafApp {
                 );
         }
 
-        let tray_present = self.tray_icon.is_some();
-        let status_message = self.status_message.clone();
-        self.sync_tray_icon();
-        changed |=
-            tray_present != self.tray_icon.is_some() || status_message != self.status_message;
+        changed |= self.sync_tray_icon();
 
-        self.background_automation
-            .update_settings(&self.background_settings());
+        if !should_check_now {
+            self.sync_background_settings();
+        }
         TickOutcome::Continue { changed }
     }
 
     fn apply_pending_auto_exclusions(&mut self) -> bool {
-        let pending = self.background_automation.take_pending_auto_exclusions();
+        let Some(pending) = self
+            .background_automation
+            .take_pending_auto_exclusions_since(&mut self.last_pending_auto_exclusions_generation)
+        else {
+            return false;
+        };
         let mut changed = false;
 
         for process in pending.eco_qos {
@@ -3724,23 +3875,77 @@ impl PowerLeafApp {
     }
 
     fn runtime_settings(&self) -> Settings {
-        let mut settings = self.settings.clone();
-        settings.general.enabled = self.saved_settings.general.enabled;
-        settings.power_plans = self.saved_settings.power_plans.clone();
-        settings.activity_mode = self.saved_settings.activity_mode.clone();
-        settings.schedule_mode = self.saved_settings.schedule_mode.clone();
-        settings.cpu_usage_mode = self.saved_settings.cpu_usage_mode.clone();
-        settings.foreground_rules = self.saved_settings.foreground_rules.clone();
-        settings.performance_mode = self.saved_settings.performance_mode.clone();
-        settings.eco_qos = self.saved_settings.eco_qos.clone();
-        settings.app_suspension = self.saved_settings.app_suspension.clone();
-        settings.cpu_affinity = self.saved_settings.cpu_affinity.clone();
-        settings.cpu_limiter = self.saved_settings.cpu_limiter.clone();
-        settings.watchdog = self.saved_settings.watchdog.clone();
-        settings.foreground_responsiveness = self.saved_settings.foreground_responsiveness.clone();
-        settings.smart_trim = self.saved_settings.smart_trim.clone();
-        settings
+        runtime_settings_from(&self.settings, &self.saved_settings)
     }
+
+    fn cached_runtime_settings(&mut self) -> Arc<Settings> {
+        self.sync_background_settings();
+        Arc::clone(&self.last_background_settings)
+    }
+
+    fn sync_background_settings(&mut self) {
+        if runtime_settings_matches(
+            self.last_background_settings.as_ref(),
+            &self.settings,
+            &self.saved_settings,
+        ) {
+            return;
+        }
+
+        let settings = Arc::new(self.background_settings());
+        self.background_automation
+            .update_settings(settings.as_ref());
+        self.last_background_settings = settings;
+    }
+}
+
+fn runtime_settings_from(current: &Settings, saved: &Settings) -> Settings {
+    let mut settings = saved.clone();
+    settings.general = current.general.clone();
+    settings.general.enabled = saved.general.enabled;
+    settings.advanced = current.advanced.clone();
+    settings.background_cpu_restriction = current.background_cpu_restriction.clone();
+    settings.io_priority = current.io_priority.clone();
+    settings.gpu_priority = current.gpu_priority.clone();
+    settings.memory_priority = current.memory_priority.clone();
+    settings.launch_priority = current.launch_priority.clone();
+    settings.timer_resolution = current.timer_resolution.clone();
+    settings
+}
+
+fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Settings) -> bool {
+    settings.general.enabled == saved.general.enabled
+        && settings.general.startup_with_windows == current.general.startup_with_windows
+        && settings.general.start_minimized == current.general.start_minimized
+        && settings.general.hide_to_tray == current.general.hide_to_tray
+        && settings.general.theme_mode == current.general.theme_mode
+        && settings.general.accent == current.general.accent
+        && settings.general.language == current.general.language
+        && settings.general.animation_mode == current.general.animation_mode
+        && settings.general.pause_power_plan_switching_while_plugged_in
+            == current.general.pause_power_plan_switching_while_plugged_in
+        && settings.general.check_interval_ms == current.general.check_interval_ms
+        && settings.general.manual_override == current.general.manual_override
+        && settings.advanced == current.advanced
+        && settings.power_plans == saved.power_plans
+        && settings.activity_mode == saved.activity_mode
+        && settings.foreground_rules == saved.foreground_rules
+        && settings.schedule_mode == saved.schedule_mode
+        && settings.cpu_usage_mode == saved.cpu_usage_mode
+        && settings.eco_qos == saved.eco_qos
+        && settings.app_suspension == saved.app_suspension
+        && settings.cpu_affinity == saved.cpu_affinity
+        && settings.background_cpu_restriction == current.background_cpu_restriction
+        && settings.cpu_limiter == saved.cpu_limiter
+        && settings.performance_mode == saved.performance_mode
+        && settings.watchdog == saved.watchdog
+        && settings.foreground_responsiveness == saved.foreground_responsiveness
+        && settings.io_priority == current.io_priority
+        && settings.gpu_priority == current.gpu_priority
+        && settings.memory_priority == current.memory_priority
+        && settings.launch_priority == current.launch_priority
+        && settings.smart_trim == saved.smart_trim
+        && settings.timer_resolution == current.timer_resolution
 }
 
 impl Render for PowerLeafApp {
@@ -4273,7 +4478,7 @@ impl PowerLeafApp {
     }
 
     fn dashboard_enabled_function_items(&self, settings: &Settings) -> Vec<(String, String)> {
-        let mut items = Vec::new();
+        let mut items = Vec::with_capacity(17);
 
         if settings.general.enabled {
             items.push((
@@ -4550,6 +4755,8 @@ impl PowerLeafApp {
             dashboard_cpu_dual_line_points(history, self.cpu_usage.base_frequency_mhz),
             cpu_usage_color(),
             cpu_frequency_color(),
+            t!("dashboard.cpu_load").to_string(),
+            t!("dashboard.cpu_frequency").to_string(),
             Some(DASHBOARD_PERCENT_CHART_MAX),
         )
     }
@@ -4565,9 +4772,13 @@ impl PowerLeafApp {
                 history
                     .iter()
                     .map(|sample| (sample.usage_percent, sample.cache_percent)),
+                |value| memory_usage_label(value),
+                |value| memory_usage_label(value),
             ),
             memory_usage_color(),
             memory_cache_color(),
+            t!("dashboard.memory_used").to_string(),
+            t!("dashboard.memory_cache").to_string(),
             Some(DASHBOARD_PERCENT_CHART_MAX),
         )
     }
@@ -4583,9 +4794,13 @@ impl PowerLeafApp {
                 history
                     .iter()
                     .map(|sample| (sample.read_bytes_per_second, sample.write_bytes_per_second)),
+                |value| io_usage_label(value.map(f64::from)),
+                |value| io_usage_label(value.map(f64::from)),
             ),
             io_read_color(),
             io_write_color(),
+            t!("dashboard.io_read").to_string(),
+            t!("dashboard.io_write").to_string(),
             None,
         )
     }
@@ -4597,28 +4812,37 @@ impl PowerLeafApp {
     ) -> gpui::Div {
         self.render_dual_line_history_graph(
             graph_id,
-            dashboard_dual_line_points(history.iter().map(|sample| {
-                (
-                    sample.download_bytes_per_second,
-                    sample.upload_bytes_per_second,
-                )
-            })),
+            dashboard_dual_line_points(
+                history.iter().map(|sample| {
+                    (
+                        sample.download_bytes_per_second,
+                        sample.upload_bytes_per_second,
+                    )
+                }),
+                |value| io_usage_label(value.map(f64::from)),
+                |value| io_usage_label(value.map(f64::from)),
+            ),
             network_download_color(),
             network_upload_color(),
+            t!("dashboard.network_download").to_string(),
+            t!("dashboard.network_upload").to_string(),
             None,
         )
     }
 
     fn render_dual_line_history_graph(
         &self,
-        _graph_id: &'static str,
+        graph_id: &'static str,
         data: Vec<DashboardDualLinePoint>,
         first_stroke: Hsla,
         second_stroke: Hsla,
+        first_label: String,
+        second_label: String,
         scale_max: Option<f64>,
     ) -> gpui::Div {
+        let tooltips = dashboard_graph_sample_tooltips(&data, &first_label, &second_label);
         let mut chart = AreaChart::new(data)
-            .x(|point: &DashboardDualLinePoint| point.tick.clone())
+            .x(|point: &DashboardDualLinePoint| point.tick)
             .y(|point: &DashboardDualLinePoint| point.first_value)
             .stroke(first_stroke)
             .fill(gpui::transparent_black())
@@ -4642,7 +4866,9 @@ impl PowerLeafApp {
             .min_w(px(0.0))
             .px_1()
             .py_1()
+            .relative()
             .child(chart.tick_margin(DASHBOARD_LINE_CHART_TICK_MARGIN))
+            .child(dashboard_graph_hover_overlay(graph_id, tooltips))
     }
 
     fn render_process_list_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -7817,22 +8043,28 @@ impl PowerLeafApp {
             body = body.child(if let Some(progress) = advanced_section_progress {
                 expanded_child_at_progress(section, None, progress)
             } else {
-                animated_expanded_child("auto-balance-advanced-section", section)
+                expanded_child(section)
             });
         } else {
             remember_expanded_child_hidden("auto-balance-advanced-section");
         }
 
         if advanced_enabled || advanced_cards_progress.is_some() {
-            let cards = self.render_auto_balance_advanced_cards(window, cx, &input_value, enabled);
+            let cards = self.render_auto_balance_advanced_cards(window, cx);
             body = body.child(if let Some(progress) = advanced_cards_progress {
                 expanded_child_at_progress(cards, None, progress)
             } else {
-                animated_expanded_child("auto-balance-advanced-cards", cards)
+                expanded_child(cards)
             });
         } else {
             remember_expanded_child_hidden("auto-balance-advanced-cards");
         }
+        body = body.child(self.render_auto_balance_exclusions_section(
+            window,
+            cx,
+            &input_value,
+            enabled,
+        ));
 
         let help = tooltip_lines(vec![
             t!("responsiveness.intro_1").to_string(),
@@ -8000,10 +8232,9 @@ impl PowerLeafApp {
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-        input_value: &str,
-        enabled: bool,
     ) -> AnyElement {
         let settings = &self.settings.foreground_responsiveness;
+        let enabled = settings.enabled;
         let efficiency_action = if self.settings.eco_qos.enabled {
             value_pill(t!("responsiveness.background_efficiency_handled").to_string())
                 .into_any_element()
@@ -8085,7 +8316,7 @@ impl PowerLeafApp {
                 .into_any_element(),
             );
         }
-        let mut rows = vec![
+        let rows = vec![
             setting_group_with_help(
                 SettingGroupTarget::AutoBalanceEfficiency,
                 (
@@ -8369,8 +8600,27 @@ impl PowerLeafApp {
             .into_any_element(),
         ];
 
-        let exclusion_editor = v_flex()
+        v_flex().gap_2().children(rows).into_any_element()
+    }
+
+    fn render_auto_balance_exclusions_section(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        input_value: &str,
+        enabled: bool,
+    ) -> AnyElement {
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
             .gap_2()
+            .child(
+                section_header(
+                    &t!("responsiveness.auto_balance_exclusions"),
+                    t!("responsiveness.auto_balance_exclusions_help").to_string(),
+                )
+                .into_any_element(),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -8414,30 +8664,8 @@ impl PowerLeafApp {
                             })),
                     ),
             )
-            .child(self.render_responsiveness_exclusions(cx));
-        rows.push(
-            setting_group_with_help_body_height(
-                SettingGroupTarget::AutoBalanceExclusions,
-                (
-                    t!("responsiveness.auto_balance_exclusions").to_string(),
-                    t!("responsiveness.auto_balance_exclusions_help").to_string(),
-                ),
-                div().into_any_element(),
-                SettingGroupBody {
-                    collapsed: self
-                        .is_setting_group_collapsed(SettingGroupTarget::AutoBalanceExclusions),
-                    rows: vec![exclusion_editor.into_any_element()],
-                    animation_height: Some(auto_balance_exclusions_body_height(
-                        settings.auto_balance_exclusions.len(),
-                    )),
-                },
-                window,
-                cx,
-            )
-            .into_any_element(),
-        );
-
-        v_flex().gap_2().children(rows).into_any_element()
+            .child(self.render_responsiveness_exclusions(cx))
+            .into_any_element()
     }
 
     fn render_foreground_boost_selector(
@@ -11042,8 +11270,18 @@ impl PowerLeafApp {
         .into_any_element()
     }
 
+    fn sync_accent_color_picker(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let color = self.settings.general.accent.custom_color;
+        self.accent_color_picker.update(cx, |picker, cx| {
+            if picker.value().and_then(hsla_to_rgb_u32) != Some(color) {
+                picker.set_value(rgb(color), window, cx);
+            }
+        });
+    }
+
     fn render_accent_selector(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let selected_source = self.settings.general.accent.source;
+        self.sync_accent_color_picker(window, cx);
         let accent_target = SettingGroupTarget::AccentColor;
         let collapsed = self.is_setting_group_collapsed(accent_target);
         let accent_motion_id = format!("setting-group-{accent_target:?}");
@@ -11099,15 +11337,17 @@ impl PowerLeafApp {
         for color in ACCENT_PALETTE {
             let selected = self.settings.general.accent.source == AccentColorSource::Custom
                 && self.settings.general.accent.custom_color == color;
-            color_row = color_row.child(accent_swatch(color, selected).on_click(cx.listener(
-                move |app, _, window, cx| {
-                    app.settings.general.accent.source = AccentColorSource::Custom;
-                    app.settings.general.accent.custom_color = color;
-                    app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
-                    apply_appearance_settings(&app.settings.general, window, cx);
-                    cx.notify();
-                },
-            )));
+            color_row = color_row.child(
+                accent_swatch("accent-palette-swatch", color, selected).on_click(cx.listener(
+                    move |app, _, window, cx| {
+                        app.settings.general.accent.source = AccentColorSource::Custom;
+                        app.settings.general.accent.custom_color = color;
+                        app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
+                        apply_appearance_settings(&app.settings.general, window, cx);
+                        cx.notify();
+                    },
+                )),
+            );
             color_row_len += 1;
             if color_row_len == ACCENT_SWATCHES_PER_ROW {
                 color_palette = color_palette.child(color_row);
@@ -11119,49 +11359,57 @@ impl PowerLeafApp {
             color_palette = color_palette.child(color_row);
         }
 
-        let mut recent_colors = v_flex().gap_2();
-        let mut recent_row = h_flex().gap_2();
-        let mut recent_row_len = 0;
-        let mut recent_color_count = 0;
-        for color in self
-            .settings
-            .general
-            .accent
-            .custom_colors
-            .iter()
-            .copied()
-            .filter(|color| !ACCENT_PALETTE.contains(color))
-        {
-            recent_color_count += 1;
+        let mut custom_picker = h_flex().w_full().min_w(px(0.0)).gap_2().flex_wrap();
+        for color in self.settings.general.accent.custom_colors.iter().copied() {
             let selected = self.settings.general.accent.source == AccentColorSource::Custom
                 && self.settings.general.accent.custom_color == color;
-            recent_row = recent_row.child(accent_swatch(color, selected).on_click(cx.listener(
-                move |app, _, window, cx| {
-                    app.settings.general.accent.source = AccentColorSource::Custom;
-                    app.settings.general.accent.custom_color = color;
-                    app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
-                    apply_appearance_settings(&app.settings.general, window, cx);
-                    cx.notify();
-                },
-            )));
-            recent_row_len += 1;
-            if recent_row_len == ACCENT_SWATCHES_PER_ROW {
-                recent_colors = recent_colors.child(recent_row);
-                recent_row = h_flex().gap_2();
-                recent_row_len = 0;
-            }
-        }
-        if recent_row_len > 0 {
-            recent_colors = recent_colors.child(recent_row);
+            let app_entity = cx.entity().clone();
+            custom_picker = custom_picker.child(
+                accent_swatch("accent-custom-swatch", color, selected)
+                    .on_click(cx.listener(move |app, _, window, cx| {
+                        app.settings.general.accent.source = AccentColorSource::Custom;
+                        app.settings.general.accent.custom_color = color;
+                        app.set_setting_group_expanded(SettingGroupTarget::AccentColor, true);
+                        apply_appearance_settings(&app.settings.general, window, cx);
+                        cx.notify();
+                    }))
+                    .context_menu(move |menu, _, _| {
+                        let app_entity = app_entity.clone();
+                        menu.item(PopupMenuItem::new("Delete").on_click(move |_, _, cx| {
+                            app_entity.update(cx, |app, cx| {
+                                remove_custom_accent_color(&mut app.settings.general.accent, color);
+                                cx.notify();
+                            });
+                        }))
+                        .item(PopupMenuItem::new("Cancel"))
+                    }),
+            );
         }
 
+        custom_picker = custom_picker.child(
+            div()
+                .id("accent-custom-picker-card")
+                .size(px(ACCENT_COLOR_PICKER_WRAPPER_SIZE))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(BRAND_RADIUS_CONTROL))
+                .bg(rgb(panel_active_color()))
+                .child(
+                    ColorPicker::new(&self.accent_color_picker)
+                        .featured_colors(accent_picker_featured_colors())
+                        .icon(IconName::Palette)
+                        .with_size(px(ACCENT_COLOR_PICKER_INNER_SIZE))
+                        .into_any_element(),
+                ),
+        );
+
         let mut palette_content = v_flex().w_full().min_w(px(0.0)).gap_4();
-        if recent_color_count > 0 {
-            palette_content = palette_content.child(accent_color_group(
-                t!("accent.recent_colors").to_string(),
-                recent_colors.into_any_element(),
-            ));
-        }
+        palette_content = palette_content.child(accent_color_group(
+            t!("accent.custom").to_string(),
+            custom_picker.into_any_element(),
+        ));
         palette_content = palette_content.child(accent_color_group(
             t!("accent.color_palette").to_string(),
             color_palette.into_any_element(),
@@ -11175,8 +11423,6 @@ impl PowerLeafApp {
             .min_w(px(0.0))
             .overflow_hidden()
             .rounded(px(BRAND_RADIUS_CONTROL))
-            .border_1()
-            .border_color(rgb(border_color()))
             .bg(rgb(settings_card_color()))
             .text_color(rgb(primary_text_color()))
             .text_size(px(TEXT_BODY_SIZE))
@@ -11263,7 +11509,9 @@ impl PowerLeafApp {
             accent_card = accent_card.child(if let Some(progress) = accent_motion_progress {
                 expanded_child_at_progress(
                     palette,
-                    Some(accent_palette_animation_height(recent_color_count)),
+                    Some(accent_palette_animation_height(
+                        self.settings.general.accent.custom_colors.len(),
+                    )),
                     progress,
                 )
             } else {
@@ -11598,8 +11846,6 @@ impl PowerLeafApp {
             .min_w(px(0.0))
             .overflow_hidden()
             .rounded(px(BRAND_RADIUS_CONTROL))
-            .border_1()
-            .border_color(rgb(border_color()))
             .bg(rgb(settings_card_color()))
             .text_color(rgb(primary_text_color()))
             .text_size(px(TEXT_BODY_SIZE))
@@ -11799,8 +12045,6 @@ impl PowerLeafApp {
             .min_w(px(0.0))
             .overflow_hidden()
             .rounded(px(BRAND_RADIUS_CONTROL))
-            .border_1()
-            .border_color(rgb(border_color()))
             .bg(rgb(settings_card_color()))
             .text_color(rgb(primary_text_color()))
             .text_size(px(TEXT_BODY_SIZE))
@@ -12571,18 +12815,10 @@ impl PowerLeafApp {
                 .relative()
                 .overflow_hidden()
                 .rounded(px(BRAND_RADIUS_CONTROL))
-                .border_1()
-                .border_color(rgb(border_color()))
                 .bg(rgb(settings_card_color()))
                 .text_color(rgb(primary_text_color()))
                 .text_size(px(TEXT_BODY_SIZE))
                 .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                .on_hover(|hovered, _, cx| {
-                    set_card_hovered("processor-power-target-plan-card".to_string(), *hovered, cx);
-                })
-                .child(animated_card_hover_layer(
-                    "processor-power-target-plan-card",
-                ))
                 .child(
                     h_flex()
                         .flex_1()
@@ -13712,7 +13948,6 @@ enum SettingGroupTarget {
     AutoBalanceAffinity,
     AutoBalanceBehaviourTuning,
     AutoBalanceEfficiency,
-    AutoBalanceExclusions,
     AutoBalanceIoPriority,
     AutoBalanceMemoryPriority,
     IoPriorityMaster,
@@ -14385,165 +14620,6 @@ fn switch_accent_color() -> u32 {
     accent_color()
 }
 
-fn read_registry_dword_root(root: HKEY, sub_key: &str, value_name: &str) -> Option<u32> {
-    let sub_key = wide_null(sub_key);
-    let value_name = wide_null(value_name);
-    let mut key: HKEY = null_mut();
-    let status = unsafe { RegOpenKeyExW(root, sub_key.as_ptr(), 0, KEY_QUERY_VALUE, &mut key) };
-    if status != ERROR_SUCCESS {
-        return None;
-    }
-
-    let key = RegistryKey(key);
-    let mut value_type = 0;
-    let mut value = 0_u32;
-    let mut value_size = size_of::<u32>() as u32;
-    let status = unsafe {
-        RegQueryValueExW(
-            key.0,
-            value_name.as_ptr(),
-            null_mut(),
-            &mut value_type,
-            &mut value as *mut u32 as *mut u8,
-            &mut value_size,
-        )
-    };
-
-    if status == ERROR_SUCCESS && value_type == REG_DWORD && value_size == size_of::<u32>() as u32 {
-        Some(value)
-    } else {
-        None
-    }
-}
-
-fn read_registry_binary_root(root: HKEY, sub_key: &str, value_name: &str) -> Option<Vec<u8>> {
-    let sub_key = wide_null(sub_key);
-    let value_name = wide_null(value_name);
-    let mut key: HKEY = null_mut();
-    let status = unsafe { RegOpenKeyExW(root, sub_key.as_ptr(), 0, KEY_QUERY_VALUE, &mut key) };
-    if status != ERROR_SUCCESS {
-        return None;
-    }
-
-    let key = RegistryKey(key);
-    let mut value_type = 0;
-    let mut value_size = 0_u32;
-    let status = unsafe {
-        RegQueryValueExW(
-            key.0,
-            value_name.as_ptr(),
-            null_mut(),
-            &mut value_type,
-            null_mut(),
-            &mut value_size,
-        )
-    };
-    if status != ERROR_SUCCESS || value_type != REG_BINARY || value_size == 0 {
-        return None;
-    }
-
-    let mut value = vec![0; value_size as usize];
-    let status = unsafe {
-        RegQueryValueExW(
-            key.0,
-            value_name.as_ptr(),
-            null_mut(),
-            &mut value_type,
-            value.as_mut_ptr(),
-            &mut value_size,
-        )
-    };
-    if status == ERROR_SUCCESS && value_type == REG_BINARY {
-        value.truncate(value_size as usize);
-        Some(value)
-    } else {
-        None
-    }
-}
-
-fn write_registry_dword_root(
-    root: HKEY,
-    sub_key: &str,
-    value_name: &str,
-    value: u32,
-) -> Result<(), String> {
-    let sub_key = wide_null(sub_key);
-    let value_name = wide_null(value_name);
-    let mut key: HKEY = null_mut();
-    let status = unsafe { RegOpenKeyExW(root, sub_key.as_ptr(), 0, KEY_SET_VALUE, &mut key) };
-    if status != ERROR_SUCCESS {
-        return Err(registry_error_message(
-            "open registry key for write",
-            status,
-        ));
-    }
-
-    let key = RegistryKey(key);
-    let status = unsafe {
-        RegSetValueExW(
-            key.0,
-            value_name.as_ptr(),
-            0,
-            REG_DWORD,
-            &value as *const u32 as *const u8,
-            size_of::<u32>() as u32,
-        )
-    };
-    if status == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(registry_error_message("write registry value", status))
-    }
-}
-
-fn write_registry_dword_create_root(
-    root: HKEY,
-    sub_key: &str,
-    value_name: &str,
-    value: u32,
-) -> Result<(), String> {
-    let sub_key = wide_null(sub_key);
-    let value_name = wide_null(value_name);
-    let mut key: HKEY = null_mut();
-    let mut disposition = 0_u32;
-    let status = unsafe {
-        RegCreateKeyExW(
-            root,
-            sub_key.as_ptr(),
-            0,
-            null_mut(),
-            REG_OPTION_NON_VOLATILE,
-            KEY_SET_VALUE,
-            null_mut(),
-            &mut key,
-            &mut disposition,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(registry_error_message(
-            "create registry key for backup",
-            status,
-        ));
-    }
-
-    let key = RegistryKey(key);
-    let status = unsafe {
-        RegSetValueExW(
-            key.0,
-            value_name.as_ptr(),
-            0,
-            REG_DWORD,
-            &value as *const u32 as *const u8,
-            size_of::<u32>() as u32,
-        )
-    };
-    if status == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(registry_error_message("write registry backup", status))
-    }
-}
-
 fn read_win32_priority_separation() -> Option<u32> {
     read_registry_dword_root(
         HKEY_LOCAL_MACHINE,
@@ -14725,20 +14801,6 @@ fn win32_priority_separation_field_label(
         .find(|option| option.bits == selected_bits)
         .map(|option| win32_priority_separation_field_option_label(field, option.bits))
         .unwrap_or_else(|| t!("settings.win32_priority_separation_unavailable").to_string())
-}
-
-fn registry_error_message(action: &str, status: u32) -> String {
-    format!("Failed to {action}: Windows error {status}.")
-}
-
-struct RegistryKey(HKEY);
-
-impl Drop for RegistryKey {
-    fn drop(&mut self) {
-        unsafe {
-            RegCloseKey(self.0);
-        }
-    }
 }
 
 fn apply_language(language: AppLanguage) {
@@ -15747,6 +15809,15 @@ fn animated_expanded_child(id: impl Into<SharedString>, child: AnyElement) -> An
     }
 }
 
+fn expanded_child(child: AnyElement) -> AnyElement {
+    div()
+        .w_full()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .child(child)
+        .into_any_element()
+}
+
 fn animated_expanded_child_with_height(
     id: impl Into<SharedString>,
     target_height: f32,
@@ -16036,8 +16107,6 @@ fn branded_panel() -> gpui::Div {
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
 }
@@ -16178,8 +16247,6 @@ fn rule_card_with_header_action(
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
@@ -16260,26 +16327,40 @@ fn disabled_feature_body(
     const DISABLED_FEATURE_DIM_OPACITY: f32 = 0.58;
 
     let id = id.into();
+    let id_key = id.to_string();
     let target_opacity = if enabled {
         0.0
     } else {
         DISABLED_FEATURE_DIM_OPACITY
     };
-    let start_opacity = if enabled {
-        DISABLED_FEATURE_DIM_OPACITY
+    let previous_enabled = DISABLED_FEATURE_STATES
+        .lock()
+        .ok()
+        .and_then(|mut states| states.insert(id_key, enabled));
+    let dim_layer = if previous_enabled.is_some_and(|previous| previous != enabled) {
+        let start_opacity = if enabled {
+            DISABLED_FEATURE_DIM_OPACITY
+        } else {
+            0.0
+        };
+        with_optional_motion(
+            div().absolute().inset_0().bg(cx.theme().background),
+            SharedString::from(format!("feature-gray-layer-{id}-{enabled}")),
+            MotionSpeed::Standard,
+            move |layer| layer.opacity(target_opacity),
+            move |layer, delta| {
+                let opacity = start_opacity + (target_opacity - start_opacity) * delta;
+                layer.opacity(opacity)
+            },
+        )
     } else {
-        0.0
+        div()
+            .absolute()
+            .inset_0()
+            .bg(cx.theme().background)
+            .opacity(target_opacity)
+            .into_any_element()
     };
-    let dim_layer = with_optional_motion(
-        div().absolute().inset_0().bg(cx.theme().background),
-        SharedString::from(format!("feature-gray-layer-{id}-{enabled}")),
-        MotionSpeed::Standard,
-        move |layer| layer.opacity(target_opacity),
-        move |layer, delta| {
-            let opacity = start_opacity + (target_opacity - start_opacity) * delta;
-            layer.opacity(opacity)
-        },
-    );
     let body = body
         .child(dim_layer)
         .when(!enabled, |body| body.child(disabled_interaction_shield(cx)));
@@ -16329,8 +16410,6 @@ fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
         .items_center()
         .justify_end()
         .gap_2()
-        .border_t_1()
-        .border_color(rgb(border_color()))
         .px_4()
         .py_3()
         .child(row)
@@ -16348,11 +16427,8 @@ fn rename_rule_button(target: RuleTitleTarget, cx: &mut Context<PowerLeafApp>) -
 }
 
 fn compact_rule_row(id: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
-    let id: SharedString = id.into();
-    let hover_id = id.to_string();
-
     h_flex()
-        .id(id)
+        .id(id.into())
         .w_full()
         .min_w(px(0.0))
         .h(px(CARD_ROW_HEIGHT))
@@ -16364,19 +16440,10 @@ fn compact_rule_row(id: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .on_hover({
-            let hover_id = hover_id.clone();
-            move |hovered, _, cx| {
-                set_card_hovered(hover_id.clone(), *hovered, cx);
-            }
-        })
-        .child(animated_card_hover_layer(&hover_id))
 }
 
 fn create_rule_card(
@@ -16445,36 +16512,6 @@ fn setting_group_with_help(
     )
 }
 
-fn setting_group_with_help_body_height(
-    target: SettingGroupTarget,
-    title_help: (impl Into<SharedString>, impl Into<SharedString>),
-    action: AnyElement,
-    body: SettingGroupBody,
-    window: &mut Window,
-    cx: &mut Context<PowerLeafApp>,
-) -> gpui::Stateful<gpui::Div> {
-    let (title, help) = title_help;
-    let title: SharedString = title.into();
-    setting_group_with_title_element_with_body_height(
-        target,
-        h_flex()
-            .flex_1()
-            .min_w(px(0.0))
-            .gap_1()
-            .items_center()
-            .child(div().truncate().child(title))
-            .child(title_info_button(
-                SharedString::from(format!("setting-group-info-{target:?}")),
-                help,
-            ))
-            .into_any_element(),
-        action,
-        body,
-        window,
-        cx,
-    )
-}
-
 fn setting_group_with_title_element(
     target: SettingGroupTarget,
     title: AnyElement,
@@ -16525,8 +16562,6 @@ fn setting_group_with_title_element_with_body_height(
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
@@ -16641,22 +16676,10 @@ fn setting_group_body_animation_height(
 ) -> Option<f32> {
     match target {
         SettingGroupTarget::AccentColor
-        | SettingGroupTarget::AutoBalanceExclusions
         | SettingGroupTarget::EfficiencyCpuRestriction
         | SettingGroupTarget::BackgroundCpuRestriction => None,
         _ => Some(CARD_ROW_HEIGHT * row_count.max(1) as f32),
     }
-}
-
-fn auto_balance_exclusions_body_height(exclusion_count: usize) -> f32 {
-    let list_height = if exclusion_count == 0 {
-        TEXT_BODY_LINE_HEIGHT
-    } else {
-        CARD_ROW_HEIGHT * exclusion_count as f32
-            + px_spacing(2) * exclusion_count.saturating_sub(1) as f32
-    };
-
-    DROPDOWN_CONTROL_HEIGHT + px_spacing(2) + list_height
 }
 
 fn setting_group_collapse_button(
@@ -16717,7 +16740,7 @@ fn setting_group_action_row_element(
     id: impl Into<SharedString>,
     title: AnyElement,
     action: AnyElement,
-    divided: bool,
+    _divided: bool,
 ) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(id.into())
@@ -16732,9 +16755,6 @@ fn setting_group_action_row_element(
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .when(divided, |row| {
-            row.border_t_1().border_color(rgb(border_color()))
-        })
         .child(title)
         .child(
             h_flex()
@@ -16751,7 +16771,7 @@ fn setting_group_stacked_action_row(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     action: AnyElement,
-    divided: bool,
+    _divided: bool,
 ) -> gpui::Stateful<gpui::Div> {
     v_flex()
         .id(id.into())
@@ -16763,9 +16783,6 @@ fn setting_group_stacked_action_row(
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .when(divided, |row| {
-            row.border_t_1().border_color(rgb(border_color()))
-        })
         .child(div().w_full().min_w(px(0.0)).child(title.into()))
         .child(
             div()
@@ -16847,38 +16864,18 @@ fn rule_action_row_with_title_color(
     action: AnyElement,
     title_color: u32,
 ) -> gpui::Stateful<gpui::Div> {
-    h_flex()
-        .id(id.into())
-        .w_full()
-        .min_w(px(0.0))
-        .h(px(CARD_ROW_HEIGHT))
-        .items_center()
-        .justify_between()
-        .gap_2()
-        .border_t_1()
-        .border_color(rgb(border_color()))
-        .py_3()
-        .px_4()
-        .text_color(rgb(primary_text_color()))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .truncate()
-                .text_color(rgb(title_color))
-                .child(title.into()),
-        )
-        .child(
-            h_flex()
-                .flex_1()
-                .min_w(px(0.0))
-                .items_center()
-                .justify_end()
-                .gap_2()
-                .child(action),
-        )
+    setting_group_action_row_element(
+        id,
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .text_color(rgb(title_color))
+            .child(title.into())
+            .into_any_element(),
+        action,
+        false,
+    )
 }
 
 fn rule_stepper_row_u64(
@@ -16947,23 +16944,12 @@ fn rule_checkbox_row(
     let checkbox_handler = Rc::clone(&handler);
     let label_handler = Rc::clone(&handler);
 
-    h_flex()
-        .id(id.clone())
-        .w_full()
-        .min_w(px(0.0))
-        .h(px(CARD_ROW_HEIGHT))
-        .items_center()
-        .justify_between()
-        .gap_2()
-        .border_t_1()
-        .border_color(rgb(border_color()))
-        .py_3()
-        .px_4()
-        .text_color(rgb(primary_text_color()))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .child(
-            div().flex_1().min_w(px(0.0)).child(
+    setting_group_action_row_element(
+        id.clone(),
+        div()
+            .flex_1()
+            .min_w(px(0.0))
+            .child(
                 div()
                     .id(SharedString::from(format!("{id}-label")))
                     .min_w(px(0.0))
@@ -16976,24 +16962,14 @@ fn rule_checkbox_row(
                         label_handler(&next, window, cx);
                     })
                     .child(title),
-            ),
-        )
-        .child(
-            h_flex()
-                .items_center()
-                .justify_end()
-                .gap_2()
-                .min_w(px(0.0))
-                .flex_shrink_0()
-                .child(rule_enable_checkbox(
-                    format!("{id}-check"),
-                    checked,
-                    move |next, window, cx| {
-                        checkbox_handler(next, window, cx);
-                    },
-                )),
-        )
-        .into_any_element()
+            )
+            .into_any_element(),
+        rule_enable_checkbox(format!("{id}-check"), checked, move |next, window, cx| {
+            checkbox_handler(next, window, cx);
+        }),
+        false,
+    )
+    .into_any_element()
 }
 
 fn rule_toggle_switch(
@@ -17013,21 +16989,7 @@ fn rule_toggle_switch(
 }
 
 fn rule_notice_row(id: impl Into<SharedString>, notice: AnyElement) -> gpui::Stateful<gpui::Div> {
-    h_flex()
-        .id(id.into())
-        .w_full()
-        .min_w(px(0.0))
-        .h(px(CARD_ROW_HEIGHT))
-        .items_center()
-        .gap_2()
-        .border_t_1()
-        .border_color(rgb(border_color()))
-        .py_3()
-        .px_4()
-        .text_color(rgb(primary_text_color()))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .child(notice)
+    setting_group_action_row_element(id, notice, Empty.into_any_element(), false)
 }
 
 fn setting_action_card(
@@ -17074,7 +17036,6 @@ fn setting_action_card_element(
     action: AnyElement,
 ) -> gpui::Stateful<gpui::Div> {
     let id: SharedString = id.into();
-    let hover_id = id.to_string();
 
     h_flex()
         .id(id)
@@ -17089,19 +17050,10 @@ fn setting_action_card_element(
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .on_hover({
-            let hover_id = hover_id.clone();
-            move |hovered, _, cx| {
-                set_card_hovered(hover_id.clone(), *hovered, cx);
-            }
-        })
-        .child(animated_card_hover_layer(&hover_id))
         .child(title)
         .child(
             h_flex()
@@ -17269,8 +17221,6 @@ fn dashboard_summary_card(
         .p_3()
         .gap_2()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .child(header)
         .child(
@@ -17334,6 +17284,49 @@ fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui:
     dashboard_split_value(label, io_usage_label(value), color)
 }
 
+fn dashboard_graph_hover_overlay(graph_id: &'static str, tooltips: Vec<SharedString>) -> gpui::Div {
+    let mut overlay = h_flex().absolute().inset_0().w_full().h_full();
+    for (index, tooltip) in tooltips.into_iter().enumerate() {
+        overlay = overlay.child(
+            div()
+                .id(SharedString::from(format!(
+                    "{graph_id}-sample-hover-{index}"
+                )))
+                .h_full()
+                .flex_1()
+                .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
+        );
+    }
+    overlay
+}
+
+fn dashboard_graph_sample_tooltips(
+    points: &[DashboardDualLinePoint],
+    first_series_label: &str,
+    second_series_label: &str,
+) -> Vec<SharedString> {
+    points
+        .iter()
+        .enumerate()
+        .map(|(index, point)| {
+            tooltip_lines([
+                dashboard_sample_age_label(index),
+                format!("{first_series_label}: {}", point.first_label),
+                format!("{second_series_label}: {}", point.second_label),
+            ])
+        })
+        .collect()
+}
+
+fn dashboard_sample_age_label(index: usize) -> String {
+    let age = CPU_USAGE_HISTORY_LEN.saturating_sub(index + 1);
+    if age == 0 {
+        "Latest sample".to_string()
+    } else {
+        format!("{age}s ago")
+    }
+}
+
 fn dashboard_cpu_dual_line_points(
     values: &VecDeque<CpuUsageHistorySample>,
     base_frequency_mhz: Option<u32>,
@@ -17341,40 +17334,43 @@ fn dashboard_cpu_dual_line_points(
     let sample_count = values.len().min(CPU_USAGE_HISTORY_LEN);
     let missing_samples = CPU_USAGE_HISTORY_LEN - sample_count;
     let start_index = values.len().saturating_sub(sample_count);
-    let visible_samples = values.iter().skip(start_index).collect::<Vec<_>>();
     let base_frequency_mhz = base_frequency_mhz
         .or_else(|| {
-            visible_samples
+            values
                 .iter()
+                .skip(start_index)
                 .filter_map(|sample| sample.frequency_mhz)
                 .min()
         })
         .unwrap_or(0);
-    let peak_frequency_mhz = visible_samples
+    let peak_frequency_mhz = values
         .iter()
+        .skip(start_index)
         .filter_map(|sample| sample.frequency_mhz)
         .max()
         .filter(|peak| *peak > base_frequency_mhz);
 
-    (0..CPU_USAGE_HISTORY_LEN)
-        .map(|index| {
-            let sample = if index < missing_samples {
-                None
-            } else {
-                Some(values[start_index + index - missing_samples])
-            };
+    let mut points = Vec::with_capacity(CPU_USAGE_HISTORY_LEN);
+    for (index, tick) in DASHBOARD_HISTORY_TICKS.iter().copied().enumerate() {
+        let sample = if index < missing_samples {
+            None
+        } else {
+            Some(values[start_index + index - missing_samples])
+        };
 
-            DashboardDualLinePoint {
-                tick: format!("sample-{index:02}"),
-                first_value: f64::from(sample.map_or(0.0, |sample| sample.percent.max(0.0))),
-                second_value: f64::from(normalize_cpu_frequency_percent(
-                    sample.and_then(|sample| sample.frequency_mhz),
-                    base_frequency_mhz,
-                    peak_frequency_mhz,
-                )),
-            }
-        })
-        .collect()
+        points.push(DashboardDualLinePoint {
+            tick,
+            first_value: f64::from(sample.map_or(0.0, |sample| sample.percent.max(0.0))),
+            second_value: f64::from(normalize_cpu_frequency_percent(
+                sample.and_then(|sample| sample.frequency_mhz),
+                base_frequency_mhz,
+                peak_frequency_mhz,
+            )),
+            first_label: cpu_usage_label(sample.map(|sample| sample.percent)),
+            second_label: cpu_frequency_label(sample.and_then(|sample| sample.frequency_mhz)),
+        });
+    }
+    points
 }
 
 fn normalize_cpu_frequency_percent(
@@ -17398,28 +17394,33 @@ fn normalize_cpu_frequency_percent(
 }
 
 fn dashboard_dual_line_points(
-    values: impl IntoIterator<Item = (f32, f32)>,
+    values: impl ExactSizeIterator<Item = (f32, f32)>,
+    first_label: impl Fn(Option<f32>) -> String,
+    second_label: impl Fn(Option<f32>) -> String,
 ) -> Vec<DashboardDualLinePoint> {
-    let values = values.into_iter().collect::<Vec<_>>();
-    let sample_count = values.len().min(CPU_USAGE_HISTORY_LEN);
+    let value_count = values.len();
+    let sample_count = value_count.min(CPU_USAGE_HISTORY_LEN);
     let missing_samples = CPU_USAGE_HISTORY_LEN - sample_count;
-    let start_index = values.len().saturating_sub(sample_count);
+    let mut values = values.skip(value_count.saturating_sub(sample_count));
 
-    (0..CPU_USAGE_HISTORY_LEN)
-        .map(|index| {
-            let (first_value, second_value) = if index < missing_samples {
-                (0.0, 0.0)
-            } else {
-                values[start_index + index - missing_samples]
-            };
+    let mut points = Vec::with_capacity(CPU_USAGE_HISTORY_LEN);
+    for (index, tick) in DASHBOARD_HISTORY_TICKS.iter().copied().enumerate() {
+        let sample = if index < missing_samples {
+            None
+        } else {
+            values.next()
+        };
+        let (first_value, second_value) = sample.unwrap_or((0.0, 0.0));
 
-            DashboardDualLinePoint {
-                tick: format!("sample-{index:02}"),
-                first_value: f64::from(first_value.max(0.0)),
-                second_value: f64::from(second_value.max(0.0)),
-            }
-        })
-        .collect()
+        points.push(DashboardDualLinePoint {
+            tick,
+            first_value: f64::from(first_value.max(0.0)),
+            second_value: f64::from(second_value.max(0.0)),
+            first_label: first_label(sample.map(|sample| sample.0)),
+            second_label: second_label(sample.map(|sample| sample.1)),
+        });
+    }
+    points
 }
 
 fn cpu_usage_color() -> Hsla {
@@ -17707,8 +17708,8 @@ struct ProcessListPolicyCellTarget<'a> {
 }
 
 fn process_list_groups(processes: &[ProcessInfo]) -> Vec<ProcessListGroup<'_>> {
-    let mut groups = Vec::<ProcessListGroup<'_>>::new();
-    let mut group_indexes = HashMap::<String, usize>::new();
+    let mut groups = Vec::<ProcessListGroup<'_>>::with_capacity(processes.len());
+    let mut group_indexes = HashMap::<String, usize>::with_capacity(processes.len());
 
     for process in processes {
         let key = process_list_group_key(&process.name);
@@ -17731,7 +17732,10 @@ fn process_list_sorted_rows<'a>(
     summaries: Vec<ProcessPolicySummary>,
     sort: ProcessListSort,
 ) -> Vec<(ProcessListGroup<'a>, ProcessPolicySummary)> {
-    let mut rows = groups.into_iter().zip(summaries).collect::<Vec<_>>();
+    let mut rows = Vec::with_capacity(groups.len().min(summaries.len()));
+    for row in groups.into_iter().zip(summaries) {
+        rows.push(row);
+    }
     rows.sort_by(|(left_group, left_summary), (right_group, right_summary)| {
         process_list_group_sort_cmp(left_group, left_summary, right_group, right_summary, sort)
     });
@@ -17743,7 +17747,17 @@ fn process_list_rendered_rows(
     process_icons_by_name: &HashMap<&str, &Arc<Image>>,
     is_group_collapsed: impl Fn(&str) -> bool,
 ) -> Vec<ProcessListRenderedRow> {
-    let mut rendered_rows = Vec::new();
+    let max_rendered_rows = rows
+        .iter()
+        .map(|(group, _)| {
+            if group.processes.len() == 1 {
+                1
+            } else {
+                1 + group.processes.len()
+            }
+        })
+        .sum();
+    let mut rendered_rows = Vec::with_capacity(max_rendered_rows);
     let mut row_index = 0usize;
 
     for (group, summary) in rows {
@@ -17805,10 +17819,14 @@ fn process_list_render_data(app: &PowerLeafApp) -> ProcessListRenderData {
     for group in &mut process_groups {
         process_list_sort_group_processes(group, app.process_list_sort);
     }
-    let process_summaries = process_groups
-        .iter()
-        .map(|group| process_policy_summary(&app.settings, &app.plans, &group.display_name))
-        .collect::<Vec<_>>();
+    let mut process_summaries = Vec::with_capacity(process_groups.len());
+    for group in &process_groups {
+        process_summaries.push(process_policy_summary(
+            &app.settings,
+            &app.plans,
+            &group.display_name,
+        ));
+    }
     let column_layout =
         process_list_column_layout(&app.settings, &process_groups, &process_summaries);
     let process_rows =
@@ -18174,8 +18192,6 @@ fn process_list_surface() -> gpui::Div {
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
@@ -19448,8 +19464,6 @@ fn action_log_list_surface() -> gpui::Div {
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
@@ -19619,16 +19633,9 @@ fn action_log_entry_row(entry: &ActionLogEntry, divided: bool) -> gpui::Stateful
         .h(px(40.0))
         .relative()
         .overflow_hidden()
-        .on_hover({
-            let row_id = row_id.to_string();
-            move |hovered, _, cx| {
-                set_card_hovered(row_id.clone(), *hovered, cx);
-            }
-        })
         .when(divided, |row| {
             row.border_t_1().border_color(rgb(border_color()))
         })
-        .child(animated_card_hover_layer(row_id.as_ref()))
         .child(
             div()
                 .w_full()
@@ -19907,19 +19914,6 @@ fn app_input(
                 .text_color(cx.theme().foreground)
                 .into_any_element(),
         )
-        .child(
-            div()
-                .absolute()
-                .left(px(0.0))
-                .right(px(0.0))
-                .bottom(px(0.0))
-                .h(px(if focused { 1.5 } else { 1.0 }))
-                .bg(if focused {
-                    cx.theme().accent
-                } else {
-                    Hsla::from(rgb(app_input_bottom_line_color()))
-                }),
-        )
 }
 
 fn app_input_color(focused: bool) -> u32 {
@@ -19949,14 +19943,6 @@ fn app_input_hover_border_color() -> u32 {
         0x6a6a6a
     } else {
         0x9a9a9a
-    }
-}
-
-fn app_input_bottom_line_color() -> u32 {
-    if ui_is_dark() {
-        0x9a9a9a
-    } else {
-        0x6d6d6d
     }
 }
 
@@ -20256,8 +20242,6 @@ fn section_landing_card(page: Page, cx: &mut Context<PowerLeafApp>) -> gpui::Sta
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .on_hover({
@@ -20526,7 +20510,7 @@ fn danger_control_button(button: Button) -> Button {
     control_button(button.danger()).text_color(rgb(0xffffff))
 }
 
-fn accent_swatch(color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
+fn accent_swatch(id_prefix: &'static str, color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
     let border = if selected {
         primary_text_color()
     } else {
@@ -20534,8 +20518,8 @@ fn accent_swatch(color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
     };
 
     div()
-        .id(SharedString::from(format!("accent-swatch-{color:06x}")))
-        .size(px(42.0))
+        .id(SharedString::from(format!("{id_prefix}-{color:06x}")))
+        .size(px(ACCENT_SWATCH_SIZE))
         .flex_shrink_0()
         .rounded(px(BRAND_RADIUS_CONTROL))
         .border_1()
@@ -20555,23 +20539,60 @@ fn accent_color_group(title: impl Into<SharedString>, swatches: AnyElement) -> g
         .child(swatches)
 }
 
-fn accent_palette_animation_height(recent_color_count: usize) -> f32 {
-    let palette_rows = accent_swatch_row_count(ACCENT_PALETTE.len());
-    let mut height = px_spacing(6) + accent_color_group_height(palette_rows);
+fn accent_picker_featured_colors() -> Vec<Hsla> {
+    ACCENT_PALETTE
+        .iter()
+        .copied()
+        .map(|color| rgb(color).into())
+        .collect()
+}
 
-    if recent_color_count > 0 {
-        height +=
-            px_spacing(4) + accent_color_group_height(accent_swatch_row_count(recent_color_count));
+fn add_custom_accent_color(settings: &mut AccentSettings, color: u32) {
+    settings
+        .custom_colors
+        .retain(|stored_color| *stored_color != color);
+    settings.custom_colors.push(color);
+}
+
+fn remove_custom_accent_color(settings: &mut AccentSettings, color: u32) {
+    settings
+        .custom_colors
+        .retain(|stored_color| *stored_color != color);
+}
+
+fn hsla_to_rgb_u32(color: Hsla) -> Option<u32> {
+    let hex = color.to_hex();
+    let hex = hex.trim_start_matches('#');
+    if hex.len() < 6 {
+        return None;
     }
+    u32::from_str_radix(&hex[..6], 16).ok()
+}
 
-    height
+fn accent_palette_animation_height(custom_color_count: usize) -> f32 {
+    let palette_rows = accent_swatch_row_count(ACCENT_PALETTE.len());
+    px_spacing(6)
+        + accent_custom_color_group_height(custom_color_count)
+        + px_spacing(4)
+        + accent_color_group_height(palette_rows)
+}
+
+fn accent_custom_color_group_height(custom_color_count: usize) -> f32 {
+    let swatch_rows = accent_swatch_row_count(custom_color_count);
+    let swatch_height = if swatch_rows == 0 {
+        0.0
+    } else {
+        ACCENT_SWATCH_SIZE * swatch_rows as f32
+            + px_spacing(2) * swatch_rows.saturating_sub(1) as f32
+    };
+    TEXT_BODY_LINE_HEIGHT + px_spacing(2) + swatch_height.max(ACCENT_COLOR_PICKER_WRAPPER_SIZE)
 }
 
 fn accent_color_group_height(row_count: usize) -> f32 {
     let row_count = row_count.max(1);
     TEXT_BODY_LINE_HEIGHT
         + px_spacing(2)
-        + 42.0 * row_count as f32
+        + ACCENT_SWATCH_SIZE * row_count as f32
         + px_spacing(2) * row_count.saturating_sub(1) as f32
 }
 
@@ -20606,7 +20627,6 @@ fn feature_toggle_switch_inner(
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
     let id: SharedString = id.into();
-    let hover_id = id.to_string();
     let label = label.into();
     let label_id = id.clone();
     let mut label_row = h_flex()
@@ -20632,19 +20652,10 @@ fn feature_toggle_switch_inner(
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .on_hover({
-            let hover_id = hover_id.clone();
-            move |hovered, _, cx| {
-                set_card_hovered(hover_id.clone(), *hovered, cx);
-            }
-        })
-        .child(animated_card_hover_layer(&hover_id))
         .child(label_row)
         .child(switch_toggle_action(
             format!("{id}-switch"),
@@ -20740,15 +20751,6 @@ fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
         .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
         .text_color(rgb(primary_text_color()))
         .child(value.into())
-        .child(
-            div()
-                .absolute()
-                .left(px(0.0))
-                .right(px(0.0))
-                .bottom(px(0.0))
-                .h(px(1.0))
-                .bg(rgb(app_input_bottom_line_color())),
-        )
 }
 
 fn numeric_value_width(field: NumericField) -> f32 {
@@ -20854,8 +20856,6 @@ fn processor_power_setting_row(
     label: impl Into<SharedString>,
     value_element: AnyElement,
 ) -> AnyElement {
-    let hover_id = id.to_string();
-
     h_flex()
         .id(id)
         .w_full()
@@ -20869,19 +20869,10 @@ fn processor_power_setting_row(
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .on_hover({
-            let hover_id = hover_id.clone();
-            move |hovered, _, cx| {
-                set_card_hovered(hover_id.clone(), *hovered, cx);
-            }
-        })
-        .child(animated_card_hover_layer(&hover_id))
         .child(
             div()
                 .w(px(180.0))
@@ -20908,7 +20899,6 @@ fn win32_priority_registry_value_row(
     divided: bool,
 ) -> AnyElement {
     let id: SharedString = id.into();
-    let hover_id = id.to_string();
     let mut label_row = h_flex()
         .flex_1()
         .min_w(px(0.0))
@@ -20931,16 +20921,9 @@ fn win32_priority_registry_value_row(
         .px_4()
         .relative()
         .overflow_hidden()
-        .on_hover({
-            let hover_id = hover_id.clone();
-            move |hovered, _, cx| {
-                set_card_hovered(hover_id.clone(), *hovered, cx);
-            }
-        })
         .when(divided, |row| {
             row.border_t_1().border_color(rgb(border_color()))
         })
-        .child(animated_card_hover_layer(&hover_id))
         .child(label_row)
         .child(value_pill(value))
         .into_any_element()
@@ -20953,7 +20936,6 @@ fn win32_priority_row(
     value_element: AnyElement,
 ) -> AnyElement {
     let id: SharedString = id.into();
-    let hover_id = id.to_string();
     let mut label_row = h_flex()
         .flex_1()
         .min_w(px(0.0))
@@ -20977,19 +20959,10 @@ fn win32_priority_row(
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .on_hover({
-            let hover_id = hover_id.clone();
-            move |hovered, _, cx| {
-                set_card_hovered(hover_id.clone(), *hovered, cx);
-            }
-        })
-        .child(animated_card_hover_layer(&hover_id))
         .child(label_row)
         .child(
             h_flex()
@@ -21384,7 +21357,6 @@ where
         enabled,
         delta,
     } = spec;
-    let hover_id = id.to_string();
     let handler: StepChangeHandler<T> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let down_delta = delta;
@@ -21417,19 +21389,10 @@ where
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_SURFACE))
-        .border_1()
-        .border_color(rgb(border_color()))
         .bg(rgb(settings_card_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
-        .on_hover({
-            let hover_id = hover_id.clone();
-            move |hovered, _, cx| {
-                set_card_hovered(hover_id.clone(), *hovered, cx);
-            }
-        })
-        .child(animated_card_hover_layer(&hover_id))
         .child(
             div()
                 .flex_1()
@@ -21666,6 +21629,22 @@ fn memory_cache_percent(snapshot: MemoryUsageSnapshot) -> Option<f32> {
         snapshot.cached_physical_bytes,
         snapshot.total_physical_bytes,
     )
+}
+
+fn refresh_due(now: Instant, next_refresh: &mut Instant, interval: Duration) -> bool {
+    if now < *next_refresh {
+        return false;
+    }
+
+    *next_refresh = now + interval;
+    true
+}
+
+fn active_plan_guid(plans: &[PowerPlan]) -> Option<&str> {
+    plans
+        .iter()
+        .find(|plan| plan.active)
+        .map(|plan| plan.guid.as_str())
 }
 
 fn memory_bytes_percent(bytes: Option<u64>, total_bytes: Option<u64>) -> Option<f32> {
@@ -23686,135 +23665,6 @@ fn network_threshold_value_label(value: f64) -> String {
         .to_owned()
 }
 
-#[derive(Debug, Clone, Copy)]
-enum FileDialogMode {
-    Open,
-    Save,
-}
-
-fn choose_settings_file(
-    hwnd: Option<HWND>,
-    mode: FileDialogMode,
-) -> Result<Option<PathBuf>, String> {
-    const FILE_BUFFER_LEN: usize = 4096;
-
-    let default_path = match mode {
-        FileDialogMode::Open => config::storage::config_path(),
-        FileDialogMode::Save => config::storage::default_export_toml_path(),
-    };
-    let mut file_buffer = path_to_wide_buffer(&default_path, FILE_BUFFER_LEN);
-    let filter = wide_nulls("TOML settings (*.toml)\0*.toml\0All files (*.*)\0*.*\0");
-    let default_extension = wide_null("toml");
-    let title = match mode {
-        FileDialogMode::Open => wide_null("Import settings"),
-        FileDialogMode::Save => wide_null("Export settings"),
-    };
-
-    let mut dialog = OPENFILENAMEW {
-        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
-        hwndOwner: hwnd.unwrap_or_default(),
-        lpstrFilter: filter.as_ptr(),
-        lpstrFile: file_buffer.as_mut_ptr(),
-        nMaxFile: file_buffer.len() as u32,
-        lpstrTitle: title.as_ptr(),
-        lpstrDefExt: default_extension.as_ptr(),
-        Flags: OFN_HIDEREADONLY | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST,
-        ..Default::default()
-    };
-
-    if matches!(mode, FileDialogMode::Open) {
-        dialog.Flags |= OFN_FILEMUSTEXIST;
-    } else {
-        dialog.Flags |= OFN_OVERWRITEPROMPT;
-    }
-
-    let selected = unsafe {
-        match mode {
-            FileDialogMode::Open => GetOpenFileNameW(&mut dialog),
-            FileDialogMode::Save => GetSaveFileNameW(&mut dialog),
-        }
-    };
-
-    if selected != 0 {
-        return Ok(Some(path_from_wide_buffer(&file_buffer)));
-    }
-
-    let error = unsafe { CommDlgExtendedError() };
-    if error == 0 {
-        Ok(None)
-    } else {
-        Err(format!("File dialog failed with error code {error}"))
-    }
-}
-
-fn choose_action_log_export_file(hwnd: Option<HWND>) -> Result<Option<PathBuf>, String> {
-    const FILE_BUFFER_LEN: usize = 4096;
-
-    let mut file_buffer =
-        path_to_wide_buffer(&default_action_log_export_csv_path(), FILE_BUFFER_LEN);
-    let filter = wide_nulls("CSV files (*.csv)\0*.csv\0All files (*.*)\0*.*\0");
-    let default_extension = wide_null("csv");
-    let title = wide_null("Export log");
-
-    let mut dialog = OPENFILENAMEW {
-        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
-        hwndOwner: hwnd.unwrap_or_default(),
-        lpstrFilter: filter.as_ptr(),
-        lpstrFile: file_buffer.as_mut_ptr(),
-        nMaxFile: file_buffer.len() as u32,
-        lpstrTitle: title.as_ptr(),
-        lpstrDefExt: default_extension.as_ptr(),
-        Flags: OFN_HIDEREADONLY | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
-        ..Default::default()
-    };
-
-    let selected = unsafe { GetSaveFileNameW(&mut dialog) };
-    if selected != 0 {
-        return Ok(Some(path_from_wide_buffer(&file_buffer)));
-    }
-
-    let error = unsafe { CommDlgExtendedError() };
-    if error == 0 {
-        Ok(None)
-    } else {
-        Err(format!("File dialog failed with error code {error}"))
-    }
-}
-
-fn default_action_log_export_csv_path() -> PathBuf {
-    config::storage::config_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(format!(
-            "powerleaf_action_log_{}_{}.csv",
-            env!("CARGO_PKG_VERSION"),
-            Local::now().format("%Y-%m-%d")
-        ))
-}
-
-fn path_to_wide_buffer(path: &Path, len: usize) -> Vec<u16> {
-    let mut buffer: Vec<u16> = path.as_os_str().encode_wide().take(len - 1).collect();
-    buffer.resize(len, 0);
-    buffer
-}
-
-fn path_from_wide_buffer(buffer: &[u16]) -> PathBuf {
-    let len = buffer
-        .iter()
-        .position(|character| *character == 0)
-        .unwrap_or(buffer.len());
-    PathBuf::from(OsString::from_wide(&buffer[..len]))
-}
-
-fn wide_null(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain([0]).collect()
-}
-
-fn wide_nulls(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain([0]).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -23870,11 +23720,126 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_dual_line_points_pad_and_keep_latest_samples() {
+        let points = dashboard_dual_line_points(
+            (0..(CPU_USAGE_HISTORY_LEN + 2)).map(|index| (index as f32, (index * 2) as f32)),
+            |value| format!("{:?}", value),
+            |value| format!("{:?}", value),
+        );
+
+        assert_eq!(points.len(), CPU_USAGE_HISTORY_LEN);
+        assert_eq!(points[0].first_value, 2.0);
+        assert_eq!(points[0].second_value, 4.0);
+        assert_eq!(
+            points[CPU_USAGE_HISTORY_LEN - 1].first_value,
+            (CPU_USAGE_HISTORY_LEN + 1) as f64
+        );
+
+        let padded = dashboard_dual_line_points(
+            [(7.0, 9.0)].into_iter(),
+            |value| format!("{:?}", value),
+            |value| format!("{:?}", value),
+        );
+        assert_eq!(padded.len(), CPU_USAGE_HISTORY_LEN);
+        assert_eq!(padded[CPU_USAGE_HISTORY_LEN - 2].first_value, 0.0);
+        assert_eq!(padded[CPU_USAGE_HISTORY_LEN - 1].first_value, 7.0);
+    }
+
+    #[test]
     fn memory_cache_percent_uses_total_memory_scale() {
         assert_eq!(memory_bytes_percent(Some(4), Some(16)), Some(25.0));
         assert_eq!(memory_bytes_percent(Some(32), Some(16)), Some(100.0));
         assert_eq!(memory_bytes_percent(Some(4), Some(0)), None);
         assert_eq!(memory_bytes_percent(None, Some(16)), None);
+    }
+
+    #[test]
+    fn refresh_due_advances_only_after_deadline() {
+        let now = Instant::now();
+        let mut next_refresh = now + Duration::from_secs(1);
+
+        assert!(!refresh_due(now, &mut next_refresh, Duration::from_secs(3)));
+        assert_eq!(next_refresh, now + Duration::from_secs(1));
+
+        assert!(refresh_due(
+            now + Duration::from_secs(1),
+            &mut next_refresh,
+            Duration::from_secs(3)
+        ));
+        assert_eq!(next_refresh, now + Duration::from_secs(4));
+    }
+
+    #[test]
+    fn active_plan_guid_returns_active_plan_only() {
+        let plans = vec![
+            PowerPlan {
+                guid: "balanced".to_owned(),
+                name: "Balanced".to_owned(),
+                active: false,
+            },
+            PowerPlan {
+                guid: "saver".to_owned(),
+                name: "Saver".to_owned(),
+                active: true,
+            },
+        ];
+
+        assert_eq!(active_plan_guid(&plans), Some("saver"));
+        assert_eq!(active_plan_guid(&[]), None);
+    }
+
+    #[test]
+    fn runtime_settings_preserves_live_and_saved_sections() {
+        let mut current = Settings::default();
+        let mut saved = Settings::default();
+
+        current.general.enabled = false;
+        saved.general.enabled = true;
+        current.general.check_interval_ms = 1_234;
+        saved.general.check_interval_ms = 5_678;
+        current.advanced.action_log_mode = ActionLogMode::Off;
+        saved.advanced.action_log_mode = ActionLogMode::Full;
+        current.power_plans.performance_guid = Some("current".to_owned());
+        saved.power_plans.performance_guid = Some("saved".to_owned());
+        current.background_cpu_restriction.enabled = true;
+        saved.background_cpu_restriction.enabled = false;
+        current.io_priority.enabled = true;
+        saved.io_priority.enabled = false;
+        current.timer_resolution.enabled = true;
+        saved.timer_resolution.enabled = false;
+        current.smart_trim.enabled = false;
+        saved.smart_trim.enabled = true;
+
+        let settings = runtime_settings_from(&current, &saved);
+
+        assert!(settings.general.enabled);
+        assert_eq!(settings.general.check_interval_ms, 1_234);
+        assert_eq!(settings.advanced.action_log_mode, ActionLogMode::Off);
+        assert_eq!(
+            settings.power_plans.performance_guid.as_deref(),
+            Some("saved")
+        );
+        assert!(settings.background_cpu_restriction.enabled);
+        assert!(settings.io_priority.enabled);
+        assert!(settings.timer_resolution.enabled);
+        assert!(settings.smart_trim.enabled);
+        assert!(runtime_settings_matches(&settings, &current, &saved));
+
+        let mut stale_saved_section = settings.clone();
+        stale_saved_section.smart_trim.enabled = false;
+        assert!(!runtime_settings_matches(
+            &stale_saved_section,
+            &current,
+            &saved
+        ));
+
+        let mut stale_live_section = settings;
+        stale_live_section.timer_resolution.enabled = false;
+        assert!(!runtime_settings_matches(
+            &stale_live_section,
+            &current,
+            &saved
+        ));
     }
 
     #[test]

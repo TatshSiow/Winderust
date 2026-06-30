@@ -1,6 +1,5 @@
 use std::{
     ffi::c_void,
-    iter::once,
     mem::size_of,
     ptr::{null, null_mut},
     time::Instant,
@@ -26,7 +25,7 @@ use windows_sys::{
     },
 };
 
-use crate::win_util::filetime_to_u64;
+use crate::win_util::{filetime_to_u64, wide_null};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CpuUsageSnapshot {
@@ -88,14 +87,19 @@ struct ProcessorPowerFrequencySample {
 
 impl CpuUsageMonitor {
     pub fn sample(&mut self) -> CpuUsageSnapshot {
-        let live_frequency = self.sample_live_cpu_frequency();
-        let processor_power_frequency = read_processor_power_frequency();
-        let frequency_mhz = live_frequency
-            .map(|sample| sample.frequency_mhz)
-            .or_else(|| processor_power_frequency.map(|sample| sample.current_mhz));
-        let base_frequency_mhz = live_frequency
-            .and_then(|sample| sample.nominal_frequency_mhz)
-            .or_else(|| processor_power_frequency.and_then(|sample| sample.base_mhz));
+        self.sample_with_frequency(true)
+    }
+
+    pub fn sample_usage(&mut self) -> CpuUsageSnapshot {
+        self.sample_with_frequency(false)
+    }
+
+    fn sample_with_frequency(&mut self, include_frequency: bool) -> CpuUsageSnapshot {
+        let (frequency_mhz, base_frequency_mhz) = if include_frequency {
+            self.sample_frequency()
+        } else {
+            (None, None)
+        };
 
         let Some(current) = read_system_cpu_times() else {
             return CpuUsageSnapshot {
@@ -105,19 +109,9 @@ impl CpuUsageMonitor {
             };
         };
 
-        let percent = self.previous.and_then(|previous| {
-            let idle_delta = current.idle.saturating_sub(previous.idle);
-            let kernel_delta = current.kernel.saturating_sub(previous.kernel);
-            let user_delta = current.user.saturating_sub(previous.user);
-            let total_delta = kernel_delta + user_delta;
-
-            if total_delta == 0 {
-                None
-            } else {
-                let used = total_delta.saturating_sub(idle_delta);
-                Some(((used as f32 / total_delta as f32) * 100.0).clamp(0.0, 100.0))
-            }
-        });
+        let percent = self
+            .previous
+            .and_then(|previous| system_cpu_usage_percent(previous, current));
 
         self.previous = Some(current);
         CpuUsageSnapshot {
@@ -125,6 +119,23 @@ impl CpuUsageMonitor {
             frequency_mhz,
             base_frequency_mhz,
         }
+    }
+
+    fn sample_frequency(&mut self) -> (Option<u32>, Option<u32>) {
+        let live_frequency = self.sample_live_cpu_frequency();
+        let frequency_mhz = live_frequency.map(|sample| sample.frequency_mhz);
+        let base_frequency_mhz = live_frequency.and_then(|sample| sample.nominal_frequency_mhz);
+        if frequency_mhz.is_some() && base_frequency_mhz.is_some() {
+            return (frequency_mhz, base_frequency_mhz);
+        }
+
+        let processor_power_frequency = read_processor_power_frequency();
+        let frequency_mhz =
+            frequency_mhz.or_else(|| processor_power_frequency.map(|sample| sample.current_mhz));
+        let base_frequency_mhz = base_frequency_mhz
+            .or_else(|| processor_power_frequency.and_then(|sample| sample.base_mhz));
+
+        (frequency_mhz, base_frequency_mhz)
     }
 
     fn sample_live_cpu_frequency(&mut self) -> Option<CpuFrequencySample> {
@@ -273,6 +284,20 @@ fn read_system_cpu_times() -> Option<SystemCpuTimes> {
     })
 }
 
+fn system_cpu_usage_percent(previous: SystemCpuTimes, current: SystemCpuTimes) -> Option<f32> {
+    let idle_delta = current.idle.saturating_sub(previous.idle);
+    let kernel_delta = current.kernel.saturating_sub(previous.kernel);
+    let user_delta = current.user.saturating_sub(previous.user);
+    let total_delta = kernel_delta + user_delta;
+
+    if total_delta == 0 {
+        None
+    } else {
+        let used = total_delta.saturating_sub(idle_delta);
+        Some(((used as f32 / total_delta as f32) * 100.0).clamp(0.0, 100.0))
+    }
+}
+
 fn read_processor_cpu_times() -> Option<Vec<ProcessorCpuTimes>> {
     let processor_count = std::thread::available_parallelism()
         .map(usize::from)
@@ -366,10 +391,6 @@ fn frequency_mhz_to_u32(frequency_mhz: f64) -> Option<u32> {
     Some(frequency_mhz.round() as u32)
 }
 
-fn wide_null(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(once(0)).collect()
-}
-
 fn average_processor_power_frequency(
     records: &[PROCESSOR_POWER_INFORMATION],
 ) -> Option<ProcessorPowerFrequencySample> {
@@ -437,6 +458,23 @@ mod tests {
         };
 
         assert_eq!(processor_usage_percent(previous, current), 80.0);
+    }
+
+    #[test]
+    fn system_cpu_usage_scales_from_idle_kernel_user_deltas() {
+        let previous = SystemCpuTimes {
+            idle: 10,
+            kernel: 20,
+            user: 10,
+        };
+        let current = SystemCpuTimes {
+            idle: 20,
+            kernel: 50,
+            user: 30,
+        };
+
+        assert_eq!(system_cpu_usage_percent(previous, current), Some(80.0));
+        assert_eq!(system_cpu_usage_percent(current, current), None);
     }
 
     #[test]

@@ -85,21 +85,20 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     Ok(processes)
 }
 
-pub fn list_process_ids() -> Result<Vec<u32>, String> {
+pub fn for_each_process_id(mut visit: impl FnMut(u32)) -> Result<(), String> {
     let snapshot = process_snapshot()?;
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
         ..Default::default()
     };
-    let mut process_ids = Vec::new();
 
     let mut has_entry = unsafe { Process32FirstW(snapshot.raw(), &mut entry) != 0 };
     while has_entry {
-        process_ids.push(entry.th32ProcessID);
+        visit(entry.th32ProcessID);
         has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
     }
 
-    Ok(process_ids)
+    Ok(())
 }
 
 pub fn process_names_by_id(processes: &[ProcessInfo]) -> BTreeMap<u32, String> {

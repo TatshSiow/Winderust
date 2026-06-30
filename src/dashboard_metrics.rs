@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::{foreground::list_process_ids, win_util::WinHandle};
+use crate::{foreground::for_each_process_id, win_util::WinHandle};
 use windows_sys::Win32::{
     Foundation::HANDLE,
     NetworkManagement::{
@@ -195,14 +195,19 @@ fn read_system_io_counters() -> Option<IoCounterSample> {
     let mut write_bytes = 0u64;
     let mut sampled_any = false;
 
-    for process_id in list_process_ids().ok()? {
+    for_each_process_id(|process_id| {
+        if process_id == 0 {
+            return;
+        }
+
         let Some(counters) = process_io_counters(process_id) else {
-            continue;
+            return;
         };
         read_bytes = read_bytes.saturating_add(counters.ReadTransferCount);
         write_bytes = write_bytes.saturating_add(counters.WriteTransferCount);
         sampled_any = true;
-    }
+    })
+    .ok()?;
 
     sampled_any.then_some(IoCounterSample {
         read_bytes,

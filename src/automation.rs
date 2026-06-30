@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeSet,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Condvar, Mutex,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -77,6 +80,7 @@ pub struct BackgroundAutomation {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutomationStatusSnapshot {
+    pub generation: u64,
     pub eco_qos: EcoQosSnapshot,
     pub app_suspension: AppSuspensionSnapshot,
     pub cpu_affinity: CpuAffinitySnapshot,
@@ -97,11 +101,14 @@ pub struct AutomationStatusSnapshot {
 struct SharedAutomationState {
     state: Mutex<AutomationWorkerState>,
     changed: Condvar,
+    status_generation: AtomicU64,
+    pending_auto_exclusions_generation: AtomicU64,
 }
 
 struct AutomationWorkerState {
-    settings: Settings,
+    settings: Arc<Settings>,
     change_generation: u64,
+    status_generation: u64,
     eco_qos_status: EcoQosSnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     cpu_affinity_status: CpuAffinitySnapshot,
@@ -161,8 +168,9 @@ impl BackgroundAutomation {
     pub fn start(settings: &Settings) -> Self {
         let shared = Arc::new(SharedAutomationState {
             state: Mutex::new(AutomationWorkerState {
-                settings: settings.clone(),
+                settings: Arc::new(settings.clone()),
                 change_generation: 0,
+                status_generation: 1,
                 eco_qos_status: EcoQosSnapshot::default(),
                 app_suspension_status: AppSuspensionSnapshot::default(),
                 cpu_affinity_status: CpuAffinitySnapshot::default(),
@@ -187,6 +195,8 @@ impl BackgroundAutomation {
                 stop_requested: false,
             }),
             changed: Condvar::new(),
+            status_generation: AtomicU64::new(1),
+            pending_auto_exclusions_generation: AtomicU64::new(0),
         });
         let automation = Self {
             shared,
@@ -201,10 +211,10 @@ impl BackgroundAutomation {
     pub fn update_settings(&self, settings: &Settings) {
         let mut changed = false;
         if let Ok(mut state) = self.shared.state.lock() {
-            if state.settings == *settings {
+            if state.settings.as_ref() == settings {
                 return;
             }
-            state.settings = settings.clone();
+            state.settings = Arc::new(settings.clone());
             state.pending_events.settings_changed = true;
             state.change_generation = state.change_generation.wrapping_add(1);
             self.shared.changed.notify_one();
@@ -217,11 +227,17 @@ impl BackgroundAutomation {
         }
     }
 
-    pub fn status_snapshot(&self) -> AutomationStatusSnapshot {
-        self.shared
-            .state
-            .lock()
-            .map(|state| AutomationStatusSnapshot {
+    pub fn status_snapshot_since(
+        &self,
+        observed_generation: u64,
+    ) -> Option<AutomationStatusSnapshot> {
+        if self.shared.status_generation.load(Ordering::Acquire) == observed_generation {
+            return None;
+        }
+
+        self.shared.state.lock().ok().and_then(|state| {
+            (state.status_generation != observed_generation).then(|| AutomationStatusSnapshot {
+                generation: state.status_generation,
                 eco_qos: state.eco_qos_status.clone(),
                 app_suspension: state.app_suspension_status.clone(),
                 cpu_affinity: state.cpu_affinity_status.clone(),
@@ -238,7 +254,7 @@ impl BackgroundAutomation {
                 action_log_entries: state.action_log_entries.clone(),
                 appearance_change_generation: state.appearance_change_generation,
             })
-            .unwrap_or_default()
+        })
     }
 
     pub fn clear_action_log(&self) {
@@ -250,12 +266,31 @@ impl BackgroundAutomation {
         }
     }
 
-    pub fn take_pending_auto_exclusions(&self) -> PendingAutoExclusions {
-        self.shared
-            .state
-            .lock()
-            .map(|mut state| std::mem::take(&mut state.pending_auto_exclusions))
-            .unwrap_or_default()
+    pub fn take_pending_auto_exclusions_since(
+        &self,
+        observed_generation: &mut u64,
+    ) -> Option<PendingAutoExclusions> {
+        if self
+            .shared
+            .pending_auto_exclusions_generation
+            .load(Ordering::Acquire)
+            == *observed_generation
+        {
+            return None;
+        }
+
+        self.shared.state.lock().ok().and_then(|mut state| {
+            let generation = self
+                .shared
+                .pending_auto_exclusions_generation
+                .load(Ordering::Acquire);
+            if generation == *observed_generation {
+                return None;
+            }
+
+            *observed_generation = generation;
+            Some(std::mem::take(&mut state.pending_auto_exclusions))
+        })
     }
 
     pub fn request_app_suspension_freeze(&self, process_name: &str) {
@@ -269,12 +304,12 @@ impl BackgroundAutomation {
             state.app_suspension_freeze_requests.push(process_name);
             state.pending_events.settings_changed = true;
             state.change_generation = state.change_generation.wrapping_add(1);
-            settings_to_sync = Some(state.settings.clone());
+            settings_to_sync = Some(Arc::clone(&state.settings));
             self.shared.changed.notify_one();
         }
 
         if let Some(settings) = settings_to_sync {
-            self.sync_worker(&settings);
+            self.sync_worker(settings.as_ref());
         }
     }
 
@@ -283,12 +318,12 @@ impl BackgroundAutomation {
         if let Ok(mut state) = self.shared.state.lock() {
             state.smart_trim_now_requested = true;
             state.change_generation = state.change_generation.wrapping_add(1);
-            settings_to_sync = Some(state.settings.clone());
+            settings_to_sync = Some(Arc::clone(&state.settings));
             self.shared.changed.notify_one();
         }
 
         if let Some(settings) = settings_to_sync {
-            self.sync_worker(&settings);
+            self.sync_worker(settings.as_ref());
         }
     }
 
@@ -416,70 +451,71 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, smart_trim_refresh_interval(&settings));
         let timer_resolution_refresh_interval =
             automation_refresh_interval(hidden_to_tray, TIMER_RESOLUTION_REFRESH_INTERVAL);
+        let event_now = Instant::now();
         let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
         if settings_changed {
-            next_check = Instant::now();
-            next_eco_qos_refresh = Instant::now();
-            next_app_suspension_refresh = Instant::now();
-            next_app_suspension_foreground_release = Instant::now();
-            next_cpu_affinity_refresh = Instant::now();
-            next_background_cpu_restriction_refresh = Instant::now();
-            next_cpu_limiter_refresh = Instant::now();
-            next_performance_mode_refresh = Instant::now();
-            next_watchdog_refresh = Instant::now();
-            next_foreground_responsiveness_refresh = Instant::now();
-            next_io_priority_refresh = Instant::now();
-            next_gpu_priority_refresh = Instant::now();
-            next_memory_priority_refresh = Instant::now();
-            next_smart_trim_refresh = Instant::now();
-            next_timer_resolution_refresh = Instant::now();
-            next_process_appearance_scan = Instant::now();
-            next_controller_activity_poll = Instant::now();
+            next_check = event_now;
+            next_eco_qos_refresh = event_now;
+            next_app_suspension_refresh = event_now;
+            next_app_suspension_foreground_release = event_now;
+            next_cpu_affinity_refresh = event_now;
+            next_background_cpu_restriction_refresh = event_now;
+            next_cpu_limiter_refresh = event_now;
+            next_performance_mode_refresh = event_now;
+            next_watchdog_refresh = event_now;
+            next_foreground_responsiveness_refresh = event_now;
+            next_io_priority_refresh = event_now;
+            next_gpu_priority_refresh = event_now;
+            next_memory_priority_refresh = event_now;
+            next_smart_trim_refresh = event_now;
+            next_timer_resolution_refresh = event_now;
+            next_process_appearance_scan = event_now;
+            next_controller_activity_poll = event_now;
             foreground_responsiveness_fast_until = None;
         }
         if wake_events.foreground_changed || wake_events.session_changed {
-            next_check = Instant::now();
-            next_eco_qos_refresh = Instant::now();
-            next_cpu_affinity_refresh = Instant::now();
-            next_background_cpu_restriction_refresh = Instant::now();
-            next_cpu_limiter_refresh = Instant::now();
-            next_foreground_responsiveness_refresh = Instant::now();
-            next_io_priority_refresh = Instant::now();
-            next_gpu_priority_refresh = Instant::now();
-            next_memory_priority_refresh = Instant::now();
-            next_smart_trim_refresh = Instant::now();
-            next_timer_resolution_refresh = Instant::now();
-            next_app_suspension_foreground_release = Instant::now();
+            next_check = event_now;
+            next_eco_qos_refresh = event_now;
+            next_cpu_affinity_refresh = event_now;
+            next_background_cpu_restriction_refresh = event_now;
+            next_cpu_limiter_refresh = event_now;
+            next_foreground_responsiveness_refresh = event_now;
+            next_io_priority_refresh = event_now;
+            next_gpu_priority_refresh = event_now;
+            next_memory_priority_refresh = event_now;
+            next_smart_trim_refresh = event_now;
+            next_timer_resolution_refresh = event_now;
+            next_app_suspension_foreground_release = event_now;
             foreground_responsiveness_fast_until =
-                foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
+                foreground_responsiveness_fast_refresh_deadline(&settings, event_now);
         }
         if wake_events.window_created || wake_events.session_changed {
-            next_process_appearance_scan = Instant::now();
-            next_app_suspension_refresh = Instant::now();
+            next_process_appearance_scan = event_now;
+            next_app_suspension_refresh = event_now;
             foreground_responsiveness_fast_until =
-                foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
+                foreground_responsiveness_fast_refresh_deadline(&settings, event_now);
         }
         if wake_events.power_changed || wake_events.session_changed {
-            next_check = Instant::now();
+            next_check = event_now;
             runner.refresh_active_plan();
         }
         if wake_events.input_activity {
-            next_check = Instant::now();
+            next_check = event_now;
         }
         let controller_poll_required =
             hidden_to_tray && controller_activity_poll_required(&settings);
-        if controller_poll_required && Instant::now() >= next_controller_activity_poll {
-            if runner.poll_controller_activity(Instant::now()) {
-                next_check = Instant::now();
+        if controller_poll_required && event_now >= next_controller_activity_poll {
+            if runner.poll_controller_activity(event_now) {
+                next_check = event_now;
             }
-            next_controller_activity_poll = Instant::now() + CONTROLLER_ACTIVITY_POLL_INTERVAL;
+            next_controller_activity_poll = event_now + CONTROLLER_ACTIVITY_POLL_INTERVAL;
         } else if !controller_poll_required {
             runner.clear_controller_activity();
-            next_controller_activity_poll = Instant::now();
+            next_controller_activity_poll = event_now;
         }
         if wake_events.app_switch || wake_events.app_switch_mouse_click {
-            next_app_suspension_foreground_release = Instant::now();
-            next_timer_resolution_refresh = Instant::now();
+            next_app_suspension_foreground_release = event_now;
+            next_timer_resolution_refresh = event_now;
             if runner.app_suspension_manager.has_suspended_processes() {
                 let app_suspension_status = if wake_events.app_switch {
                     runner.run_app_suspension_app_switch_release()
@@ -492,6 +528,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 }
             }
         }
+        let now = Instant::now();
         let power_plan_checks_required = power_plan_checks_required(&settings);
         let scan_process_appearance = process_appearance_scan_required(&settings);
         let eco_qos_refresh_required =
@@ -524,62 +561,62 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let timer_resolution_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.timer_resolution.enabled);
         if !app_suspension_freeze_requests.is_empty() {
-            next_app_suspension_refresh = Instant::now();
+            next_app_suspension_refresh = now;
         }
         if smart_trim_now_requested {
-            next_smart_trim_refresh = Instant::now();
+            next_smart_trim_refresh = now;
         }
 
         if foreground_responsiveness_fast_refresh_active(
             &settings,
             foreground_responsiveness_fast_until,
-            Instant::now(),
+            now,
         ) {
             foreground_responsiveness_refresh_interval =
                 FOREGROUND_RESPONSIVENESS_FAST_REFRESH_INTERVAL;
         }
 
-        if scan_process_appearance && Instant::now() >= next_process_appearance_scan {
+        if scan_process_appearance && now >= next_process_appearance_scan {
             if runner.detect_process_appearance() {
-                next_eco_qos_refresh = Instant::now();
-                next_cpu_affinity_refresh = Instant::now();
-                next_background_cpu_restriction_refresh = Instant::now();
-                next_cpu_limiter_refresh = Instant::now();
-                next_performance_mode_refresh = Instant::now();
-                next_watchdog_refresh = Instant::now();
-                next_foreground_responsiveness_refresh = Instant::now();
-                next_io_priority_refresh = Instant::now();
-                next_gpu_priority_refresh = Instant::now();
-                next_memory_priority_refresh = Instant::now();
-                next_smart_trim_refresh = Instant::now();
+                next_eco_qos_refresh = now;
+                next_cpu_affinity_refresh = now;
+                next_background_cpu_restriction_refresh = now;
+                next_cpu_limiter_refresh = now;
+                next_performance_mode_refresh = now;
+                next_watchdog_refresh = now;
+                next_foreground_responsiveness_refresh = now;
+                next_io_priority_refresh = now;
+                next_gpu_priority_refresh = now;
+                next_memory_priority_refresh = now;
+                next_smart_trim_refresh = now;
                 foreground_responsiveness_fast_until =
-                    foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
+                    foreground_responsiveness_fast_refresh_deadline(&settings, now);
             }
-            next_process_appearance_scan = Instant::now() + PROCESS_APPEARANCE_SCAN_INTERVAL;
+            next_process_appearance_scan = now + PROCESS_APPEARANCE_SCAN_INTERVAL;
         } else if !scan_process_appearance {
             runner.known_process_ids.clear();
-            next_process_appearance_scan = Instant::now() + PROCESS_APPEARANCE_SCAN_INTERVAL;
+            next_process_appearance_scan = now + PROCESS_APPEARANCE_SCAN_INTERVAL;
         }
 
         if runner.app_suspension_manager.has_suspended_processes()
-            && Instant::now() >= next_app_suspension_foreground_release
+            && now >= next_app_suspension_foreground_release
         {
             if let Some(app_suspension_status) = runner.run_app_suspension_foreground_release() {
                 update_app_suspension_status(&shared, app_suspension_status);
                 runner.publish_action_log_if_changed(&shared);
             }
             next_app_suspension_foreground_release =
-                Instant::now() + APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL;
+                now + APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL;
         }
 
-        if eco_qos_refresh_required && Instant::now() >= next_eco_qos_refresh {
+        if eco_qos_refresh_required && now >= next_eco_qos_refresh {
             let eco_qos_status = runner.run_eco_qos_update(&settings);
             update_eco_qos_status(&shared, eco_qos_status);
             runner.publish_action_log_if_changed(&shared);
-            next_eco_qos_refresh = Instant::now() + eco_qos_refresh_interval;
+            next_eco_qos_refresh = now + eco_qos_refresh_interval;
         }
         if foreground_responsiveness_refresh_required
-            && Instant::now() >= next_foreground_responsiveness_refresh
+            && now >= next_foreground_responsiveness_refresh
         {
             let foreground_responsiveness_status =
                 runner.run_foreground_responsiveness_update(&settings);
@@ -589,75 +626,75 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 || foreground_responsiveness_status.auto_balanced_processes > 0
             {
                 foreground_responsiveness_fast_until =
-                    foreground_responsiveness_fast_refresh_deadline(&settings, Instant::now());
+                    foreground_responsiveness_fast_refresh_deadline(&settings, now);
             }
             update_foreground_responsiveness_status(&shared, foreground_responsiveness_status);
             runner.publish_action_log_if_changed(&shared);
             next_foreground_responsiveness_refresh =
-                Instant::now() + foreground_responsiveness_refresh_interval;
+                now + foreground_responsiveness_refresh_interval;
         }
-        if io_priority_refresh_required && Instant::now() >= next_io_priority_refresh {
+        if io_priority_refresh_required && now >= next_io_priority_refresh {
             let io_priority_status = runner.run_io_priority_update(&settings);
             update_io_priority_status(&shared, io_priority_status);
             runner.publish_action_log_if_changed(&shared);
-            next_io_priority_refresh = Instant::now() + io_priority_refresh_interval;
+            next_io_priority_refresh = now + io_priority_refresh_interval;
         }
-        if gpu_priority_refresh_required && Instant::now() >= next_gpu_priority_refresh {
+        if gpu_priority_refresh_required && now >= next_gpu_priority_refresh {
             let gpu_priority_status = runner.run_gpu_priority_update(&settings);
             update_gpu_priority_status(&shared, gpu_priority_status);
             runner.publish_action_log_if_changed(&shared);
-            next_gpu_priority_refresh = Instant::now() + gpu_priority_refresh_interval;
+            next_gpu_priority_refresh = now + gpu_priority_refresh_interval;
         }
-        if memory_priority_refresh_required && Instant::now() >= next_memory_priority_refresh {
+        if memory_priority_refresh_required && now >= next_memory_priority_refresh {
             let memory_priority_status = runner.run_memory_priority_update(&settings);
             update_memory_priority_status(&shared, memory_priority_status);
             runner.publish_action_log_if_changed(&shared);
-            next_memory_priority_refresh = Instant::now() + memory_priority_refresh_interval;
+            next_memory_priority_refresh = now + memory_priority_refresh_interval;
         }
-        if app_suspension_refresh_required && Instant::now() >= next_app_suspension_refresh {
+        if app_suspension_refresh_required && now >= next_app_suspension_refresh {
             let app_suspension_status =
                 runner.run_app_suspension_update(&settings, &app_suspension_freeze_requests);
             update_app_suspension_status(&shared, app_suspension_status);
             runner.publish_action_log_if_changed(&shared);
-            next_app_suspension_refresh = Instant::now() + app_suspension_refresh_interval;
+            next_app_suspension_refresh = now + app_suspension_refresh_interval;
             if runner.app_suspension_manager.has_suspended_processes() {
-                next_app_suspension_foreground_release = Instant::now();
+                next_app_suspension_foreground_release = now;
             }
         }
-        if cpu_affinity_refresh_required && Instant::now() >= next_cpu_affinity_refresh {
+        if cpu_affinity_refresh_required && now >= next_cpu_affinity_refresh {
             let cpu_affinity_status = runner.run_cpu_affinity_update(&settings);
             update_cpu_affinity_status(&shared, cpu_affinity_status);
             runner.publish_action_log_if_changed(&shared);
-            next_cpu_affinity_refresh = Instant::now() + cpu_affinity_refresh_interval;
+            next_cpu_affinity_refresh = now + cpu_affinity_refresh_interval;
         }
         if background_cpu_restriction_refresh_required
-            && Instant::now() >= next_background_cpu_restriction_refresh
+            && now >= next_background_cpu_restriction_refresh
         {
             let status = runner.run_background_cpu_restriction_update(&settings);
             update_background_cpu_restriction_status(&shared, status);
             runner.publish_action_log_if_changed(&shared);
             next_background_cpu_restriction_refresh =
-                Instant::now() + background_cpu_restriction_refresh_interval;
+                now + background_cpu_restriction_refresh_interval;
         }
-        if cpu_limiter_refresh_required && Instant::now() >= next_cpu_limiter_refresh {
+        if cpu_limiter_refresh_required && now >= next_cpu_limiter_refresh {
             let cpu_limiter_status = runner.run_cpu_limiter_update(&settings);
             update_cpu_limiter_status(&shared, cpu_limiter_status);
             runner.publish_action_log_if_changed(&shared);
-            next_cpu_limiter_refresh = Instant::now() + cpu_limiter_refresh_interval;
+            next_cpu_limiter_refresh = now + cpu_limiter_refresh_interval;
         }
-        if performance_mode_refresh_required && Instant::now() >= next_performance_mode_refresh {
+        if performance_mode_refresh_required && now >= next_performance_mode_refresh {
             let performance_mode_status = runner.run_performance_mode_update(&settings);
             update_performance_mode_status(&shared, performance_mode_status);
             runner.publish_action_log_if_changed(&shared);
-            next_performance_mode_refresh = Instant::now() + performance_mode_refresh_interval;
+            next_performance_mode_refresh = now + performance_mode_refresh_interval;
         }
-        if watchdog_refresh_required && Instant::now() >= next_watchdog_refresh {
+        if watchdog_refresh_required && now >= next_watchdog_refresh {
             let watchdog_status = runner.run_watchdog_update(&settings);
             update_watchdog_status(&shared, watchdog_status);
             runner.publish_action_log_if_changed(&shared);
-            next_watchdog_refresh = Instant::now() + watchdog_refresh_interval;
+            next_watchdog_refresh = now + watchdog_refresh_interval;
         }
-        if smart_trim_refresh_required && Instant::now() >= next_smart_trim_refresh {
+        if smart_trim_refresh_required && now >= next_smart_trim_refresh {
             let smart_trim_status = if smart_trim_now_requested {
                 runner.run_smart_trim_now(&settings)
             } else {
@@ -665,41 +702,42 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             };
             update_smart_trim_status(&shared, smart_trim_status);
             runner.publish_action_log_if_changed(&shared);
-            next_smart_trim_refresh = Instant::now() + smart_trim_refresh_interval;
+            next_smart_trim_refresh = now + smart_trim_refresh_interval;
         }
-        if timer_resolution_refresh_required && Instant::now() >= next_timer_resolution_refresh {
+        if timer_resolution_refresh_required && now >= next_timer_resolution_refresh {
             let timer_resolution_status = runner.run_timer_resolution_update(&settings);
             update_timer_resolution_status(&shared, timer_resolution_status);
             runner.publish_action_log_if_changed(&shared);
-            next_timer_resolution_refresh = Instant::now() + timer_resolution_refresh_interval;
+            next_timer_resolution_refresh = now + timer_resolution_refresh_interval;
         }
 
+        let wait_now = Instant::now();
         let mut wait_for = if hidden_to_tray {
             if power_plan_checks_required {
                 let input_events = input_hook::take_pending_events();
                 if input_hook_should_check(&settings, input_events) {
-                    next_check = Instant::now();
+                    next_check = wait_now;
                 }
 
-                if Instant::now() >= next_check && !runner.performance_mode_manager.is_active() {
+                if wait_now >= next_check && !runner.performance_mode_manager.is_active() {
                     runner.run_check(&settings);
                 }
 
                 if let Some(delay) =
                     hidden_power_plan_check_delay(&settings, windows_event_watcher_active)
                 {
-                    next_check = Instant::now() + delay;
-                    Some(next_check.saturating_duration_since(Instant::now()))
+                    next_check = wait_now + delay;
+                    Some(next_check.saturating_duration_since(wait_now))
                 } else {
-                    next_check = Instant::now();
+                    next_check = wait_now;
                     None
                 }
             } else {
-                next_check = Instant::now();
+                next_check = wait_now;
                 None
             }
         } else {
-            next_check = Instant::now();
+            next_check = wait_now;
             None
         };
 
@@ -707,7 +745,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_eco_qos_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(eco_qos_refresh_interval),
             ));
         }
@@ -715,7 +753,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_app_suspension_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(app_suspension_refresh_interval),
             ));
         }
@@ -723,7 +761,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_cpu_affinity_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(cpu_affinity_refresh_interval),
             ));
         }
@@ -731,7 +769,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_background_cpu_restriction_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(background_cpu_restriction_refresh_interval),
             ));
         }
@@ -739,7 +777,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_cpu_limiter_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(cpu_limiter_refresh_interval),
             ));
         }
@@ -747,7 +785,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_performance_mode_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(performance_mode_refresh_interval),
             ));
         }
@@ -755,7 +793,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_watchdog_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(watchdog_refresh_interval),
             ));
         }
@@ -763,7 +801,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_foreground_responsiveness_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(foreground_responsiveness_refresh_interval),
             ));
         }
@@ -771,7 +809,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_io_priority_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(io_priority_refresh_interval),
             ));
         }
@@ -779,7 +817,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_gpu_priority_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(gpu_priority_refresh_interval),
             ));
         }
@@ -787,7 +825,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_memory_priority_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(memory_priority_refresh_interval),
             ));
         }
@@ -795,7 +833,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_smart_trim_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(smart_trim_refresh_interval),
             ));
         }
@@ -803,7 +841,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_timer_resolution_refresh
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(timer_resolution_refresh_interval),
             ));
         }
@@ -811,7 +849,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_process_appearance_scan
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(PROCESS_APPEARANCE_SCAN_INTERVAL),
             ));
         }
@@ -819,7 +857,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_controller_activity_poll
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(CONTROLLER_ACTIVITY_POLL_INTERVAL),
             ));
         }
@@ -827,7 +865,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             wait_for = Some(min_worker_wait(
                 wait_for,
                 next_app_suspension_foreground_release
-                    .saturating_duration_since(Instant::now())
+                    .saturating_duration_since(wait_now)
                     .min(APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL),
             ));
         }
@@ -849,7 +887,7 @@ fn min_worker_wait(current: Option<Duration>, candidate: Duration) -> Duration {
 }
 
 struct AutomationSnapshot {
-    settings: Settings,
+    settings: Arc<Settings>,
     change_generation: u64,
     app_suspension_freeze_requests: Vec<String>,
     smart_trim_now_requested: bool,
@@ -894,6 +932,7 @@ fn notify_windows_event(shared: &SharedAutomationState, event: WindowsAutomation
 
         if event == WindowsAutomationEvent::AppearanceChanged {
             state.appearance_change_generation = state.appearance_change_generation.wrapping_add(1);
+            bump_status_generation(shared, &mut state);
         }
         state.pending_events.insert_windows_event(event);
         state.change_generation = state.change_generation.wrapping_add(1);
@@ -923,23 +962,33 @@ fn notify_input_event(shared: &SharedAutomationState, events: InputHookEvents) {
 
 fn update_eco_qos_status(shared: &SharedAutomationState, status: EcoQosSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        append_unique_process_names(
+        if append_unique_process_names(
             &mut state.pending_auto_exclusions.eco_qos,
             &status.auto_excluded_processes,
-        );
-        state.eco_qos_status = status;
+        ) {
+            shared
+                .pending_auto_exclusions_generation
+                .fetch_add(1, Ordering::Release);
+        }
+        if set_status(&mut state.eco_qos_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_app_suspension_status(shared: &SharedAutomationState, status: AppSuspensionSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.app_suspension_status = status;
+        if set_status(&mut state.app_suspension_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_cpu_affinity_status(shared: &SharedAutomationState, status: CpuAffinitySnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.cpu_affinity_status = status;
+        if set_status(&mut state.cpu_affinity_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
@@ -948,15 +997,22 @@ fn update_background_cpu_restriction_status(
     status: CpuAffinitySnapshot,
 ) {
     if let Ok(mut state) = shared.state.lock() {
-        append_unique_process_names(
+        if append_unique_process_names(
             &mut state.pending_auto_exclusions.background_cpu_restriction,
             &status.auto_excluded_processes,
-        );
-        state.background_cpu_restriction_status = status;
+        ) {
+            shared
+                .pending_auto_exclusions_generation
+                .fetch_add(1, Ordering::Release);
+        }
+        if set_status(&mut state.background_cpu_restriction_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
-fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) {
+fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) -> bool {
+    let old_len = target.len();
     for name in names {
         let name = process_name_key(name);
         if !name.is_empty()
@@ -967,23 +1023,30 @@ fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) {
             target.push(name);
         }
     }
+    target.len() != old_len
 }
 
 fn update_cpu_limiter_status(shared: &SharedAutomationState, status: CpuLimiterSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.cpu_limiter_status = status;
+        if set_status(&mut state.cpu_limiter_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_performance_mode_status(shared: &SharedAutomationState, status: PerformanceModeSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.performance_mode_status = status;
+        if set_status(&mut state.performance_mode_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_watchdog_status(shared: &SharedAutomationState, status: WatchdogSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.watchdog_status = status;
+        if set_status(&mut state.watchdog_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
@@ -992,44 +1055,76 @@ fn update_foreground_responsiveness_status(
     status: ForegroundResponsivenessSnapshot,
 ) {
     if let Ok(mut state) = shared.state.lock() {
-        state.foreground_responsiveness_status = status;
+        if set_status(&mut state.foreground_responsiveness_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_io_priority_status(shared: &SharedAutomationState, status: IoPrioritySnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.io_priority_status = status;
+        if set_status(&mut state.io_priority_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_gpu_priority_status(shared: &SharedAutomationState, status: GpuPrioritySnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.gpu_priority_status = status;
+        if set_status(&mut state.gpu_priority_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_memory_priority_status(shared: &SharedAutomationState, status: MemoryPrioritySnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.memory_priority_status = status;
+        if set_status(&mut state.memory_priority_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_smart_trim_status(shared: &SharedAutomationState, status: SmartTrimSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.smart_trim_status = status;
+        if set_status(&mut state.smart_trim_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_timer_resolution_status(shared: &SharedAutomationState, status: TimerResolutionSnapshot) {
     if let Ok(mut state) = shared.state.lock() {
-        state.timer_resolution_status = status;
+        if set_status(&mut state.timer_resolution_status, status) {
+            bump_status_generation(shared, &mut state);
+        }
     }
 }
 
 fn update_action_log_entries(shared: &SharedAutomationState, entries: Vec<ActionLogEntry>) {
     if let Ok(mut state) = shared.state.lock() {
-        state.action_log_entries = Arc::new(entries);
+        let entries = Arc::new(entries);
+        if state.action_log_entries != entries {
+            state.action_log_entries = entries;
+            bump_status_generation(shared, &mut state);
+        }
     }
+}
+
+fn set_status<T: PartialEq>(current: &mut T, next: T) -> bool {
+    if *current != next {
+        *current = next;
+        true
+    } else {
+        false
+    }
+}
+
+fn bump_status_generation(shared: &SharedAutomationState, state: &mut AutomationWorkerState) {
+    state.status_generation = state.status_generation.wrapping_add(1);
+    shared
+        .status_generation
+        .store(state.status_generation, Ordering::Release);
 }
 
 fn automation_refresh_interval(hidden_to_tray: bool, hidden_interval: Duration) -> Duration {
@@ -1763,7 +1858,7 @@ impl HiddenAutomationRunner {
             .next_cpu_usage_refresh
             .is_none_or(|refresh_at| Instant::now() >= refresh_at)
         {
-            self.cpu_usage = self.cpu_monitor.sample();
+            self.cpu_usage = self.cpu_monitor.sample_usage();
             self.next_cpu_usage_refresh = Some(Instant::now() + CPU_USAGE_REFRESH_INTERVAL);
         }
     }
@@ -1905,6 +2000,44 @@ mod tests {
         let settings = Settings::default();
 
         assert!(!automation_worker_required(&settings));
+    }
+
+    #[test]
+    fn status_snapshot_since_skips_unchanged_status() {
+        let automation = BackgroundAutomation::start(&Settings::default());
+        let snapshot = automation
+            .status_snapshot_since(0)
+            .expect("initial status snapshot should be visible");
+
+        assert!(automation
+            .status_snapshot_since(snapshot.generation)
+            .is_none());
+    }
+
+    #[test]
+    fn pending_auto_exclusions_are_taken_only_after_generation_change() {
+        let automation = BackgroundAutomation::start(&Settings::default());
+        let mut generation = 0;
+
+        assert!(automation
+            .take_pending_auto_exclusions_since(&mut generation)
+            .is_none());
+
+        update_eco_qos_status(
+            &automation.shared,
+            EcoQosSnapshot {
+                auto_excluded_processes: vec!["Editor.exe".to_owned()],
+                ..EcoQosSnapshot::default()
+            },
+        );
+
+        let pending = automation
+            .take_pending_auto_exclusions_since(&mut generation)
+            .expect("new pending exclusions should be visible");
+        assert_eq!(pending.eco_qos, vec!["editor.exe"]);
+        assert!(automation
+            .take_pending_auto_exclusions_since(&mut generation)
+            .is_none());
     }
 
     #[test]
