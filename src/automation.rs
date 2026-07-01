@@ -17,8 +17,8 @@ use crate::{
     affinity::{CpuAffinityManager, CpuAffinitySnapshot},
     background_cpu::BackgroundCpuRestrictionManager,
     config::{
-        AccentColorSource, AnimationMode, AppThemeMode, ForegroundRule, PowerPlanSettings,
-        ProcessIoPriority, Settings,
+        AccentColorSource, AnimationMode, AppThemeMode, PowerPlanSettings, ProcessIoPriority,
+        Settings,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
