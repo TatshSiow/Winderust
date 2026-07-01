@@ -16,9 +16,8 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - CPU limiter, background CPU restriction, and CPU affinity/core steering.
 - Efficiency Mode / EcoQoS.
 - App Suspension for explicit opt-in apps.
-- IO, GPU, memory, and launch priority policies.
+- IO, GPU, and memory priority policies.
 - Smart Trim and memory-priority controls.
-- Watchdog rules for terminate/restart behavior.
 - Timer resolution rules tied to foreground apps.
 - Action Log and CSV export.
 - Process List as the main per-process policy surface.
@@ -31,7 +30,6 @@ Covered enough for day-to-day responsiveness:
 - Foreground exclusions.
 - Per-process policy rules.
 - CPU limiter.
-- Watchdog basics.
 - Priority and affinity controls.
 - Action history.
 - Process table/policy surface.
@@ -49,7 +47,6 @@ Not a goal by default:
 
 Add only when a real workflow needs them:
 
-- Instance limits, keep-running, and disallowed-process rules if Watchdog users need more actions.
 - Process-list context actions if repeated workflows are awkward without them.
 - Gaming/work/battery presets after the current settings model stabilizes.
 - Better telemetry/export if Action Log is not enough.

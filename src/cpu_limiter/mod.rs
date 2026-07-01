@@ -35,6 +35,7 @@ pub struct CpuLimiterSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub limited_apps: Vec<String>,
+    pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -196,10 +197,16 @@ impl CpuLimiterManager {
             .retain(|process_id, _| target_ids.contains(process_id));
 
         let mut skipped_processes = 0;
+        let mut auto_excluded_processes = BTreeSet::new();
         let now = Instant::now();
         for (process_id, (process_name, rule)) in target_processes {
             let failure_process_name = process_name.clone();
-            if self.is_process_suppressed(process_id, &failure_process_name, action_log) {
+            if self.is_process_suppressed(
+                process_id,
+                &failure_process_name,
+                action_log,
+                &mut auto_excluded_processes,
+            ) {
                 skipped_processes += 1;
                 continue;
             }
@@ -252,6 +259,7 @@ impl CpuLimiterManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "Core Limiter active.".to_owned(),
             last_error: failures.last_error,
         }
@@ -406,6 +414,7 @@ impl CpuLimiterManager {
         process_id: u32,
         process_name: &str,
         action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if !suppression.suppressed {
@@ -413,6 +422,7 @@ impl CpuLimiterManager {
         }
 
         if suppression.newly_suppressed {
+            auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
                 ActionLogFeature::CpuLimiter,
                 Some(process_id),
@@ -456,6 +466,7 @@ impl Default for CpuLimiterSnapshot {
             skipped_processes: 0,
             failed_processes: 0,
             limited_apps: Vec::new(),
+            auto_excluded_processes: Vec::new(),
             message: "Core Limiter disabled.".to_owned(),
             last_error: None,
         }
@@ -807,12 +818,12 @@ mod tests {
 
         manager.record_process_failure("APP.exe");
         manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
         assert!(log.entries().is_empty());
 
         manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);

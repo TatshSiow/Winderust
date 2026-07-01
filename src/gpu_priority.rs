@@ -47,6 +47,7 @@ pub struct GpuPrioritySnapshot {
     pub suppressed_processes: usize,
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
+    pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -216,9 +217,10 @@ impl GpuPriorityManager {
         let mut applied_log_count = 0;
         let mut pending_context_log_count = 0;
         let mut access_denied_log_count = 0;
+        let mut auto_excluded_processes = BTreeSet::new();
 
         for (process_id, (process_name, priority, foreground)) in target_processes {
-            if self.is_process_suppressed(&process_name) {
+            if self.is_process_suppressed(&process_name, &mut auto_excluded_processes) {
                 skipped_processes += 1;
                 suppressed_processes += 1;
                 continue;
@@ -295,6 +297,7 @@ impl GpuPriorityManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: gpu_priority_status_message(
                 pending_processes,
                 denied_processes,
@@ -468,10 +471,16 @@ impl GpuPriorityManager {
         failures
     }
 
-    fn is_process_suppressed(&mut self, process_name: &str) -> bool {
-        self.failure_suppression
-            .process_suppression(process_name)
-            .suppressed
+    fn is_process_suppressed(
+        &mut self,
+        process_name: &str,
+        auto_excluded_processes: &mut BTreeSet<String>,
+    ) -> bool {
+        let suppression = self.failure_suppression.process_suppression(process_name);
+        if suppression.newly_suppressed {
+            auto_excluded_processes.insert(process_failure_key(process_name));
+        }
+        suppression.suppressed
     }
 
     fn record_process_failure(&mut self, process_name: &str) -> bool {
@@ -812,7 +821,7 @@ mod tests {
         assert!(manager.record_process_pending_context("game.exe"));
         assert!(!manager.record_process_pending_context("GAME.exe"));
 
-        assert!(!manager.is_process_suppressed("game.exe"));
+        assert!(!manager.is_process_suppressed("game.exe", &mut BTreeSet::new()));
     }
 
     #[test]
@@ -821,11 +830,11 @@ mod tests {
 
         assert!(manager.record_process_failure("APP.exe"));
         assert!(!manager.record_process_failure("app.exe"));
-        assert!(!manager.is_process_suppressed("app.exe"));
+        assert!(!manager.is_process_suppressed("app.exe", &mut BTreeSet::new()));
 
         assert!(!manager.record_process_failure("app.exe"));
-        assert!(manager.is_process_suppressed("app.exe"));
-        assert!(manager.is_process_suppressed("APP.exe"));
+        assert!(manager.is_process_suppressed("app.exe", &mut BTreeSet::new()));
+        assert!(manager.is_process_suppressed("APP.exe", &mut BTreeSet::new()));
     }
 
     #[test]

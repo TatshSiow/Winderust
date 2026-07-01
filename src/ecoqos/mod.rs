@@ -289,8 +289,6 @@ impl EcoQosManager {
                 process_id,
                 name.clone(),
                 &mut self.throttled,
-                settings.prefer_efficiency_cores,
-                settings.limit_cpu_sets_on_non_hybrid,
                 cpu_restriction(settings),
                 action_log,
             ) {
@@ -563,8 +561,6 @@ fn apply_efficiency_mode_to_process(
     process_id: u32,
     process_name: String,
     throttled: &mut BTreeMap<u32, ThrottledProcess>,
-    prefer_efficiency_cores: bool,
-    limit_cpu_sets_on_non_hybrid: bool,
     restriction: EcoQosCpuRestriction,
     action_log: &mut ActionLog,
 ) -> Result<bool, EcoQosError> {
@@ -573,23 +569,18 @@ fn apply_efficiency_mode_to_process(
             process_id,
             &process_name,
             process_state,
-            prefer_efficiency_cores,
-            limit_cpu_sets_on_non_hybrid,
             restriction,
             action_log,
         )?;
         return Ok(false);
     }
 
-    let process = enable_efficiency_mode(
-        process_id,
-        process_name.clone(),
-        prefer_efficiency_cores,
-        limit_cpu_sets_on_non_hybrid,
-        restriction,
-    )?;
+    let process = enable_efficiency_mode(process_id, process_name.clone(), restriction)?;
     throttled.insert(process_id, process);
-    let cpu_sets_note = if prefer_efficiency_cores {
+    let cpu_sets_note = if matches!(
+        restriction.strategy,
+        EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::PreferEfficiencyCores
+    ) {
         " and preferred efficiency CPU sets"
     } else {
         ""
@@ -626,18 +617,12 @@ fn process_failure_message(
 fn enable_efficiency_mode(
     process_id: u32,
     process_name: String,
-    prefer_efficiency_cores: bool,
-    limit_cpu_sets_on_non_hybrid: bool,
     restriction: EcoQosCpuRestriction,
 ) -> Result<ThrottledProcess, EcoQosError> {
     let process = ProcessHandle::open(process_id)?;
     let previous_state = process.power_throttling_state().ok();
     let previous_priority = process.priority_class().ok();
-    let target = efficiency_restriction_target(
-        prefer_efficiency_cores,
-        limit_cpu_sets_on_non_hybrid,
-        restriction,
-    )?;
+    let target = efficiency_restriction_target(restriction)?;
     let previous_cpu_set_ids = match &target {
         EcoQosRestrictionTarget::SoftCpuSets(ids) if !ids.is_empty() => {
             Some(process.default_cpu_set_ids()?)
@@ -775,16 +760,10 @@ fn sync_efficiency_cpu_sets(
     process_id: u32,
     process_name: &str,
     process_state: &mut ThrottledProcess,
-    prefer_efficiency_cores: bool,
-    limit_cpu_sets_on_non_hybrid: bool,
     restriction: EcoQosCpuRestriction,
     action_log: &mut ActionLog,
 ) -> Result<(), EcoQosError> {
-    let target = efficiency_restriction_target(
-        prefer_efficiency_cores,
-        limit_cpu_sets_on_non_hybrid,
-        restriction,
-    )?;
+    let target = efficiency_restriction_target(restriction)?;
 
     match target {
         EcoQosRestrictionTarget::None => {
@@ -887,21 +866,9 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
 }
 
 fn cpu_restriction(settings: &EcoQosSettings) -> EcoQosCpuRestriction {
-    let legacy_strategy = EcoQosCpuRestrictionStrategy::from_legacy_flags(
-        settings.prefer_efficiency_cores,
-        settings.limit_cpu_sets_on_non_hybrid,
-    );
-    let strategy = if settings.cpu_restriction_strategy == EcoQosCpuRestrictionStrategy::Auto
-        && legacy_strategy != EcoQosCpuRestrictionStrategy::Auto
-    {
-        legacy_strategy
-    } else {
-        settings.cpu_restriction_strategy
-    };
-
     EcoQosCpuRestriction {
         mode: settings.cpu_restriction_mode,
-        strategy,
+        strategy: settings.cpu_restriction_strategy,
         control_style: settings.cpu_restriction_control_style,
         percent: settings.cpu_restriction_percent.clamp(1, 100),
         max_logical_processors: settings.cpu_restriction_max_logical_processors,
@@ -910,8 +877,6 @@ fn cpu_restriction(settings: &EcoQosSettings) -> EcoQosCpuRestriction {
 }
 
 fn efficiency_restriction_target(
-    prefer_efficiency_cores: bool,
-    limit_cpu_sets_on_non_hybrid: bool,
     restriction: EcoQosCpuRestriction,
 ) -> Result<EcoQosRestrictionTarget, EcoQosError> {
     if restriction.strategy == EcoQosCpuRestrictionStrategy::Off {
@@ -920,11 +885,7 @@ fn efficiency_restriction_target(
 
     match restriction.mode {
         EcoQosCpuRestrictionMode::SoftCpuSets => Ok(EcoQosRestrictionTarget::SoftCpuSets(
-            efficiency_cpu_set_ids(
-                prefer_efficiency_cores,
-                limit_cpu_sets_on_non_hybrid,
-                restriction,
-            )?,
+            efficiency_cpu_set_ids(restriction)?,
         )),
         EcoQosCpuRestrictionMode::HardAffinity => Ok(efficiency_affinity_mask(restriction)
             .map(EcoQosRestrictionTarget::HardAffinity)
@@ -1020,11 +981,7 @@ fn logical_indices_to_limited_mask(
     (mask != 0).then_some(mask)
 }
 
-fn efficiency_cpu_set_ids(
-    prefer_efficiency_cores: bool,
-    limit_cpu_sets_on_non_hybrid: bool,
-    restriction: EcoQosCpuRestriction,
-) -> Result<Vec<u32>, EcoQosError> {
+fn efficiency_cpu_set_ids(restriction: EcoQosCpuRestriction) -> Result<Vec<u32>, EcoQosError> {
     let mut returned_length = 0;
     unsafe {
         GetSystemCpuSetInformation(null_mut(), 0, &mut returned_length, null_mut(), 0);
@@ -1054,18 +1011,11 @@ fn efficiency_cpu_set_ids(
 
     Ok(efficiency_cpu_set_ids_from_bytes(
         unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) },
-        prefer_efficiency_cores,
-        limit_cpu_sets_on_non_hybrid,
         restriction,
     ))
 }
 
-fn efficiency_cpu_set_ids_from_bytes(
-    buffer: &[u8],
-    prefer_efficiency_cores: bool,
-    limit_cpu_sets_on_non_hybrid: bool,
-    restriction: EcoQosCpuRestriction,
-) -> Vec<u32> {
+fn efficiency_cpu_set_ids_from_bytes(buffer: &[u8], restriction: EcoQosCpuRestriction) -> Vec<u32> {
     let mut records = Vec::new();
     let mut offset = 0;
     let header_size = size_of::<CpuSetInformationHeader>();
@@ -1095,21 +1045,6 @@ fn efficiency_cpu_set_ids_from_bytes(
 
         offset += record_size;
     }
-
-    let legacy_strategy = EcoQosCpuRestrictionStrategy::from_legacy_flags(
-        prefer_efficiency_cores,
-        limit_cpu_sets_on_non_hybrid,
-    );
-    let restriction = if restriction.strategy == EcoQosCpuRestrictionStrategy::Auto
-        && legacy_strategy != EcoQosCpuRestrictionStrategy::Auto
-    {
-        EcoQosCpuRestriction {
-            strategy: legacy_strategy,
-            ..restriction
-        }
-    } else {
-        restriction
-    };
 
     cpu_set_target_ids_from_records(&records, restriction)
 }
@@ -1377,8 +1312,6 @@ mod tests {
         let settings = EcoQosSettings {
             enabled: true,
             exclude_foreground_app: true,
-            prefer_efficiency_cores: false,
-            limit_cpu_sets_on_non_hybrid: false,
             cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
             cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
@@ -1426,8 +1359,6 @@ mod tests {
         let settings = EcoQosSettings {
             enabled: true,
             exclude_foreground_app: true,
-            prefer_efficiency_cores: false,
-            limit_cpu_sets_on_non_hybrid: false,
             cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
             cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
@@ -1526,19 +1457,26 @@ mod tests {
         let records = [(10, 0), (11, 0), (12, 0), (13, 0)];
 
         assert_eq!(
-            limited_cpu_set_ids_for_test(&records, false, true),
+            limited_cpu_set_ids_for_test(&records, EcoQosCpuRestrictionStrategy::LimitLogicalCpus),
             vec![10, 11]
         );
-        assert!(limited_cpu_set_ids_for_test(&records, true, false).is_empty());
+        assert!(limited_cpu_set_ids_for_test(
+            &records,
+            EcoQosCpuRestrictionStrategy::PreferEfficiencyCores
+        )
+        .is_empty());
     }
 
     #[test]
     fn hybrid_cpu_sets_prefer_efficiency_class() {
         let records = [(20, 0), (21, 0), (30, 1), (31, 1)];
 
-        assert_eq!(limited_cpu_set_ids_for_test(&records, true, true), vec![20]);
         assert_eq!(
-            limited_cpu_set_ids_for_test(&records, false, true),
+            limited_cpu_set_ids_for_test(&records, EcoQosCpuRestrictionStrategy::Auto),
+            vec![20]
+        );
+        assert_eq!(
+            limited_cpu_set_ids_for_test(&records, EcoQosCpuRestrictionStrategy::LimitLogicalCpus),
             vec![20, 21]
         );
     }
@@ -1608,8 +1546,7 @@ mod tests {
 
     fn limited_cpu_set_ids_for_test(
         records: &[(u32, u8)],
-        prefer_efficiency_cores: bool,
-        limit_cpu_sets_on_non_hybrid: bool,
+        strategy: EcoQosCpuRestrictionStrategy,
     ) -> Vec<u32> {
         let records = records
             .iter()
@@ -1620,10 +1557,7 @@ mod tests {
             &records,
             EcoQosCpuRestriction {
                 mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-                strategy: EcoQosCpuRestrictionStrategy::from_legacy_flags(
-                    prefer_efficiency_cores,
-                    limit_cpu_sets_on_non_hybrid,
-                ),
+                strategy,
                 control_style: EcoQosCpuRestrictionControlStyle::Percentage,
                 percent: 50,
                 max_logical_processors: 0,

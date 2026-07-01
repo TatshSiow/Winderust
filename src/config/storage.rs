@@ -108,13 +108,13 @@ mod tests {
         EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
         EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
         ForegroundRules, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
-        IoPrioritySettings, LaunchPriorityRule, LaunchPrioritySettings, ManualOverride,
-        MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
-        PowerPlanSettings, PriorityBoostSettings, PriorityRule, ProcessCpuPrioritySetting,
-        ProcessExclusionRule, ProcessGpuPrioritySetting, ProcessIoPriority,
-        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
-        ProcessPriority, ProcessPriorityBoostSetting, ScheduleModeSettings, ScheduleRule,
-        SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
+        IoPrioritySettings, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
+        PerformanceModeSettings, PowerPlanSettings, PriorityBoostSettings, PriorityRule,
+        ProcessCpuPrioritySetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
+        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
+        ProcessMemoryPrioritySetting, ProcessPriority, ProcessPriorityBoostSetting,
+        ScheduleModeSettings, ScheduleRule, SmartTrimSettings, TimerResolutionRule,
+        TimerResolutionSettings, WeekdaySetting,
     };
 
     #[test]
@@ -131,7 +131,6 @@ mod tests {
                 animation_mode: AnimationMode::Off,
                 pause_power_plan_switching_while_plugged_in: true,
                 check_interval_ms: 2_500,
-                manual_override: ManualOverride::UntilEpochSeconds(42),
             },
             advanced: AdvancedSettings {
                 action_log_mode: ActionLogMode::Error,
@@ -173,8 +172,6 @@ mod tests {
                         power_plan_guid: Some("backup-guid".to_owned()),
                     },
                 ],
-                whitelist: vec!["game.exe".to_owned(), "comma,app.exe".to_owned()],
-                force_power_save: vec!["backup\\tool.exe".to_owned()],
                 power_plans: PowerPlanSettings {
                     power_save_guid: Some("foreground-idle-guid".to_owned()),
                     performance_guid: Some("foreground-active-guid".to_owned()),
@@ -190,8 +187,6 @@ mod tests {
                     start_time: "09:00".to_owned(),
                     end_time: "17:30".to_owned(),
                     power_plan_guid: Some("work-hours-guid".to_owned()),
-                    power_save_guid: None,
-                    performance_guid: None,
                 }],
             },
             cpu_usage_mode: CpuUsageModeSettings {
@@ -207,14 +202,11 @@ mod tests {
                     power_plan_guid: Some("low-cpu-guid".to_owned()),
                     else_enabled: true,
                     else_power_plan_guid: Some("normal-cpu-guid".to_owned()),
-                    target: None,
                 }],
             },
             eco_qos: EcoQosSettings {
                 enabled: true,
                 exclude_foreground_app: false,
-                prefer_efficiency_cores: true,
-                limit_cpu_sets_on_non_hybrid: true,
                 cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
                 cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Auto,
                 cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
@@ -414,16 +406,6 @@ mod tests {
                     ..Default::default()
                 }],
             },
-            launch_priority: LaunchPrioritySettings {
-                enabled: true,
-                rules: vec![LaunchPriorityRule {
-                    enabled: true,
-                    process_name: "game.exe".to_owned(),
-                    cpu_priority: ProcessCpuPrioritySetting::AboveNormal,
-                    io_priority: ProcessIoPrioritySetting::Default,
-                    memory_priority: ProcessMemoryPrioritySetting::Low,
-                }],
-            },
             timer_resolution: TimerResolutionSettings {
                 enabled: true,
                 desired_100ns: 10_000,
@@ -497,367 +479,5 @@ mod tests {
 
         assert!(filename.starts_with(&format!("winderust_{}_", env!("CARGO_PKG_VERSION"))));
         assert!(filename.ends_with(".toml"));
-    }
-
-    #[test]
-    fn legacy_suspendable_app_strings_migrate_to_rules() {
-        let raw = r#"
-[general]
-enabled = true
-startup_with_windows = false
-start_minimized = false
-hide_to_tray = false
-pause_power_plan_switching_while_plugged_in = false
-check_interval_ms = 1000
-manual_override = "None"
-
-[power_plans]
-
-[activity_mode]
-enabled = false
-idle_timeout_seconds = 300
-switch_to_performance_on_resume = true
-
-[foreground_rules]
-enabled = true
-
-[schedule_mode]
-enabled = false
-rules = []
-
-[cpu_usage_mode]
-enabled = false
-rules = []
-
-[eco_qos]
-enabled = false
-exclude_foreground_app = true
-exclude_suspended_processes = false
-efficiency_whitelist = []
-
-[app_suspension]
-enabled = true
-background_delay_seconds = 120
-temporary_thaw_enabled = false
-temporary_thaw_interval_seconds = 900
-temporary_thaw_duration_seconds = 20
-network_wake_enabled = true
-network_wake_duration_seconds = 30
-suspendable_apps = ["CHAT.EXE", "browser.exe"]
-"#;
-
-        let settings = toml_to_settings(raw).expect("legacy settings should parse");
-
-        assert_eq!(
-            settings.app_suspension.suspendable_apps,
-            vec![
-                AppSuspensionRule {
-                    enabled: true,
-                    process_name: "chat.exe".to_owned(),
-                    network_wake_enabled: true,
-                    audio_wake_enabled: true,
-                    network_download_threshold_bytes: 1,
-                    network_download_threshold_unit: NetworkThresholdUnit::Bytes,
-                    network_upload_threshold_bytes: 0,
-                    network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
-                },
-                AppSuspensionRule {
-                    enabled: true,
-                    process_name: "browser.exe".to_owned(),
-                    network_wake_enabled: true,
-                    audio_wake_enabled: true,
-                    network_download_threshold_bytes: 1,
-                    network_download_threshold_unit: NetworkThresholdUnit::Bytes,
-                    network_upload_threshold_bytes: 0,
-                    network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
-                }
-            ]
-        );
-    }
-
-    #[test]
-    fn legacy_io_priority_rules_migrate_to_exclusions() {
-        let raw = r#"
-[general]
-enabled = true
-startup_with_windows = false
-start_minimized = false
-hide_to_tray = false
-pause_power_plan_switching_while_plugged_in = false
-check_interval_ms = 1000
-manual_override = "None"
-
-[power_plans]
-
-[activity_mode]
-enabled = false
-idle_timeout_seconds = 300
-switch_to_performance_on_resume = true
-
-[foreground_rules]
-enabled = true
-
-[schedule_mode]
-enabled = false
-rules = []
-
-[io_priority]
-enabled = true
-exclude_foreground_app = true
-
-[[io_priority.rules]]
-enabled = true
-process_name = "BACKUP.EXE"
-priority = "low"
-"#;
-
-        let settings = toml_to_settings(raw).expect("legacy I/O priority settings should parse");
-
-        assert_eq!(
-            settings.io_priority.foreground_priority,
-            ProcessIoPrioritySetting::Normal
-        );
-        assert!(settings.io_priority.foreground_detection_enabled);
-        assert_eq!(
-            settings.io_priority.background_priority,
-            ProcessIoPrioritySetting::VeryLow
-        );
-        assert_eq!(
-            settings.io_priority.exclusions,
-            vec![ProcessExclusionRule {
-                enabled: true,
-                process_name: "backup.exe".to_owned(),
-                ..Default::default()
-            }]
-        );
-    }
-
-    #[test]
-    fn legacy_gpu_priority_rules_migrate_to_exclusions() {
-        let raw = r#"
-[general]
-enabled = true
-startup_with_windows = false
-start_minimized = false
-hide_to_tray = false
-pause_power_plan_switching_while_plugged_in = false
-check_interval_ms = 1000
-manual_override = "None"
-
-[power_plans]
-
-[activity_mode]
-enabled = false
-idle_timeout_seconds = 300
-switch_to_performance_on_resume = true
-
-[foreground_rules]
-enabled = true
-
-[schedule_mode]
-enabled = false
-rules = []
-
-[gpu_priority]
-enabled = true
-exclude_foreground_app = true
-
-[[gpu_priority.rules]]
-enabled = true
-process_name = "RENDER.EXE"
-priority = "below_normal"
-"#;
-
-        let settings = toml_to_settings(raw).expect("legacy GPU priority settings should parse");
-
-        assert_eq!(
-            settings.gpu_priority.foreground_priority,
-            ProcessGpuPrioritySetting::AboveNormal
-        );
-        assert!(settings.gpu_priority.foreground_detection_enabled);
-        assert_eq!(
-            settings.gpu_priority.background_priority,
-            ProcessGpuPrioritySetting::BelowNormal
-        );
-        assert_eq!(
-            settings.gpu_priority.exclusions,
-            vec![ProcessExclusionRule {
-                enabled: true,
-                process_name: "render.exe".to_owned(),
-                ..Default::default()
-            }]
-        );
-    }
-
-    #[test]
-    fn legacy_memory_priority_rules_migrate_to_exclusions() {
-        let raw = r#"
-[general]
-enabled = true
-startup_with_windows = false
-start_minimized = false
-hide_to_tray = false
-pause_power_plan_switching_while_plugged_in = false
-check_interval_ms = 1000
-manual_override = "None"
-
-[power_plans]
-
-[activity_mode]
-enabled = false
-idle_timeout_seconds = 300
-switch_to_performance_on_resume = true
-
-[foreground_rules]
-enabled = true
-
-[schedule_mode]
-enabled = false
-rules = []
-
-[memory_priority]
-enabled = true
-exclude_foreground_app = true
-
-[[memory_priority.rules]]
-enabled = true
-process_name = "BACKUP.EXE"
-priority = "low"
-"#;
-
-        let settings = toml_to_settings(raw).expect("legacy memory priority settings should parse");
-
-        assert_eq!(
-            settings.memory_priority.foreground_priority,
-            ProcessMemoryPrioritySetting::Default
-        );
-        assert!(settings.memory_priority.foreground_detection_enabled);
-        assert_eq!(
-            settings.memory_priority.background_priority,
-            ProcessMemoryPrioritySetting::Low
-        );
-        assert_eq!(
-            settings.memory_priority.exclusions,
-            vec![ProcessExclusionRule {
-                enabled: true,
-                process_name: "backup.exe".to_owned(),
-                ..Default::default()
-            }]
-        );
-    }
-
-    #[test]
-    fn legacy_schedule_rule_idle_plan_migrates_to_rule_target() {
-        let raw = r#"
-[general]
-enabled = true
-startup_with_windows = false
-start_minimized = false
-hide_to_tray = false
-pause_power_plan_switching_while_plugged_in = false
-check_interval_ms = 1000
-manual_override = "None"
-
-[power_plans]
-power_save_guid = "global-idle"
-performance_guid = "global-active"
-
-[activity_mode]
-enabled = false
-idle_timeout_seconds = 300
-switch_to_performance_on_resume = true
-
-[foreground_rules]
-enabled = true
-
-[schedule_mode]
-enabled = true
-
-[schedule_mode.power_plans]
-power_save_guid = "schedule-idle"
-performance_guid = "schedule-active"
-
-[[schedule_mode.rules]]
-name = "Night"
-days = ["mon"]
-start_time = "22:00"
-end_time = "08:00"
-"#;
-
-        let mut settings = toml_to_settings(raw).expect("legacy TOML should parse");
-        settings.fill_missing_power_plan_mappings();
-        let rule = settings.schedule_mode.rules.first().unwrap();
-
-        assert_eq!(rule.power_plan_guid.as_deref(), Some("schedule-idle"));
-        assert_eq!(rule.power_save_guid, None);
-        assert_eq!(rule.performance_guid, None);
-    }
-
-    #[test]
-    fn legacy_cpu_usage_rule_target_migrates_to_rule_target_plan() {
-        let raw = r#"
-[general]
-enabled = true
-startup_with_windows = false
-start_minimized = false
-hide_to_tray = false
-pause_power_plan_switching_while_plugged_in = false
-check_interval_ms = 1000
-manual_override = "None"
-
-[power_plans]
-power_save_guid = "global-idle"
-performance_guid = "global-active"
-
-[activity_mode]
-enabled = false
-idle_timeout_seconds = 300
-switch_to_performance_on_resume = true
-
-[foreground_rules]
-enabled = true
-
-[schedule_mode]
-enabled = false
-rules = []
-
-[cpu_usage_mode]
-enabled = true
-
-[cpu_usage_mode.power_plans]
-power_save_guid = "cpu-idle"
-performance_guid = "cpu-active"
-
-[[cpu_usage_mode.rules]]
-name = "High CPU"
-comparison = "at_or_above"
-threshold_percent = 75
-duration_seconds = 10
-target = "active"
-
-[[cpu_usage_mode.rules]]
-name = "Fallback"
-comparison = "else"
-threshold_percent = 0
-duration_seconds = 0
-power_plan_guid = "fallback-guid"
-"#;
-
-        let mut settings = toml_to_settings(raw).expect("legacy TOML should parse");
-        settings.fill_missing_power_plan_mappings();
-        let rule = settings.cpu_usage_mode.rules.first().unwrap();
-
-        assert_eq!(rule.power_plan_guid.as_deref(), Some("cpu-active"));
-        assert_eq!(rule.target, None);
-        assert!(settings.cpu_usage_mode.power_plans.is_empty());
-
-        let fallback_rule = &settings.cpu_usage_mode.rules[1];
-        assert_eq!(fallback_rule.comparison, CpuUsageComparison::AtOrBelow);
-        assert_eq!(fallback_rule.power_plan_guid, None);
-        assert!(fallback_rule.else_enabled);
-        assert_eq!(
-            fallback_rule.else_power_plan_guid.as_deref(),
-            Some("fallback-guid")
-        );
     }
 }

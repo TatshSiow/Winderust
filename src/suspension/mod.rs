@@ -75,6 +75,7 @@ pub struct AppSuspensionSnapshot {
     pub audio_wake_apps: Vec<String>,
     pub skipped_processes: usize,
     pub failed_actions: usize,
+    pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -465,12 +466,18 @@ impl AppSuspensionManager {
         self.network_snapshot = network_snapshot;
         failed_actions += self.release_for_temporary_thaw(settings, &target_ids, now, action_log);
 
+        let mut auto_excluded_processes = BTreeSet::new();
         for (process_id, process_name) in target_processes {
             if self.suspended.contains_key(&process_id) {
                 continue;
             }
 
-            if self.is_process_suppressed(process_id, &process_name, action_log) {
+            if self.is_process_suppressed(
+                process_id,
+                &process_name,
+                action_log,
+                &mut auto_excluded_processes,
+            ) {
                 skipped_processes += 1;
                 continue;
             }
@@ -580,7 +587,7 @@ impl AppSuspensionManager {
             }
         }
 
-        self.snapshot(
+        let mut snapshot = self.snapshot(
             true,
             unsupported,
             skipped_processes,
@@ -592,7 +599,9 @@ impl AppSuspensionManager {
                 "App Suspension active.".to_owned()
             },
             last_error,
-        )
+        );
+        snapshot.auto_excluded_processes = auto_excluded_processes.into_iter().collect();
+        snapshot
     }
 
     fn release_non_targets(
@@ -1364,6 +1373,7 @@ impl AppSuspensionManager {
             ),
             skipped_processes,
             failed_actions,
+            auto_excluded_processes: Vec::new(),
             message,
             last_error,
         }
@@ -1374,6 +1384,7 @@ impl AppSuspensionManager {
         process_id: u32,
         process_name: &str,
         action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if !suppression.suppressed {
@@ -1381,6 +1392,7 @@ impl AppSuspensionManager {
         }
 
         if suppression.newly_suppressed {
+            auto_excluded_processes.insert(process_name_key(process_name));
             action_log.record(
                 ActionLogFeature::AppSuspension,
                 Some(process_id),
@@ -1478,6 +1490,7 @@ impl Default for AppSuspensionSnapshot {
             audio_wake_apps: Vec::new(),
             skipped_processes: 0,
             failed_actions: 0,
+            auto_excluded_processes: Vec::new(),
             message: "App Suspension disabled.".to_owned(),
             last_error: None,
         }
@@ -2329,12 +2342,12 @@ mod tests {
 
         manager.record_process_failure("APP.exe");
         manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
         assert!(log.entries().is_empty());
 
         manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);

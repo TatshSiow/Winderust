@@ -2744,11 +2744,119 @@ impl WinderustApp {
             }
         }
 
+        for process in pending.app_suspension {
+            if can_add_suspension_process(&self.settings.app_suspension, &process) {
+                let mut rule = new_suspension_rule(&process);
+                rule.enabled = false;
+                self.settings.app_suspension.suspendable_apps.push(rule);
+                changed = true;
+            }
+        }
+
+        for process in pending.cpu_affinity {
+            if can_add_affinity_process(&self.settings.cpu_affinity, &process) {
+                let mut rule = new_affinity_rule(&process);
+                rule.enabled = false;
+                self.settings.cpu_affinity.rules.push(rule);
+                changed = true;
+            }
+        }
+
         for process in pending.background_cpu_restriction {
             if can_add_background_cpu_exclusion(&self.settings.background_cpu_restriction, &process)
             {
                 self.settings
                     .background_cpu_restriction
+                    .exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.cpu_limiter {
+            if can_add_cpu_limiter_process(&self.settings.cpu_limiter, &process) {
+                let mut rule = new_cpu_limiter_rule(&process);
+                rule.enabled = false;
+                self.settings.cpu_limiter.rules.push(rule);
+                changed = true;
+            }
+        }
+
+        for process in pending.foreground_responsiveness {
+            if can_add_responsiveness_exclusion(&self.settings.foreground_responsiveness, &process)
+            {
+                self.settings
+                    .foreground_responsiveness
+                    .auto_balance_exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.io_priority {
+            if can_add_io_priority_exclusion(&self.settings.io_priority, &process) {
+                self.settings
+                    .io_priority
+                    .exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.cpu_priority {
+            if can_add_cpu_priority_exclusion(&self.settings.cpu_priority, &process) {
+                self.settings
+                    .cpu_priority
+                    .exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.thread_priority {
+            if can_add_thread_priority_exclusion(&self.settings.thread_priority, &process) {
+                self.settings
+                    .thread_priority
+                    .exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.priority_boost {
+            if can_add_priority_boost_exclusion(&self.settings.priority_boost, &process) {
+                self.settings
+                    .priority_boost
+                    .exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.gpu_priority {
+            if can_add_gpu_priority_exclusion(&self.settings.gpu_priority, &process) {
+                self.settings
+                    .gpu_priority
+                    .exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.memory_priority {
+            if can_add_memory_priority_exclusion(&self.settings.memory_priority, &process) {
+                self.settings
+                    .memory_priority
+                    .exclusions
+                    .push(new_process_exclusion_rule(&process));
+                changed = true;
+            }
+        }
+
+        for process in pending.smart_trim {
+            if can_add_smart_trim_exclusion(&self.settings.smart_trim, &process) {
+                self.settings
+                    .smart_trim
                     .exclusions
                     .push(new_process_exclusion_rule(&process));
                 changed = true;
@@ -3838,7 +3946,6 @@ fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Set
         && settings.general.pause_power_plan_switching_while_plugged_in
             == current.general.pause_power_plan_switching_while_plugged_in
         && settings.general.check_interval_ms == current.general.check_interval_ms
-        && settings.general.manual_override == current.general.manual_override
         && settings.advanced == current.advanced
         && settings.power_plans == saved.power_plans
         && settings.activity_mode == saved.activity_mode
@@ -5459,8 +5566,6 @@ impl WinderustApp {
                         start_time: "22:00".to_owned(),
                         end_time: "08:00".to_owned(),
                         power_plan_guid: app.current_plan.as_ref().map(|plan| plan.guid.clone()),
-                        power_save_guid: None,
-                        performance_guid: None,
                     });
                     app.inputs.ensure_for_settings(window, cx, &app.settings);
                     cx.notify();
@@ -5666,7 +5771,6 @@ impl WinderustApp {
                             .current_plan
                             .as_ref()
                             .map(|plan| plan.guid.clone()),
-                        target: None,
                     });
                     app.inputs.ensure_for_settings(window, cx, &app.settings);
                     cx.notify();
@@ -6221,12 +6325,7 @@ impl WinderustApp {
                     .when(!option_enabled, |row| row.opacity(0.48).cursor_default());
                     let row = if option_enabled {
                         row.on_click(cx.listener(move |app, _, _, cx| {
-                            let (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) =
-                                strategy.legacy_flags();
                             app.settings.eco_qos.cpu_restriction_strategy = strategy;
-                            app.settings.eco_qos.prefer_efficiency_cores = prefer_efficiency_cores;
-                            app.settings.eco_qos.limit_cpu_sets_on_non_hybrid =
-                                limit_cpu_sets_on_non_hybrid;
                             if app.settings.eco_qos.cpu_restriction_control_style
                                 == EcoQosCpuRestrictionControlStyle::CoreToggle
                             {
@@ -6389,14 +6488,10 @@ impl WinderustApp {
                         {
                             app.settings.eco_qos.cpu_restriction_strategy =
                                 EcoQosCpuRestrictionStrategy::Auto;
-                            app.settings.eco_qos.prefer_efficiency_cores = true;
-                            app.settings.eco_qos.limit_cpu_sets_on_non_hybrid = true;
                         }
                     } else {
                         app.settings.eco_qos.cpu_restriction_strategy =
                             EcoQosCpuRestrictionStrategy::Off;
-                        app.settings.eco_qos.prefer_efficiency_cores = false;
-                        app.settings.eco_qos.limit_cpu_sets_on_non_hybrid = false;
                     }
                     cx.notify();
                 }),
@@ -6430,17 +6525,7 @@ impl WinderustApp {
     }
 
     fn effective_eco_qos_cpu_restriction_strategy(&self) -> EcoQosCpuRestrictionStrategy {
-        let legacy_strategy = EcoQosCpuRestrictionStrategy::from_legacy_flags(
-            self.settings.eco_qos.prefer_efficiency_cores,
-            self.settings.eco_qos.limit_cpu_sets_on_non_hybrid,
-        );
-        if self.settings.eco_qos.cpu_restriction_strategy == EcoQosCpuRestrictionStrategy::Auto
-            && legacy_strategy != EcoQosCpuRestrictionStrategy::Auto
-        {
-            legacy_strategy
-        } else {
-            self.settings.eco_qos.cpu_restriction_strategy
-        }
+        self.settings.eco_qos.cpu_restriction_strategy
     }
 
     fn effective_background_cpu_restriction_strategy(&self) -> EcoQosCpuRestrictionStrategy {
@@ -22952,10 +23037,7 @@ fn new_performance_mode_rule(
 }
 
 fn foreground_lookup_required(settings: &Settings) -> bool {
-    settings.foreground_rules.enabled
-        && (!settings.foreground_rules.rules.is_empty()
-            || !settings.foreground_rules.whitelist.is_empty()
-            || !settings.foreground_rules.force_power_save.is_empty())
+    settings.foreground_rules.enabled && !settings.foreground_rules.rules.is_empty()
 }
 
 fn performance_mode_decision(status: &PerformanceModeSnapshot) -> Option<PerformanceModeDecision> {
@@ -23125,30 +23207,6 @@ fn foreground_power_plan_policy_label(
         return power_plan_policy_value_label(plans, rule.power_plan_guid.as_deref());
     }
 
-    if process_name_list_contains(&settings.foreground_rules.force_power_save, process_name) {
-        return power_plan_policy_value_label(
-            plans,
-            settings
-                .foreground_rules
-                .power_plans
-                .power_save_guid
-                .as_deref()
-                .or(settings.power_plans.power_save_guid.as_deref()),
-        );
-    }
-
-    if process_name_list_contains(&settings.foreground_rules.whitelist, process_name) {
-        return power_plan_policy_value_label(
-            plans,
-            settings
-                .foreground_rules
-                .power_plans
-                .performance_guid
-                .as_deref()
-                .or(settings.power_plans.performance_guid.as_deref()),
-        );
-    }
-
     process_list_default_label()
 }
 
@@ -23158,8 +23216,6 @@ fn foreground_power_plan_policy_is_custom(settings: &Settings, process_name: &st
         .rules
         .iter()
         .any(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
-        || process_name_list_contains(&settings.foreground_rules.force_power_save, process_name)
-        || process_name_list_contains(&settings.foreground_rules.whitelist, process_name)
 }
 
 fn running_app_power_plan_policy_label(
@@ -23198,12 +23254,6 @@ fn power_plan_policy_value_label(plans: &[PowerPlan], guid: Option<&str>) -> Str
         .find(|plan| plan.guid.eq_ignore_ascii_case(guid))
         .map(|plan| plan.name.clone())
         .unwrap_or_else(|| guid.to_owned())
-}
-
-fn process_name_list_contains(processes: &[String], process_name: &str) -> bool {
-    processes
-        .iter()
-        .any(|process| process_setting_matches(process, process_name))
 }
 
 fn process_list_off_label() -> String {
@@ -23350,22 +23400,22 @@ fn process_priority_label(priority: ProcessPriority) -> String {
 
 fn process_cpu_priority_setting_label(priority: ProcessCpuPrioritySetting) -> String {
     match priority {
-        ProcessCpuPrioritySetting::Default => t!("launch_priority.priority_default").to_string(),
+        ProcessCpuPrioritySetting::Default => t!("cpu_priority.priority_default").to_string(),
         ProcessCpuPrioritySetting::Auto => t!("responsiveness.priority_auto").to_string(),
         ProcessCpuPrioritySetting::Realtime => {
-            format!("24 ({})", t!("launch_priority.priority_realtime"))
+            format!("24 ({})", t!("cpu_priority.priority_realtime"))
         }
-        ProcessCpuPrioritySetting::High => format!("13 ({})", t!("launch_priority.priority_high")),
+        ProcessCpuPrioritySetting::High => format!("13 ({})", t!("cpu_priority.priority_high")),
         ProcessCpuPrioritySetting::AboveNormal => {
-            format!("10 ({})", t!("launch_priority.priority_above_normal"))
+            format!("10 ({})", t!("cpu_priority.priority_above_normal"))
         }
         ProcessCpuPrioritySetting::Normal => {
-            format!("8 ({})", t!("launch_priority.priority_normal"))
+            format!("8 ({})", t!("cpu_priority.priority_normal"))
         }
         ProcessCpuPrioritySetting::BelowNormal => {
-            format!("6 ({})", t!("launch_priority.priority_below_normal"))
+            format!("6 ({})", t!("cpu_priority.priority_below_normal"))
         }
-        ProcessCpuPrioritySetting::Idle => format!("4 ({})", t!("launch_priority.priority_idle")),
+        ProcessCpuPrioritySetting::Idle => format!("4 ({})", t!("cpu_priority.priority_idle")),
     }
 }
 
@@ -25094,10 +25144,12 @@ mod tests {
         settings.foreground_rules.enabled = true;
         assert!(!foreground_lookup_required(&settings));
 
-        settings
-            .foreground_rules
-            .force_power_save
-            .push("backup.exe".to_owned());
+        settings.foreground_rules.rules.push(ForegroundRule {
+            enabled: true,
+            name: "backup.exe".to_owned(),
+            process_name: "backup.exe".to_owned(),
+            power_plan_guid: Some("idle-guid".to_owned()),
+        });
         assert!(foreground_lookup_required(&settings));
     }
 }

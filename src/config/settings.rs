@@ -45,8 +45,6 @@ pub struct Settings {
     #[serde(default)]
     pub memory_priority: MemoryPrioritySettings,
     #[serde(default)]
-    pub launch_priority: LaunchPrioritySettings,
-    #[serde(default)]
     pub smart_trim: SmartTrimSettings,
     #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
@@ -105,7 +103,6 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
-    pub manual_override: ManualOverride,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,14 +193,6 @@ impl AppLanguage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ManualOverride {
-    None,
-    UntilEpochSeconds(i64),
-    UntilRestart,
-    Indefinite,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PowerPlanSettings {
     pub power_save_guid: Option<String>,
@@ -238,10 +227,6 @@ pub struct ForegroundRules {
     #[serde(default)]
     pub rules: Vec<ForegroundRule>,
     #[serde(default)]
-    pub whitelist: Vec<String>,
-    #[serde(default)]
-    pub force_power_save: Vec<String>,
-    #[serde(default)]
     pub power_plans: PowerPlanSettings,
 }
 
@@ -275,10 +260,6 @@ pub struct ScheduleRule {
     pub end_time: String,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub power_save_guid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub performance_guid: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,12 +273,8 @@ pub struct CpuUsageModeSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EcoQosSettings {
     pub enabled: bool,
-    #[serde(default = "default_true", alias = "ignore_foreground_app")]
+    #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
-    #[serde(default)]
-    pub prefer_efficiency_cores: bool,
-    #[serde(default)]
-    pub limit_cpu_sets_on_non_hybrid: bool,
     #[serde(default)]
     pub cpu_restriction_mode: EcoQosCpuRestrictionMode,
     #[serde(default)]
@@ -312,11 +289,7 @@ pub struct EcoQosSettings {
     pub cpu_restriction_core_mask: u64,
     #[serde(default)]
     pub aggressiveness: EcoQosAggressiveness,
-    #[serde(
-        default,
-        alias = "excluded_processes",
-        deserialize_with = "deserialize_eco_qos_exclusion_rules"
-    )]
+    #[serde(default)]
     pub efficiency_whitelist: Vec<EcoQosExclusionRule>,
 }
 
@@ -362,29 +335,6 @@ pub enum EcoQosCpuRestrictionStrategy {
     LimitLogicalCpus,
 }
 
-impl EcoQosCpuRestrictionStrategy {
-    pub const fn from_legacy_flags(
-        prefer_efficiency_cores: bool,
-        limit_cpu_sets_on_non_hybrid: bool,
-    ) -> Self {
-        match (prefer_efficiency_cores, limit_cpu_sets_on_non_hybrid) {
-            (true, true) => Self::Auto,
-            (true, false) => Self::PreferEfficiencyCores,
-            (false, true) => Self::LimitLogicalCpus,
-            (false, false) => Self::Off,
-        }
-    }
-
-    pub const fn legacy_flags(self) -> (bool, bool) {
-        match self {
-            Self::Off => (false, false),
-            Self::Auto => (true, true),
-            Self::PreferEfficiencyCores => (true, false),
-            Self::LimitLogicalCpus => (false, true),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EcoQosCpuRestrictionControlStyle {
@@ -415,18 +365,14 @@ pub struct AppSuspensionSettings {
     pub audio_wake_enabled: bool,
     #[serde(default = "default_audio_wake_duration_seconds")]
     pub audio_wake_duration_seconds: u64,
-    #[serde(
-        default,
-        alias = "suspend_whitelist",
-        deserialize_with = "deserialize_app_suspension_rules"
-    )]
+    #[serde(default)]
     pub suspendable_apps: Vec<AppSuspensionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuAffinitySettings {
     pub enabled: bool,
-    #[serde(default = "default_true", alias = "ignore_foreground_app")]
+    #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
     pub rules: Vec<CpuAffinityRule>,
@@ -435,7 +381,7 @@ pub struct CpuAffinitySettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackgroundCpuRestrictionSettings {
     pub enabled: bool,
-    #[serde(default = "default_true", alias = "ignore_foreground_app")]
+    #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
     pub mode: EcoQosCpuRestrictionMode,
@@ -449,7 +395,7 @@ pub struct BackgroundCpuRestrictionSettings {
     pub max_logical_processors: u8,
     #[serde(default)]
     pub core_mask: u64,
-    #[serde(default, deserialize_with = "deserialize_process_exclusion_rules")]
+    #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
 
@@ -665,7 +611,7 @@ pub struct CpuAffinityRule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuLimiterSettings {
     pub enabled: bool,
-    #[serde(default = "default_true", alias = "ignore_foreground_app")]
+    #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
     pub rules: Vec<CpuLimiterRule>,
@@ -751,7 +697,7 @@ pub struct ForegroundResponsivenessSettings {
     pub auto_balance_minimum_restraint_seconds: u64,
     #[serde(default = "default_auto_balance_cooldown_seconds")]
     pub auto_balance_cooldown_seconds: u64,
-    #[serde(default, deserialize_with = "deserialize_process_exclusion_rules")]
+    #[serde(default)]
     pub auto_balance_exclusions: Vec<ProcessExclusionRule>,
     #[serde(default)]
     pub boost_foreground_app: bool,
@@ -766,11 +712,7 @@ pub struct ForegroundResponsivenessSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IoPrioritySettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_true",
-        alias = "exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_io_priority_foreground")]
     pub foreground_priority: ProcessIoPrioritySetting,
@@ -780,22 +722,14 @@ pub struct IoPrioritySettings {
     pub preserve_foreground_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
-    #[serde(
-        default,
-        alias = "rules",
-        deserialize_with = "deserialize_process_exclusion_rules"
-    )]
+    #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuPrioritySettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_true",
-        alias = "exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_cpu_priority_foreground")]
     pub foreground_priority: ProcessCpuPrioritySetting,
@@ -805,22 +739,14 @@ pub struct CpuPrioritySettings {
     pub preserve_foreground_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
-    #[serde(
-        default,
-        alias = "rules",
-        deserialize_with = "deserialize_process_exclusion_rules"
-    )]
+    #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThreadPrioritySettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_true",
-        alias = "exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_thread_priority_foreground")]
     pub foreground_priority: ProcessThreadPrioritySetting,
@@ -830,43 +756,27 @@ pub struct ThreadPrioritySettings {
     pub preserve_foreground_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
-    #[serde(
-        default,
-        alias = "rules",
-        deserialize_with = "deserialize_process_exclusion_rules"
-    )]
+    #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PriorityBoostSettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_true",
-        alias = "exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_priority_boost_foreground")]
     pub foreground_boost: ProcessPriorityBoostSetting,
     #[serde(default = "default_priority_boost_background")]
     pub background_boost: ProcessPriorityBoostSetting,
-    #[serde(
-        default,
-        alias = "rules",
-        deserialize_with = "deserialize_process_exclusion_rules"
-    )]
+    #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuPrioritySettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_true",
-        alias = "exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_gpu_priority_foreground")]
     pub foreground_priority: ProcessGpuPrioritySetting,
@@ -876,22 +786,14 @@ pub struct GpuPrioritySettings {
     pub preserve_foreground_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
-    #[serde(
-        default,
-        alias = "rules",
-        deserialize_with = "deserialize_process_exclusion_rules"
-    )]
+    #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPrioritySettings {
     pub enabled: bool,
-    #[serde(
-        default = "default_true",
-        alias = "exclude_foreground_app",
-        alias = "ignore_foreground_app"
-    )]
+    #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_memory_priority_foreground")]
     pub foreground_priority: ProcessMemoryPrioritySetting,
@@ -901,32 +803,8 @@ pub struct MemoryPrioritySettings {
     pub preserve_foreground_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
-    #[serde(
-        default,
-        alias = "rules",
-        deserialize_with = "deserialize_process_exclusion_rules"
-    )]
+    #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaunchPrioritySettings {
-    pub enabled: bool,
-    #[serde(default)]
-    pub rules: Vec<LaunchPriorityRule>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LaunchPriorityRule {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    pub process_name: String,
-    #[serde(default)]
-    pub cpu_priority: ProcessCpuPrioritySetting,
-    #[serde(default)]
-    pub io_priority: ProcessIoPrioritySetting,
-    #[serde(default)]
-    pub memory_priority: ProcessMemoryPrioritySetting,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -943,7 +821,7 @@ pub struct SmartTrimSettings {
     pub enabled: bool,
     #[serde(default = "default_smart_trim_check_interval_minutes")]
     pub check_interval_minutes: u64,
-    #[serde(default = "default_true", alias = "ignore_foreground_app")]
+    #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default = "default_true")]
     pub trim_working_sets: bool,
@@ -965,7 +843,7 @@ pub struct SmartTrimSettings {
     pub purge_only_in_performance_mode: bool,
     #[serde(default = "default_smart_trim_purge_free_ram_threshold_mb")]
     pub purge_free_ram_threshold_mb: u64,
-    #[serde(default, deserialize_with = "deserialize_process_exclusion_rules")]
+    #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
 
@@ -1478,8 +1356,6 @@ pub struct CpuUsageRule {
     pub else_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub else_power_plan_guid: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<CpuUsageTarget>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1489,13 +1365,6 @@ pub enum CpuUsageComparison {
     AtOrBelow,
     Between,
     Else,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CpuUsageTarget {
-    Active,
-    Idle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1524,7 +1393,6 @@ impl Default for Settings {
                 animation_mode: AnimationMode::System,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
-                manual_override: ManualOverride::None,
             },
             advanced: AdvancedSettings::default(),
             power_plans: PowerPlanSettings::default(),
@@ -1546,8 +1414,6 @@ impl Default for Settings {
                     start_time: "22:00".to_owned(),
                     end_time: "08:00".to_owned(),
                     power_plan_guid: None,
-                    power_save_guid: None,
-                    performance_guid: None,
                 }],
             },
             cpu_usage_mode: CpuUsageModeSettings::default(),
@@ -1564,7 +1430,6 @@ impl Default for Settings {
             io_priority: IoPrioritySettings::default(),
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
-            launch_priority: LaunchPrioritySettings::default(),
             smart_trim: SmartTrimSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
         }
@@ -1606,8 +1471,6 @@ impl Default for ForegroundRules {
         Self {
             enabled: true,
             rules: Vec::new(),
-            whitelist: Vec::new(),
-            force_power_save: Vec::new(),
             power_plans: PowerPlanSettings::default(),
         }
     }
@@ -1629,7 +1492,6 @@ impl Default for CpuUsageModeSettings {
                     power_plan_guid: None,
                     else_enabled: false,
                     else_power_plan_guid: None,
-                    target: None,
                 },
                 CpuUsageRule {
                     enabled: true,
@@ -1641,7 +1503,6 @@ impl Default for CpuUsageModeSettings {
                     power_plan_guid: None,
                     else_enabled: false,
                     else_power_plan_guid: None,
-                    target: None,
                 },
             ],
         }
@@ -1653,8 +1514,6 @@ impl Default for EcoQosSettings {
         Self {
             enabled: false,
             exclude_foreground_app: default_true(),
-            prefer_efficiency_cores: true,
-            limit_cpu_sets_on_non_hybrid: true,
             cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Auto,
             cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
@@ -2444,109 +2303,6 @@ fn wildcard_match(pattern: &str, value: &str) -> bool {
     pattern_index == pattern.len()
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum EcoQosExclusionRuleInput {
-    ProcessName(String),
-    Rule(EcoQosExclusionRule),
-}
-
-fn deserialize_eco_qos_exclusion_rules<'de, D>(
-    deserializer: D,
-) -> Result<Vec<EcoQosExclusionRule>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let rules = Vec::<EcoQosExclusionRuleInput>::deserialize(deserializer)?;
-    Ok(rules
-        .into_iter()
-        .filter_map(|rule| match rule {
-            EcoQosExclusionRuleInput::ProcessName(process_name) => {
-                let process_name = process_name.trim().to_ascii_lowercase();
-                (!process_name.is_empty()).then_some(EcoQosExclusionRule {
-                    enabled: true,
-                    process_name,
-                })
-            }
-            EcoQosExclusionRuleInput::Rule(mut rule) => {
-                rule.process_name = rule.process_name.trim().to_ascii_lowercase();
-                (!rule.process_name.is_empty()).then_some(rule)
-            }
-        })
-        .collect())
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ProcessExclusionRuleInput {
-    ProcessName(String),
-    Rule(ProcessExclusionRule),
-}
-
-fn deserialize_process_exclusion_rules<'de, D>(
-    deserializer: D,
-) -> Result<Vec<ProcessExclusionRule>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let rules = Vec::<ProcessExclusionRuleInput>::deserialize(deserializer)?;
-    Ok(rules
-        .into_iter()
-        .filter_map(|rule| match rule {
-            ProcessExclusionRuleInput::ProcessName(process_name) => {
-                let process_name = process_name.trim().to_ascii_lowercase();
-                (!process_name.is_empty()).then_some(ProcessExclusionRule {
-                    process_name,
-                    ..Default::default()
-                })
-            }
-            ProcessExclusionRuleInput::Rule(mut rule) => {
-                rule.process_name = rule.process_name.trim().to_ascii_lowercase();
-                (!rule.process_name.is_empty()).then_some(rule)
-            }
-        })
-        .collect())
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum AppSuspensionRuleInput {
-    ProcessName(String),
-    Rule(AppSuspensionRule),
-}
-
-fn deserialize_app_suspension_rules<'de, D>(
-    deserializer: D,
-) -> Result<Vec<AppSuspensionRule>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let rules = Vec::<AppSuspensionRuleInput>::deserialize(deserializer)?;
-    Ok(rules
-        .into_iter()
-        .filter_map(|rule| match rule {
-            AppSuspensionRuleInput::ProcessName(process_name) => {
-                let process_name = process_name.trim().to_ascii_lowercase();
-                let download_threshold = default_rule_network_download_threshold_bytes();
-                (!process_name.is_empty()).then_some(AppSuspensionRule {
-                    enabled: true,
-                    process_name,
-                    network_wake_enabled: true,
-                    audio_wake_enabled: true,
-                    network_download_threshold_bytes: download_threshold,
-                    network_download_threshold_unit: NetworkThresholdUnit::Bytes,
-                    network_upload_threshold_bytes: 0,
-                    network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
-                })
-            }
-            AppSuspensionRuleInput::Rule(mut rule) => {
-                rule.process_name = rule.process_name.trim().to_ascii_lowercase();
-                (!rule.process_name.is_empty()).then_some(rule)
-            }
-        })
-        .collect())
-}
-
 impl InputDetectionSettings {
     pub const fn any_enabled(&self) -> bool {
         self.keyboard || self.mouse || self.controller
@@ -2574,92 +2330,6 @@ impl Settings {
         self.cpu_usage_mode
             .power_plans
             .fill_missing_from(&self.power_plans);
-
-        self.migrate_legacy_schedule_rules();
-        self.migrate_legacy_cpu_usage_rules();
-        self.migrate_legacy_foreground_rules();
-    }
-
-    fn migrate_legacy_schedule_rules(&mut self) {
-        let schedule_power_save_guid = self.schedule_mode.power_plans.power_save_guid.clone();
-        let fallback_power_save_guid = self.power_plans.power_save_guid.clone();
-
-        for rule in &mut self.schedule_mode.rules {
-            if rule.power_plan_guid.is_none() {
-                rule.power_plan_guid = rule
-                    .power_save_guid
-                    .clone()
-                    .or_else(|| schedule_power_save_guid.clone())
-                    .or_else(|| fallback_power_save_guid.clone());
-            }
-
-            rule.power_save_guid = None;
-            rule.performance_guid = None;
-        }
-
-        self.schedule_mode.power_plans = PowerPlanSettings::default();
-    }
-
-    fn migrate_legacy_cpu_usage_rules(&mut self) {
-        let idle_guid = self.cpu_usage_mode.power_plans.power_save_guid.clone();
-        let active_guid = self.cpu_usage_mode.power_plans.performance_guid.clone();
-
-        for rule in &mut self.cpu_usage_mode.rules {
-            if rule.power_plan_guid.is_none() {
-                rule.power_plan_guid = match rule.target {
-                    Some(CpuUsageTarget::Idle) => idle_guid.clone(),
-                    Some(CpuUsageTarget::Active) => active_guid.clone(),
-                    None => None,
-                };
-            }
-
-            if rule.is_else() {
-                rule.else_enabled = true;
-                if rule.else_power_plan_guid.is_none() {
-                    rule.else_power_plan_guid = rule.power_plan_guid.clone();
-                }
-                rule.power_plan_guid = None;
-                rule.comparison = CpuUsageComparison::AtOrBelow;
-            }
-
-            rule.target = None;
-        }
-
-        self.cpu_usage_mode.power_plans = PowerPlanSettings::default();
-    }
-
-    fn migrate_legacy_foreground_rules(&mut self) {
-        if !self.foreground_rules.rules.is_empty() {
-            return;
-        }
-
-        for process in &self.foreground_rules.whitelist {
-            self.foreground_rules.rules.push(ForegroundRule {
-                enabled: true,
-                name: process.clone(),
-                process_name: process.clone(),
-                power_plan_guid: self
-                    .foreground_rules
-                    .power_plans
-                    .performance_guid
-                    .clone()
-                    .or_else(|| self.power_plans.performance_guid.clone()),
-            });
-        }
-
-        for process in &self.foreground_rules.force_power_save {
-            self.foreground_rules.rules.push(ForegroundRule {
-                enabled: true,
-                name: process.clone(),
-                process_name: process.clone(),
-                power_plan_guid: self
-                    .foreground_rules
-                    .power_plans
-                    .power_save_guid
-                    .clone()
-                    .or_else(|| self.power_plans.power_save_guid.clone()),
-            });
-        }
     }
 }
 
@@ -2674,16 +2344,6 @@ impl PowerPlanSettings {
         }
         if self.performance_guid.is_none() {
             self.performance_guid = fallback.performance_guid.clone();
-        }
-    }
-}
-
-impl ManualOverride {
-    pub fn is_active(&self, now_epoch_seconds: i64) -> bool {
-        match self {
-            ManualOverride::None => false,
-            ManualOverride::UntilEpochSeconds(until) => now_epoch_seconds < *until,
-            ManualOverride::UntilRestart | ManualOverride::Indefinite => true,
         }
     }
 }

@@ -17,8 +17,8 @@ use crate::{
     affinity::{CpuAffinityManager, CpuAffinitySnapshot},
     background_cpu::BackgroundCpuRestrictionManager,
     config::{
-        AccentColorSource, AnimationMode, AppThemeMode, PowerPlanSettings, ProcessIoPriority,
-        Settings,
+        AccentColorSource, AnimationMode, AppThemeMode, ForegroundRule, PowerPlanSettings,
+        ProcessIoPriority, Settings,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
@@ -144,7 +144,18 @@ struct AutomationWorkerState {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingAutoExclusions {
     pub eco_qos: Vec<String>,
+    pub app_suspension: Vec<String>,
+    pub cpu_affinity: Vec<String>,
     pub background_cpu_restriction: Vec<String>,
+    pub cpu_limiter: Vec<String>,
+    pub foreground_responsiveness: Vec<String>,
+    pub io_priority: Vec<String>,
+    pub cpu_priority: Vec<String>,
+    pub thread_priority: Vec<String>,
+    pub priority_boost: Vec<String>,
+    pub gpu_priority: Vec<String>,
+    pub memory_priority: Vec<String>,
+    pub smart_trim: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -994,46 +1005,46 @@ fn notify_input_event(shared: &SharedAutomationState, events: InputHookEvents) {
 }
 
 fn update_eco_qos_status(shared: &SharedAutomationState, status: EcoQosSnapshot) {
-    if let Ok(mut state) = shared.state.lock() {
-        if append_unique_process_names(
-            &mut state.pending_auto_exclusions.eco_qos,
-            &status.auto_excluded_processes,
-        ) {
-            shared
-                .pending_auto_exclusions_generation
-                .fetch_add(1, Ordering::Release);
-        }
-        if set_status(&mut state.eco_qos_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.eco_qos,
+        |state| &mut state.eco_qos_status,
+    );
 }
 
 fn update_app_suspension_status(shared: &SharedAutomationState, status: AppSuspensionSnapshot) {
-    update_status(shared, status, |state| &mut state.app_suspension_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.app_suspension,
+        |state| &mut state.app_suspension_status,
+    );
 }
 
 fn update_cpu_affinity_status(shared: &SharedAutomationState, status: CpuAffinitySnapshot) {
-    update_status(shared, status, |state| &mut state.cpu_affinity_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.cpu_affinity,
+        |state| &mut state.cpu_affinity_status,
+    );
 }
 
 fn update_background_cpu_restriction_status(
     shared: &SharedAutomationState,
     status: CpuAffinitySnapshot,
 ) {
-    if let Ok(mut state) = shared.state.lock() {
-        if append_unique_process_names(
-            &mut state.pending_auto_exclusions.background_cpu_restriction,
-            &status.auto_excluded_processes,
-        ) {
-            shared
-                .pending_auto_exclusions_generation
-                .fetch_add(1, Ordering::Release);
-        }
-        if set_status(&mut state.background_cpu_restriction_status, status) {
-            bump_status_generation(shared, &mut state);
-        }
-    }
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.background_cpu_restriction,
+        |state| &mut state.background_cpu_restriction_status,
+    );
 }
 
 fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) -> bool {
@@ -1052,7 +1063,13 @@ fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) -> bo
 }
 
 fn update_cpu_limiter_status(shared: &SharedAutomationState, status: CpuLimiterSnapshot) {
-    update_status(shared, status, |state| &mut state.cpu_limiter_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.cpu_limiter,
+        |state| &mut state.cpu_limiter_status,
+    );
 }
 
 fn update_performance_mode_status(shared: &SharedAutomationState, status: PerformanceModeSnapshot) {
@@ -1063,37 +1080,83 @@ fn update_foreground_responsiveness_status(
     shared: &SharedAutomationState,
     status: ForegroundResponsivenessSnapshot,
 ) {
-    update_status(shared, status, |state| {
-        &mut state.foreground_responsiveness_status
-    });
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.foreground_responsiveness,
+        |state| &mut state.foreground_responsiveness_status,
+    );
 }
 
 fn update_io_priority_status(shared: &SharedAutomationState, status: IoPrioritySnapshot) {
-    update_status(shared, status, |state| &mut state.io_priority_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.io_priority,
+        |state| &mut state.io_priority_status,
+    );
 }
 
 fn update_cpu_priority_status(shared: &SharedAutomationState, status: CpuPrioritySnapshot) {
-    update_status(shared, status, |state| &mut state.cpu_priority_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.cpu_priority,
+        |state| &mut state.cpu_priority_status,
+    );
 }
 
 fn update_thread_priority_status(shared: &SharedAutomationState, status: ThreadPrioritySnapshot) {
-    update_status(shared, status, |state| &mut state.thread_priority_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.thread_priority,
+        |state| &mut state.thread_priority_status,
+    );
 }
 
 fn update_priority_boost_status(shared: &SharedAutomationState, status: PriorityBoostSnapshot) {
-    update_status(shared, status, |state| &mut state.priority_boost_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.priority_boost,
+        |state| &mut state.priority_boost_status,
+    );
 }
 
 fn update_gpu_priority_status(shared: &SharedAutomationState, status: GpuPrioritySnapshot) {
-    update_status(shared, status, |state| &mut state.gpu_priority_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.gpu_priority,
+        |state| &mut state.gpu_priority_status,
+    );
 }
 
 fn update_memory_priority_status(shared: &SharedAutomationState, status: MemoryPrioritySnapshot) {
-    update_status(shared, status, |state| &mut state.memory_priority_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.memory_priority,
+        |state| &mut state.memory_priority_status,
+    );
 }
 
 fn update_smart_trim_status(shared: &SharedAutomationState, status: SmartTrimSnapshot) {
-    update_status(shared, status, |state| &mut state.smart_trim_status);
+    update_status_with_auto_exclusions(
+        shared,
+        status.clone(),
+        &status.auto_excluded_processes,
+        |pending| &mut pending.smart_trim,
+        |state| &mut state.smart_trim_status,
+    );
 }
 
 fn update_timer_resolution_status(shared: &SharedAutomationState, status: TimerResolutionSnapshot) {
@@ -1107,6 +1170,28 @@ fn update_status<T: PartialEq>(
 ) {
     if let Ok(mut state) = shared.state.lock() {
         if set_status(field(&mut state), status) {
+            bump_status_generation(shared, &mut state);
+        }
+    }
+}
+
+fn update_status_with_auto_exclusions<T: PartialEq>(
+    shared: &SharedAutomationState,
+    status: T,
+    auto_excluded_processes: &[String],
+    pending_field: impl for<'a> FnOnce(&'a mut PendingAutoExclusions) -> &'a mut Vec<String>,
+    status_field: impl for<'a> FnOnce(&'a mut AutomationWorkerState) -> &'a mut T,
+) {
+    if let Ok(mut state) = shared.state.lock() {
+        if append_unique_process_names(
+            pending_field(&mut state.pending_auto_exclusions),
+            auto_excluded_processes,
+        ) {
+            shared
+                .pending_auto_exclusions_generation
+                .fetch_add(1, Ordering::Release);
+        }
+        if set_status(status_field(&mut state), status) {
             bump_status_generation(shared, &mut state);
         }
     }
@@ -1332,18 +1417,11 @@ fn foreground_rules_required(settings: &Settings) -> bool {
             .foreground_rules
             .rules
             .iter()
-            .any(|rule| rule.enabled && rule.power_plan_guid.is_some())
-            || (!settings.foreground_rules.whitelist.is_empty()
-                && has_active_plan(&settings.foreground_rules.power_plans, settings))
-            || (!settings.foreground_rules.force_power_save.is_empty()
-                && has_idle_plan(&settings.foreground_rules.power_plans, settings)))
+            .any(|rule| rule.enabled && rule.power_plan_guid.is_some()))
 }
 
 fn foreground_lookup_required(settings: &Settings) -> bool {
-    settings.foreground_rules.enabled
-        && (!settings.foreground_rules.rules.is_empty()
-            || !settings.foreground_rules.whitelist.is_empty()
-            || !settings.foreground_rules.force_power_save.is_empty())
+    settings.foreground_rules.enabled && !settings.foreground_rules.rules.is_empty()
 }
 
 fn schedule_rules_required(settings: &Settings) -> bool {
@@ -2024,10 +2102,12 @@ mod tests {
         settings.foreground_rules.enabled = true;
         assert!(!foreground_lookup_required(&settings));
 
-        settings
-            .foreground_rules
-            .whitelist
-            .push("editor.exe".to_owned());
+        settings.foreground_rules.rules.push(ForegroundRule {
+            enabled: true,
+            name: "editor.exe".to_owned(),
+            process_name: "editor.exe".to_owned(),
+            power_plan_guid: Some("active-guid".to_owned()),
+        });
         assert!(foreground_lookup_required(&settings));
     }
 
@@ -2071,6 +2151,20 @@ mod tests {
             .take_pending_auto_exclusions_since(&mut generation)
             .expect("new pending exclusions should be visible");
         assert_eq!(pending.eco_qos, vec!["editor.exe"]);
+        assert!(pending.cpu_affinity.is_empty());
+        assert!(pending.background_cpu_restriction.is_empty());
+        update_cpu_affinity_status(
+            &automation.shared,
+            CpuAffinitySnapshot {
+                auto_excluded_processes: vec!["Game.exe".to_owned()],
+                ..CpuAffinitySnapshot::default()
+            },
+        );
+
+        let pending = automation
+            .take_pending_auto_exclusions_since(&mut generation)
+            .expect("new pending affinity exclusions should be visible");
+        assert_eq!(pending.cpu_affinity, vec!["game.exe"]);
         assert!(automation
             .take_pending_auto_exclusions_since(&mut generation)
             .is_none());
@@ -2205,11 +2299,12 @@ mod tests {
         let mut settings = Settings::default();
         settings.activity_mode.enabled = false;
         settings.foreground_rules.enabled = true;
-        settings.foreground_rules.power_plans.performance_guid = Some("active-guid".to_owned());
-        settings
-            .foreground_rules
-            .whitelist
-            .push("chat.exe".to_owned());
+        settings.foreground_rules.rules.push(ForegroundRule {
+            enabled: true,
+            name: "chat.exe".to_owned(),
+            process_name: "chat.exe".to_owned(),
+            power_plan_guid: Some("active-guid".to_owned()),
+        });
 
         assert!(power_plan_checks_required(&settings));
         assert!(windows_event_watcher_required(&settings));

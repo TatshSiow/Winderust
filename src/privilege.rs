@@ -2,8 +2,8 @@ use windows_sys::Win32::{
     Foundation::HWND,
     Foundation::{ERROR_NOT_ALL_ASSIGNED, LUID},
     Security::{
-        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME,
-        SE_INCREASE_QUOTA_NAME, SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME,
+        AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_INCREASE_QUOTA_NAME,
+        SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME,
         TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
@@ -38,10 +38,6 @@ pub fn relaunch_as_admin_if_needed() -> bool {
     }
 
     true
-}
-
-pub fn enable_debug_privilege() -> bool {
-    enable_privilege(SE_DEBUG_NAME)
 }
 
 pub fn enable_increase_quota_privilege() -> bool {

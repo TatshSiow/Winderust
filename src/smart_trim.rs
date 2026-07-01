@@ -48,6 +48,7 @@ pub struct SmartTrimSnapshot {
     pub free_ram_excluding_cache_mb: Option<u64>,
     pub memory_load_percent: Option<u8>,
     pub trimmed_apps: Vec<String>,
+    pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -250,10 +251,16 @@ impl SmartTrimManager {
         let mut skipped_processes = 0;
         let mut failures = SmartTrimFailures::default();
         let mut trimmed_apps = BTreeSet::new();
+        let mut auto_excluded_processes = BTreeSet::new();
         let now = Instant::now();
 
         for (process_id, process_name) in target_processes {
-            if self.is_process_suppressed(process_id, &process_name, action_log) {
+            if self.is_process_suppressed(
+                process_id,
+                &process_name,
+                action_log,
+                &mut auto_excluded_processes,
+            ) {
                 skipped_processes += 1;
                 continue;
             }
@@ -384,6 +391,7 @@ impl SmartTrimManager {
             free_ram_excluding_cache_mb,
             memory_load_percent: Some(memory_load_percent),
             trimmed_apps: trimmed_apps.into_iter().collect(),
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: match mode {
                 SmartTrimMode::Automatic => "Smart Trim active.".to_owned(),
                 SmartTrimMode::Manual => "Manual Smart Trim pass completed.".to_owned(),
@@ -496,6 +504,7 @@ impl SmartTrimManager {
         process_id: u32,
         process_name: &str,
         action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if !suppression.suppressed {
@@ -503,6 +512,7 @@ impl SmartTrimManager {
         }
 
         if suppression.newly_suppressed {
+            auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
                 ActionLogFeature::SmartTrim,
                 Some(process_id),
@@ -938,6 +948,7 @@ impl Default for SmartTrimSnapshot {
             free_ram_excluding_cache_mb: None,
             memory_load_percent: None,
             trimmed_apps: Vec::new(),
+            auto_excluded_processes: Vec::new(),
             message: "Smart Trim disabled.".to_owned(),
             last_error: None,
         }
@@ -955,11 +966,11 @@ mod tests {
 
         manager.record_process_failure("APP.exe");
         manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
 
         manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
@@ -977,10 +988,10 @@ mod tests {
         manager.record_process_failure("app.exe");
         manager.record_process_failure("app.exe");
         manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
 
         manager.clear_process_failure("APP.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
     }
 
     #[test]

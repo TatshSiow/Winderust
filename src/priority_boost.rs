@@ -31,6 +31,7 @@ pub struct PriorityBoostSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
+    pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -186,9 +187,15 @@ impl PriorityBoostManager {
         );
         let mut skipped_processes = 0;
         let mut applied_processes = 0;
+        let mut auto_excluded_processes = BTreeSet::new();
 
         for (process_id, (process_name, disabled)) in target_processes {
-            if self.is_process_suppressed(process_id, &process_name, action_log) {
+            if self.is_process_suppressed(
+                process_id,
+                &process_name,
+                action_log,
+                &mut auto_excluded_processes,
+            ) {
                 skipped_processes += 1;
                 continue;
             }
@@ -246,6 +253,7 @@ impl PriorityBoostManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "Dynamic priority boost defaults active.".to_owned(),
             last_error: failures.last_error,
         }
@@ -369,6 +377,7 @@ impl PriorityBoostManager {
         process_id: u32,
         process_name: &str,
         action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if !suppression.suppressed {
@@ -376,6 +385,7 @@ impl PriorityBoostManager {
         }
 
         if suppression.newly_suppressed {
+            auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
                 ActionLogFeature::PriorityBoost,
                 Some(process_id),

@@ -24,7 +24,7 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 
 ### Process Control
 - Applies Background Efficiency / Windows EcoQoS to eligible background apps.
-- Manages I/O priority, GPU scheduler priority, launch priority, and Watchdog terminate/restart rules.
+- Manages I/O priority and GPU scheduler priority.
 - Keeps dangerous automatic High/Realtime priority controls out of normal workflows.
 
 ### CPU Control

@@ -34,11 +34,11 @@ cargo build --release --target-dir target-next
 - `src/main.rs`: app entry, single-instance guard, GPUI startup.
 - `src/app.rs`: main GPUI state, rendering, navigation, dialogs, and page wiring. It is large; shrink by moving one complete page/helper cluster at a time.
 - `src/ui/mod.rs`: page enum, section grouping, labels, and small UI-independent helpers.
-- `src/config/settings.rs`: persisted settings structs, defaults, compatibility deserializers.
+- `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
 - `src/automation.rs`: background worker loop that applies runtime policies.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
-- Feature backends live in their own modules, for example `ecoqos`, `suspension`, `affinity`, `cpu_limiter`, `responsiveness`, `smart_trim`, `watchdog`, and priority modules.
+- Feature backends live in their own modules, for example `ecoqos`, `suspension`, `affinity`, `cpu_limiter`, `responsiveness`, `smart_trim`, and priority modules.
 
 ## Navigation
 
@@ -48,7 +48,7 @@ Pages are grouped in `src/ui/mod.rs`:
 - Process List: process table and per-process policy surface.
 - Foreground Responsiveness.
 - Power Plan Automation: foreground rules, running app/performance mode, CPU usage, activity, schedule, processor power tuning.
-- Process Policies: Efficiency Mode, IO/GPU/launch priority, Watchdog.
+- Process Policies: Efficiency Mode and IO/GPU priority.
 - Processor Controls: CPU limiter, background CPU restriction, CPU affinity.
 - Memory Control: Memory Priority, Smart Trim.
 - Action Log.
@@ -63,8 +63,6 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `W
 - Add new fields with `#[serde(default)]` when older config files must keep loading.
 - If a setting is edited through the UI, update the relevant input sync code in `src/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/app.rs`.
-- Legacy fields should deserialize, migrate, and then stay out of the UI unless the user asks for them back.
-
 ## Runtime Safety
 
 Process-control features must keep these defaults:

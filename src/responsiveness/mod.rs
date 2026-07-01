@@ -60,6 +60,7 @@ pub struct ForegroundResponsivenessSnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
+    pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -150,6 +151,7 @@ struct ForegroundCandidate {
 struct ForegroundBoostGroupResult {
     skipped: usize,
     failures: PriorityFailures,
+    auto_excluded_processes: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -371,6 +373,11 @@ impl ForegroundResponsivenessManager {
             foreground_process_id,
             action_log,
         );
+        let mut auto_excluded_processes = lower_background_affinity_snapshot
+            .auto_excluded_processes
+            .iter()
+            .map(|name| process_failure_key(name))
+            .collect::<BTreeSet<_>>();
         failures.count += lower_background_affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
             failures.last_error = lower_background_affinity_snapshot.last_error.clone();
@@ -474,6 +481,12 @@ impl ForegroundResponsivenessManager {
             foreground_process_id,
             action_log,
         );
+        auto_excluded_processes.extend(
+            auto_balance_affinity_snapshot
+                .auto_excluded_processes
+                .iter()
+                .map(|name| process_failure_key(name)),
+        );
         failures.count += auto_balance_affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
             failures.last_error = auto_balance_affinity_snapshot.last_error.clone();
@@ -491,6 +504,12 @@ impl ForegroundResponsivenessManager {
             automation_enabled,
             ActionLogFeature::ForegroundResponsiveness,
             action_log,
+        );
+        auto_excluded_processes.extend(
+            auto_balance_memory_snapshot
+                .auto_excluded_processes
+                .iter()
+                .map(|name| process_failure_key(name)),
         );
         failures.count += auto_balance_memory_snapshot.failed_processes;
         if failures.last_error.is_none() {
@@ -518,7 +537,12 @@ impl ForegroundResponsivenessManager {
 
         for (process_id, (process_name, priority, source)) in target_processes {
             let failure_process_name = process_name.clone();
-            if self.is_process_suppressed(process_id, &failure_process_name, action_log) {
+            if self.is_process_suppressed(
+                process_id,
+                &failure_process_name,
+                action_log,
+                &mut auto_excluded_processes,
+            ) {
                 skipped_processes += 1;
                 continue;
             }
@@ -651,6 +675,7 @@ impl ForegroundResponsivenessManager {
                     action_log,
                 );
                 skipped_processes += result.skipped;
+                auto_excluded_processes.extend(result.auto_excluded_processes);
                 failures.merge(result.failures);
             } else if let Some(error) =
                 self.clear_boosted(true, action_log, "foreground boost disabled or blocked")
@@ -691,6 +716,7 @@ impl ForegroundResponsivenessManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "Foreground Responsiveness active.".to_owned(),
             last_error: failures.last_error,
         }
@@ -803,6 +829,7 @@ impl ForegroundResponsivenessManager {
         process_id: u32,
         process_name: &str,
         action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if !suppression.suppressed {
@@ -810,6 +837,7 @@ impl ForegroundResponsivenessManager {
         }
 
         if suppression.newly_suppressed {
+            auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
                 ActionLogFeature::ForegroundResponsiveness,
                 Some(process_id),
@@ -964,8 +992,14 @@ impl ForegroundResponsivenessManager {
 
         let priority_class =
             foreground_boost_priority_class(foreground_boost, foreground_cpu_usage_percent);
+        let mut auto_excluded_processes = BTreeSet::new();
         for (process_id, process_name) in targets {
-            if self.is_process_suppressed(*process_id, process_name, action_log) {
+            if self.is_process_suppressed(
+                *process_id,
+                process_name,
+                action_log,
+                &mut auto_excluded_processes,
+            ) {
                 result.skipped += 1;
                 continue;
             }
@@ -1003,6 +1037,7 @@ impl ForegroundResponsivenessManager {
             }
         }
 
+        result.auto_excluded_processes = auto_excluded_processes.into_iter().collect();
         result
     }
 
@@ -1328,6 +1363,7 @@ impl Default for ForegroundResponsivenessSnapshot {
             skipped_processes: 0,
             failed_processes: 0,
             adjusted_apps: Vec::new(),
+            auto_excluded_processes: Vec::new(),
             message: "Foreground Responsiveness disabled.".to_owned(),
             last_error: None,
         }
@@ -2353,12 +2389,12 @@ mod tests {
 
         manager.record_process_failure("APP.exe");
         manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
         assert!(log.entries().is_empty());
 
         manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);

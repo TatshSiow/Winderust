@@ -107,7 +107,6 @@ mod tests {
                 power_plan_guid: Some("high-cpu-guid".to_owned()),
                 else_enabled: false,
                 else_power_plan_guid: None,
-                target: None,
             }],
         };
 
@@ -133,7 +132,6 @@ mod tests {
                 power_plan_guid: Some("low-cpu-guid".to_owned()),
                 else_enabled: false,
                 else_power_plan_guid: None,
-                target: None,
             }],
         };
 
@@ -156,7 +154,6 @@ mod tests {
                 power_plan_guid: Some("medium-cpu-guid".to_owned()),
                 else_enabled: false,
                 else_power_plan_guid: None,
-                target: None,
             }],
         };
 
@@ -182,7 +179,6 @@ mod tests {
                 power_plan_guid: Some("high-cpu-guid".to_owned()),
                 else_enabled: true,
                 else_power_plan_guid: Some("else-guid".to_owned()),
-                target: None,
             }],
         };
 
@@ -214,7 +210,6 @@ mod tests {
                 power_plan_guid: Some("high-cpu-guid".to_owned()),
                 else_enabled: true,
                 else_power_plan_guid: Some("else-guid".to_owned()),
-                target: None,
             }],
         };
 

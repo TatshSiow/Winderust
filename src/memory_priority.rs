@@ -33,6 +33,7 @@ pub struct MemoryPrioritySnapshot {
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
+    pub auto_excluded_processes: Vec<String>,
     pub last_error: Option<String>,
 }
 
@@ -250,6 +251,7 @@ impl MemoryPriorityManager {
         );
         let mut skipped_processes = 0;
         let mut applied_processes = 0;
+        let mut auto_excluded_processes = BTreeSet::new();
 
         for target in targets {
             if self.is_process_suppressed(
@@ -257,6 +259,7 @@ impl MemoryPriorityManager {
                 &target.process_name,
                 action_log_feature,
                 action_log,
+                &mut auto_excluded_processes,
             ) {
                 skipped_processes += 1;
                 continue;
@@ -332,6 +335,7 @@ impl MemoryPriorityManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
+            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             last_error: failures.last_error,
         }
     }
@@ -501,6 +505,7 @@ impl MemoryPriorityManager {
         process_name: &str,
         action_log_feature: ActionLogFeature,
         action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if !suppression.suppressed {
@@ -508,6 +513,7 @@ impl MemoryPriorityManager {
         }
 
         if suppression.newly_suppressed {
+            auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
                 action_log_feature,
                 Some(process_id),
@@ -772,7 +778,8 @@ mod tests {
             42,
             "app.exe",
             ActionLogFeature::ForegroundResponsiveness,
-            &mut log
+            &mut log,
+            &mut BTreeSet::new()
         ));
 
         manager.record_process_failure("app.exe");
@@ -780,13 +787,15 @@ mod tests {
             42,
             "app.exe",
             ActionLogFeature::ForegroundResponsiveness,
-            &mut log
+            &mut log,
+            &mut BTreeSet::new()
         ));
         assert!(manager.is_process_suppressed(
             43,
             "APP.exe",
             ActionLogFeature::ForegroundResponsiveness,
-            &mut log
+            &mut log,
+            &mut BTreeSet::new()
         ));
 
         let entries = log.entries();

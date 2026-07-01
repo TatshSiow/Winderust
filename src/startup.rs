@@ -1,15 +1,10 @@
 use std::path::PathBuf;
-use std::{mem::size_of, ptr::null_mut};
 
-use windows_sys::Win32::{
-    Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
-    System::Registry::{
-        RegCloseKey, RegCreateKeyW, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
-        HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ,
-    },
+use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, KEY_SET_VALUE};
+
+use crate::win_registry::{
+    create_registry_key, delete_registry_value, open_registry_key, write_registry_string,
 };
-
-use crate::win_util::wide_null;
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE_NAME: &str = "Winderust";
@@ -24,93 +19,17 @@ pub fn set_startup_with_windows(enabled: bool) -> Result<(), String> {
 }
 
 fn enable_startup() -> Result<(), String> {
-    let key = create_run_key()?;
-    let value_name = wide_null(VALUE_NAME);
     let command = startup_command()?;
-    let command = wide_null(&command);
-    let data = unsafe {
-        std::slice::from_raw_parts(
-            command.as_ptr() as *const u8,
-            command.len() * size_of::<u16>(),
-        )
-    };
-
-    let status = unsafe {
-        RegSetValueExW(
-            key.0,
-            value_name.as_ptr(),
-            0,
-            REG_SZ,
-            data.as_ptr(),
-            data.len() as u32,
-        )
-    };
-    if status == ERROR_SUCCESS {
-        Ok(())
-    } else {
-        Err(format!(
-            "failed to enable Windows startup entry: error {status}"
-        ))
-    }
+    let key = create_registry_key(HKEY_CURRENT_USER, RUN_KEY, KEY_SET_VALUE)?;
+    write_registry_string(&key, VALUE_NAME, &command)
 }
 
 fn disable_startup() -> Result<(), String> {
-    let Some(key) = open_run_key_for_write()? else {
+    let Some(key) = open_registry_key(HKEY_CURRENT_USER, RUN_KEY, KEY_SET_VALUE)? else {
         return Ok(());
     };
 
-    delete_startup_value(&key, VALUE_NAME)?;
-    Ok(())
-}
-
-fn delete_startup_value(key: &RegKey, value_name: &str) -> Result<(), String> {
-    let value_name = wide_null(value_name);
-    let status = unsafe { RegDeleteValueW(key.0, value_name.as_ptr()) };
-    if status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND {
-        Ok(())
-    } else {
-        Err(format!(
-            "failed to disable Windows startup entry: error {status}"
-        ))
-    }
-}
-
-fn create_run_key() -> Result<RegKey, String> {
-    let sub_key = wide_null(RUN_KEY);
-    let mut key = null_mut();
-    let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, sub_key.as_ptr(), &mut key) };
-
-    if status == ERROR_SUCCESS {
-        Ok(RegKey(key))
-    } else {
-        Err(format!(
-            "failed to open Windows startup registry key: error {status}"
-        ))
-    }
-}
-
-fn open_run_key_for_write() -> Result<Option<RegKey>, String> {
-    let sub_key = wide_null(RUN_KEY);
-    let mut key = null_mut();
-    let status = unsafe {
-        RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            sub_key.as_ptr(),
-            0,
-            KEY_SET_VALUE,
-            &mut key,
-        )
-    };
-
-    if status == ERROR_SUCCESS {
-        Ok(Some(RegKey(key)))
-    } else if status == ERROR_FILE_NOT_FOUND {
-        Ok(None)
-    } else {
-        Err(format!(
-            "failed to open Windows startup registry key: error {status}"
-        ))
-    }
+    delete_registry_value(&key, VALUE_NAME)
 }
 
 fn startup_command() -> Result<String, String> {
@@ -142,16 +61,4 @@ fn sanitize_startup_executable(exe: PathBuf) -> Result<PathBuf, String> {
     }
 
     Ok(exe)
-}
-
-struct RegKey(HKEY);
-
-impl Drop for RegKey {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe {
-                RegCloseKey(self.0);
-            }
-        }
-    }
 }

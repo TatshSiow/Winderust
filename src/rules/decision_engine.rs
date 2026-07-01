@@ -1,5 +1,3 @@
-use chrono::Utc;
-
 use crate::{
     activity::ActivityState,
     config::{PowerPlanSettings, Settings},
@@ -10,11 +8,8 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionState {
     Disabled,
-    ManualOverride,
     PluggedInPause,
     ForegroundRule,
-    ForegroundForceActive,
-    ForegroundForcePowerSave,
     PerformanceMode,
     ScheduledRule,
     CpuLoadRule,
@@ -59,14 +54,6 @@ impl DecisionEngine {
             );
         }
 
-        let now = Utc::now().timestamp();
-        if settings.general.manual_override.is_active(now) {
-            return DecisionOutcome::without_target(
-                DecisionState::ManualOverride,
-                "Manual override is active.",
-            );
-        }
-
         if settings.general.pause_power_plan_switching_while_plugged_in
             && input.plugged_in == Some(true)
         {
@@ -93,22 +80,6 @@ impl DecisionEngine {
                     }
                     break;
                 }
-            }
-
-            if contains_process(&settings.foreground_rules.force_power_save, app) {
-                return DecisionOutcome::with_target(
-                    idle_plan(&settings.foreground_rules.power_plans, settings),
-                    DecisionState::ForegroundForcePowerSave,
-                    format!("{app} is configured to force the Idle plan."),
-                );
-            }
-
-            if contains_process(&settings.foreground_rules.whitelist, app) {
-                return DecisionOutcome::with_target(
-                    active_plan(&settings.foreground_rules.power_plans, settings),
-                    DecisionState::ForegroundForceActive,
-                    format!("{app} is configured to force the Active plan."),
-                );
             }
         }
 
@@ -215,11 +186,6 @@ impl DecisionOutcome {
     }
 }
 
-fn contains_process(list: &[String], app: &str) -> bool {
-    list.iter()
-        .any(|entry| entry.trim().eq_ignore_ascii_case(app.trim()))
-}
-
 fn idle_plan(power_plans: &PowerPlanSettings, settings: &Settings) -> Option<String> {
     power_plans
         .power_save_guid
@@ -252,32 +218,9 @@ mod tests {
         settings.foreground_rules = ForegroundRules {
             enabled: true,
             rules: Vec::new(),
-            whitelist: vec!["game.exe".to_owned()],
-            force_power_save: vec!["backup.exe".to_owned()],
             power_plans: PowerPlanSettings::default(),
         };
         settings
-    }
-
-    #[test]
-    fn foreground_force_idle_overrides_schedule_and_activity() {
-        let outcome = DecisionEngine.decide(
-            &test_settings(),
-            DecisionInput {
-                activity_state: ActivityState::Active,
-                foreground_app: Some("backup.exe".to_owned()),
-                plugged_in: None,
-                performance_mode: None,
-                schedule: Some(ScheduleDecision {
-                    rule_name: "Work hours".to_owned(),
-                    power_plan_guid: Some("schedule-custom".to_owned()),
-                }),
-                cpu_usage: None,
-            },
-        );
-
-        assert_eq!(outcome.state, DecisionState::ForegroundForcePowerSave);
-        assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
     }
 
     #[test]

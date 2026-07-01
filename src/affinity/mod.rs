@@ -248,9 +248,7 @@ impl CpuAffinityManager {
                 self.check_process_suppression(process_id, &failure_process_name, action_log);
             if suppression.suppressed {
                 skipped_processes += 1;
-                if suppression.newly_suppressed
-                    && self.action_log_feature == ActionLogFeature::BackgroundCpuRestriction
-                {
+                if suppression.newly_suppressed {
                     auto_excluded_processes.insert(process_failure_key(&failure_process_name));
                 }
                 continue;
