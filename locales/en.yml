@@ -12,8 +12,6 @@ nav:
   advanced_group: "Advanced"
   processor_controls: "CPU Control"
   priority_control: "Priority Control"
-  process_policies: "Process Control"
-  memory_control: "RAM Control"
   app: "App"
   advanced: "Advanced Controls"
   dashboard: "Dashboard"

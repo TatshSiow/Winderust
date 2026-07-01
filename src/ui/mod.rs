@@ -7,8 +7,6 @@ pub enum Page {
     WinderustFeatures,
     ProcessorControls,
     PriorityControl,
-    ProcessPolicies,
-    MemoryControl,
     AppHome,
     AdvancedHome,
     Activity,
@@ -132,8 +130,6 @@ impl Page {
             Self::WinderustFeatures => t!("nav.winderust_features"),
             Self::ProcessorControls => t!("nav.processor_controls"),
             Self::PriorityControl => t!("nav.priority_control"),
-            Self::ProcessPolicies => t!("nav.process_policies"),
-            Self::MemoryControl => t!("nav.memory_control"),
             Self::AppHome => t!("nav.settings"),
             Self::AdvancedHome => t!("nav.advanced"),
             Self::Activity => t!("nav.activity"),
@@ -174,8 +170,6 @@ impl Page {
             Self::WinderustFeatures => t!("nav.winderust_features"),
             Self::ProcessorControls => t!("nav.processor_controls"),
             Self::PriorityControl => t!("nav.priority_control"),
-            Self::ProcessPolicies => t!("nav.process_policies"),
-            Self::MemoryControl => t!("nav.memory_control"),
             Self::AppHome => t!("nav.settings"),
             Self::AdvancedHome => t!("nav.advanced"),
             Self::ProcessList => t!("nav.process_list"),
@@ -235,8 +229,6 @@ impl Page {
             | Self::IoPriority
             | Self::GpuPriority
             | Self::MemoryPriority => Self::PriorityControl,
-            Self::ProcessPolicies => Self::ProcessPolicies,
-            Self::MemoryControl => Self::MemoryControl,
             Self::ActionLog => Self::ActionLog,
             Self::AppHome
             | Self::Settings

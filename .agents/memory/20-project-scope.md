@@ -1,6 +1,6 @@
 # Winderust Project Scope
 
-This is the product-scope and future-goals doc. Development mechanics live in `DEVELOPMENT_GUIDE.md`.
+This is the product-scope and future-goals doc. Development mechanics live in `10-development-guide.md`.
 
 ## Goal
 
@@ -58,5 +58,5 @@ Add only when a real workflow needs them:
 - Runtime changes must restore cleanly when possible.
 - Dangerous controls need explicit user intent and conservative defaults.
 - If a feature can be a rule on an existing page, do that before adding a new top-level page.
-- If the value is only for developers, put it in `DEVELOPMENT_GUIDE.md`, not here.
+- If the value is only for developers, put it in `10-development-guide.md`, not here.
 

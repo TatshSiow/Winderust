@@ -1,9 +1,14 @@
 use std::{
+    ffi::OsString,
     fs, io,
+    os::windows::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
 use chrono::Local;
+use windows_sys::Win32::Storage::FileSystem::{
+    MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+};
 
 use super::Settings;
 
@@ -85,7 +90,11 @@ fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
 
     let raw = settings_to_toml(settings)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    fs::write(path, raw)
+    let temp_path = temp_settings_path(path);
+    fs::write(&temp_path, raw)?;
+    replace_file(&temp_path, path).inspect_err(|_| {
+        let _ = fs::remove_file(&temp_path);
+    })
 }
 
 fn settings_to_toml(settings: &Settings) -> Result<String, toml::ser::Error> {
@@ -94,6 +103,36 @@ fn settings_to_toml(settings: &Settings) -> Result<String, toml::ser::Error> {
 
 fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
     toml::from_str(raw)
+}
+
+fn temp_settings_path(path: &Path) -> PathBuf {
+    let mut value: OsString = path.as_os_str().to_os_string();
+    value.push(".tmp");
+    PathBuf::from(value)
+}
+
+fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+    let from = wide_path(from);
+    let to = wide_path(to);
+    let ok = unsafe {
+        MoveFileExW(
+            from.as_ptr(),
+            to.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn wide_path(path: &Path) -> Vec<u16> {
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 #[cfg(test)]
@@ -479,5 +518,13 @@ mod tests {
 
         assert!(filename.starts_with(&format!("winderust_{}_", env!("CARGO_PKG_VERSION"))));
         assert!(filename.ends_with(".toml"));
+    }
+
+    #[test]
+    fn temp_settings_path_keeps_original_path_intact() {
+        assert_eq!(
+            temp_settings_path(Path::new(r"C:\Users\me\settings.toml")),
+            PathBuf::from(r"C:\Users\me\settings.toml.tmp")
+        );
     }
 }

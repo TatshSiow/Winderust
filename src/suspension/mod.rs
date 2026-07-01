@@ -2026,7 +2026,13 @@ fn table_rows<T: Copy>(buffer: &[u8]) -> Vec<T> {
 
     let rows_offset = mem::size_of::<u32>();
     let row_size = mem::size_of::<T>();
-    if row_size == 0 || buffer.len() < rows_offset + (count * row_size) {
+    let Some(rows_len) = count.checked_mul(row_size) else {
+        return Vec::new();
+    };
+    let Some(required_len) = rows_offset.checked_add(rows_len) else {
+        return Vec::new();
+    };
+    if row_size == 0 || buffer.len() < required_len {
         return Vec::new();
     }
 
@@ -3105,6 +3111,13 @@ mod tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].dwOwningPid, 42);
         assert_eq!(parsed[1].dwOwningPid, 99);
+    }
+
+    #[test]
+    fn table_rows_rejects_overflowing_row_count() {
+        let buffer = usize::MAX.to_ne_bytes();
+
+        assert!(table_rows::<MIB_UDPROW_OWNER_PID>(&buffer).is_empty());
     }
 
     #[test]

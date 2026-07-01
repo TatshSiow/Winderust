@@ -2037,6 +2037,7 @@ fn switch_failure_key(target_guid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ForegroundRule;
 
     #[test]
     fn process_appearance_detector_ignores_initial_snapshot() {

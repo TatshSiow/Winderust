@@ -101,5 +101,4 @@ target\release\winderust.exe
 
 - EcoQoS works best on Windows 11 and supported CPU platforms.
 - Foreground rules have the highest scheduler priority and override other power plan rules.
-- Development guide: `DEVELOPMENT_GUIDE.md`.
-- Product scope and future goals: `PROJECT_SCOPE.md`.
+- Agent docs, development guide, scope, and references: `.agents/memory/README.md`.

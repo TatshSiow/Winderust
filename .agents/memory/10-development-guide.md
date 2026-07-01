@@ -1,6 +1,6 @@
 # Winderust Development Guide
 
-This is the working guide for code changes. Product scope and future goals live in `PROJECT_SCOPE.md`.
+This is the working guide for code changes. Product scope and future goals live in `20-project-scope.md`.
 
 ## Project Basics
 
@@ -46,11 +46,10 @@ Pages are grouped in `src/ui/mod.rs`:
 
 - Overview: dashboard.
 - Process List: process table and per-process policy surface.
-- Foreground Responsiveness.
+- Winderust Features: Efficiency Mode, Foreground Responsiveness, Smart Trim.
 - Power Plan Automation: foreground rules, running app/performance mode, CPU usage, activity, schedule, processor power tuning.
-- Process Policies: Efficiency Mode and IO/GPU priority.
+- Priority Control: CPU priority, thread priority, dynamic priority boost, IO priority, GPU priority, memory priority.
 - Processor Controls: CPU limiter, background CPU restriction, CPU affinity.
-- Memory Control: Memory Priority, Smart Trim.
 - Action Log.
 - Settings.
 - Advanced: App Suspension, Timer Resolution, Win32 priority separation.

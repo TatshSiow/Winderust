@@ -1191,9 +1191,7 @@ impl WinderustApp {
         app.subscribe_to_activity_sliders(window, cx);
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
-        app.refresh_process_candidates(false);
-        app.refresh_running_processes(false);
-        app.run_check(true, Instant::now());
+        app.run_check(false, Instant::now());
         app.sync_processor_power_slider_states(window, cx);
         app.sync_input_hook();
         app.schedule_tick(window, cx);
@@ -1970,7 +1968,7 @@ impl WinderustApp {
         } else if decision_settings.cpu_usage_mode.enabled {
             self.refresh_cpu_usage_sample(now);
         }
-        self.foreground_app = foreground_lookup_required(&decision_settings)
+        self.foreground_app = foreground_lookup_required(decision_settings)
             .then(|| self.foreground_detector.process_name())
             .flatten();
         let schedule = self
@@ -1984,7 +1982,7 @@ impl WinderustApp {
             .next_switch_label(&decision_settings.schedule_mode);
 
         self.decision = self.decision_engine.decide(
-            &decision_settings,
+            decision_settings,
             DecisionInput {
                 activity_state: self.activity.state,
                 foreground_app: self.foreground_app.clone(),
@@ -4312,8 +4310,6 @@ impl WinderustApp {
                 self.render_section_landing_page(Page::ProcessorControls, cx)
             }
             Page::PriorityControl => self.render_section_landing_page(Page::PriorityControl, cx),
-            Page::ProcessPolicies => self.render_section_landing_page(Page::ProcessPolicies, cx),
-            Page::MemoryControl => self.render_section_landing_page(Page::MemoryControl, cx),
             Page::AppHome => self.render_section_landing_page(Page::AppHome, cx),
             Page::AdvancedHome => self.render_section_landing_page(Page::AdvancedHome, cx),
             Page::Activity => self.render_activity_page(window, cx),
@@ -4810,8 +4806,8 @@ impl WinderustApp {
                 history
                     .iter()
                     .map(|sample| (sample.usage_percent, sample.cache_percent)),
-                |value| memory_usage_label(value),
-                |value| memory_usage_label(value),
+                memory_usage_label,
+                memory_usage_label,
             ),
             dashboard_primary_series_color(),
             dashboard_secondary_series_color(),
@@ -4868,6 +4864,10 @@ impl WinderustApp {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "dashboard graph labels and scaling stay clearer at each call site"
+    )]
     fn render_dual_line_history_graph(
         &self,
         graph_id: &'static str,
@@ -15703,12 +15703,6 @@ fn dashboard_page_search_text(page: Page) -> String {
         Page::PriorityControl => vec![
             "priority control process thread dynamic boost io gpu memory launch registry ifeo scheduler base priority".to_string(),
         ],
-        Page::ProcessPolicies => vec![
-            "process policies rules efficiency mode background foreground".to_string(),
-        ],
-        Page::MemoryControl => vec![
-            "memory control smart trim ram trim working set standby list file cache paging background process".to_string(),
-        ],
         Page::ActionLog => vec![
             t!("action_log.intro_1").to_string(),
             t!("action_log.intro_2").to_string(),
@@ -15979,9 +15973,9 @@ fn page_content_frame(
 
 #[derive(Clone, Copy)]
 enum PageTransitionMotion {
-    EnterSubPage,
-    ExitSubPage,
-    SameLevelPage,
+    EnterSub,
+    ExitSub,
+    SameLevel,
 }
 
 fn animated_page_content_frame(
@@ -15995,9 +15989,9 @@ fn animated_page_content_frame(
         return frame.into_any_element();
     };
     let (x, y) = match motion {
-        PageTransitionMotion::EnterSubPage => (18.0, 0.0),
-        PageTransitionMotion::ExitSubPage => (-18.0, 0.0),
-        PageTransitionMotion::SameLevelPage => (0.0, 14.0),
+        PageTransitionMotion::EnterSub => (18.0, 0.0),
+        PageTransitionMotion::ExitSub => (-18.0, 0.0),
+        PageTransitionMotion::SameLevel => (0.0, 14.0),
     };
 
     with_optional_motion(
@@ -16023,13 +16017,13 @@ fn page_transition_motion(transition: &BreadcrumbTransition) -> Option<PageTrans
     }
 
     if current.len() > previous.len() {
-        return Some(PageTransitionMotion::EnterSubPage);
+        return Some(PageTransitionMotion::EnterSub);
     }
     if current.len() < previous.len() {
-        return Some(PageTransitionMotion::ExitSubPage);
+        return Some(PageTransitionMotion::ExitSub);
     }
 
-    Some(PageTransitionMotion::SameLevelPage)
+    Some(PageTransitionMotion::SameLevel)
 }
 
 #[derive(Clone, Copy)]
@@ -21082,8 +21076,6 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::WinderustFeatures => NavIcon::Feather,
         Page::ProcessorControls => NavIcon::Cpu,
         Page::PriorityControl => NavIcon::CircleFadingArrowUp,
-        Page::ProcessPolicies => NavIcon::AppWindow,
-        Page::MemoryControl => NavIcon::MemoryStick,
         Page::AppHome => NavIcon::Settings,
         Page::AdvancedHome => NavIcon::Cog,
         Page::Activity => NavIcon::SquareActivity,
