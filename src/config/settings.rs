@@ -35,6 +35,12 @@ pub struct Settings {
     #[serde(default)]
     pub foreground_responsiveness: ForegroundResponsivenessSettings,
     #[serde(default)]
+    pub cpu_priority: CpuPrioritySettings,
+    #[serde(default)]
+    pub thread_priority: ThreadPrioritySettings,
+    #[serde(default)]
+    pub priority_boost: PriorityBoostSettings,
+    #[serde(default)]
     pub io_priority: IoPrioritySettings,
     #[serde(default)]
     pub gpu_priority: GpuPrioritySettings,
@@ -617,6 +623,71 @@ pub struct IoPrioritySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuPrioritySettings {
+    pub enabled: bool,
+    #[serde(default)]
+    pub advanced_priority_enabled: bool,
+    #[serde(
+        default = "default_true",
+        alias = "exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub foreground_detection_enabled: bool,
+    #[serde(default = "default_cpu_priority_foreground")]
+    pub foreground_priority: ProcessCpuPrioritySetting,
+    #[serde(default = "default_cpu_priority_background")]
+    pub background_priority: ProcessCpuPrioritySetting,
+    #[serde(
+        default,
+        alias = "rules",
+        deserialize_with = "deserialize_process_exclusion_rules"
+    )]
+    pub exclusions: Vec<ProcessExclusionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadPrioritySettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_true",
+        alias = "exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub foreground_detection_enabled: bool,
+    #[serde(default = "default_thread_priority_foreground")]
+    pub foreground_priority: ProcessThreadPrioritySetting,
+    #[serde(default = "default_thread_priority_background")]
+    pub background_priority: ProcessThreadPrioritySetting,
+    #[serde(
+        default,
+        alias = "rules",
+        deserialize_with = "deserialize_process_exclusion_rules"
+    )]
+    pub exclusions: Vec<ProcessExclusionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PriorityBoostSettings {
+    pub enabled: bool,
+    #[serde(
+        default = "default_true",
+        alias = "exclude_foreground_app",
+        alias = "ignore_foreground_app"
+    )]
+    pub foreground_detection_enabled: bool,
+    #[serde(default = "default_priority_boost_foreground")]
+    pub foreground_boost: ProcessPriorityBoostSetting,
+    #[serde(default = "default_priority_boost_background")]
+    pub background_boost: ProcessPriorityBoostSetting,
+    #[serde(
+        default,
+        alias = "rules",
+        deserialize_with = "deserialize_process_exclusion_rules"
+    )]
+    pub exclusions: Vec<ProcessExclusionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GpuPrioritySettings {
     pub enabled: bool,
     #[serde(
@@ -897,11 +968,39 @@ impl From<ProcessMemoryPriority> for ProcessMemoryPrioritySetting {
 pub enum ProcessCpuPrioritySetting {
     #[default]
     Default,
+    Realtime,
     High,
     AboveNormal,
     Normal,
     BelowNormal,
     Idle,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessThreadPrioritySetting {
+    #[default]
+    Default,
+    TimeCritical,
+    Highest,
+    AboveNormal,
+    Normal,
+    BelowNormal,
+    Lowest,
+    Idle,
+}
+
+impl ProcessThreadPrioritySetting {
+    pub const ALL: [Self; 8] = [
+        Self::Default,
+        Self::TimeCritical,
+        Self::Highest,
+        Self::AboveNormal,
+        Self::Normal,
+        Self::BelowNormal,
+        Self::Lowest,
+        Self::Idle,
+    ];
 }
 
 impl ProcessCpuPrioritySetting {
@@ -914,14 +1013,53 @@ impl ProcessCpuPrioritySetting {
         Self::Idle,
     ];
 
+    pub const ADVANCED_ALL: [Self; 7] = [
+        Self::Default,
+        Self::Realtime,
+        Self::High,
+        Self::AboveNormal,
+        Self::Normal,
+        Self::BelowNormal,
+        Self::Idle,
+    ];
+
+    pub const fn safe_when_advanced_disabled(self) -> Self {
+        match self {
+            Self::Realtime => Self::High,
+            _ => self,
+        }
+    }
+
     pub const fn registry_value(self) -> Option<u32> {
         match self {
             Self::Default => None,
             Self::Idle => Some(1),
             Self::Normal => Some(2),
             Self::High => Some(3),
+            Self::Realtime => None,
             Self::BelowNormal => Some(5),
             Self::AboveNormal => Some(6),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessPriorityBoostSetting {
+    #[default]
+    Default,
+    Enabled,
+    Disabled,
+}
+
+impl ProcessPriorityBoostSetting {
+    pub const ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
+
+    pub const fn disabled_flag(self) -> Option<bool> {
+        match self {
+            Self::Default => None,
+            Self::Enabled => Some(false),
+            Self::Disabled => Some(true),
         }
     }
 }
@@ -1099,6 +1237,9 @@ impl Default for Settings {
             performance_mode: PerformanceModeSettings::default(),
             watchdog: WatchdogSettings::default(),
             foreground_responsiveness: ForegroundResponsivenessSettings::default(),
+            cpu_priority: CpuPrioritySettings::default(),
+            thread_priority: ThreadPrioritySettings::default(),
+            priority_boost: PriorityBoostSettings::default(),
             io_priority: IoPrioritySettings::default(),
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
@@ -1210,6 +1351,30 @@ const fn default_io_priority_foreground() -> ProcessIoPrioritySetting {
 
 const fn default_io_priority_background() -> ProcessIoPrioritySetting {
     ProcessIoPrioritySetting::VeryLow
+}
+
+const fn default_cpu_priority_foreground() -> ProcessCpuPrioritySetting {
+    ProcessCpuPrioritySetting::Default
+}
+
+const fn default_cpu_priority_background() -> ProcessCpuPrioritySetting {
+    ProcessCpuPrioritySetting::BelowNormal
+}
+
+const fn default_thread_priority_foreground() -> ProcessThreadPrioritySetting {
+    ProcessThreadPrioritySetting::Default
+}
+
+const fn default_thread_priority_background() -> ProcessThreadPrioritySetting {
+    ProcessThreadPrioritySetting::BelowNormal
+}
+
+const fn default_priority_boost_foreground() -> ProcessPriorityBoostSetting {
+    ProcessPriorityBoostSetting::Default
+}
+
+const fn default_priority_boost_background() -> ProcessPriorityBoostSetting {
+    ProcessPriorityBoostSetting::Disabled
 }
 
 const fn default_gpu_priority_foreground() -> ProcessGpuPrioritySetting {
@@ -1507,6 +1672,43 @@ impl Default for IoPrioritySettings {
     }
 }
 
+impl Default for CpuPrioritySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            advanced_priority_enabled: false,
+            foreground_detection_enabled: default_true(),
+            foreground_priority: default_cpu_priority_foreground(),
+            background_priority: default_cpu_priority_background(),
+            exclusions: Vec::new(),
+        }
+    }
+}
+
+impl Default for ThreadPrioritySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            foreground_detection_enabled: default_true(),
+            foreground_priority: default_thread_priority_foreground(),
+            background_priority: default_thread_priority_background(),
+            exclusions: Vec::new(),
+        }
+    }
+}
+
+impl Default for PriorityBoostSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            foreground_detection_enabled: default_true(),
+            foreground_boost: default_priority_boost_foreground(),
+            background_boost: default_priority_boost_background(),
+            exclusions: Vec::new(),
+        }
+    }
+}
+
 impl Default for GpuPrioritySettings {
     fn default() -> Self {
         Self {
@@ -1565,6 +1767,48 @@ impl Default for SmartTrimSettings {
 }
 
 impl IoPrioritySettings {
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
+        self.exclusions
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
+    }
+
+    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+        })
+    }
+}
+
+impl CpuPrioritySettings {
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
+        self.exclusions
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
+    }
+
+    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+        })
+    }
+}
+
+impl ThreadPrioritySettings {
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
+        self.exclusions
+            .iter()
+            .any(|rule| same_process_name(&rule.process_name, process_name))
+    }
+
+    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.exclusions.iter().any(|rule| {
+            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+        })
+    }
+}
+
+impl PriorityBoostSettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
@@ -2156,6 +2400,18 @@ mod tests {
         assert!(settings.auto_balance_exclusion_enabled_for("worker1.exe"));
         assert!(!settings.auto_balance_exclusion_enabled_for("worker12.exe"));
         assert!(!settings.auto_balance_exclusion_enabled_for("disabled.exe"));
+    }
+
+    #[test]
+    fn realtime_cpu_priority_downgrades_when_advanced_is_hidden() {
+        assert_eq!(
+            ProcessCpuPrioritySetting::Realtime.safe_when_advanced_disabled(),
+            ProcessCpuPrioritySetting::High
+        );
+        assert_eq!(
+            ProcessCpuPrioritySetting::BelowNormal.safe_when_advanced_disabled(),
+            ProcessCpuPrioritySetting::BelowNormal
+        );
     }
 
     #[test]

@@ -50,19 +50,22 @@ use crate::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
         AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
         CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
-        CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
-        EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
-        EcoQosSettings, ForegroundBoostPriority, ForegroundResponsivenessSettings, ForegroundRule,
-        ForegroundRules, GpuPrioritySettings, IoPrioritySettings, LaunchPriorityRule,
-        LaunchPrioritySettings, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
-        PerformanceModeSettings, ProcessCpuPrioritySetting, ProcessExclusionRule,
-        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
-        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority, ScheduleRule,
-        Settings, SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
+        CpuPrioritySettings, CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness,
+        EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
+        EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
+        ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GpuPrioritySettings,
+        IoPrioritySettings, LaunchPriorityRule, LaunchPrioritySettings, MemoryPrioritySettings,
+        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PriorityBoostSettings,
+        ProcessCpuPrioritySetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
+        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
+        ProcessMemoryPrioritySetting, ProcessPriority, ProcessPriorityBoostSetting,
+        ProcessThreadPrioritySetting, ScheduleRule, Settings, SmartTrimSettings,
+        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
         WatchdogRule, WatchdogSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
+    cpu_priority::{self, CpuPrioritySnapshot},
     dashboard_metrics::{
         IoUsageMonitor, IoUsageSnapshot, MemoryUsageMonitor, MemoryUsageSnapshot,
         NetworkUsageMonitor, NetworkUsageSnapshot,
@@ -84,6 +87,7 @@ use crate::{
         ProcessorPowerValues,
     },
     power_source,
+    priority_boost::{self, PriorityBoostSnapshot},
     process_icon::load_process_icon,
     responsiveness::{self, ForegroundResponsivenessSnapshot},
     rules::{
@@ -94,6 +98,7 @@ use crate::{
     smart_trim::{self, SmartTrimSnapshot},
     startup,
     suspension::{self, AppSuspensionSnapshot},
+    thread_priority::{self, ThreadPrioritySnapshot},
     timer_resolution::{self, TimerResolutionSnapshot},
     tray::{self, TrayIcon},
     ui::{self, Page},
@@ -272,7 +277,7 @@ enum ActionLogFeatureFilter {
 }
 
 impl ActionLogFeatureFilter {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 17] = [
         Self::All,
         Self::Feature(ActionLogFeature::AppSuspension),
         Self::Feature(ActionLogFeature::BackgroundCpuRestriction),
@@ -282,6 +287,9 @@ impl ActionLogFeatureFilter {
         Self::Feature(ActionLogFeature::PerformanceMode),
         Self::Feature(ActionLogFeature::Watchdog),
         Self::Feature(ActionLogFeature::ForegroundResponsiveness),
+        Self::Feature(ActionLogFeature::CpuPriority),
+        Self::Feature(ActionLogFeature::ThreadPriority),
+        Self::Feature(ActionLogFeature::PriorityBoost),
         Self::Feature(ActionLogFeature::IoPriority),
         Self::Feature(ActionLogFeature::GpuPriority),
         Self::Feature(ActionLogFeature::MemoryPriority),
@@ -426,6 +434,9 @@ pub struct WinderustApp {
     performance_mode_status: PerformanceModeSnapshot,
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
+    cpu_priority_status: CpuPrioritySnapshot,
+    thread_priority_status: ThreadPrioritySnapshot,
+    priority_boost_status: PriorityBoostSnapshot,
     io_priority_status: IoPrioritySnapshot,
     gpu_priority_status: GpuPrioritySnapshot,
     memory_priority_status: MemoryPrioritySnapshot,
@@ -627,6 +638,9 @@ enum ListItemRemovalKind {
     WatchdogRule,
     PerformanceModeRule,
     ResponsivenessExclusion,
+    CpuPriorityExclusion,
+    ThreadPriorityExclusion,
+    PriorityBoostExclusion,
     IoPriorityExclusion,
     GpuPriorityExclusion,
     MemoryPriorityExclusion,
@@ -676,6 +690,9 @@ struct UiInputs {
     performance_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
     responsiveness_process: Entity<InputState>,
+    cpu_priority_process: Entity<InputState>,
+    thread_priority_process: Entity<InputState>,
+    priority_boost_process: Entity<InputState>,
     io_priority_process: Entity<InputState>,
     gpu_priority_process: Entity<InputState>,
     memory_priority_process: Entity<InputState>,
@@ -812,6 +829,9 @@ impl UiInputs {
             performance_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
             responsiveness_process: make_input(window, cx, "", "Search running apps..."),
+            cpu_priority_process: make_input(window, cx, "", "Search running apps..."),
+            thread_priority_process: make_input(window, cx, "", "Search running apps..."),
+            priority_boost_process: make_input(window, cx, "", "Search running apps..."),
             io_priority_process: make_input(window, cx, "", "Search running apps..."),
             gpu_priority_process: make_input(window, cx, "", "Search running apps..."),
             memory_priority_process: make_input(window, cx, "", "Search running apps..."),
@@ -1093,6 +1113,9 @@ impl WinderustApp {
             performance_mode_status: PerformanceModeSnapshot::default(),
             watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
+            cpu_priority_status: CpuPrioritySnapshot::default(),
+            thread_priority_status: ThreadPrioritySnapshot::default(),
+            priority_boost_status: PriorityBoostSnapshot::default(),
             io_priority_status: IoPrioritySnapshot::default(),
             gpu_priority_status: GpuPrioritySnapshot::default(),
             memory_priority_status: MemoryPrioritySnapshot::default(),
@@ -1470,6 +1493,21 @@ impl WinderustApp {
                         .foreground_responsiveness
                         .auto_balance_exclusions
                         .remove(index);
+                }
+            }
+            ListItemRemovalKind::CpuPriorityExclusion => {
+                if index < self.settings.cpu_priority.exclusions.len() {
+                    self.settings.cpu_priority.exclusions.remove(index);
+                }
+            }
+            ListItemRemovalKind::ThreadPriorityExclusion => {
+                if index < self.settings.thread_priority.exclusions.len() {
+                    self.settings.thread_priority.exclusions.remove(index);
+                }
+            }
+            ListItemRemovalKind::PriorityBoostExclusion => {
+                if index < self.settings.priority_boost.exclusions.len() {
+                    self.settings.priority_boost.exclusions.remove(index);
                 }
             }
             ListItemRemovalKind::IoPriorityExclusion => {
@@ -2637,6 +2675,21 @@ impl WinderustApp {
                 changed = true;
             }
 
+            if self.cpu_priority_status != background_status.cpu_priority {
+                self.cpu_priority_status = background_status.cpu_priority;
+                changed = true;
+            }
+
+            if self.thread_priority_status != background_status.thread_priority {
+                self.thread_priority_status = background_status.thread_priority;
+                changed = true;
+            }
+
+            if self.priority_boost_status != background_status.priority_boost {
+                self.priority_boost_status = background_status.priority_boost;
+                changed = true;
+            }
+
             if self.io_priority_status != background_status.io_priority {
                 self.io_priority_status = background_status.io_priority;
                 changed = true;
@@ -2776,6 +2829,8 @@ impl WinderustApp {
             Page::ForegroundRules
                 | Page::EfficiencyMode
                 | Page::AppSuspension
+                | Page::CpuPriority
+                | Page::DynamicPriorityBoost
                 | Page::CpuLimiter
                 | Page::BackgroundCpuRestriction
                 | Page::Watchdog
@@ -4258,9 +4313,13 @@ impl WinderustApp {
             Page::PowerPlanAutomation => {
                 self.render_section_landing_page(Page::PowerPlanAutomation, cx)
             }
+            Page::WinderustFeatures => {
+                self.render_section_landing_page(Page::WinderustFeatures, cx)
+            }
             Page::ProcessorControls => {
                 self.render_section_landing_page(Page::ProcessorControls, cx)
             }
+            Page::PriorityControl => self.render_section_landing_page(Page::PriorityControl, cx),
             Page::ProcessPolicies => self.render_section_landing_page(Page::ProcessPolicies, cx),
             Page::MemoryControl => self.render_section_landing_page(Page::MemoryControl, cx),
             Page::AppHome => self.render_section_landing_page(Page::AppHome, cx),
@@ -4270,6 +4329,9 @@ impl WinderustApp {
             Page::Schedule => self.render_schedule_page(window, cx),
             Page::CpuUsage => self.render_cpu_usage_page(window, cx),
             Page::CoreParking => self.render_core_parking_page(window, cx),
+            Page::CpuPriority => self.render_cpu_priority_page(window, cx),
+            Page::ThreadPriority => self.render_thread_priority_page(window, cx),
+            Page::DynamicPriorityBoost => self.render_priority_boost_page(window, cx),
             Page::CpuLimiter => self.render_cpu_limiter_page(window, cx),
             Page::BackgroundCpuRestriction => {
                 self.render_background_cpu_restriction_page(window, cx)
@@ -8062,7 +8124,7 @@ impl WinderustApp {
             t!("responsiveness.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::ForegroundResponsiveness, cx)
+        self.page_shell(self.page, cx)
             .child(feature_toggle_switch_with_help(
                 "foreground-responsiveness-enabled",
                 t!("responsiveness.enable").to_string(),
@@ -8992,6 +9054,823 @@ impl WinderustApp {
             .child(master_card)
             .child(disabled_feature_body("io-priority-body", body, enabled, cx))
             .into_any_element()
+    }
+
+    fn render_cpu_priority_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self
+            .inputs
+            .cpu_priority_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.cpu_priority.enabled;
+        let help = tooltip_lines(vec![
+            t!("cpu_priority.intro_1").to_string(),
+            t!("cpu_priority.intro_2").to_string(),
+        ]);
+        let master_card = setting_group_with_help(
+            SettingGroupTarget::CpuPriorityMaster,
+            (t!("cpu_priority.enable").to_string(), help),
+            setting_group_switch_action(
+                "cpu-priority-enabled-toggle",
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.cpu_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::CpuPriorityMaster),
+            vec![
+                setting_group_action_row(
+                    "cpu-priority-background-default-row",
+                    t!("cpu_priority.background_default").to_string(),
+                    self.render_cpu_priority_default_selector(
+                        CpuPriorityDefaultTarget::Background,
+                        self.settings.cpu_priority.background_priority,
+                        enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element(),
+                setting_group_action_row(
+                    "cpu-priority-advanced-row",
+                    t!("cpu_priority.advanced_priority").to_string(),
+                    setting_group_switch_action(
+                        "cpu-priority-advanced-toggle",
+                        self.settings.cpu_priority.advanced_priority_enabled,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings.cpu_priority.advanced_priority_enabled = *checked;
+                            if !*checked {
+                                app.settings.cpu_priority.background_priority = app
+                                    .settings
+                                    .cpu_priority
+                                    .background_priority
+                                    .safe_when_advanced_disabled();
+                                app.settings.cpu_priority.foreground_priority = app
+                                    .settings
+                                    .cpu_priority
+                                    .foreground_priority
+                                    .safe_when_advanced_disabled();
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                    false,
+                )
+                .into_any_element(),
+            ],
+            window,
+            cx,
+        );
+        let body = feature_body(enabled)
+            .child(setting_group_with_help(
+                SettingGroupTarget::CpuPriorityForegroundDetection,
+                (
+                    t!("cpu_priority.foreground_detection").to_string(),
+                    t!("cpu_priority.foreground_detection_help").to_string(),
+                ),
+                setting_group_switch_action(
+                    "cpu-priority-foreground-detection-toggle",
+                    self.settings.cpu_priority.foreground_detection_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.cpu_priority.foreground_detection_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(SettingGroupTarget::CpuPriorityForegroundDetection),
+                vec![setting_group_action_row(
+                    "cpu-priority-foreground-default-row",
+                    t!("cpu_priority.foreground_default").to_string(),
+                    self.render_cpu_priority_default_selector(
+                        CpuPriorityDefaultTarget::Foreground,
+                        self.settings.cpu_priority.foreground_priority,
+                        self.settings.cpu_priority.foreground_detection_enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element()],
+                window,
+                cx,
+            ))
+            .child(self.render_cpu_priority_status_card())
+            .child(section_header(
+                &t!("cpu_priority.exclusions"),
+                t!("cpu_priority.exclusions_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "cpu-priority-process-suggestion",
+                        &self.inputs.cpu_priority_process,
+                        SuggestionTarget::CpuPriority,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-cpu-priority-exclusion"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_cpu_priority_exclusion(
+                                        &self.settings.cpu_priority,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process =
+                                    app.inputs.cpu_priority_process.read(cx).value().to_string();
+                                if can_add_cpu_priority_exclusion(
+                                    &app.settings.cpu_priority,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .cpu_priority
+                                        .exclusions
+                                        .push(new_process_exclusion_rule(&process));
+                                    clear_input(&app.inputs.cpu_priority_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_cpu_priority_exclusions(cx));
+
+        self.page_shell(Page::CpuPriority, cx)
+            .child(master_card)
+            .child(disabled_feature_body(
+                "cpu-priority-body",
+                body,
+                enabled,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_cpu_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.cpu_priority.exclusions.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let row = compact_rule_row(format!("cpu-priority-exclusion-row-{index}"))
+                .child(rule_enable_checkbox(
+                    format!("cpu-priority-exclusion-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.cpu_priority.exclusions.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(
+                    remove_control_button(Button::new(SharedString::from(format!(
+                        "remove-cpu-priority-exclusion-{index}"
+                    ))))
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::CpuPriorityExclusion,
+                                index,
+                            ),
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::new(ListItemRemovalKind::CpuPriorityExclusion, index),
+                SharedString::from(format!("cpu-priority-exclusion-{index}")),
+                row.into_any_element(),
+            ));
+        }
+        if self.settings.cpu_priority.exclusions.is_empty() {
+            list = list.child(text_muted(t!("cpu_priority.no_exclusions").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_cpu_priority_status_card(&self) -> gpui::Div {
+        let status = &self.cpu_priority_status;
+        let message = if status.message.is_empty() {
+            t!("cpu_priority.not_checked").to_string()
+        } else {
+            status.message.clone()
+        };
+        let mut rows = vec![
+            (t!("common.status").to_string(), message),
+            (
+                t!("cpu_priority.adjusted_processes").to_string(),
+                status.adjusted_processes.to_string(),
+            ),
+            (
+                t!("cpu_priority.scanned_processes").to_string(),
+                status.scanned_processes.to_string(),
+            ),
+            (
+                t!("cpu_priority.skipped_processes").to_string(),
+                status.skipped_processes.to_string(),
+            ),
+            (
+                t!("cpu_priority.failed_actions").to_string(),
+                status.failed_processes.to_string(),
+            ),
+        ];
+        if let Some(error) = &status.last_error {
+            rows.push((t!("common.last_failure").to_string(), error.clone()));
+        }
+        stat_grid(rows)
+    }
+
+    fn render_cpu_priority_default_selector(
+        &self,
+        target: CpuPriorityDefaultTarget,
+        selected_priority: ProcessCpuPrioritySetting,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = match target {
+            CpuPriorityDefaultTarget::Background => "cpu-priority-background-default",
+            CpuPriorityDefaultTarget::Foreground => "cpu-priority-foreground-default",
+        };
+        let priorities: &[ProcessCpuPrioritySetting] =
+            if self.settings.cpu_priority.advanced_priority_enabled {
+                &ProcessCpuPrioritySetting::ADVANCED_ALL
+            } else {
+                &ProcessCpuPrioritySetting::ALL
+            };
+        self.render_dropdown_select(
+            id,
+            process_cpu_priority_setting_label(selected_priority),
+            enabled,
+            DropdownSelectWidth::Standard,
+            priorities.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in priorities.iter().copied() {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_cpu_priority_setting_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match target {
+                                CpuPriorityDefaultTarget::Background => {
+                                    app.settings.cpu_priority.background_priority = priority;
+                                }
+                                CpuPriorityDefaultTarget::Foreground => {
+                                    app.settings.cpu_priority.foreground_priority = priority;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_thread_priority_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .thread_priority_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.thread_priority.enabled;
+        let help = tooltip_lines(vec![
+            t!("thread_priority.intro_1").to_string(),
+            t!("thread_priority.intro_2").to_string(),
+        ]);
+        let master_card = setting_group_with_help(
+            SettingGroupTarget::ThreadPriorityMaster,
+            (t!("thread_priority.enable").to_string(), help),
+            setting_group_switch_action(
+                "thread-priority-enabled-toggle",
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.thread_priority.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::ThreadPriorityMaster),
+            vec![setting_group_action_row(
+                "thread-priority-background-default-row",
+                t!("thread_priority.background_default").to_string(),
+                self.render_thread_priority_default_selector(
+                    ThreadPriorityDefaultTarget::Background,
+                    self.settings.thread_priority.background_priority,
+                    enabled,
+                    window,
+                    cx,
+                ),
+                false,
+            )
+            .into_any_element()],
+            window,
+            cx,
+        );
+        let body = feature_body(enabled)
+            .child(setting_group_with_help(
+                SettingGroupTarget::ThreadPriorityForegroundDetection,
+                (
+                    t!("thread_priority.foreground_detection").to_string(),
+                    t!("thread_priority.foreground_detection_help").to_string(),
+                ),
+                setting_group_switch_action(
+                    "thread-priority-foreground-detection-toggle",
+                    self.settings.thread_priority.foreground_detection_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.thread_priority.foreground_detection_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(
+                    SettingGroupTarget::ThreadPriorityForegroundDetection,
+                ),
+                vec![setting_group_action_row(
+                    "thread-priority-foreground-default-row",
+                    t!("thread_priority.foreground_default").to_string(),
+                    self.render_thread_priority_default_selector(
+                        ThreadPriorityDefaultTarget::Foreground,
+                        self.settings.thread_priority.foreground_priority,
+                        self.settings.thread_priority.foreground_detection_enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element()],
+                window,
+                cx,
+            ))
+            .child(self.render_thread_priority_status_card())
+            .child(section_header(
+                &t!("thread_priority.exclusions"),
+                t!("thread_priority.exclusions_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "thread-priority-process-suggestion",
+                        &self.inputs.thread_priority_process,
+                        SuggestionTarget::ThreadPriority,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-thread-priority-exclusion"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_thread_priority_exclusion(
+                                        &self.settings.thread_priority,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process = app
+                                    .inputs
+                                    .thread_priority_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_thread_priority_exclusion(
+                                    &app.settings.thread_priority,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .thread_priority
+                                        .exclusions
+                                        .push(new_process_exclusion_rule(&process));
+                                    clear_input(&app.inputs.thread_priority_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_thread_priority_exclusions(cx));
+
+        self.page_shell(Page::ThreadPriority, cx)
+            .child(master_card)
+            .child(disabled_feature_body(
+                "thread-priority-body",
+                body,
+                enabled,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_thread_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.thread_priority.exclusions.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let row = compact_rule_row(format!("thread-priority-exclusion-row-{index}"))
+                .child(rule_enable_checkbox(
+                    format!("thread-priority-exclusion-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.thread_priority.exclusions.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(
+                    remove_control_button(Button::new(SharedString::from(format!(
+                        "remove-thread-priority-exclusion-{index}"
+                    ))))
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::ThreadPriorityExclusion,
+                                index,
+                            ),
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::new(ListItemRemovalKind::ThreadPriorityExclusion, index),
+                SharedString::from(format!("thread-priority-exclusion-{index}")),
+                row.into_any_element(),
+            ));
+        }
+        if self.settings.thread_priority.exclusions.is_empty() {
+            list = list.child(text_muted(t!("thread_priority.no_exclusions").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_thread_priority_status_card(&self) -> gpui::Div {
+        let status = &self.thread_priority_status;
+        let message = if status.message.is_empty() {
+            t!("thread_priority.not_checked").to_string()
+        } else {
+            status.message.clone()
+        };
+        let mut rows = vec![
+            (t!("common.status").to_string(), message),
+            (
+                t!("thread_priority.adjusted_processes").to_string(),
+                status.adjusted_processes.to_string(),
+            ),
+            (
+                t!("thread_priority.adjusted_threads").to_string(),
+                status.adjusted_threads.to_string(),
+            ),
+            (
+                t!("thread_priority.scanned_processes").to_string(),
+                status.scanned_processes.to_string(),
+            ),
+            (
+                t!("thread_priority.skipped_processes").to_string(),
+                status.skipped_processes.to_string(),
+            ),
+            (
+                t!("thread_priority.failed_actions").to_string(),
+                status.failed_processes.to_string(),
+            ),
+        ];
+        if let Some(error) = &status.last_error {
+            rows.push((t!("common.last_failure").to_string(), error.clone()));
+        }
+        stat_grid(rows)
+    }
+
+    fn render_thread_priority_default_selector(
+        &self,
+        target: ThreadPriorityDefaultTarget,
+        selected_priority: ProcessThreadPrioritySetting,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = match target {
+            ThreadPriorityDefaultTarget::Background => "thread-priority-background-default",
+            ThreadPriorityDefaultTarget::Foreground => "thread-priority-foreground-default",
+        };
+        self.render_dropdown_select(
+            id,
+            process_thread_priority_setting_label(selected_priority),
+            enabled,
+            DropdownSelectWidth::Standard,
+            ProcessThreadPrioritySetting::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessThreadPrioritySetting::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_thread_priority_setting_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match target {
+                                ThreadPriorityDefaultTarget::Background => {
+                                    app.settings.thread_priority.background_priority = priority;
+                                }
+                                ThreadPriorityDefaultTarget::Foreground => {
+                                    app.settings.thread_priority.foreground_priority = priority;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_priority_boost_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .priority_boost_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.priority_boost.enabled;
+        let help = tooltip_lines(vec![
+            t!("priority_boost.intro_1").to_string(),
+            t!("priority_boost.intro_2").to_string(),
+        ]);
+        let master_card = setting_group_with_help(
+            SettingGroupTarget::PriorityBoostMaster,
+            (t!("priority_boost.enable").to_string(), help),
+            setting_group_switch_action(
+                "priority-boost-enabled-toggle",
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.priority_boost.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::PriorityBoostMaster),
+            vec![setting_group_action_row(
+                "priority-boost-background-default-row",
+                t!("priority_boost.background_default").to_string(),
+                self.render_priority_boost_default_selector(
+                    PriorityBoostDefaultTarget::Background,
+                    self.settings.priority_boost.background_boost,
+                    enabled,
+                    window,
+                    cx,
+                ),
+                false,
+            )
+            .into_any_element()],
+            window,
+            cx,
+        );
+        let body = feature_body(enabled)
+            .child(setting_group_with_help(
+                SettingGroupTarget::PriorityBoostForegroundDetection,
+                (
+                    t!("priority_boost.foreground_detection").to_string(),
+                    t!("priority_boost.foreground_detection_help").to_string(),
+                ),
+                setting_group_switch_action(
+                    "priority-boost-foreground-detection-toggle",
+                    self.settings.priority_boost.foreground_detection_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.priority_boost.foreground_detection_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(
+                    SettingGroupTarget::PriorityBoostForegroundDetection,
+                ),
+                vec![setting_group_action_row(
+                    "priority-boost-foreground-default-row",
+                    t!("priority_boost.foreground_default").to_string(),
+                    self.render_priority_boost_default_selector(
+                        PriorityBoostDefaultTarget::Foreground,
+                        self.settings.priority_boost.foreground_boost,
+                        self.settings.priority_boost.foreground_detection_enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element()],
+                window,
+                cx,
+            ))
+            .child(self.render_priority_boost_status_card())
+            .child(section_header(
+                &t!("priority_boost.exclusions"),
+                t!("priority_boost.exclusions_help").to_string(),
+            ))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_start()
+                    .flex_wrap()
+                    .child(self.render_process_picker(
+                        "priority-boost-process-suggestion",
+                        &self.inputs.priority_boost_process,
+                        SuggestionTarget::PriorityBoost,
+                        window,
+                        cx,
+                    ))
+                    .child(
+                        primary_control_button(Button::new("add-priority-boost-exclusion"), cx)
+                            .label(t!("common.add").to_string())
+                            .disabled(
+                                !enabled
+                                    || !can_add_priority_boost_exclusion(
+                                        &self.settings.priority_boost,
+                                        &input_value,
+                                    ),
+                            )
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let process = app
+                                    .inputs
+                                    .priority_boost_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_priority_boost_exclusion(
+                                    &app.settings.priority_boost,
+                                    &process,
+                                ) {
+                                    app.settings
+                                        .priority_boost
+                                        .exclusions
+                                        .push(new_process_exclusion_rule(&process));
+                                    clear_input(&app.inputs.priority_boost_process, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(self.render_priority_boost_exclusions(cx));
+
+        self.page_shell(Page::DynamicPriorityBoost, cx)
+            .child(master_card)
+            .child(disabled_feature_body(
+                "priority-boost-body",
+                body,
+                enabled,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_priority_boost_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut list = rule_list();
+        for (index, rule) in self.settings.priority_boost.exclusions.iter().enumerate() {
+            let process = rule.process_name.clone();
+            let row = compact_rule_row(format!("priority-boost-exclusion-row-{index}"))
+                .child(rule_enable_checkbox(
+                    format!("priority-boost-exclusion-enabled-{index}"),
+                    rule.enabled,
+                    cx.listener(move |app, checked, _, cx| {
+                        if let Some(rule) = app.settings.priority_boost.exclusions.get_mut(index) {
+                            rule.enabled = *checked;
+                        }
+                        cx.notify();
+                    }),
+                ))
+                .child(self.process_rule_title(&process, cx))
+                .child(
+                    remove_control_button(Button::new(SharedString::from(format!(
+                        "remove-priority-boost-exclusion-{index}"
+                    ))))
+                    .on_click(cx.listener(move |app, _, _, cx| {
+                        app.request_list_item_removal(
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::PriorityBoostExclusion,
+                                index,
+                            ),
+                            cx,
+                        );
+                    }))
+                    .into_any_element(),
+                );
+            list = list.child(self.animated_list_item(
+                ListItemRemovalTarget::new(ListItemRemovalKind::PriorityBoostExclusion, index),
+                SharedString::from(format!("priority-boost-exclusion-{index}")),
+                row.into_any_element(),
+            ));
+        }
+        if self.settings.priority_boost.exclusions.is_empty() {
+            list = list.child(text_muted(t!("priority_boost.no_exclusions").to_string()));
+        }
+        list.into_any_element()
+    }
+
+    fn render_priority_boost_status_card(&self) -> gpui::Div {
+        let status = &self.priority_boost_status;
+        let message = if status.message.is_empty() {
+            t!("priority_boost.not_checked").to_string()
+        } else {
+            status.message.clone()
+        };
+        let mut rows = vec![
+            (t!("common.status").to_string(), message),
+            (
+                t!("priority_boost.adjusted_processes").to_string(),
+                status.adjusted_processes.to_string(),
+            ),
+            (
+                t!("priority_boost.scanned_processes").to_string(),
+                status.scanned_processes.to_string(),
+            ),
+            (
+                t!("priority_boost.skipped_processes").to_string(),
+                status.skipped_processes.to_string(),
+            ),
+            (
+                t!("priority_boost.failed_actions").to_string(),
+                status.failed_processes.to_string(),
+            ),
+        ];
+        if let Some(error) = &status.last_error {
+            rows.push((t!("common.last_failure").to_string(), error.clone()));
+        }
+        stat_grid(rows)
+    }
+
+    fn render_priority_boost_default_selector(
+        &self,
+        target: PriorityBoostDefaultTarget,
+        selected_boost: ProcessPriorityBoostSetting,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = match target {
+            PriorityBoostDefaultTarget::Background => "priority-boost-background-default",
+            PriorityBoostDefaultTarget::Foreground => "priority-boost-foreground-default",
+        };
+        self.render_dropdown_select(
+            id,
+            process_priority_boost_setting_label(selected_boost),
+            enabled,
+            DropdownSelectWidth::Standard,
+            ProcessPriorityBoostSetting::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for boost in ProcessPriorityBoostSetting::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{boost:?}")),
+                            process_priority_boost_setting_label(boost),
+                            selected_boost == boost,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match target {
+                                PriorityBoostDefaultTarget::Background => {
+                                    app.settings.priority_boost.background_boost = boost;
+                                }
+                                PriorityBoostDefaultTarget::Foreground => {
+                                    app.settings.priority_boost.foreground_boost = boost;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
     }
 
     fn render_io_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -13364,6 +14243,15 @@ impl WinderustApp {
             SuggestionTarget::Responsiveness => {
                 clear_input_to(&self.inputs.responsiveness_process, process, window, cx);
             }
+            SuggestionTarget::CpuPriority => {
+                clear_input_to(&self.inputs.cpu_priority_process, process, window, cx);
+            }
+            SuggestionTarget::ThreadPriority => {
+                clear_input_to(&self.inputs.thread_priority_process, process, window, cx);
+            }
+            SuggestionTarget::PriorityBoost => {
+                clear_input_to(&self.inputs.priority_boost_process, process, window, cx);
+            }
             SuggestionTarget::IoPriority => {
                 clear_input_to(&self.inputs.io_priority_process, process, window, cx);
             }
@@ -13394,6 +14282,24 @@ enum PowerPlanKind {
 
 #[derive(Debug, Clone, Copy)]
 enum IoPriorityDefaultTarget {
+    Background,
+    Foreground,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CpuPriorityDefaultTarget {
+    Background,
+    Foreground,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ThreadPriorityDefaultTarget {
+    Background,
+    Foreground,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PriorityBoostDefaultTarget {
     Background,
     Foreground,
 }
@@ -13943,6 +14849,9 @@ enum SuggestionTarget {
     Watchdog,
     PerformanceMode,
     Responsiveness,
+    CpuPriority,
+    ThreadPriority,
+    PriorityBoost,
     IoPriority,
     GpuPriority,
     MemoryPriority,
@@ -13976,6 +14885,12 @@ enum SettingGroupTarget {
     AutoBalanceEfficiency,
     AutoBalanceIoPriority,
     AutoBalanceMemoryPriority,
+    CpuPriorityMaster,
+    CpuPriorityForegroundDetection,
+    ThreadPriorityMaster,
+    ThreadPriorityForegroundDetection,
+    PriorityBoostMaster,
+    PriorityBoostForegroundDetection,
     IoPriorityMaster,
     IoPriorityForegroundDetection,
     EfficiencyEnable,
@@ -15099,14 +16014,20 @@ fn dashboard_page_search_text(page: Page) -> String {
         Page::PowerPlanAutomation => vec![
             "power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc".to_string(),
         ],
+        Page::WinderustFeatures => vec![
+            "winderust features auto balance foreground responsiveness smart trim working set memory ram background restraint".to_string(),
+        ],
         Page::ProcessorControls => vec![
             "processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores".to_string(),
         ],
+        Page::PriorityControl => vec![
+            "priority control process thread dynamic boost io gpu memory launch registry ifeo scheduler base priority".to_string(),
+        ],
         Page::ProcessPolicies => vec![
-            "process policies rules efficiency mode io priority launch registry ifeo watchdog terminate restart background foreground".to_string(),
+            "process policies rules efficiency mode watchdog terminate restart background foreground".to_string(),
         ],
         Page::MemoryControl => vec![
-            "memory control memory priority smarttrim ram trim working set standby list file cache paging background process".to_string(),
+            "memory control smart trim ram trim working set standby list file cache paging background process".to_string(),
         ],
         Page::ActionLog => vec![
             t!("action_log.intro_1").to_string(),
@@ -15158,6 +16079,24 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("cpu_limiter.focus_detection_help").to_string(),
             t!("cpu_limiter.rules_help").to_string(),
             "cpu limiter limit core affinity threshold sustain cooldown background process".to_string(),
+        ],
+        Page::CpuPriority => vec![
+            t!("cpu_priority.intro_1").to_string(),
+            t!("cpu_priority.intro_2").to_string(),
+            t!("cpu_priority.exclusions_help").to_string(),
+            "process priority base priority normal below normal idle above normal high background foreground exclusion".to_string(),
+        ],
+        Page::ThreadPriority => vec![
+            t!("thread_priority.intro_1").to_string(),
+            t!("thread_priority.intro_2").to_string(),
+            t!("thread_priority.exclusions_help").to_string(),
+            "thread priority time critical highest above normal normal below normal lowest idle background foreground exclusion".to_string(),
+        ],
+        Page::DynamicPriorityBoost => vec![
+            t!("priority_boost.intro_1").to_string(),
+            t!("priority_boost.intro_2").to_string(),
+            t!("priority_boost.exclusions_help").to_string(),
+            "dynamic priority boost process scheduler enabled disabled background foreground exclusion".to_string(),
         ],
         Page::BackgroundCpuRestriction => vec![
             t!("background_cpu.intro_1").to_string(),
@@ -19721,6 +20660,9 @@ fn action_log_feature_label(feature: ActionLogFeature) -> String {
         ActionLogFeature::ForegroundResponsiveness => {
             t!("nav.foreground_responsiveness").to_string()
         }
+        ActionLogFeature::CpuPriority => t!("nav.cpu_priority").to_string(),
+        ActionLogFeature::ThreadPriority => t!("nav.thread_priority").to_string(),
+        ActionLogFeature::PriorityBoost => t!("nav.dynamic_priority_boost").to_string(),
         ActionLogFeature::IoPriority => t!("nav.io_priority").to_string(),
         ActionLogFeature::GpuPriority => t!("nav.gpu_priority").to_string(),
         ActionLogFeature::MemoryPriority => t!("nav.memory_priority").to_string(),
@@ -20448,7 +21390,9 @@ fn nav_icon_name(page: Page) -> NavIcon {
     match page {
         Page::Dashboard => NavIcon::House,
         Page::PowerPlanAutomation => NavIcon::Zap,
+        Page::WinderustFeatures => NavIcon::Feather,
         Page::ProcessorControls => NavIcon::Cpu,
+        Page::PriorityControl => NavIcon::CircleFadingArrowUp,
         Page::ProcessPolicies => NavIcon::AppWindow,
         Page::MemoryControl => NavIcon::MemoryStick,
         Page::AppHome => NavIcon::Settings,
@@ -20456,6 +21400,9 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::Activity => NavIcon::SquareActivity,
         Page::CpuUsage => NavIcon::ChartColumn,
         Page::CoreParking => NavIcon::Drill,
+        Page::CpuPriority => NavIcon::PanelsTopLeft,
+        Page::ThreadPriority => NavIcon::Spline,
+        Page::DynamicPriorityBoost => NavIcon::TrendingUpDown,
         Page::CpuLimiter => NavIcon::OctagonMinus,
         Page::BackgroundCpuRestriction => NavIcon::MonitorX,
         Page::ProcessList => NavIcon::List,
@@ -20466,7 +21413,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::ForegroundResponsiveness => NavIcon::BrainCog,
         Page::IoPriority => NavIcon::Rotate3d,
         Page::GpuPriority => NavIcon::Gpu,
-        Page::MemoryPriority => NavIcon::CircleFadingArrowUp,
+        Page::MemoryPriority => NavIcon::MemoryStick,
         Page::LaunchPriority => NavIcon::Rocket,
         Page::SmartTrim => NavIcon::Scissors,
         Page::CpuAffinity => NavIcon::LifeBuoy,
@@ -20494,6 +21441,7 @@ enum NavIcon {
     Cog,
     Cpu,
     Drill,
+    Feather,
     Footprints,
     Gpu,
     Hourglass,
@@ -20507,14 +21455,17 @@ enum NavIcon {
     MonitorX,
     OctagonMinus,
     Palette,
+    PanelsTopLeft,
     Rocket,
     Rotate3d,
     ScanEye,
     Scissors,
     Settings,
+    Spline,
     SquareActivity,
     SquarePen,
     Trash2,
+    TrendingUpDown,
     Wrench,
     Zap,
 }
@@ -20533,6 +21484,7 @@ impl IconNamed for NavIcon {
             Self::Cog => "icons/cog.svg",
             Self::Cpu => "icons/cpu.svg",
             Self::Drill => "icons/drill.svg",
+            Self::Feather => "icons/feather.svg",
             Self::Footprints => "icons/footprints.svg",
             Self::Gpu => "icons/gpu.svg",
             Self::Hourglass => "icons/hourglass.svg",
@@ -20546,14 +21498,17 @@ impl IconNamed for NavIcon {
             Self::MonitorX => "icons/monitor-x.svg",
             Self::OctagonMinus => "icons/octagon-minus.svg",
             Self::Palette => "icons/palette.svg",
+            Self::PanelsTopLeft => "icons/panels-top-left.svg",
             Self::Rocket => "icons/rocket.svg",
             Self::Rotate3d => "icons/rotate-3d.svg",
             Self::ScanEye => "icons/scan-eye.svg",
             Self::Scissors => "icons/scissors.svg",
             Self::Settings => "icons/settings.svg",
+            Self::Spline => "icons/spline.svg",
             Self::SquareActivity => "icons/square-activity.svg",
             Self::SquarePen => "icons/square-pen.svg",
             Self::Trash2 => "icons/trash-2.svg",
+            Self::TrendingUpDown => "icons/trending-up-down.svg",
             Self::Wrench => "icons/wrench.svg",
             Self::Zap => "icons/zap.svg",
         }
@@ -21885,6 +22840,15 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::Responsiveness => {
             can_add_responsiveness_process(&settings.foreground_responsiveness, process)
         }
+        SuggestionTarget::CpuPriority => {
+            can_add_cpu_priority_exclusion(&settings.cpu_priority, process)
+        }
+        SuggestionTarget::ThreadPriority => {
+            can_add_thread_priority_exclusion(&settings.thread_priority, process)
+        }
+        SuggestionTarget::PriorityBoost => {
+            can_add_priority_boost_exclusion(&settings.priority_boost, process)
+        }
         SuggestionTarget::IoPriority => {
             can_add_io_priority_exclusion(&settings.io_priority, process)
         }
@@ -22094,6 +23058,30 @@ fn can_add_io_priority_exclusion(settings: &IoPrioritySettings, process: &str) -
         process,
         |process| settings.contains_exclusion(process),
         io_priority::is_builtin_excluded,
+    )
+}
+
+fn can_add_cpu_priority_exclusion(settings: &CpuPrioritySettings, process: &str) -> bool {
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_exclusion(process),
+        cpu_priority::is_builtin_excluded,
+    )
+}
+
+fn can_add_thread_priority_exclusion(settings: &ThreadPrioritySettings, process: &str) -> bool {
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_exclusion(process),
+        thread_priority::is_builtin_excluded,
+    )
+}
+
+fn can_add_priority_boost_exclusion(settings: &PriorityBoostSettings, process: &str) -> bool {
+    can_add_process_candidate(
+        process,
+        |process| settings.contains_exclusion(process),
+        priority_boost::is_builtin_excluded,
     )
 }
 
@@ -23059,24 +24047,66 @@ fn format_cpu_mask(mask: u64) -> String {
 
 fn process_priority_label(priority: ProcessPriority) -> String {
     match priority {
-        ProcessPriority::Normal => t!("responsiveness.priority_normal").to_string(),
-        ProcessPriority::BelowNormal => t!("responsiveness.priority_below_normal").to_string(),
-        ProcessPriority::Idle => t!("responsiveness.priority_idle").to_string(),
+        ProcessPriority::Normal => format!("8 ({})", t!("responsiveness.priority_normal")),
+        ProcessPriority::BelowNormal => {
+            format!("6 ({})", t!("responsiveness.priority_below_normal"))
+        }
+        ProcessPriority::Idle => format!("4 ({})", t!("responsiveness.priority_idle")),
     }
 }
 
 fn process_cpu_priority_setting_label(priority: ProcessCpuPrioritySetting) -> String {
     match priority {
         ProcessCpuPrioritySetting::Default => t!("launch_priority.priority_default").to_string(),
-        ProcessCpuPrioritySetting::High => t!("launch_priority.priority_high").to_string(),
+        ProcessCpuPrioritySetting::Realtime => {
+            format!("24 ({})", t!("launch_priority.priority_realtime"))
+        }
+        ProcessCpuPrioritySetting::High => format!("13 ({})", t!("launch_priority.priority_high")),
         ProcessCpuPrioritySetting::AboveNormal => {
-            t!("launch_priority.priority_above_normal").to_string()
+            format!("10 ({})", t!("launch_priority.priority_above_normal"))
         }
-        ProcessCpuPrioritySetting::Normal => t!("launch_priority.priority_normal").to_string(),
+        ProcessCpuPrioritySetting::Normal => {
+            format!("8 ({})", t!("launch_priority.priority_normal"))
+        }
         ProcessCpuPrioritySetting::BelowNormal => {
-            t!("launch_priority.priority_below_normal").to_string()
+            format!("6 ({})", t!("launch_priority.priority_below_normal"))
         }
-        ProcessCpuPrioritySetting::Idle => t!("launch_priority.priority_idle").to_string(),
+        ProcessCpuPrioritySetting::Idle => format!("4 ({})", t!("launch_priority.priority_idle")),
+    }
+}
+
+fn process_thread_priority_setting_label(priority: ProcessThreadPrioritySetting) -> String {
+    match priority {
+        ProcessThreadPrioritySetting::Default => t!("thread_priority.priority_default").to_string(),
+        ProcessThreadPrioritySetting::TimeCritical => {
+            format!("15 ({})", t!("thread_priority.priority_time_critical"))
+        }
+        ProcessThreadPrioritySetting::Highest => {
+            format!("2 ({})", t!("thread_priority.priority_highest"))
+        }
+        ProcessThreadPrioritySetting::AboveNormal => {
+            format!("1 ({})", t!("thread_priority.priority_above_normal"))
+        }
+        ProcessThreadPrioritySetting::Normal => {
+            format!("0 ({})", t!("thread_priority.priority_normal"))
+        }
+        ProcessThreadPrioritySetting::BelowNormal => {
+            format!("-1 ({})", t!("thread_priority.priority_below_normal"))
+        }
+        ProcessThreadPrioritySetting::Lowest => {
+            format!("-2 ({})", t!("thread_priority.priority_lowest"))
+        }
+        ProcessThreadPrioritySetting::Idle => {
+            format!("-15 ({})", t!("thread_priority.priority_idle"))
+        }
+    }
+}
+
+fn process_priority_boost_setting_label(boost: ProcessPriorityBoostSetting) -> String {
+    match boost {
+        ProcessPriorityBoostSetting::Default => t!("priority_boost.boost_default").to_string(),
+        ProcessPriorityBoostSetting::Enabled => t!("priority_boost.boost_enabled").to_string(),
+        ProcessPriorityBoostSetting::Disabled => t!("priority_boost.boost_disabled").to_string(),
     }
 }
 
@@ -23377,9 +24407,9 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
 fn foreground_boost_priority_label(priority: ForegroundBoostPriority) -> String {
     match priority {
         ForegroundBoostPriority::Auto => t!("responsiveness.priority_auto").to_string(),
-        ForegroundBoostPriority::Normal => t!("responsiveness.priority_normal").to_string(),
+        ForegroundBoostPriority::Normal => format!("8 ({})", t!("responsiveness.priority_normal")),
         ForegroundBoostPriority::AboveNormal => {
-            t!("responsiveness.priority_above_normal").to_string()
+            format!("10 ({})", t!("responsiveness.priority_above_normal"))
         }
     }
 }

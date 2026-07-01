@@ -9,10 +9,11 @@ use windows_sys::Win32::{
     System::{
         SystemInformation::GetSystemTimeAsFileTime,
         Threading::{
-            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
-            OpenProcess, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation,
-            ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS,
-            IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessPriorityBoost,
+            GetProcessTimes, OpenProcess, ProcessPowerThrottling, SetPriorityClass,
+            SetProcessInformation, SetProcessPriorityBoost, ABOVE_NORMAL_PRIORITY_CLASS,
+            BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
+            NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
             PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
         },
@@ -125,6 +126,8 @@ struct AdjustedProcess {
     process_name: String,
     previous_priority: u32,
     applied_priority: u32,
+    previous_priority_boost_disabled: Option<bool>,
+    applied_priority_boost_disabled: bool,
     previous_efficiency_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     applied_efficiency_mode: bool,
 }
@@ -207,6 +210,7 @@ struct ApplyPriorityRequest<'a> {
     existing: Option<&'a AdjustedProcess>,
     source: PriorityTargetSource,
     apply_efficiency_mode: bool,
+    disable_priority_boost: bool,
     log_success: bool,
 }
 
@@ -520,6 +524,7 @@ impl ForegroundResponsivenessManager {
                     existing: self.adjusted.get(&process_id),
                     source,
                     apply_efficiency_mode: source != PriorityTargetSource::AutoBalance,
+                    disable_priority_boost: false,
                     log_success: source == PriorityTargetSource::Rule,
                 },
                 action_log,
@@ -1779,6 +1784,7 @@ fn apply_priority(
         existing,
         source,
         apply_efficiency_mode,
+        disable_priority_boost,
         log_success,
     } = request;
     let mut changed = false;
@@ -1808,6 +1814,36 @@ fn apply_priority(
             changed,
         });
     }
+    let previous_priority_boost_disabled = if disable_priority_boost {
+        let current_disabled = process.priority_boost_disabled().ok();
+        if current_disabled == Some(false) {
+            process.set_priority_boost_disabled(true)?;
+            changed = true;
+            if log_success {
+                action_log.record(
+                    ActionLogFeature::ForegroundResponsiveness,
+                    Some(process_id),
+                    process_name.clone(),
+                    ActionLogAction::Apply,
+                    ActionLogResult::Applied,
+                    "Disabled Windows dynamic priority boost for background responsiveness.",
+                );
+            }
+        }
+        reusable_existing
+            .and_then(|adjusted| adjusted.previous_priority_boost_disabled)
+            .or(current_disabled)
+    } else {
+        if let Some(adjusted) =
+            reusable_existing.filter(|adjusted| adjusted.applied_priority_boost_disabled)
+        {
+            if let Some(previous_disabled) = adjusted.previous_priority_boost_disabled {
+                process.set_priority_boost_disabled(previous_disabled)?;
+                changed = true;
+            }
+        }
+        reusable_existing.and_then(|adjusted| adjusted.previous_priority_boost_disabled)
+    };
     let previous_efficiency_state = if apply_efficiency_mode {
         let current_state = process.power_throttling_state().ok();
         if !current_state.is_some_and(power_throttling_execution_enabled) {
@@ -1834,6 +1870,7 @@ fn apply_priority(
         adjusted.applied_priority == priority_class
             && current_priority == priority_class
             && adjusted.applied_efficiency_mode == apply_efficiency_mode
+            && adjusted.applied_priority_boost_disabled == disable_priority_boost
     }) {
         return Ok(ApplyPriorityOutcome {
             adjusted: existing.cloned(),
@@ -1870,6 +1907,8 @@ fn apply_priority(
             process_name,
             previous_priority,
             applied_priority: priority_class,
+            previous_priority_boost_disabled,
+            applied_priority_boost_disabled: disable_priority_boost,
             previous_efficiency_state,
             applied_efficiency_mode: apply_efficiency_mode,
         }),
@@ -1896,6 +1935,15 @@ fn restore_adjusted_process(
             .previous_efficiency_state
             .unwrap_or_else(power_throttling_disabled_state);
         if let Err(err) = process.set_power_throttling_state(state) {
+            last_error = Some(err);
+        }
+    }
+    if process_state.applied_priority_boost_disabled {
+        if let Err(err) = process.set_priority_boost_disabled(
+            process_state
+                .previous_priority_boost_disabled
+                .unwrap_or(false),
+        ) {
             last_error = Some(err);
         }
     }
@@ -2151,6 +2199,31 @@ impl ProcessHandle {
         if ok == 0 {
             Err(PriorityError::Failed(format!(
                 "SetPriorityClass failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn priority_boost_disabled(&self) -> Result<bool, PriorityError> {
+        let mut disabled = 0;
+        let ok = unsafe { GetProcessPriorityBoost(self.0.raw(), &mut disabled) };
+        if ok == 0 {
+            Err(PriorityError::Failed(format!(
+                "GetProcessPriorityBoost failed with error {}.",
+                last_error()
+            )))
+        } else {
+            Ok(disabled != 0)
+        }
+    }
+
+    fn set_priority_boost_disabled(&self, disabled: bool) -> Result<(), PriorityError> {
+        let ok = unsafe { SetProcessPriorityBoost(self.0.raw(), i32::from(disabled)) };
+        if ok == 0 {
+            Err(PriorityError::Failed(format!(
+                "SetProcessPriorityBoost failed with error {}.",
                 last_error()
             )))
         } else {
@@ -2774,6 +2847,8 @@ mod tests {
                 process_name: "exited.exe".to_owned(),
                 previous_priority: NORMAL_PRIORITY_CLASS,
                 applied_priority: BELOW_NORMAL_PRIORITY_CLASS,
+                previous_priority_boost_disabled: None,
+                applied_priority_boost_disabled: false,
                 previous_efficiency_state: None,
                 applied_efficiency_mode: false,
             },

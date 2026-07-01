@@ -15,7 +15,7 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 
 ### Auto Balance
 - Protects the foreground app by restraining hot background processes.
-- Can lower background CPU priority, I/O priority, memory priority, and CPU access.
+- Can lower background process priority, I/O priority, memory priority, and CPU access.
 - Supports foreground boost, launch boost, cooldowns, and app exclusions.
 
 ### Process List
@@ -34,7 +34,7 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 
 ### RAM Control
 - Applies process memory-priority defaults for foreground and background apps.
-- Uses SmartTrim to trim idle high-memory background processes under memory pressure.
+- Uses Smart Trim to trim idle high-memory background processes under memory pressure.
 
 ### Advanced Controls
 - Suspends explicit opt-in background apps and resumes them when needed.
@@ -77,7 +77,7 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 - `Core Steering`
     - You want selected background apps kept on preferred logical CPUs.
 
-- `SmartTrim`
+- `Smart Trim`
     - You want memory pressure cleanup without trimming the foreground app.
     
 - `App Suspension`

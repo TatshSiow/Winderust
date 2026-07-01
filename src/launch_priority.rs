@@ -394,6 +394,7 @@ mod tests {
     #[test]
     fn cpu_priority_registry_values_match_process_priority_class() {
         assert_eq!(ProcessCpuPrioritySetting::Default.registry_value(), None);
+        assert_eq!(ProcessCpuPrioritySetting::Realtime.registry_value(), None);
         assert_eq!(ProcessCpuPrioritySetting::Idle.registry_value(), Some(1));
         assert_eq!(ProcessCpuPrioritySetting::Normal.registry_value(), Some(2));
         assert_eq!(ProcessCpuPrioritySetting::High.registry_value(), Some(3));

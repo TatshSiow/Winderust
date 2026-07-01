@@ -139,7 +139,7 @@ impl SmartTrimManager {
             self.clear_failure_suppression();
             return SmartTrimSnapshot {
                 enabled: false,
-                message: "SmartTrim disabled.".to_owned(),
+                message: "Smart Trim disabled.".to_owned(),
                 ..Default::default()
             };
         }
@@ -172,7 +172,7 @@ impl SmartTrimManager {
             return SmartTrimSnapshot {
                 enabled: true,
                 memory_load_percent: Some(memory_load_percent),
-                message: format!("SmartTrim waiting for system memory load >= {threshold}%."),
+                message: format!("Smart Trim waiting for system memory load >= {threshold}%."),
                 ..Default::default()
             };
         }
@@ -385,8 +385,8 @@ impl SmartTrimManager {
             memory_load_percent: Some(memory_load_percent),
             trimmed_apps: trimmed_apps.into_iter().collect(),
             message: match mode {
-                SmartTrimMode::Automatic => "SmartTrim active.".to_owned(),
-                SmartTrimMode::Manual => "Manual SmartTrim pass completed.".to_owned(),
+                SmartTrimMode::Automatic => "Smart Trim active.".to_owned(),
+                SmartTrimMode::Manual => "Manual Smart Trim pass completed.".to_owned(),
             },
             last_error: failures.last_error,
         }
@@ -510,7 +510,7 @@ impl SmartTrimManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying SmartTrim after {} failed attempts.",
+                    "Stopped retrying Smart Trim after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -547,7 +547,7 @@ impl SmartTrimManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying SmartTrim {label} after {} failed attempts.",
+                    "Stopped retrying Smart Trim {label} after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -938,7 +938,7 @@ impl Default for SmartTrimSnapshot {
             free_ram_excluding_cache_mb: None,
             memory_load_percent: None,
             trimmed_apps: Vec::new(),
-            message: "SmartTrim disabled.".to_owned(),
+            message: "Smart Trim disabled.".to_owned(),
             last_error: None,
         }
     }
@@ -966,7 +966,7 @@ mod tests {
         assert_eq!(entries[0].feature, ActionLogFeature::SmartTrim);
         assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
-        assert!(entries[0].reason.contains("Stopped retrying SmartTrim"));
+        assert!(entries[0].reason.contains("Stopped retrying Smart Trim"));
     }
 
     #[test]
@@ -1015,7 +1015,7 @@ mod tests {
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0]
             .reason
-            .contains("Stopped retrying SmartTrim Purge standby list"));
+            .contains("Stopped retrying Smart Trim Purge standby list"));
     }
 
     #[test]

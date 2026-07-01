@@ -22,6 +22,7 @@ use crate::{
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
+    cpu_priority::{CpuPriorityManager, CpuPrioritySnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
     foreground::{
         list_processes, process_name_key, top_level_window_process_ids, ForegroundDetector,
@@ -32,6 +33,7 @@ use crate::{
     performance_mode::{PerformanceModeManager, PerformanceModeSnapshot},
     power::PowerPlanManager,
     power_source,
+    priority_boost::{PriorityBoostManager, PriorityBoostSnapshot},
     responsiveness::{
         ForegroundResponsivenessManager, ForegroundResponsivenessSnapshot,
         ForegroundResponsivenessUpdate,
@@ -43,6 +45,7 @@ use crate::{
     scheduler::{CpuUsageScheduler, Scheduler},
     smart_trim::{SmartTrimManager, SmartTrimSnapshot},
     suspension::{AppSuspensionManager, AppSuspensionSnapshot},
+    thread_priority::{ThreadPriorityManager, ThreadPrioritySnapshot},
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
     tray,
     watchdog::{WatchdogManager, WatchdogSnapshot},
@@ -63,6 +66,9 @@ const WATCHDOG_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const FOREGROUND_RESPONSIVENESS_FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const FOREGROUND_RESPONSIVENESS_FAST_REFRESH_WINDOW: Duration = Duration::from_secs(8);
+const CPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const THREAD_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const PRIORITY_BOOST_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const IO_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const GPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -89,6 +95,9 @@ pub struct AutomationStatusSnapshot {
     pub performance_mode: PerformanceModeSnapshot,
     pub watchdog: WatchdogSnapshot,
     pub foreground_responsiveness: ForegroundResponsivenessSnapshot,
+    pub cpu_priority: CpuPrioritySnapshot,
+    pub thread_priority: ThreadPrioritySnapshot,
+    pub priority_boost: PriorityBoostSnapshot,
     pub io_priority: IoPrioritySnapshot,
     pub gpu_priority: GpuPrioritySnapshot,
     pub memory_priority: MemoryPrioritySnapshot,
@@ -117,6 +126,9 @@ struct AutomationWorkerState {
     performance_mode_status: PerformanceModeSnapshot,
     watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
+    cpu_priority_status: CpuPrioritySnapshot,
+    thread_priority_status: ThreadPrioritySnapshot,
+    priority_boost_status: PriorityBoostSnapshot,
     io_priority_status: IoPrioritySnapshot,
     gpu_priority_status: GpuPrioritySnapshot,
     memory_priority_status: MemoryPrioritySnapshot,
@@ -179,6 +191,9 @@ impl BackgroundAutomation {
                 performance_mode_status: PerformanceModeSnapshot::default(),
                 watchdog_status: WatchdogSnapshot::default(),
                 foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
+                cpu_priority_status: CpuPrioritySnapshot::default(),
+                thread_priority_status: ThreadPrioritySnapshot::default(),
+                priority_boost_status: PriorityBoostSnapshot::default(),
                 io_priority_status: IoPrioritySnapshot::default(),
                 gpu_priority_status: GpuPrioritySnapshot::default(),
                 memory_priority_status: MemoryPrioritySnapshot::default(),
@@ -246,6 +261,9 @@ impl BackgroundAutomation {
                 performance_mode: state.performance_mode_status.clone(),
                 watchdog: state.watchdog_status.clone(),
                 foreground_responsiveness: state.foreground_responsiveness_status.clone(),
+                cpu_priority: state.cpu_priority_status.clone(),
+                thread_priority: state.thread_priority_status.clone(),
+                priority_boost: state.priority_boost_status.clone(),
                 io_priority: state.io_priority_status.clone(),
                 gpu_priority: state.gpu_priority_status.clone(),
                 memory_priority: state.memory_priority_status.clone(),
@@ -402,6 +420,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_performance_mode_refresh = Instant::now();
     let mut next_watchdog_refresh = Instant::now();
     let mut next_foreground_responsiveness_refresh = Instant::now();
+    let mut next_cpu_priority_refresh = Instant::now();
+    let mut next_thread_priority_refresh = Instant::now();
+    let mut next_priority_boost_refresh = Instant::now();
     let mut next_io_priority_refresh = Instant::now();
     let mut next_gpu_priority_refresh = Instant::now();
     let mut next_memory_priority_refresh = Instant::now();
@@ -441,6 +462,12 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, WATCHDOG_REFRESH_INTERVAL);
         let mut foreground_responsiveness_refresh_interval =
             automation_refresh_interval(hidden_to_tray, FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL);
+        let cpu_priority_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, CPU_PRIORITY_REFRESH_INTERVAL);
+        let thread_priority_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, THREAD_PRIORITY_REFRESH_INTERVAL);
+        let priority_boost_refresh_interval =
+            automation_refresh_interval(hidden_to_tray, PRIORITY_BOOST_REFRESH_INTERVAL);
         let io_priority_refresh_interval =
             automation_refresh_interval(hidden_to_tray, IO_PRIORITY_REFRESH_INTERVAL);
         let gpu_priority_refresh_interval =
@@ -464,6 +491,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_performance_mode_refresh = event_now;
             next_watchdog_refresh = event_now;
             next_foreground_responsiveness_refresh = event_now;
+            next_cpu_priority_refresh = event_now;
+            next_thread_priority_refresh = event_now;
+            next_priority_boost_refresh = event_now;
             next_io_priority_refresh = event_now;
             next_gpu_priority_refresh = event_now;
             next_memory_priority_refresh = event_now;
@@ -480,6 +510,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_background_cpu_restriction_refresh = event_now;
             next_cpu_limiter_refresh = event_now;
             next_foreground_responsiveness_refresh = event_now;
+            next_cpu_priority_refresh = event_now;
+            next_thread_priority_refresh = event_now;
+            next_priority_boost_refresh = event_now;
             next_io_priority_refresh = event_now;
             next_gpu_priority_refresh = event_now;
             next_memory_priority_refresh = event_now;
@@ -549,6 +582,12 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             settings_changed || feature_refresh_required(&settings, settings.watchdog.enabled);
         let foreground_responsiveness_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.foreground_responsiveness.enabled);
+        let cpu_priority_refresh_required =
+            settings_changed || feature_refresh_required(&settings, settings.cpu_priority.enabled);
+        let thread_priority_refresh_required = settings_changed
+            || feature_refresh_required(&settings, settings.thread_priority.enabled);
+        let priority_boost_refresh_required = settings_changed
+            || feature_refresh_required(&settings, settings.priority_boost.enabled);
         let io_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, io_priority_required(&settings));
         let gpu_priority_refresh_required =
@@ -585,6 +624,9 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_performance_mode_refresh = now;
                 next_watchdog_refresh = now;
                 next_foreground_responsiveness_refresh = now;
+                next_cpu_priority_refresh = now;
+                next_thread_priority_refresh = now;
+                next_priority_boost_refresh = now;
                 next_io_priority_refresh = now;
                 next_gpu_priority_refresh = now;
                 next_memory_priority_refresh = now;
@@ -638,6 +680,24 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             update_io_priority_status(&shared, io_priority_status);
             runner.publish_action_log_if_changed(&shared);
             next_io_priority_refresh = now + io_priority_refresh_interval;
+        }
+        if cpu_priority_refresh_required && now >= next_cpu_priority_refresh {
+            let cpu_priority_status = runner.run_cpu_priority_update(&settings);
+            update_cpu_priority_status(&shared, cpu_priority_status);
+            runner.publish_action_log_if_changed(&shared);
+            next_cpu_priority_refresh = now + cpu_priority_refresh_interval;
+        }
+        if thread_priority_refresh_required && now >= next_thread_priority_refresh {
+            let thread_priority_status = runner.run_thread_priority_update(&settings);
+            update_thread_priority_status(&shared, thread_priority_status);
+            runner.publish_action_log_if_changed(&shared);
+            next_thread_priority_refresh = now + thread_priority_refresh_interval;
+        }
+        if priority_boost_refresh_required && now >= next_priority_boost_refresh {
+            let priority_boost_status = runner.run_priority_boost_update(&settings);
+            update_priority_boost_status(&shared, priority_boost_status);
+            runner.publish_action_log_if_changed(&shared);
+            next_priority_boost_refresh = now + priority_boost_refresh_interval;
         }
         if gpu_priority_refresh_required && now >= next_gpu_priority_refresh {
             let gpu_priority_status = runner.run_gpu_priority_update(&settings);
@@ -1043,6 +1103,18 @@ fn update_io_priority_status(shared: &SharedAutomationState, status: IoPriorityS
     update_status(shared, status, |state| &mut state.io_priority_status);
 }
 
+fn update_cpu_priority_status(shared: &SharedAutomationState, status: CpuPrioritySnapshot) {
+    update_status(shared, status, |state| &mut state.cpu_priority_status);
+}
+
+fn update_thread_priority_status(shared: &SharedAutomationState, status: ThreadPrioritySnapshot) {
+    update_status(shared, status, |state| &mut state.thread_priority_status);
+}
+
+fn update_priority_boost_status(shared: &SharedAutomationState, status: PriorityBoostSnapshot) {
+    update_status(shared, status, |state| &mut state.priority_boost_status);
+}
+
 fn update_gpu_priority_status(shared: &SharedAutomationState, status: GpuPrioritySnapshot) {
     update_status(shared, status, |state| &mut state.gpu_priority_status);
 }
@@ -1194,6 +1266,9 @@ fn process_appearance_scan_required(settings: &Settings) -> bool {
             || settings.performance_mode.enabled
             || settings.watchdog.enabled
             || settings.foreground_responsiveness.enabled
+            || settings.cpu_priority.enabled
+            || settings.thread_priority.enabled
+            || settings.priority_boost.enabled
             || io_priority_required(settings)
             || settings.gpu_priority.enabled
             || memory_priority_required(settings)
@@ -1220,6 +1295,9 @@ fn automation_worker_required(settings: &Settings) -> bool {
             || settings.performance_mode.enabled
             || settings.watchdog.enabled
             || settings.foreground_responsiveness.enabled
+            || settings.cpu_priority.enabled
+            || settings.thread_priority.enabled
+            || settings.priority_boost.enabled
             || io_priority_required(settings)
             || settings.gpu_priority.enabled
             || memory_priority_required(settings)
@@ -1480,6 +1558,9 @@ struct HiddenAutomationRunner {
     action_log: ActionLog,
     foreground_responsiveness_manager: ForegroundResponsivenessManager,
     launch_boost_active: bool,
+    cpu_priority_manager: CpuPriorityManager,
+    thread_priority_manager: ThreadPriorityManager,
+    priority_boost_manager: PriorityBoostManager,
     io_priority_manager: IoPriorityManager,
     gpu_priority_manager: GpuPriorityManager,
     memory_priority_manager: MemoryPriorityManager,
@@ -1725,6 +1806,33 @@ impl HiddenAutomationRunner {
             effective_io_priority_settings(settings, self.launch_boost_active);
         self.io_priority_manager.update(
             &io_priority_settings,
+            settings.general.enabled,
+            self.foreground_detector.process_id(),
+            &mut self.action_log,
+        )
+    }
+
+    fn run_cpu_priority_update(&mut self, settings: &Settings) -> CpuPrioritySnapshot {
+        self.cpu_priority_manager.update(
+            &settings.cpu_priority,
+            settings.general.enabled,
+            self.foreground_detector.process_id(),
+            &mut self.action_log,
+        )
+    }
+
+    fn run_thread_priority_update(&mut self, settings: &Settings) -> ThreadPrioritySnapshot {
+        self.thread_priority_manager.update(
+            &settings.thread_priority,
+            settings.general.enabled,
+            self.foreground_detector.process_id(),
+            &mut self.action_log,
+        )
+    }
+
+    fn run_priority_boost_update(&mut self, settings: &Settings) -> PriorityBoostSnapshot {
+        self.priority_boost_manager.update(
+            &settings.priority_boost,
             settings.general.enabled,
             self.foreground_detector.process_id(),
             &mut self.action_log,
