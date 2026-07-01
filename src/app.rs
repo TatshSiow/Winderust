@@ -54,14 +54,13 @@ use crate::{
         EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
         EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
         ForegroundResponsivenessSettings, ForegroundRule, ForegroundRules, GpuPrioritySettings,
-        IoPrioritySettings, LaunchPriorityRule, LaunchPrioritySettings, MemoryPrioritySettings,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PriorityBoostSettings,
-        ProcessCpuPrioritySetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
-        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
-        ProcessMemoryPrioritySetting, ProcessPriority, ProcessPriorityBoostSetting,
-        ProcessThreadPrioritySetting, ScheduleRule, Settings, SmartTrimSettings,
-        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
-        WatchdogRule, WatchdogSettings, WeekdaySetting,
+        IoPrioritySettings, MemoryPrioritySettings, NetworkThresholdUnit, PerformanceModeRule,
+        PerformanceModeSettings, PriorityBoostSettings, ProcessCpuPrioritySetting,
+        ProcessExclusionRule, ProcessGpuPrioritySetting, ProcessIoPriority,
+        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
+        ProcessPriority, ProcessPriorityBoostSetting, ProcessThreadPrioritySetting, ScheduleRule,
+        Settings, SmartTrimSettings, ThreadPrioritySettings, TimerResolutionRule,
+        TimerResolutionSettings, WeekdaySetting,
     },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
     cpu_limiter::{self, CpuLimiterSnapshot},
@@ -78,7 +77,6 @@ use crate::{
     },
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
-    launch_priority::{self, LaunchPrioritySnapshot},
     memory_priority::{self, MemoryPrioritySnapshot},
     performance_mode::{self, PerformanceModeSnapshot},
     power::{
@@ -102,7 +100,6 @@ use crate::{
     timer_resolution::{self, TimerResolutionSnapshot},
     tray::{self, TrayIcon},
     ui::{self, Page},
-    watchdog::{self, WatchdogSnapshot},
     win_registry::{
         read_registry_binary_root, read_registry_dword_root, write_registry_dword_create_root,
         write_registry_dword_root,
@@ -159,8 +156,14 @@ const PROCESS_PICKER_LAYER_PRIORITY: usize = 2;
 const DROPDOWN_OPTION_ROW_HEIGHT: f32 = 40.0;
 const DROPDOWN_CONTROL_HEIGHT: f32 = 32.0;
 const DROPDOWN_SELECT_COMPACT_WIDTH: f32 = 96.0;
+const DROPDOWN_SELECT_TABLE_WIDTH: f32 = 168.0;
 const DROPDOWN_SELECT_STANDARD_WIDTH: f32 = 240.0;
 const DROPDOWN_SELECT_WIDE_WIDTH: f32 = 280.0;
+const NETWORK_UNIT_PICKER_WIDTH: f32 = 76.0;
+const SUSPENSION_ACTIVE_COLUMN_WIDTH: f32 = 56.0;
+const SUSPENSION_STATUS_COLUMN_WIDTH: f32 = 96.0;
+const SUSPENSION_DETECT_COLUMN_WIDTH: f32 = 72.0;
+const SUSPENSION_ACTION_COLUMN_WIDTH: f32 = 76.0;
 const DROPDOWN_SURFACE_VERTICAL_PADDING: f32 = 16.0;
 const DROPDOWN_OPTION_GAP: f32 = 4.0;
 const DROPDOWN_MENU_OFFSET: f32 = 34.0;
@@ -277,7 +280,7 @@ enum ActionLogFeatureFilter {
 }
 
 impl ActionLogFeatureFilter {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 16] = [
         Self::All,
         Self::Feature(ActionLogFeature::AppSuspension),
         Self::Feature(ActionLogFeature::BackgroundCpuRestriction),
@@ -285,7 +288,6 @@ impl ActionLogFeatureFilter {
         Self::Feature(ActionLogFeature::EcoQos),
         Self::Feature(ActionLogFeature::CpuLimiter),
         Self::Feature(ActionLogFeature::PerformanceMode),
-        Self::Feature(ActionLogFeature::Watchdog),
         Self::Feature(ActionLogFeature::ForegroundResponsiveness),
         Self::Feature(ActionLogFeature::CpuPriority),
         Self::Feature(ActionLogFeature::ThreadPriority),
@@ -432,7 +434,6 @@ pub struct WinderustApp {
     cpu_affinity_status: CpuAffinitySnapshot,
     background_cpu_restriction_status: CpuAffinitySnapshot,
     performance_mode_status: PerformanceModeSnapshot,
-    watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     cpu_priority_status: CpuPrioritySnapshot,
     thread_priority_status: ThreadPrioritySnapshot,
@@ -440,7 +441,6 @@ pub struct WinderustApp {
     io_priority_status: IoPrioritySnapshot,
     gpu_priority_status: GpuPrioritySnapshot,
     memory_priority_status: MemoryPrioritySnapshot,
-    launch_priority_status: LaunchPrioritySnapshot,
     smart_trim_status: SmartTrimSnapshot,
     timer_resolution_status: TimerResolutionSnapshot,
     action_log_entries: Arc<Vec<ActionLogEntry>>,
@@ -635,7 +635,6 @@ enum ListItemRemovalKind {
     AppSuspensionRule,
     BackgroundCpuExclusion,
     CpuLimiterRule,
-    WatchdogRule,
     PerformanceModeRule,
     ResponsivenessExclusion,
     CpuPriorityExclusion,
@@ -644,7 +643,6 @@ enum ListItemRemovalKind {
     IoPriorityExclusion,
     GpuPriorityExclusion,
     MemoryPriorityExclusion,
-    LaunchPriorityRule,
     TimerResolutionRule,
     SmartTrimExclusion,
     CpuAffinityRule,
@@ -684,9 +682,6 @@ struct UiInputs {
     smart_trim_exclusion: Entity<InputState>,
     suspension_process: Entity<InputState>,
     cpu_limiter_process: Entity<InputState>,
-    watchdog_process: Entity<InputState>,
-    watchdog_launch_paths: Vec<Entity<InputState>>,
-    watchdog_launch_args: Vec<Entity<InputState>>,
     performance_process: Entity<InputState>,
     affinity_process: Entity<InputState>,
     responsiveness_process: Entity<InputState>,
@@ -696,7 +691,6 @@ struct UiInputs {
     io_priority_process: Entity<InputState>,
     gpu_priority_process: Entity<InputState>,
     memory_priority_process: Entity<InputState>,
-    launch_priority_process: Entity<InputState>,
     timer_resolution_process: Entity<InputState>,
     numeric_value: Entity<InputState>,
     activity_idle_timeout: Entity<SliderState>,
@@ -813,19 +807,6 @@ impl UiInputs {
             smart_trim_exclusion: make_input(window, cx, "", "Search running apps..."),
             suspension_process: make_input(window, cx, "", "Search running apps..."),
             cpu_limiter_process: make_input(window, cx, "", "Search running apps..."),
-            watchdog_process: make_input(window, cx, "", "Search running apps..."),
-            watchdog_launch_paths: settings
-                .watchdog
-                .rules
-                .iter()
-                .map(|rule| make_input(window, cx, &rule.launch_path, "Executable path"))
-                .collect(),
-            watchdog_launch_args: settings
-                .watchdog
-                .rules
-                .iter()
-                .map(|rule| make_input(window, cx, &rule.launch_args.join(" "), "Arguments"))
-                .collect(),
             performance_process: make_input(window, cx, "", "Search running apps..."),
             affinity_process: make_input(window, cx, "", "Search running apps..."),
             responsiveness_process: make_input(window, cx, "", "Search running apps..."),
@@ -835,7 +816,6 @@ impl UiInputs {
             io_priority_process: make_input(window, cx, "", "Search running apps..."),
             gpu_priority_process: make_input(window, cx, "", "Search running apps..."),
             memory_priority_process: make_input(window, cx, "", "Search running apps..."),
-            launch_priority_process: make_input(window, cx, "", "Search running apps..."),
             timer_resolution_process: make_input(window, cx, "", "Search running apps..."),
             numeric_value: make_input(window, cx, "", "Value"),
             activity_idle_timeout: make_range_slider(
@@ -956,22 +936,6 @@ impl UiInputs {
             cx,
             |index| settings.foreground_rules.rules[index].process_name.clone(),
             "process.exe",
-        );
-        sync_input_vec(
-            &mut self.watchdog_launch_paths,
-            settings.watchdog.rules.len(),
-            window,
-            cx,
-            |index| settings.watchdog.rules[index].launch_path.clone(),
-            "Executable path",
-        );
-        sync_input_vec(
-            &mut self.watchdog_launch_args,
-            settings.watchdog.rules.len(),
-            window,
-            cx,
-            |index| settings.watchdog.rules[index].launch_args.join(" "),
-            "Arguments",
         );
     }
 }
@@ -1111,7 +1075,6 @@ impl WinderustApp {
             cpu_affinity_status: CpuAffinitySnapshot::default(),
             background_cpu_restriction_status: CpuAffinitySnapshot::default(),
             performance_mode_status: PerformanceModeSnapshot::default(),
-            watchdog_status: WatchdogSnapshot::default(),
             foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
             cpu_priority_status: CpuPrioritySnapshot::default(),
             thread_priority_status: ThreadPrioritySnapshot::default(),
@@ -1119,7 +1082,6 @@ impl WinderustApp {
             io_priority_status: IoPrioritySnapshot::default(),
             gpu_priority_status: GpuPrioritySnapshot::default(),
             memory_priority_status: MemoryPrioritySnapshot::default(),
-            launch_priority_status: LaunchPrioritySnapshot::default(),
             smart_trim_status: SmartTrimSnapshot::default(),
             timer_resolution_status: initial_timer_resolution_status,
             action_log_entries: Arc::new(Vec::new()),
@@ -1465,15 +1427,6 @@ impl WinderustApp {
                     self.settings.cpu_limiter.rules.remove(index);
                 }
             }
-            ListItemRemovalKind::WatchdogRule => {
-                if let Some(rule) = self.settings.watchdog.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::Watchdog(rule.process_name.clone()));
-                }
-                if index < self.settings.watchdog.rules.len() {
-                    self.settings.watchdog.rules.remove(index);
-                }
-            }
             ListItemRemovalKind::PerformanceModeRule => {
                 if index < self.settings.performance_mode.rules.len() {
                     self.settings.performance_mode.rules.remove(index);
@@ -1523,15 +1476,6 @@ impl WinderustApp {
             ListItemRemovalKind::MemoryPriorityExclusion => {
                 if index < self.settings.memory_priority.exclusions.len() {
                     self.settings.memory_priority.exclusions.remove(index);
-                }
-            }
-            ListItemRemovalKind::LaunchPriorityRule => {
-                if let Some(rule) = self.settings.launch_priority.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::LaunchPriority(rule.process_name.clone()));
-                }
-                if index < self.settings.launch_priority.rules.len() {
-                    self.settings.launch_priority.rules.remove(index);
                 }
             }
             ListItemRemovalKind::TimerResolutionRule => {
@@ -2664,11 +2608,6 @@ impl WinderustApp {
                 changed = true;
             }
 
-            if self.watchdog_status != background_status.watchdog {
-                self.watchdog_status = background_status.watchdog;
-                changed = true;
-            }
-
             if self.foreground_responsiveness_status != background_status.foreground_responsiveness
             {
                 self.foreground_responsiveness_status = background_status.foreground_responsiveness;
@@ -2833,12 +2772,10 @@ impl WinderustApp {
                 | Page::DynamicPriorityBoost
                 | Page::CpuLimiter
                 | Page::BackgroundCpuRestriction
-                | Page::Watchdog
                 | Page::ForegroundResponsiveness
                 | Page::IoPriority
                 | Page::GpuPriority
                 | Page::MemoryPriority
-                | Page::LaunchPriority
                 | Page::TimerResolution
                 | Page::PerformanceMode
                 | Page::CpuAffinity
@@ -3487,18 +3424,18 @@ impl WinderustApp {
                     rule.max_logical_processors = value as u8;
                 }
             }
-            NumericField::WatchdogRestartDelay(index) => {
-                if let (Some(rule), Some(value)) = (
-                    self.settings.watchdog.rules.get_mut(index),
-                    parse_u64_input(&value, 0, 86_400),
-                ) {
-                    rule.restart_delay_seconds = value;
-                }
-            }
             NumericField::TimerResolutionRule(index) => {
+                let minimum_100ns = self
+                    .timer_resolution_status
+                    .minimum_100ns
+                    .unwrap_or((TIMER_RESOLUTION_INPUT_MIN_MS * 10_000.0).round() as u32);
+                let maximum_100ns = self
+                    .timer_resolution_status
+                    .maximum_100ns
+                    .unwrap_or((TIMER_RESOLUTION_INPUT_MAX_MS * 10_000.0).round() as u32);
                 if let (Some(rule), Some(value)) = (
                     self.settings.timer_resolution.rules.get_mut(index),
-                    parse_timer_resolution_input_100ns(&value),
+                    parse_timer_resolution_input_100ns(&value, minimum_100ns, maximum_100ns),
                 ) {
                     rule.desired_100ns = value;
                 }
@@ -3689,34 +3626,6 @@ impl WinderustApp {
         self.finish_process_list_edit(cx);
     }
 
-    fn set_process_list_cpu_priority(
-        &mut self,
-        process_name: String,
-        priority: ProcessCpuPrioritySetting,
-        cx: &mut Context<Self>,
-    ) {
-        set_launch_priority_cpu_override(
-            &mut self.settings.launch_priority,
-            &process_name,
-            priority,
-        );
-        self.finish_process_list_edit(cx);
-    }
-
-    fn set_process_list_io_priority(
-        &mut self,
-        process_name: String,
-        priority: ProcessIoPrioritySetting,
-        cx: &mut Context<Self>,
-    ) {
-        set_launch_priority_io_override(
-            &mut self.settings.launch_priority,
-            &process_name,
-            priority,
-        );
-        self.finish_process_list_edit(cx);
-    }
-
     fn set_process_list_gpu_priority_included(
         &mut self,
         process_name: String,
@@ -3727,20 +3636,6 @@ impl WinderustApp {
             &mut self.settings.gpu_priority.exclusions,
             &process_name,
             !included,
-        );
-        self.finish_process_list_edit(cx);
-    }
-
-    fn set_process_list_memory_priority(
-        &mut self,
-        process_name: String,
-        priority: ProcessMemoryPrioritySetting,
-        cx: &mut Context<Self>,
-    ) {
-        set_launch_priority_memory_override(
-            &mut self.settings.launch_priority,
-            &process_name,
-            priority,
         );
         self.finish_process_list_edit(cx);
     }
@@ -3892,15 +3787,6 @@ impl WinderustApp {
                 rule.process_name = input.read(cx).value().to_string();
             }
         }
-        for (index, rule) in self.settings.watchdog.rules.iter_mut().enumerate() {
-            if let Some(input) = self.inputs.watchdog_launch_paths.get(index) {
-                let launch_path = input.read(cx).value().to_string();
-                rule.launch_path = sanitize_watchdog_launch_path(&launch_path);
-            }
-            if let Some(input) = self.inputs.watchdog_launch_args.get(index) {
-                rule.launch_args = split_watchdog_args(&input.read(cx).value());
-            }
-        }
     }
 
     fn background_settings(&self) -> Settings {
@@ -3937,12 +3823,6 @@ fn runtime_settings_from(current: &Settings, saved: &Settings) -> Settings {
     settings.general = current.general.clone();
     settings.general.enabled = saved.general.enabled;
     settings.advanced = current.advanced.clone();
-    settings.background_cpu_restriction = current.background_cpu_restriction.clone();
-    settings.io_priority = current.io_priority.clone();
-    settings.gpu_priority = current.gpu_priority.clone();
-    settings.memory_priority = current.memory_priority.clone();
-    settings.launch_priority = current.launch_priority.clone();
-    settings.timer_resolution = current.timer_resolution.clone();
     settings
 }
 
@@ -3968,17 +3848,15 @@ fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Set
         && settings.eco_qos == saved.eco_qos
         && settings.app_suspension == saved.app_suspension
         && settings.cpu_affinity == saved.cpu_affinity
-        && settings.background_cpu_restriction == current.background_cpu_restriction
+        && settings.background_cpu_restriction == saved.background_cpu_restriction
         && settings.cpu_limiter == saved.cpu_limiter
         && settings.performance_mode == saved.performance_mode
-        && settings.watchdog == saved.watchdog
         && settings.foreground_responsiveness == saved.foreground_responsiveness
-        && settings.io_priority == current.io_priority
-        && settings.gpu_priority == current.gpu_priority
-        && settings.memory_priority == current.memory_priority
-        && settings.launch_priority == current.launch_priority
+        && settings.io_priority == saved.io_priority
+        && settings.gpu_priority == saved.gpu_priority
+        && settings.memory_priority == saved.memory_priority
         && settings.smart_trim == saved.smart_trim
-        && settings.timer_resolution == current.timer_resolution
+        && settings.timer_resolution == saved.timer_resolution
 }
 
 impl Render for WinderustApp {
@@ -4206,6 +4084,9 @@ impl WinderustApp {
             .border_color(cx.theme().sidebar_border);
 
         for section in Page::sections() {
+            if !self.nav_section_visible(section.landing_page) {
+                continue;
+            }
             let page = section.landing_page;
             let selected = self.page.section_landing_page() == page;
             let target = page;
@@ -4224,6 +4105,10 @@ impl WinderustApp {
 
         nav = nav.child(drawer.child(drawer_items)).child(footer);
         nav.into_any_element()
+    }
+
+    fn nav_section_visible(&self, page: Page) -> bool {
+        page != Page::AdvancedHome || self.settings.advanced.show_advanced_controls
     }
 
     fn render_unsaved_popup(
@@ -4338,7 +4223,6 @@ impl WinderustApp {
             }
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
-            Page::Watchdog => self.render_watchdog_page(window, cx),
             Page::PerformanceMode => self.render_performance_mode_page(window, cx),
             Page::ProcessList => self.render_process_list_page(window, cx),
             Page::ForegroundResponsiveness => {
@@ -4347,12 +4231,12 @@ impl WinderustApp {
             Page::IoPriority => self.render_io_priority_page(window, cx),
             Page::GpuPriority => self.render_gpu_priority_page(window, cx),
             Page::MemoryPriority => self.render_memory_priority_page(window, cx),
-            Page::LaunchPriority => self.render_launch_priority_page(window, cx),
             Page::SmartTrim => self.render_smart_trim_page(window, cx),
             Page::CpuAffinity => self.render_affinity_page(window, cx),
             Page::ActionLog => self.render_action_log_page(window, cx),
             Page::Settings => self.render_winderust_behaviour_page(window, cx),
             Page::SettingsAppearance => self.render_settings_appearance_page(window, cx),
+            Page::SettingsExperimental => self.render_settings_experimental_page(window, cx),
             Page::TimerResolution => self.render_timer_resolution_page(window, cx),
             Page::Win32PrioritySeparation => self.render_win32_priority_separation_page(window, cx),
             Page::About => self.render_about_page(cx),
@@ -4444,7 +4328,8 @@ impl WinderustApp {
     }
 
     fn render_search_results_page(&self, search_query: &str, cx: &mut Context<Self>) -> AnyElement {
-        let search_results = dashboard_search_pages(search_query);
+        let search_results =
+            dashboard_search_pages(search_query, self.settings.advanced.show_advanced_controls);
         let mut search_result_cards = h_flex()
             .w_full()
             .min_w(px(0.0))
@@ -4492,7 +4377,9 @@ impl WinderustApp {
             .gap_2()
             .flex_wrap();
 
-        for section in dashboard_sections_in_nav_order() {
+        for section in
+            dashboard_sections_in_nav_order(self.settings.advanced.show_advanced_controls)
+        {
             section_cards =
                 section_cards.child(self.render_dashboard_page_card(section.landing_page, cx));
         }
@@ -4602,12 +4489,6 @@ impl WinderustApp {
                 ),
             ));
         }
-        if settings.watchdog.enabled {
-            items.push((
-                t!("nav.watchdog").to_string(),
-                format!("{} matched", self.watchdog_status.matched_processes),
-            ));
-        }
         if settings.foreground_responsiveness.enabled {
             let responsiveness_status = if self.foreground_responsiveness_status.launch_boost_active
             {
@@ -4637,12 +4518,6 @@ impl WinderustApp {
                     "{} adjusted",
                     self.memory_priority_status.adjusted_processes
                 ),
-            ));
-        }
-        if settings.launch_priority.enabled {
-            items.push((
-                t!("nav.launch_priority").to_string(),
-                rule_count_label(settings.launch_priority.rules.len()),
             ));
         }
         if settings.smart_trim.enabled {
@@ -5403,13 +5278,21 @@ impl WinderustApp {
                         })),
                 ),
         );
-        let mut rules = rule_list();
+        let mut rules = rule_list(vec![
+            rule_table_active_header(),
+            rule_table_title_header(t!("process_list.process_name").to_string()),
+            priority_exclusion_table_cell(t!("performance_mode.power_plan").to_string()),
+            rule_table_action_header(),
+        ]);
         for (index, rule) in self.settings.foreground_rules.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::ForegroundRule, index),
                 SharedString::from(format!("foreground-rule-{index}")),
                 self.render_foreground_rule(index, rule, window, cx),
             ));
+        }
+        if self.settings.foreground_rules.rules.is_empty() {
+            rules = rules.child(text_muted(t!("common.no_custom_rules").to_string()).p_4());
         }
         body = body.child(rules);
         content = content.child(disabled_feature_body(
@@ -5430,7 +5313,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         compact_rule_row(format!("foreground-rule-row-{index}"))
-            .child(rule_enable_checkbox(
+            .child(rule_active_cell(
                 format!("foreground-rule-enabled-{index}"),
                 rule.enabled,
                 cx.listener(move |app, checked, _, cx| {
@@ -5448,7 +5331,7 @@ impl WinderustApp {
                 window,
                 cx,
             ))
-            .child(
+            .child(rule_table_action_cell(
                 remove_control_button(Button::new(SharedString::from(format!(
                     "remove-foreground-rule-{index}"
                 ))))
@@ -5459,7 +5342,7 @@ impl WinderustApp {
                     );
                 }))
                 .into_any_element(),
-            )
+            ))
             .into_any_element()
     }
 
@@ -5584,13 +5467,27 @@ impl WinderustApp {
                 }))
                 .into_any_element(),
         ));
-        let mut rules = rule_list();
+        let mut rules = rule_list(vec![
+            rule_table_active_header(),
+            rule_table_title_input_header(t!("common.rule_name").to_string()),
+            priority_exclusion_table_cell(t!("schedule.days").to_string()),
+            rule_table_centered_header(t!("schedule.start").to_string(), 96.0),
+            rule_table_centered_header(t!("schedule.end").to_string(), 96.0),
+            rule_table_centered_header(
+                t!("schedule.target_power_plan").to_string(),
+                DROPDOWN_SELECT_STANDARD_WIDTH,
+            ),
+            rule_table_action_header(),
+        ]);
         for (index, rule) in self.settings.schedule_mode.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::ScheduleRule, index),
                 SharedString::from(format!("schedule-rule-{index}")),
                 self.render_schedule_rule(index, rule, window, cx),
             ));
+        }
+        if self.settings.schedule_mode.rules.is_empty() {
+            rules = rules.child(text_muted(t!("common.no_custom_rules").to_string()).p_4());
         }
         body = body.child(rules);
         content = content.child(disabled_feature_body("schedule-body", body, enabled, cx));
@@ -5608,34 +5505,12 @@ impl WinderustApp {
         let Some(name_input) = self.inputs.schedule_rule_names.get(index).cloned() else {
             return syncing_rule_card(index);
         };
-        let mut days = h_flex().gap_1().items_center().justify_end().flex_none();
-        for day in WeekdaySetting::all() {
-            let selected = rule.days.contains(&day);
-            days = days.child(
-                toggle_button(
-                    format!("schedule-day-{index}-{}", day.short_label()),
-                    day.short_label(),
-                    selected,
-                )
-                .on_click(cx.listener(move |app, _, _, cx| {
-                    if let Some(rule) = app.settings.schedule_mode.rules.get_mut(index) {
-                        if rule.days.contains(&day) {
-                            rule.days.retain(|existing| *existing != day);
-                        } else {
-                            rule.days.push(day);
-                        }
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        let name_focused = name_input.read(cx).focus_handle(cx).is_focused(window);
+        let start_input = self.inputs.schedule_start_times.get(index).cloned();
+        let end_input = self.inputs.schedule_end_times.get(index).cloned();
 
-        let title_target = RuleTitleTarget::Schedule(index);
-        let card_target = RuleCardTarget::Schedule(index);
-        let collapsed = self.is_rule_card_collapsed(&card_target);
-        let mut card = rule_card(
-            self.render_rule_title(&rule_card_title(&rule.name), &name_input, title_target, cx),
-            rule_enable_checkbox(
+        compact_rule_row(format!("schedule-rule-row-{index}"))
+            .child(rule_active_cell(
                 format!("schedule-rule-enabled-{index}"),
                 rule.enabled,
                 cx.listener(move |app, checked, _, cx| {
@@ -5644,108 +5519,106 @@ impl WinderustApp {
                     }
                     cx.notify();
                 }),
-            ),
-            rule_card_collapse_indicator(card_target.clone(), collapsed),
-            card_target.clone(),
-            collapsed,
-            cx,
-        );
-        if rule_card_body_visible(&card_target, collapsed, window) {
-            let mut condition_fields = vec![
-                rule_action_row(
-                    format!("schedule-rule-days-{index}"),
-                    t!("schedule.days").to_string(),
-                    days.into_any_element(),
-                )
+            ))
+            .child(rule_table_title_input_cell(app_input(
+                &name_input,
+                name_focused,
+                cx,
+            )))
+            .child(self.render_schedule_days_dropdown(index, &rule.days, window, cx))
+            .child(match start_input {
+                Some(input) => rule_table_input_cell(input, 96.0, window, cx).into_any_element(),
+                None => text_muted(t!("common.unknown").to_string()).into_any_element(),
+            })
+            .child(match end_input {
+                Some(input) => rule_table_input_cell(input, 96.0, window, cx).into_any_element(),
+                None => text_muted(t!("common.unknown").to_string()).into_any_element(),
+            })
+            .child(self.render_inline_power_plan_picker(
+                format!("schedule-rule-plan-{index}"),
+                rule.power_plan_guid.clone(),
+                PowerPlanField::ScheduleRule(index),
+                window,
+                cx,
+            ))
+            .child(rule_table_action_cell(
+                remove_control_button(Button::new(SharedString::from(format!(
+                    "remove-schedule-rule-{index}"
+                ))))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.request_list_item_removal(
+                        ListItemRemovalTarget::new(ListItemRemovalKind::ScheduleRule, index),
+                        cx,
+                    );
+                }))
                 .into_any_element(),
-                match self.inputs.schedule_start_times.get(index).cloned() {
-                    Some(input) => {
-                        let focused = input.read(cx).focus_handle(cx).is_focused(window);
-                        setting_input_card(
-                            format!("schedule-rule-start-{index}"),
-                            t!("schedule.start").to_string(),
-                            input,
-                            focused,
-                            cx,
-                        )
-                        .into_any_element()
-                    }
-                    None => syncing_rule_card(index),
-                },
-                match self.inputs.schedule_end_times.get(index).cloned() {
-                    Some(input) => {
-                        let focused = input.read(cx).focus_handle(cx).is_focused(window);
-                        setting_input_card(
-                            format!("schedule-rule-end-{index}"),
-                            t!("schedule.end").to_string(),
-                            input,
-                            focused,
-                            cx,
-                        )
-                        .into_any_element()
-                    }
-                    None => syncing_rule_card(index),
-                },
-            ];
+            ))
+            .into_any_element()
+    }
 
-            if rule.parsed_times().is_none() {
-                condition_fields.push(
-                    setting_notice_card(
-                        format!("schedule-rule-time-format-{index}"),
-                        text_danger(t!("schedule.use_hhmm").to_string()).into_any_element(),
-                    )
-                    .into_any_element(),
-                );
-            }
-            let condition_row_count = condition_fields.len();
-
-            card = card
-                .child(animated_rule_card_body_child(
-                    &card_target,
-                    0,
-                    condition_row_count,
-                    rule_card_body_row(condition_fields),
-                ))
-                .child(animated_rule_card_body_child(
-                    &card_target,
-                    1,
-                    1,
-                    rule_card_body_row(vec![rule_action_row(
-                        format!("schedule-rule-plan-{index}"),
-                        t!("schedule.target_power_plan").to_string(),
-                        self.render_inline_power_plan_picker(
-                            format!("schedule-rule-plan-{index}"),
-                            rule.power_plan_guid.clone(),
-                            PowerPlanField::ScheduleRule(index),
-                            window,
-                            cx,
-                        ),
-                    )
-                    .into_any_element()]),
-                ))
-                .child(animated_rule_card_body_child(
-                    &card_target,
-                    2,
-                    1,
-                    rule_card_body_actions(vec![
-                        rename_rule_button(title_target, cx),
-                        remove_control_button(Button::new(SharedString::from(format!(
-                            "remove-schedule-rule-{index}"
-                        ))))
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.request_list_item_removal(
-                                ListItemRemovalTarget::new(
-                                    ListItemRemovalKind::ScheduleRule,
-                                    index,
-                                ),
-                                cx,
-                            );
-                        }))
-                        .into_any_element(),
-                    ]),
-                ));
-        }
-        card.into_any_element()
+    fn render_schedule_days_dropdown(
+        &self,
+        index: usize,
+        days: &[WeekdaySetting],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_dropdown_select(
+            format!("schedule-days-{index}"),
+            schedule_days_label(days),
+            true,
+            DropdownSelectWidth::Table,
+            WeekdaySetting::all().len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for day in WeekdaySetting::all() {
+                    let selected = days.contains(&day);
+                    let option_id = SharedString::from(format!("schedule-days-{index}-{day:?}"));
+                    let motion_id = format!("checkbox-{option_id}");
+                    let progress = control_motion_progress(&motion_id, selected);
+                    options = options.child(
+                        h_flex()
+                            .id(option_id.clone())
+                            .relative()
+                            .min_h(px(40.0))
+                            .items_center()
+                            .gap_2()
+                            .pl_3()
+                            .pr_3()
+                            .rounded(px(BRAND_RADIUS_CONTROL))
+                            .text_size(px(TEXT_CONTROL_SIZE))
+                            .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                            .text_color(cx.theme().popover_foreground)
+                            .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
+                            .cursor_pointer()
+                            .child(checkbox_box(
+                                SharedString::from(format!("{option_id}-box")),
+                                16.0,
+                                SharedString::from(format!("{option_id}-mark")),
+                                accent_glyph_color(accent_color()),
+                                progress,
+                            ))
+                            .child(day.short_label())
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                if let Some(rule) = app.settings.schedule_mode.rules.get_mut(index)
+                                {
+                                    let next = !rule.days.contains(&day);
+                                    begin_control_motion(motion_id.clone(), next, cx);
+                                    if next {
+                                        rule.days.push(day);
+                                    } else {
+                                        rule.days.retain(|existing| *existing != day);
+                                    }
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
+                options
+            },
+        )
     }
 
     fn render_cpu_usage_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -5800,13 +5673,20 @@ impl WinderustApp {
                 }))
                 .into_any_element(),
         ));
-        let mut rules = rule_list();
+        let mut rules = rule_list(vec![
+            rule_table_active_header(),
+            rule_table_title_header(t!("common.rule_name").to_string()),
+            rule_table_action_header(),
+        ]);
         for (index, rule) in self.settings.cpu_usage_mode.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::CpuUsageRule, index),
                 SharedString::from(format!("cpu-rule-{index}")),
                 self.render_cpu_rule(index, rule, enabled, window, cx),
             ));
+        }
+        if self.settings.cpu_usage_mode.rules.is_empty() {
+            rules = rules.child(text_muted(t!("common.no_custom_rules").to_string()).p_4());
         }
         body = body.child(rules);
         content = content.child(disabled_feature_body("cpu-usage-body", body, enabled, cx));
@@ -5880,7 +5760,7 @@ impl WinderustApp {
         let collapsed = self.is_rule_card_collapsed(&card_target);
         let mut card = rule_card(
             self.render_rule_title(&rule_card_title(&rule.name), &name_input, title_target, cx),
-            rule_enable_checkbox(
+            rule_active_cell(
                 format!("cpu-rule-enabled-{index}"),
                 rule.enabled,
                 cx.listener(move |app, checked, _, cx| {
@@ -6568,7 +6448,7 @@ impl WinderustApp {
     }
 
     fn render_eco_qos_whitelist(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = v_flex().gap_2();
+        let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self
             .settings
             .eco_qos
@@ -6578,7 +6458,7 @@ impl WinderustApp {
         {
             let process = rule.process_name.clone();
             let row = compact_rule_row(format!("eco-qos-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
+                .child(rule_active_cell(
                     format!("eco-qos-exclusion-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -6590,7 +6470,7 @@ impl WinderustApp {
                     }),
                 ))
                 .child(self.process_rule_title(&process, cx))
-                .child(
+                .child(rule_table_action_cell(
                     remove_control_button(Button::new(SharedString::from(format!(
                         "remove-eco-qos-{index}"
                     ))))
@@ -6599,8 +6479,9 @@ impl WinderustApp {
                             ListItemRemovalTarget::new(ListItemRemovalKind::EcoQosExclusion, index),
                             cx,
                         );
-                    })),
-                );
+                    }))
+                    .into_any_element(),
+                ));
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::EcoQosExclusion, index),
                 SharedString::from(format!("eco-qos-exclusion-{index}")),
@@ -6608,7 +6489,7 @@ impl WinderustApp {
             ));
         }
         if self.settings.eco_qos.efficiency_whitelist.is_empty() {
-            list = list.child(text_muted(t!("efficiency.no_whitelist").to_string()));
+            list = list.child(text_muted(t!("efficiency.no_whitelist").to_string()).p_4());
         }
         list.into_any_element()
     }
@@ -6878,7 +6759,28 @@ impl WinderustApp {
     }
 
     fn render_suspendable_apps(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
+        let mut list = rule_list(vec![
+            rule_table_active_header(),
+            rule_table_left_header(
+                t!("common.status").to_string(),
+                SUSPENSION_STATUS_COLUMN_WIDTH,
+            ),
+            rule_table_title_header(t!("process_list.process_name").to_string()),
+            rule_table_centered_header(
+                t!("suspension.audio").to_string(),
+                SUSPENSION_DETECT_COLUMN_WIDTH,
+            ),
+            rule_table_centered_header(
+                t!("suspension.network").to_string(),
+                SUSPENSION_DETECT_COLUMN_WIDTH,
+            ),
+            rule_table_centered_header("Download".to_string(), 172.0),
+            rule_table_centered_header("Upload".to_string(), 172.0),
+            rule_table_centered_header(
+                t!("action_log.action").to_string(),
+                SUSPENSION_ACTION_COLUMN_WIDTH,
+            ),
+        ]);
         for (index, rule) in self
             .settings
             .app_suspension
@@ -6888,130 +6790,121 @@ impl WinderustApp {
         {
             let process = rule.process_name.clone();
             let indicator = suspension_indicator(&self.app_suspension_status, &process);
-            let card_target = RuleCardTarget::Suspension(process.clone());
-            let collapsed = self.is_rule_card_collapsed(&card_target);
             let rule_enabled = rule.enabled;
             let network_thresholds_enabled = rule_enabled
                 && self.settings.app_suspension.network_wake_enabled
                 && rule.network_wake_enabled;
-            let freeze_action = control_button(Button::new(SharedString::from(format!(
-                "freeze-suspension-{index}"
-            ))))
-            .label(t!("suspension.freeze").to_string())
-            .disabled(!rule_enabled || !can_manual_freeze(&self.app_suspension_status, &process))
-            .on_click(cx.listener({
-                let process = process.clone();
-                move |app, _, _, cx| {
-                    cx.stop_propagation();
-                    app.background_automation
-                        .request_app_suspension_freeze(&process);
-                    app.status_message =
-                        t!("suspension.manual_freeze_requested", process = process).to_string();
-                    cx.notify();
-                }
-            }))
-            .into_any_element();
-            let title = h_flex()
-                .flex_1()
-                .min_w(px(0.0))
-                .gap_2()
-                .items_center()
+            let row = compact_rule_row(format!("suspension-rule-row-{index}"))
+                .child(
+                    h_flex()
+                        .w(px(SUSPENSION_ACTIVE_COLUMN_WIDTH))
+                        .min_w(px(0.0))
+                        .flex_shrink_0()
+                        .justify_center()
+                        .items_center()
+                        .child(rule_enable_checkbox(
+                            format!("suspension-rule-enabled-{index}"),
+                            rule.enabled,
+                            cx.listener(move |app, checked, _, cx| {
+                                if let Some(rule) =
+                                    app.settings.app_suspension.suspendable_apps.get_mut(index)
+                                {
+                                    rule.enabled = *checked;
+                                }
+                                cx.notify();
+                            }),
+                        )),
+                )
+                .child(
+                    h_flex()
+                        .w(px(SUSPENSION_STATUS_COLUMN_WIDTH))
+                        .min_w(px(0.0))
+                        .flex_shrink_0()
+                        .items_center()
+                        .child(status_pill(indicator.label, indicator.bg, indicator.fg)),
+                )
                 .child(self.process_rule_title(&process, cx))
-                .child(status_pill(indicator.label, indicator.bg, indicator.fg))
-                .into_any_element();
-            let mut card = rule_card_with_header_action(
-                title,
-                rule_enable_checkbox(
-                    format!("suspension-rule-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) =
-                            app.settings.app_suspension.suspendable_apps.get_mut(index)
-                        {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ),
-                Some(freeze_action),
-                rule_card_collapse_indicator(card_target.clone(), collapsed),
-                card_target.clone(),
-                collapsed,
-                cx,
-            );
-            if rule_card_body_visible(&card_target, collapsed, window) {
-                card = card
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        0,
-                        2,
-                        rule_card_body_row(vec![
-                            rule_toggle_switch(
-                                format!("suspension-audio-rule-{index}"),
-                                t!("suspension.audio_detection").to_string(),
-                                rule.audio_wake_enabled,
-                                cx.listener(move |app, checked, _, cx| {
-                                    if let Some(rule) =
-                                        app.settings.app_suspension.suspendable_apps.get_mut(index)
-                                    {
-                                        rule.audio_wake_enabled = *checked;
-                                    }
+                .child(
+                    rule_table_checkbox_cell(
+                        "suspension-audio-rule",
+                        index,
+                        rule.audio_wake_enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) =
+                                app.settings.app_suspension.suspendable_apps.get_mut(index)
+                            {
+                                rule.audio_wake_enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .into_any_element(),
+                )
+                .child(
+                    rule_table_checkbox_cell(
+                        "suspension-network-rule",
+                        index,
+                        rule.network_wake_enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) =
+                                app.settings.app_suspension.suspendable_apps.get_mut(index)
+                            {
+                                rule.network_wake_enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .into_any_element(),
+                )
+                .child(self.render_network_threshold_cell(
+                    ThresholdField::Download(index),
+                    rule.network_download_threshold_bytes,
+                    rule.network_download_threshold_unit,
+                    network_thresholds_enabled,
+                    window,
+                    cx,
+                ))
+                .child(self.render_network_threshold_cell(
+                    ThresholdField::Upload(index),
+                    rule.network_upload_threshold_bytes,
+                    rule.network_upload_threshold_unit,
+                    network_thresholds_enabled,
+                    window,
+                    cx,
+                ))
+                .child(
+                    h_flex()
+                        .w(px(SUSPENSION_ACTION_COLUMN_WIDTH))
+                        .min_w(px(0.0))
+                        .flex_shrink_0()
+                        .gap_1()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            control_button(Button::new(SharedString::from(format!(
+                                "freeze-suspension-{index}"
+                            ))))
+                            .with_size(px(32.0))
+                            .icon(Icon::new(NavIcon::Snowflake).with_size(px(14.0)))
+                            .tooltip(t!("suspension.freeze").to_string())
+                            .disabled(
+                                !rule_enabled
+                                    || !can_manual_freeze(&self.app_suspension_status, &process),
+                            )
+                            .on_click(cx.listener({
+                                let process = process.clone();
+                                move |app, _, _, cx| {
+                                    cx.stop_propagation();
+                                    app.background_automation
+                                        .request_app_suspension_freeze(&process);
+                                    app.status_message =
+                                        t!("suspension.manual_freeze_requested", process = process)
+                                            .to_string();
                                     cx.notify();
-                                }),
-                            ),
-                            rule_toggle_switch(
-                                format!("suspension-network-rule-{index}"),
-                                t!("suspension.network_detection").to_string(),
-                                rule.network_wake_enabled,
-                                cx.listener(move |app, checked, _, cx| {
-                                    if let Some(rule) =
-                                        app.settings.app_suspension.suspendable_apps.get_mut(index)
-                                    {
-                                        rule.network_wake_enabled = *checked;
-                                    }
-                                    cx.notify();
-                                }),
-                            ),
-                        ]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        1,
-                        2,
-                        rule_card_body_row(vec![
-                            self.render_network_threshold(
-                                NetworkThresholdRenderSpec {
-                                    label: SharedString::from(
-                                        t!("suspension.download_threshold").to_string(),
-                                    ),
-                                    threshold_bytes: rule.network_download_threshold_bytes,
-                                    unit: rule.network_download_threshold_unit,
-                                    field: ThresholdField::Download(index),
-                                    enabled: network_thresholds_enabled,
-                                },
-                                window,
-                                cx,
-                            ),
-                            self.render_network_threshold(
-                                NetworkThresholdRenderSpec {
-                                    label: SharedString::from(
-                                        t!("suspension.upload_threshold").to_string(),
-                                    ),
-                                    threshold_bytes: rule.network_upload_threshold_bytes,
-                                    unit: rule.network_upload_threshold_unit,
-                                    field: ThresholdField::Upload(index),
-                                    enabled: network_thresholds_enabled,
-                                },
-                                window,
-                                cx,
-                            ),
-                        ]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        2,
-                        1,
-                        rule_card_body_action(
+                                }
+                            })),
+                        )
+                        .child(
                             remove_control_button(Button::new(SharedString::from(format!(
                                 "remove-suspension-{index}"
                             ))))
@@ -7025,19 +6918,18 @@ impl WinderustApp {
                                         cx,
                                     );
                                 }
-                            }))
-                            .into_any_element(),
-                        ),
-                    ));
-            }
+                            })),
+                        )
+                        .into_any_element(),
+                );
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::AppSuspensionRule, index),
                 SharedString::from(format!("suspension-rule-{index}")),
-                card.into_any_element(),
+                row.into_any_element(),
             ));
         }
         if self.settings.app_suspension.suspendable_apps.is_empty() {
-            list = list.child(text_muted(t!("suspension.no_suspendable").to_string()));
+            list = list.child(text_muted(t!("suspension.no_suspendable").to_string()).p_4());
         }
         list.into_any_element()
     }
@@ -7386,7 +7278,7 @@ impl WinderustApp {
     }
 
     fn render_background_cpu_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = v_flex().gap_2();
+        let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self
             .settings
             .background_cpu_restriction
@@ -7396,7 +7288,7 @@ impl WinderustApp {
         {
             let process = rule.process_name.clone();
             let row = compact_rule_row(format!("background-cpu-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
+                .child(rule_active_cell(
                     format!("background-cpu-exclusion-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -7412,7 +7304,7 @@ impl WinderustApp {
                     }),
                 ))
                 .child(self.process_rule_title(&process, cx))
-                .child(
+                .child(rule_table_action_cell(
                     remove_control_button(Button::new(SharedString::from(format!(
                         "remove-background-cpu-exclusion-{index}"
                     ))))
@@ -7424,8 +7316,9 @@ impl WinderustApp {
                             ),
                             cx,
                         );
-                    })),
-                );
+                    }))
+                    .into_any_element(),
+                ));
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::BackgroundCpuExclusion, index),
                 SharedString::from(format!("background-cpu-exclusion-{index}")),
@@ -7438,7 +7331,7 @@ impl WinderustApp {
             .exclusions
             .is_empty()
         {
-            list = list.child(text_muted(t!("background_cpu.no_exclusions").to_string()));
+            list = list.child(text_muted(t!("background_cpu.no_exclusions").to_string()).p_4());
         }
         list.into_any_element()
     }
@@ -7522,7 +7415,7 @@ impl WinderustApp {
     }
 
     fn render_cpu_limiter_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
+        let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self.settings.cpu_limiter.rules.iter().enumerate() {
             let process = rule.process_name.clone();
             let indicator = cpu_limiter_indicator(&self.cpu_limiter_status, &process);
@@ -7530,7 +7423,7 @@ impl WinderustApp {
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
                 self.process_rule_title(&process, cx),
-                rule_enable_checkbox(
+                rule_active_cell(
                     format!("cpu-limiter-rule-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -7634,7 +7527,7 @@ impl WinderustApp {
             ));
         }
         if self.settings.cpu_limiter.rules.is_empty() {
-            list = list.child(text_muted(t!("cpu_limiter.no_rules").to_string()));
+            list = list.child(text_muted(t!("cpu_limiter.no_rules").to_string()).p_4());
         }
         list.into_any_element()
     }
@@ -7652,279 +7545,6 @@ impl WinderustApp {
             format!("cpu-limiter-numeric-{index}-{field:?}"),
             label,
             self.render_numeric_value(field, display_value, edit_value, cx),
-        )
-        .into_any_element()
-    }
-
-    fn render_watchdog_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let input_value = self.inputs.watchdog_process.read(cx).value().to_string();
-        let enabled = self.settings.watchdog.enabled;
-        let can_add = enabled && can_add_watchdog_process(&self.settings.watchdog, &input_value);
-        let body = feature_body(enabled)
-            .child(section_header(
-                &t!("watchdog.rules"),
-                t!("watchdog.rules_help").to_string(),
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_start()
-                    .flex_wrap()
-                    .child(self.render_process_picker(
-                        "watchdog-suggestion",
-                        &self.inputs.watchdog_process,
-                        SuggestionTarget::Watchdog,
-                        window,
-                        cx,
-                    ))
-                    .child(
-                        primary_control_button(Button::new("add-watchdog-terminate"), cx)
-                            .label(t!("watchdog.add_terminate").to_string())
-                            .disabled(!can_add)
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.watchdog_process.read(cx).value().to_string();
-                                if can_add_watchdog_process(&app.settings.watchdog, &process) {
-                                    app.settings.watchdog.rules.push(new_watchdog_rule(
-                                        &process,
-                                        WatchdogAction::TerminateOnLaunch,
-                                    ));
-                                    clear_input(&app.inputs.watchdog_process, window, cx);
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        primary_control_button(Button::new("add-watchdog-restart"), cx)
-                            .label(t!("watchdog.add_restart").to_string())
-                            .disabled(!can_add)
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.watchdog_process.read(cx).value().to_string();
-                                if can_add_watchdog_process(&app.settings.watchdog, &process) {
-                                    app.settings.watchdog.rules.push(new_watchdog_rule(
-                                        &process,
-                                        WatchdogAction::RestartIfExited,
-                                    ));
-                                    clear_input(&app.inputs.watchdog_process, window, cx);
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(self.render_watchdog_rules(window, cx));
-
-        let help = tooltip_lines(vec![
-            t!("watchdog.intro_1").to_string(),
-            t!("watchdog.intro_2").to_string(),
-            t!("watchdog.intro_3").to_string(),
-        ]);
-
-        self.page_shell(Page::Watchdog, cx)
-            .child(feature_toggle_switch_with_help(
-                "watchdog-enabled",
-                t!("watchdog.enable").to_string(),
-                help,
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.watchdog.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(disabled_feature_body("watchdog-body", body, enabled, cx))
-            .into_any_element()
-    }
-
-    fn render_watchdog_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self.settings.watchdog.rules.iter().enumerate() {
-            let process = rule.process_name.clone();
-            let indicator = watchdog_indicator(&self.watchdog_status, &process);
-            let card_target = RuleCardTarget::Watchdog(process.clone());
-            let collapsed = self.is_rule_card_collapsed(&card_target);
-            let mut card = rule_card(
-                self.process_rule_title(&process, cx),
-                rule_enable_checkbox(
-                    format!("watchdog-rule-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.watchdog.rules.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ),
-                rule_card_collapse_indicator(card_target.clone(), collapsed),
-                card_target.clone(),
-                collapsed,
-                cx,
-            );
-            if rule_card_body_visible(&card_target, collapsed, window) {
-                card = card
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        0,
-                        1,
-                        rule_card_body_row(vec![rule_action_row(
-                            format!("watchdog-rule-status-{index}"),
-                            t!("common.status").to_string(),
-                            status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
-                        )
-                        .into_any_element()]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        1,
-                        1,
-                        rule_card_body_row(vec![self.render_watchdog_action_selector(
-                            index,
-                            rule.action,
-                            window,
-                            cx,
-                        )]),
-                    ));
-
-                let mut body_index = 2;
-                if rule.action == WatchdogAction::RestartIfExited {
-                    if let Some(input) = self.inputs.watchdog_launch_paths.get(index) {
-                        card = card.child(animated_rule_card_body_child(
-                            &card_target,
-                            body_index,
-                            1,
-                            rule_card_body_row(vec![rule_action_row(
-                                format!("watchdog-launch-path-{index}"),
-                                t!("watchdog.launch_path").to_string(),
-                                app_input(
-                                    input,
-                                    input.read(cx).focus_handle(cx).is_focused(window),
-                                    cx,
-                                )
-                                .into_any_element(),
-                            )
-                            .into_any_element()]),
-                        ));
-                        body_index += 1;
-                    }
-                    if let Some(input) = self.inputs.watchdog_launch_args.get(index) {
-                        card = card.child(animated_rule_card_body_child(
-                            &card_target,
-                            body_index,
-                            1,
-                            rule_card_body_row(vec![rule_action_row(
-                                format!("watchdog-launch-args-{index}"),
-                                t!("watchdog.launch_args").to_string(),
-                                app_input(
-                                    input,
-                                    input.read(cx).focus_handle(cx).is_focused(window),
-                                    cx,
-                                )
-                                .into_any_element(),
-                            )
-                            .into_any_element()]),
-                        ));
-                        body_index += 1;
-                    }
-                    card = card.child(animated_rule_card_body_child(
-                        &card_target,
-                        body_index,
-                        1,
-                        rule_card_body_row(vec![rule_action_row(
-                            format!("watchdog-restart-delay-{index}"),
-                            t!("watchdog.restart_delay").to_string(),
-                            self.render_numeric_value(
-                                NumericField::WatchdogRestartDelay(index),
-                                format!("{} sec", rule.restart_delay_seconds),
-                                rule.restart_delay_seconds.to_string(),
-                                cx,
-                            ),
-                        )
-                        .into_any_element()]),
-                    ));
-                    body_index += 1;
-                }
-
-                card = card.child(animated_rule_card_body_child(
-                    &card_target,
-                    body_index,
-                    1,
-                    rule_card_body_action(
-                        remove_control_button(Button::new(SharedString::from(format!(
-                            "remove-watchdog-{index}"
-                        ))))
-                        .on_click(cx.listener({
-                            move |app, _, _, cx| {
-                                app.request_list_item_removal(
-                                    ListItemRemovalTarget::new(
-                                        ListItemRemovalKind::WatchdogRule,
-                                        index,
-                                    ),
-                                    cx,
-                                );
-                            }
-                        }))
-                        .into_any_element(),
-                    ),
-                ));
-            }
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::WatchdogRule, index),
-                SharedString::from(format!("watchdog-rule-{index}")),
-                card.into_any_element(),
-            ));
-        }
-        if self.settings.watchdog.rules.is_empty() {
-            list = list.child(text_muted(t!("watchdog.no_rules").to_string()));
-        }
-        list.into_any_element()
-    }
-
-    fn render_watchdog_action_selector(
-        &self,
-        index: usize,
-        selected_action: WatchdogAction,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let action_options = [
-            WatchdogAction::TerminateOnLaunch,
-            WatchdogAction::RestartIfExited,
-        ];
-        let dropdown = self.render_dropdown_select(
-            format!("watchdog-action-{index}"),
-            watchdog_action_label(selected_action),
-            true,
-            DropdownSelectWidth::Standard,
-            action_options.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for action in action_options {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!(
-                                "watchdog-action-{index}-option-{action:?}"
-                            )),
-                            watchdog_action_label(action),
-                            selected_action == action,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.watchdog.rules.get_mut(index) {
-                                rule.action = action;
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        );
-        rule_action_row(
-            format!("watchdog-action-row-{index}"),
-            t!("watchdog.action").to_string(),
-            dropdown,
         )
         .into_any_element()
     }
@@ -8013,11 +7633,16 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut list = rule_list();
+        let mut list = rule_list(vec![
+            rule_table_active_header(),
+            rule_table_title_header(t!("process_list.process_name").to_string()),
+            priority_exclusion_table_cell(t!("performance_mode.power_plan").to_string()),
+            rule_table_action_header(),
+        ]);
         for (index, rule) in self.settings.performance_mode.rules.iter().enumerate() {
             let process = rule.process_name.clone();
             let row = compact_rule_row(format!("performance-mode-rule-row-{index}"))
-                .child(rule_enable_checkbox(
+                .child(rule_active_cell(
                     format!("performance-mode-rule-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -8035,7 +7660,7 @@ impl WinderustApp {
                     window,
                     cx,
                 ))
-                .child(
+                .child(rule_table_action_cell(
                     remove_control_button(Button::new(SharedString::from(format!(
                         "remove-performance-mode-{index}"
                     ))))
@@ -8049,12 +7674,15 @@ impl WinderustApp {
                         );
                     }))
                     .into_any_element(),
-                );
+                ));
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::PerformanceModeRule, index),
                 SharedString::from(format!("performance-mode-rule-{index}")),
                 row.into_any_element(),
             ));
+        }
+        if self.settings.performance_mode.rules.is_empty() {
+            list = list.child(text_muted(t!("common.no_custom_rules").to_string()).p_4());
         }
         list.into_any_element()
     }
@@ -8879,7 +8507,7 @@ impl WinderustApp {
     }
 
     fn render_responsiveness_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = v_flex().gap_2();
+        let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self
             .settings
             .foreground_responsiveness
@@ -8889,7 +8517,7 @@ impl WinderustApp {
         {
             let process = rule.process_name.clone();
             let row = compact_rule_row(format!("responsiveness-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
+                .child(rule_active_cell(
                     format!("responsiveness-exclusion-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -8905,7 +8533,7 @@ impl WinderustApp {
                     }),
                 ))
                 .child(self.process_rule_title(&process, cx))
-                .child(
+                .child(rule_table_action_cell(
                     remove_control_button(Button::new(SharedString::from(format!(
                         "remove-responsiveness-exclusion-{index}"
                     ))))
@@ -8917,8 +8545,9 @@ impl WinderustApp {
                             ),
                             cx,
                         );
-                    })),
-                );
+                    }))
+                    .into_any_element(),
+                ));
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::ResponsivenessExclusion, index),
                 SharedString::from(format!("responsiveness-exclusion-{index}")),
@@ -8957,19 +8586,35 @@ impl WinderustApp {
                 }),
             ),
             self.is_setting_group_collapsed(SettingGroupTarget::IoPriorityMaster),
-            vec![setting_group_action_row(
-                "io-priority-background-default-row",
-                t!("io_priority.background_default").to_string(),
-                self.render_io_priority_default_selector(
-                    IoPriorityDefaultTarget::Background,
-                    self.settings.io_priority.background_priority,
-                    enabled,
-                    window,
-                    cx,
-                ),
-                false,
-            )
-            .into_any_element()],
+            vec![
+                setting_group_action_row(
+                    "io-priority-background-default-row",
+                    t!("io_priority.background_default").to_string(),
+                    self.render_io_priority_default_selector(
+                        IoPriorityDefaultTarget::Background,
+                        self.settings.io_priority.background_priority,
+                        enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element(),
+                setting_group_action_row(
+                    "io-priority-preserve-background-row",
+                    t!("common.preserve_background_priority").to_string(),
+                    setting_group_switch_action(
+                        "io-priority-preserve-background-toggle",
+                        self.settings.io_priority.preserve_background_priority,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings.io_priority.preserve_background_priority = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    false,
+                )
+                .into_any_element(),
+            ],
             window,
             cx,
         );
@@ -8989,19 +8634,35 @@ impl WinderustApp {
                     }),
                 ),
                 self.is_setting_group_collapsed(SettingGroupTarget::IoPriorityForegroundDetection),
-                vec![setting_group_action_row(
-                    "io-priority-foreground-default-row",
-                    t!("io_priority.foreground_default").to_string(),
-                    self.render_io_priority_default_selector(
-                        IoPriorityDefaultTarget::Foreground,
-                        self.settings.io_priority.foreground_priority,
-                        self.settings.io_priority.foreground_detection_enabled,
-                        window,
-                        cx,
-                    ),
-                    false,
-                )
-                .into_any_element()],
+                vec![
+                    setting_group_action_row(
+                        "io-priority-foreground-default-row",
+                        t!("io_priority.foreground_default").to_string(),
+                        self.render_io_priority_default_selector(
+                            IoPriorityDefaultTarget::Foreground,
+                            self.settings.io_priority.foreground_priority,
+                            self.settings.io_priority.foreground_detection_enabled,
+                            window,
+                            cx,
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "io-priority-preserve-foreground-row",
+                        t!("common.preserve_foreground_priority").to_string(),
+                        setting_group_switch_action(
+                            "io-priority-preserve-foreground-toggle",
+                            self.settings.io_priority.preserve_foreground_priority,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.io_priority.preserve_foreground_priority = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                ],
                 window,
                 cx,
             ))
@@ -9048,7 +8709,7 @@ impl WinderustApp {
                             })),
                     ),
             )
-            .child(self.render_io_priority_exclusions(cx));
+            .child(self.render_io_priority_exclusions(window, cx));
 
         self.page_shell(Page::IoPriority, cx)
             .child(master_card)
@@ -9095,25 +8756,13 @@ impl WinderustApp {
                 )
                 .into_any_element(),
                 setting_group_action_row(
-                    "cpu-priority-advanced-row",
-                    t!("cpu_priority.advanced_priority").to_string(),
+                    "cpu-priority-preserve-background-row",
+                    t!("common.preserve_background_priority").to_string(),
                     setting_group_switch_action(
-                        "cpu-priority-advanced-toggle",
-                        self.settings.cpu_priority.advanced_priority_enabled,
+                        "cpu-priority-preserve-background-toggle",
+                        self.settings.cpu_priority.preserve_background_priority,
                         cx.listener(|app, checked, _, cx| {
-                            app.settings.cpu_priority.advanced_priority_enabled = *checked;
-                            if !*checked {
-                                app.settings.cpu_priority.background_priority = app
-                                    .settings
-                                    .cpu_priority
-                                    .background_priority
-                                    .safe_when_advanced_disabled();
-                                app.settings.cpu_priority.foreground_priority = app
-                                    .settings
-                                    .cpu_priority
-                                    .foreground_priority
-                                    .safe_when_advanced_disabled();
-                            }
+                            app.settings.cpu_priority.preserve_background_priority = *checked;
                             cx.notify();
                         }),
                     ),
@@ -9140,19 +8789,35 @@ impl WinderustApp {
                     }),
                 ),
                 self.is_setting_group_collapsed(SettingGroupTarget::CpuPriorityForegroundDetection),
-                vec![setting_group_action_row(
-                    "cpu-priority-foreground-default-row",
-                    t!("cpu_priority.foreground_default").to_string(),
-                    self.render_cpu_priority_default_selector(
-                        CpuPriorityDefaultTarget::Foreground,
-                        self.settings.cpu_priority.foreground_priority,
-                        self.settings.cpu_priority.foreground_detection_enabled,
-                        window,
-                        cx,
-                    ),
-                    false,
-                )
-                .into_any_element()],
+                vec![
+                    setting_group_action_row(
+                        "cpu-priority-foreground-default-row",
+                        t!("cpu_priority.foreground_default").to_string(),
+                        self.render_cpu_priority_default_selector(
+                            CpuPriorityDefaultTarget::Foreground,
+                            self.settings.cpu_priority.foreground_priority,
+                            self.settings.cpu_priority.foreground_detection_enabled,
+                            window,
+                            cx,
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "cpu-priority-preserve-foreground-row",
+                        t!("common.preserve_foreground_priority").to_string(),
+                        setting_group_switch_action(
+                            "cpu-priority-preserve-foreground-toggle",
+                            self.settings.cpu_priority.preserve_foreground_priority,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.cpu_priority.preserve_foreground_priority = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                ],
                 window,
                 cx,
             ))
@@ -9200,7 +8865,7 @@ impl WinderustApp {
                             })),
                     ),
             )
-            .child(self.render_cpu_priority_exclusions(cx));
+            .child(self.render_cpu_priority_exclusions(window, cx));
 
         self.page_shell(Page::CpuPriority, cx)
             .child(master_card)
@@ -9213,47 +8878,19 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_cpu_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self.settings.cpu_priority.exclusions.iter().enumerate() {
-            let process = rule.process_name.clone();
-            let row = compact_rule_row(format!("cpu-priority-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
-                    format!("cpu-priority-exclusion-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.cpu_priority.exclusions.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ))
-                .child(self.process_rule_title(&process, cx))
-                .child(
-                    remove_control_button(Button::new(SharedString::from(format!(
-                        "remove-cpu-priority-exclusion-{index}"
-                    ))))
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.request_list_item_removal(
-                            ListItemRemovalTarget::new(
-                                ListItemRemovalKind::CpuPriorityExclusion,
-                                index,
-                            ),
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-                );
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::CpuPriorityExclusion, index),
-                SharedString::from(format!("cpu-priority-exclusion-{index}")),
-                row.into_any_element(),
-            ));
-        }
-        if self.settings.cpu_priority.exclusions.is_empty() {
-            list = list.child(text_muted(t!("cpu_priority.no_exclusions").to_string()));
-        }
-        list.into_any_element()
+    fn render_cpu_priority_exclusions(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_priority_exclusion_table(
+            "cpu-priority-exclusion",
+            &self.settings.cpu_priority.exclusions,
+            ListItemRemovalKind::CpuPriorityExclusion,
+            t!("cpu_priority.no_exclusions").to_string(),
+            window,
+            cx,
+        )
     }
 
     fn render_cpu_priority_status_card(&self) -> gpui::Div {
@@ -9301,7 +8938,7 @@ impl WinderustApp {
             CpuPriorityDefaultTarget::Foreground => "cpu-priority-foreground-default",
         };
         let priorities: &[ProcessCpuPrioritySetting] =
-            if self.settings.cpu_priority.advanced_priority_enabled {
+            if self.settings.advanced.expose_all_priority_values {
                 &ProcessCpuPrioritySetting::ADVANCED_ALL
             } else {
                 &ProcessCpuPrioritySetting::ALL
@@ -9371,19 +9008,35 @@ impl WinderustApp {
                 }),
             ),
             self.is_setting_group_collapsed(SettingGroupTarget::ThreadPriorityMaster),
-            vec![setting_group_action_row(
-                "thread-priority-background-default-row",
-                t!("thread_priority.background_default").to_string(),
-                self.render_thread_priority_default_selector(
-                    ThreadPriorityDefaultTarget::Background,
-                    self.settings.thread_priority.background_priority,
-                    enabled,
-                    window,
-                    cx,
-                ),
-                false,
-            )
-            .into_any_element()],
+            vec![
+                setting_group_action_row(
+                    "thread-priority-background-default-row",
+                    t!("thread_priority.background_default").to_string(),
+                    self.render_thread_priority_default_selector(
+                        ThreadPriorityDefaultTarget::Background,
+                        self.settings.thread_priority.background_priority,
+                        enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element(),
+                setting_group_action_row(
+                    "thread-priority-preserve-background-row",
+                    t!("common.preserve_background_priority").to_string(),
+                    setting_group_switch_action(
+                        "thread-priority-preserve-background-toggle",
+                        self.settings.thread_priority.preserve_background_priority,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings.thread_priority.preserve_background_priority = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    false,
+                )
+                .into_any_element(),
+            ],
             window,
             cx,
         );
@@ -9405,19 +9058,36 @@ impl WinderustApp {
                 self.is_setting_group_collapsed(
                     SettingGroupTarget::ThreadPriorityForegroundDetection,
                 ),
-                vec![setting_group_action_row(
-                    "thread-priority-foreground-default-row",
-                    t!("thread_priority.foreground_default").to_string(),
-                    self.render_thread_priority_default_selector(
-                        ThreadPriorityDefaultTarget::Foreground,
-                        self.settings.thread_priority.foreground_priority,
-                        self.settings.thread_priority.foreground_detection_enabled,
-                        window,
-                        cx,
-                    ),
-                    false,
-                )
-                .into_any_element()],
+                vec![
+                    setting_group_action_row(
+                        "thread-priority-foreground-default-row",
+                        t!("thread_priority.foreground_default").to_string(),
+                        self.render_thread_priority_default_selector(
+                            ThreadPriorityDefaultTarget::Foreground,
+                            self.settings.thread_priority.foreground_priority,
+                            self.settings.thread_priority.foreground_detection_enabled,
+                            window,
+                            cx,
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "thread-priority-preserve-foreground-row",
+                        t!("common.preserve_foreground_priority").to_string(),
+                        setting_group_switch_action(
+                            "thread-priority-preserve-foreground-toggle",
+                            self.settings.thread_priority.preserve_foreground_priority,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.thread_priority.preserve_foreground_priority =
+                                    *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                ],
                 window,
                 cx,
             ))
@@ -9469,7 +9139,7 @@ impl WinderustApp {
                             })),
                     ),
             )
-            .child(self.render_thread_priority_exclusions(cx));
+            .child(self.render_thread_priority_exclusions(window, cx));
 
         self.page_shell(Page::ThreadPriority, cx)
             .child(master_card)
@@ -9482,47 +9152,19 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_thread_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self.settings.thread_priority.exclusions.iter().enumerate() {
-            let process = rule.process_name.clone();
-            let row = compact_rule_row(format!("thread-priority-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
-                    format!("thread-priority-exclusion-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.thread_priority.exclusions.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ))
-                .child(self.process_rule_title(&process, cx))
-                .child(
-                    remove_control_button(Button::new(SharedString::from(format!(
-                        "remove-thread-priority-exclusion-{index}"
-                    ))))
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.request_list_item_removal(
-                            ListItemRemovalTarget::new(
-                                ListItemRemovalKind::ThreadPriorityExclusion,
-                                index,
-                            ),
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-                );
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::ThreadPriorityExclusion, index),
-                SharedString::from(format!("thread-priority-exclusion-{index}")),
-                row.into_any_element(),
-            ));
-        }
-        if self.settings.thread_priority.exclusions.is_empty() {
-            list = list.child(text_muted(t!("thread_priority.no_exclusions").to_string()));
-        }
-        list.into_any_element()
+    fn render_thread_priority_exclusions(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_priority_exclusion_table(
+            "thread-priority-exclusion",
+            &self.settings.thread_priority.exclusions,
+            ListItemRemovalKind::ThreadPriorityExclusion,
+            t!("thread_priority.no_exclusions").to_string(),
+            window,
+            cx,
+        )
     }
 
     fn render_thread_priority_status_card(&self) -> gpui::Div {
@@ -9573,17 +9215,23 @@ impl WinderustApp {
             ThreadPriorityDefaultTarget::Background => "thread-priority-background-default",
             ThreadPriorityDefaultTarget::Foreground => "thread-priority-foreground-default",
         };
+        let priorities: &[ProcessThreadPrioritySetting] =
+            if self.settings.advanced.expose_all_priority_values {
+                &ProcessThreadPrioritySetting::ADVANCED_ALL
+            } else {
+                &ProcessThreadPrioritySetting::ALL
+            };
         self.render_dropdown_select(
             id,
             process_thread_priority_setting_label(selected_priority),
             enabled,
             DropdownSelectWidth::Standard,
-            ProcessThreadPrioritySetting::ALL.len(),
+            priorities.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessThreadPrioritySetting::ALL {
+                for priority in priorities.iter().copied() {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!("{id}-option-{priority:?}")),
@@ -9736,7 +9384,7 @@ impl WinderustApp {
                             })),
                     ),
             )
-            .child(self.render_priority_boost_exclusions(cx));
+            .child(self.render_priority_boost_exclusions(window, cx));
 
         self.page_shell(Page::DynamicPriorityBoost, cx)
             .child(master_card)
@@ -9749,47 +9397,19 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_priority_boost_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self.settings.priority_boost.exclusions.iter().enumerate() {
-            let process = rule.process_name.clone();
-            let row = compact_rule_row(format!("priority-boost-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
-                    format!("priority-boost-exclusion-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.priority_boost.exclusions.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ))
-                .child(self.process_rule_title(&process, cx))
-                .child(
-                    remove_control_button(Button::new(SharedString::from(format!(
-                        "remove-priority-boost-exclusion-{index}"
-                    ))))
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.request_list_item_removal(
-                            ListItemRemovalTarget::new(
-                                ListItemRemovalKind::PriorityBoostExclusion,
-                                index,
-                            ),
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-                );
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::PriorityBoostExclusion, index),
-                SharedString::from(format!("priority-boost-exclusion-{index}")),
-                row.into_any_element(),
-            ));
-        }
-        if self.settings.priority_boost.exclusions.is_empty() {
-            list = list.child(text_muted(t!("priority_boost.no_exclusions").to_string()));
-        }
-        list.into_any_element()
+    fn render_priority_boost_exclusions(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_priority_exclusion_table(
+            "priority-boost-exclusion",
+            &self.settings.priority_boost.exclusions,
+            ListItemRemovalKind::PriorityBoostExclusion,
+            t!("priority_boost.no_exclusions").to_string(),
+            window,
+            cx,
+        )
     }
 
     fn render_priority_boost_status_card(&self) -> gpui::Div {
@@ -9873,47 +9493,357 @@ impl WinderustApp {
         )
     }
 
-    fn render_io_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self.settings.io_priority.exclusions.iter().enumerate() {
+    fn render_io_priority_exclusions(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_priority_exclusion_table(
+            "io-priority-exclusion",
+            &self.settings.io_priority.exclusions,
+            ListItemRemovalKind::IoPriorityExclusion,
+            t!("io_priority.no_exclusions").to_string(),
+            window,
+            cx,
+        )
+    }
+
+    fn render_priority_exclusion_table(
+        &self,
+        id_prefix: &'static str,
+        rules: &[ProcessExclusionRule],
+        kind: ListItemRemovalKind,
+        empty_message: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut table = v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .overflow_hidden()
+            .rounded(px(BRAND_RADIUS_SURFACE))
+            .border_1()
+            .border_color(rgb(border_color()))
+            .bg(rgb(settings_card_color()))
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w(px(0.0))
+                    .h(px(32.0))
+                    .items_center()
+                    .gap_2()
+                    .px_4()
+                    .border_b_1()
+                    .border_color(rgb(border_color()))
+                    .text_size(px(TEXT_LABEL_SIZE))
+                    .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+                    .text_color(rgb(muted_text_color()))
+                    .child(rule_table_active_header())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .child(t!("process_list.process_name").to_string()),
+                    )
+                    .child(priority_exclusion_table_cell(
+                        t!("process_list.foreground").to_string(),
+                    ))
+                    .child(priority_exclusion_table_cell(
+                        t!("process_list.background").to_string(),
+                    ))
+                    .child(rule_table_action_header()),
+            );
+
+        for (index, rule) in rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            let card = compact_rule_row(format!("io-priority-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
-                    format!("io-priority-exclusion-enabled-{index}"),
+            let target = ListItemRemovalTarget::new(kind, index);
+            let row = h_flex()
+                .id(SharedString::from(format!("{id_prefix}-row-{index}")))
+                .w_full()
+                .min_w(px(0.0))
+                .h(px(CARD_ROW_HEIGHT))
+                .items_center()
+                .gap_2()
+                .px_4()
+                .border_b_1()
+                .border_color(rgb(border_color()))
+                .text_size(px(TEXT_BODY_SIZE))
+                .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                .child(rule_active_cell(
+                    format!("{id_prefix}-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.io_priority.exclusions.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
+                        app.set_priority_exclusion_enabled(kind, index, *checked);
                         cx.notify();
                     }),
                 ))
                 .child(self.process_rule_title(&process, cx))
-                .child(
-                    remove_control_button(Button::new(SharedString::from(format!(
-                        "remove-io-priority-exclusion-{index}"
+                .child(self.render_priority_exclusion_dropdown(kind, index, true, window, cx))
+                .child(self.render_priority_exclusion_dropdown(kind, index, false, window, cx))
+                .child(rule_table_action_cell(
+                    danger_control_button(Button::new(SharedString::from(format!(
+                        "remove-{id_prefix}-{index}"
                     ))))
+                    .with_size(px(32.0))
+                    .icon(Icon::new(NavIcon::Trash2).with_size(px(14.0)))
+                    .tooltip(t!("common.remove").to_string())
                     .on_click(cx.listener(move |app, _, _, cx| {
-                        app.request_list_item_removal(
-                            ListItemRemovalTarget::new(
-                                ListItemRemovalKind::IoPriorityExclusion,
-                                index,
-                            ),
-                            cx,
-                        );
+                        app.request_list_item_removal(target, cx);
                     }))
                     .into_any_element(),
-                );
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::IoPriorityExclusion, index),
-                SharedString::from(format!("io-priority-exclusion-{index}")),
-                card.into_any_element(),
+                ));
+
+            table = table.child(self.animated_list_item(
+                target,
+                SharedString::from(format!("{id_prefix}-{index}")),
+                row.into_any_element(),
             ));
         }
-        if self.settings.io_priority.exclusions.is_empty() {
-            list = list.child(text_muted(t!("io_priority.no_exclusions").to_string()));
+
+        if rules.is_empty() {
+            table = table.child(text_muted(empty_message).p_4());
         }
-        list.into_any_element()
+
+        table.into_any_element()
+    }
+
+    fn render_priority_exclusion_dropdown(
+        &self,
+        kind: ListItemRemovalKind,
+        index: usize,
+        foreground: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match kind {
+            ListItemRemovalKind::CpuPriorityExclusion => {
+                let selected =
+                    self.settings.cpu_priority.exclusions[index].cpu_priority_override(foreground);
+                let priorities: &[ProcessCpuPrioritySetting] =
+                    if self.settings.advanced.expose_all_priority_values {
+                        &ProcessCpuPrioritySetting::CUSTOM_RULE_ADVANCED_ALL
+                    } else {
+                        &ProcessCpuPrioritySetting::CUSTOM_RULE_ALL
+                    };
+                self.render_priority_rule_dropdown(
+                    "cpu-priority-exclusion",
+                    index,
+                    foreground,
+                    selected,
+                    priorities,
+                    process_cpu_priority_setting_label,
+                    |app, index, foreground, priority| {
+                        if let Some(rule) = app.settings.cpu_priority.exclusions.get_mut(index) {
+                            rule.set_cpu_priority_override(foreground, priority);
+                        }
+                    },
+                    window,
+                    cx,
+                )
+            }
+            ListItemRemovalKind::ThreadPriorityExclusion => {
+                let selected = self.settings.thread_priority.exclusions[index]
+                    .thread_priority_override(foreground);
+                let priorities: &[ProcessThreadPrioritySetting] =
+                    if self.settings.advanced.expose_all_priority_values {
+                        &ProcessThreadPrioritySetting::CUSTOM_RULE_ADVANCED_ALL
+                    } else {
+                        &ProcessThreadPrioritySetting::CUSTOM_RULE_ALL
+                    };
+                self.render_priority_rule_dropdown(
+                    "thread-priority-exclusion",
+                    index,
+                    foreground,
+                    selected,
+                    priorities,
+                    process_thread_priority_setting_label,
+                    |app, index, foreground, priority| {
+                        if let Some(rule) = app.settings.thread_priority.exclusions.get_mut(index) {
+                            rule.set_thread_priority_override(foreground, priority);
+                        }
+                    },
+                    window,
+                    cx,
+                )
+            }
+            ListItemRemovalKind::PriorityBoostExclusion => {
+                let selected = self.settings.priority_boost.exclusions[index]
+                    .priority_boost_override(foreground);
+                self.render_priority_rule_dropdown(
+                    "priority-boost-exclusion",
+                    index,
+                    foreground,
+                    selected,
+                    &ProcessPriorityBoostSetting::CUSTOM_RULE_ALL,
+                    process_priority_boost_setting_label,
+                    |app, index, foreground, boost| {
+                        if let Some(rule) = app.settings.priority_boost.exclusions.get_mut(index) {
+                            rule.set_priority_boost_override(foreground, boost);
+                        }
+                    },
+                    window,
+                    cx,
+                )
+            }
+            ListItemRemovalKind::IoPriorityExclusion => {
+                let selected =
+                    self.settings.io_priority.exclusions[index].io_priority_override(foreground);
+                let priorities: &[ProcessIoPrioritySetting] =
+                    if self.settings.advanced.expose_all_priority_values {
+                        &ProcessIoPrioritySetting::CUSTOM_RULE_ADVANCED_ALL
+                    } else {
+                        &ProcessIoPrioritySetting::CUSTOM_RULE_ALL
+                    };
+                self.render_priority_rule_dropdown(
+                    "io-priority-exclusion",
+                    index,
+                    foreground,
+                    selected,
+                    priorities,
+                    process_io_priority_setting_label,
+                    |app, index, foreground, priority| {
+                        if let Some(rule) = app.settings.io_priority.exclusions.get_mut(index) {
+                            rule.set_io_priority_override(foreground, priority);
+                        }
+                    },
+                    window,
+                    cx,
+                )
+            }
+            ListItemRemovalKind::GpuPriorityExclusion => {
+                let selected =
+                    self.settings.gpu_priority.exclusions[index].gpu_priority_override(foreground);
+                let priorities: &[ProcessGpuPrioritySetting] =
+                    if self.settings.advanced.expose_all_priority_values {
+                        &ProcessGpuPrioritySetting::CUSTOM_RULE_ADVANCED_ALL
+                    } else {
+                        &ProcessGpuPrioritySetting::CUSTOM_RULE_ALL
+                    };
+                self.render_priority_rule_dropdown(
+                    "gpu-priority-exclusion",
+                    index,
+                    foreground,
+                    selected,
+                    priorities,
+                    process_gpu_priority_setting_label,
+                    |app, index, foreground, priority| {
+                        if let Some(rule) = app.settings.gpu_priority.exclusions.get_mut(index) {
+                            rule.set_gpu_priority_override(foreground, priority);
+                        }
+                    },
+                    window,
+                    cx,
+                )
+            }
+            ListItemRemovalKind::MemoryPriorityExclusion => {
+                let selected = self.settings.memory_priority.exclusions[index]
+                    .memory_priority_override(foreground);
+                self.render_priority_rule_dropdown(
+                    "memory-priority-exclusion",
+                    index,
+                    foreground,
+                    selected,
+                    &ProcessMemoryPrioritySetting::CUSTOM_RULE_ALL,
+                    process_memory_priority_setting_label,
+                    |app, index, foreground, priority| {
+                        if let Some(rule) = app.settings.memory_priority.exclusions.get_mut(index) {
+                            rule.set_memory_priority_override(foreground, priority);
+                        }
+                    },
+                    window,
+                    cx,
+                )
+            }
+            _ => priority_exclusion_table_cell(t!("common.none").to_string()),
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "keeps six custom-rule dropdowns on one rendering path"
+    )]
+    fn render_priority_rule_dropdown<T>(
+        &self,
+        id_prefix: &'static str,
+        index: usize,
+        foreground: bool,
+        selected: T,
+        values: &[T],
+        label: impl Fn(T) -> String + Copy + 'static,
+        set: impl Fn(&mut Self, usize, bool, T) + Copy + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement
+    where
+        T: Copy + PartialEq + std::fmt::Debug + 'static,
+    {
+        let side = if foreground {
+            "foreground"
+        } else {
+            "background"
+        };
+        self.render_dropdown_select(
+            format!("{id_prefix}-{side}-{index}"),
+            label(selected),
+            true,
+            DropdownSelectWidth::Table,
+            values.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for value in values.iter().copied() {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id_prefix}-{side}-{index}-{value:?}")),
+                            label(value),
+                            selected == value,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            set(app, index, foreground, value);
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn set_priority_exclusion_enabled(
+        &mut self,
+        kind: ListItemRemovalKind,
+        index: usize,
+        enabled: bool,
+    ) {
+        let rule = match kind {
+            ListItemRemovalKind::CpuPriorityExclusion => {
+                self.settings.cpu_priority.exclusions.get_mut(index)
+            }
+            ListItemRemovalKind::ThreadPriorityExclusion => {
+                self.settings.thread_priority.exclusions.get_mut(index)
+            }
+            ListItemRemovalKind::PriorityBoostExclusion => {
+                self.settings.priority_boost.exclusions.get_mut(index)
+            }
+            ListItemRemovalKind::IoPriorityExclusion => {
+                self.settings.io_priority.exclusions.get_mut(index)
+            }
+            ListItemRemovalKind::GpuPriorityExclusion => {
+                self.settings.gpu_priority.exclusions.get_mut(index)
+            }
+            ListItemRemovalKind::MemoryPriorityExclusion => {
+                self.settings.memory_priority.exclusions.get_mut(index)
+            }
+            _ => None,
+        };
+
+        if let Some(rule) = rule {
+            rule.enabled = enabled;
+        }
     }
 
     fn render_io_priority_default_selector(
@@ -9928,17 +9858,23 @@ impl WinderustApp {
             IoPriorityDefaultTarget::Background => "io-priority-background-default",
             IoPriorityDefaultTarget::Foreground => "io-priority-foreground-default",
         };
+        let priorities: &[ProcessIoPrioritySetting] =
+            if self.settings.advanced.expose_all_priority_values {
+                &ProcessIoPrioritySetting::ADVANCED_ALL
+            } else {
+                &ProcessIoPrioritySetting::ALL
+            };
         let dropdown = self.render_dropdown_select(
             id,
             process_io_priority_setting_label(selected_priority),
             enabled,
             DropdownSelectWidth::Standard,
-            ProcessIoPrioritySetting::ALL.len(),
+            priorities.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessIoPrioritySetting::ALL {
+                for priority in priorities.iter().copied() {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!("{id}-option-{priority:?}")),
@@ -9991,19 +9927,35 @@ impl WinderustApp {
                 }),
             ),
             self.is_setting_group_collapsed(SettingGroupTarget::GpuPriorityMaster),
-            vec![setting_group_action_row(
-                "gpu-priority-background-default-row",
-                t!("gpu_priority.background_default").to_string(),
-                self.render_gpu_priority_default_selector(
-                    GpuPriorityDefaultTarget::Background,
-                    self.settings.gpu_priority.background_priority,
-                    enabled,
-                    window,
-                    cx,
-                ),
-                false,
-            )
-            .into_any_element()],
+            vec![
+                setting_group_action_row(
+                    "gpu-priority-background-default-row",
+                    t!("gpu_priority.background_default").to_string(),
+                    self.render_gpu_priority_default_selector(
+                        GpuPriorityDefaultTarget::Background,
+                        self.settings.gpu_priority.background_priority,
+                        enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element(),
+                setting_group_action_row(
+                    "gpu-priority-preserve-background-row",
+                    t!("common.preserve_background_priority").to_string(),
+                    setting_group_switch_action(
+                        "gpu-priority-preserve-background-toggle",
+                        self.settings.gpu_priority.preserve_background_priority,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings.gpu_priority.preserve_background_priority = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    false,
+                )
+                .into_any_element(),
+            ],
             window,
             cx,
         );
@@ -10023,19 +9975,35 @@ impl WinderustApp {
                     }),
                 ),
                 self.is_setting_group_collapsed(SettingGroupTarget::GpuPriorityForegroundDetection),
-                vec![setting_group_action_row(
-                    "gpu-priority-foreground-default-row",
-                    t!("gpu_priority.foreground_default").to_string(),
-                    self.render_gpu_priority_default_selector(
-                        GpuPriorityDefaultTarget::Foreground,
-                        self.settings.gpu_priority.foreground_priority,
-                        self.settings.gpu_priority.foreground_detection_enabled,
-                        window,
-                        cx,
-                    ),
-                    false,
-                )
-                .into_any_element()],
+                vec![
+                    setting_group_action_row(
+                        "gpu-priority-foreground-default-row",
+                        t!("gpu_priority.foreground_default").to_string(),
+                        self.render_gpu_priority_default_selector(
+                            GpuPriorityDefaultTarget::Foreground,
+                            self.settings.gpu_priority.foreground_priority,
+                            self.settings.gpu_priority.foreground_detection_enabled,
+                            window,
+                            cx,
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "gpu-priority-preserve-foreground-row",
+                        t!("common.preserve_foreground_priority").to_string(),
+                        setting_group_switch_action(
+                            "gpu-priority-preserve-foreground-toggle",
+                            self.settings.gpu_priority.preserve_foreground_priority,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.gpu_priority.preserve_foreground_priority = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                ],
                 window,
                 cx,
             ))
@@ -10083,7 +10051,7 @@ impl WinderustApp {
                             })),
                     ),
             )
-            .child(self.render_gpu_priority_exclusions(cx));
+            .child(self.render_gpu_priority_exclusions(window, cx));
 
         self.page_shell(Page::GpuPriority, cx)
             .child(master_card)
@@ -10096,47 +10064,19 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_gpu_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self.settings.gpu_priority.exclusions.iter().enumerate() {
-            let process = rule.process_name.clone();
-            let card = compact_rule_row(format!("gpu-priority-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
-                    format!("gpu-priority-exclusion-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.gpu_priority.exclusions.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ))
-                .child(self.process_rule_title(&process, cx))
-                .child(
-                    remove_control_button(Button::new(SharedString::from(format!(
-                        "remove-gpu-priority-exclusion-{index}"
-                    ))))
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.request_list_item_removal(
-                            ListItemRemovalTarget::new(
-                                ListItemRemovalKind::GpuPriorityExclusion,
-                                index,
-                            ),
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-                );
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::GpuPriorityExclusion, index),
-                SharedString::from(format!("gpu-priority-exclusion-{index}")),
-                card.into_any_element(),
-            ));
-        }
-        if self.settings.gpu_priority.exclusions.is_empty() {
-            list = list.child(text_muted(t!("gpu_priority.no_exclusions").to_string()));
-        }
-        list.into_any_element()
+    fn render_gpu_priority_exclusions(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_priority_exclusion_table(
+            "gpu-priority-exclusion",
+            &self.settings.gpu_priority.exclusions,
+            ListItemRemovalKind::GpuPriorityExclusion,
+            t!("gpu_priority.no_exclusions").to_string(),
+            window,
+            cx,
+        )
     }
 
     fn render_gpu_priority_status_card(&self) -> gpui::Div {
@@ -10195,17 +10135,23 @@ impl WinderustApp {
             GpuPriorityDefaultTarget::Background => "gpu-priority-background-default",
             GpuPriorityDefaultTarget::Foreground => "gpu-priority-foreground-default",
         };
+        let priorities: &[ProcessGpuPrioritySetting] =
+            if self.settings.advanced.expose_all_priority_values {
+                &ProcessGpuPrioritySetting::ADVANCED_ALL
+            } else {
+                &ProcessGpuPrioritySetting::ALL
+            };
         let dropdown = self.render_dropdown_select(
             id,
             process_gpu_priority_setting_label(selected_priority),
             enabled,
             DropdownSelectWidth::Standard,
-            ProcessGpuPrioritySetting::ALL.len(),
+            priorities.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessGpuPrioritySetting::ALL {
+                for priority in priorities.iter().copied() {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!("{id}-option-{priority:?}")),
@@ -10261,19 +10207,35 @@ impl WinderustApp {
                 }),
             ),
             self.is_setting_group_collapsed(SettingGroupTarget::MemoryPriorityMaster),
-            vec![setting_group_action_row(
-                "memory-priority-background-default-row",
-                t!("memory_priority.background_default").to_string(),
-                self.render_memory_priority_default_selector(
-                    MemoryPriorityDefaultTarget::Background,
-                    self.settings.memory_priority.background_priority,
-                    enabled,
-                    window,
-                    cx,
-                ),
-                false,
-            )
-            .into_any_element()],
+            vec![
+                setting_group_action_row(
+                    "memory-priority-background-default-row",
+                    t!("memory_priority.background_default").to_string(),
+                    self.render_memory_priority_default_selector(
+                        MemoryPriorityDefaultTarget::Background,
+                        self.settings.memory_priority.background_priority,
+                        enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element(),
+                setting_group_action_row(
+                    "memory-priority-preserve-background-row",
+                    t!("common.preserve_background_priority").to_string(),
+                    setting_group_switch_action(
+                        "memory-priority-preserve-background-toggle",
+                        self.settings.memory_priority.preserve_background_priority,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings.memory_priority.preserve_background_priority = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    false,
+                )
+                .into_any_element(),
+            ],
             window,
             cx,
         );
@@ -10295,19 +10257,36 @@ impl WinderustApp {
                 self.is_setting_group_collapsed(
                     SettingGroupTarget::MemoryPriorityForegroundDetection,
                 ),
-                vec![setting_group_action_row(
-                    "memory-priority-foreground-default-row",
-                    t!("memory_priority.foreground_default").to_string(),
-                    self.render_memory_priority_default_selector(
-                        MemoryPriorityDefaultTarget::Foreground,
-                        self.settings.memory_priority.foreground_priority,
-                        self.settings.memory_priority.foreground_detection_enabled,
-                        window,
-                        cx,
-                    ),
-                    false,
-                )
-                .into_any_element()],
+                vec![
+                    setting_group_action_row(
+                        "memory-priority-foreground-default-row",
+                        t!("memory_priority.foreground_default").to_string(),
+                        self.render_memory_priority_default_selector(
+                            MemoryPriorityDefaultTarget::Foreground,
+                            self.settings.memory_priority.foreground_priority,
+                            self.settings.memory_priority.foreground_detection_enabled,
+                            window,
+                            cx,
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "memory-priority-preserve-foreground-row",
+                        t!("common.preserve_foreground_priority").to_string(),
+                        setting_group_switch_action(
+                            "memory-priority-preserve-foreground-toggle",
+                            self.settings.memory_priority.preserve_foreground_priority,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.memory_priority.preserve_foreground_priority =
+                                    *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                ],
                 window,
                 cx,
             ))
@@ -10358,7 +10337,7 @@ impl WinderustApp {
                             })),
                     ),
             )
-            .child(self.render_memory_priority_exclusions(cx));
+            .child(self.render_memory_priority_exclusions(window, cx));
 
         self.page_shell(Page::MemoryPriority, cx)
             .child(master_card)
@@ -10371,47 +10350,19 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_memory_priority_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self.settings.memory_priority.exclusions.iter().enumerate() {
-            let process = rule.process_name.clone();
-            let row = compact_rule_row(format!("memory-priority-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
-                    format!("memory-priority-exclusion-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.memory_priority.exclusions.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ))
-                .child(self.process_rule_title(&process, cx))
-                .child(
-                    remove_control_button(Button::new(SharedString::from(format!(
-                        "remove-memory-priority-exclusion-{index}"
-                    ))))
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.request_list_item_removal(
-                            ListItemRemovalTarget::new(
-                                ListItemRemovalKind::MemoryPriorityExclusion,
-                                index,
-                            ),
-                            cx,
-                        );
-                    }))
-                    .into_any_element(),
-                );
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::MemoryPriorityExclusion, index),
-                SharedString::from(format!("memory-priority-exclusion-{index}")),
-                row.into_any_element(),
-            ));
-        }
-        if self.settings.memory_priority.exclusions.is_empty() {
-            list = list.child(text_muted(t!("memory_priority.no_exclusions").to_string()));
-        }
-        list.into_any_element()
+    fn render_memory_priority_exclusions(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.render_priority_exclusion_table(
+            "memory-priority-exclusion",
+            &self.settings.memory_priority.exclusions,
+            ListItemRemovalKind::MemoryPriorityExclusion,
+            t!("memory_priority.no_exclusions").to_string(),
+            window,
+            cx,
+        )
     }
 
     fn render_memory_priority_default_selector(
@@ -10462,385 +10413,6 @@ impl WinderustApp {
             },
         );
         dropdown
-    }
-
-    fn render_launch_priority_page(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .launch_priority_process
-            .read(cx)
-            .value()
-            .to_string();
-        let enabled = self.settings.launch_priority.enabled;
-        let help = tooltip_lines(vec![
-            t!("launch_priority.intro_1").to_string(),
-            t!("launch_priority.intro_2").to_string(),
-            t!("launch_priority.intro_3").to_string(),
-        ]);
-        let master_card = setting_group_with_help(
-            SettingGroupTarget::LaunchPriorityMaster,
-            (t!("launch_priority.enable").to_string(), help),
-            setting_group_switch_action(
-                "launch-priority-enabled-toggle",
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.launch_priority.enabled = *checked;
-                    cx.notify();
-                }),
-            ),
-            self.is_setting_group_collapsed(SettingGroupTarget::LaunchPriorityMaster),
-            vec![
-                setting_group_action_row(
-                    "launch-priority-exact-name-help",
-                    t!("launch_priority.exact_name").to_string(),
-                    value_pill(t!("launch_priority.exact_name_value").to_string())
-                        .into_any_element(),
-                    false,
-                )
-                .into_any_element(),
-                setting_group_action_row(
-                    "launch-priority-apply-row",
-                    t!("launch_priority.registry_rules").to_string(),
-                    primary_control_button(Button::new("apply-launch-priority-rules"), cx)
-                        .label(t!("launch_priority.apply").to_string())
-                        .on_click(cx.listener(|app, _, _, cx| {
-                            app.apply_launch_priority_rules(cx);
-                        }))
-                        .into_any_element(),
-                    true,
-                )
-                .into_any_element(),
-            ],
-            window,
-            cx,
-        );
-        let body = feature_body(enabled)
-            .child(section_header(
-                &t!("launch_priority.rules"),
-                t!("launch_priority.rules_help").to_string(),
-            ))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_start()
-                    .flex_wrap()
-                    .child(self.render_process_picker(
-                        "launch-priority-process-suggestion",
-                        &self.inputs.launch_priority_process,
-                        SuggestionTarget::LaunchPriority,
-                        window,
-                        cx,
-                    ))
-                    .child(
-                        primary_control_button(Button::new("add-launch-priority-rule"), cx)
-                            .label(t!("common.add").to_string())
-                            .disabled(
-                                !enabled
-                                    || !can_add_launch_priority_process(
-                                        &self.settings.launch_priority,
-                                        &input_value,
-                                    ),
-                            )
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .launch_priority_process
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
-                                if can_add_launch_priority_process(
-                                    &app.settings.launch_priority,
-                                    &process,
-                                ) {
-                                    app.settings
-                                        .launch_priority
-                                        .rules
-                                        .push(new_launch_priority_rule(&process));
-                                    clear_input(&app.inputs.launch_priority_process, window, cx);
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(self.render_launch_priority_rules(window, cx))
-            .child(self.render_launch_priority_status_card());
-
-        self.page_shell(Page::LaunchPriority, cx)
-            .child(master_card)
-            .child(disabled_feature_body(
-                "launch-priority-body",
-                body,
-                enabled,
-                cx,
-            ))
-            .into_any_element()
-    }
-
-    fn render_launch_priority_rules(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut list = rule_list();
-        for (index, rule) in self.settings.launch_priority.rules.iter().enumerate() {
-            let process = rule.process_name.clone();
-            let card_target = RuleCardTarget::LaunchPriority(process.clone());
-            let collapsed = self.is_rule_card_collapsed(&card_target);
-            let mut card = rule_card(
-                self.process_rule_title(&process, cx),
-                rule_enable_checkbox(
-                    format!("launch-priority-rule-enabled-{index}"),
-                    rule.enabled,
-                    cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.launch_priority.rules.get_mut(index) {
-                            rule.enabled = *checked;
-                        }
-                        cx.notify();
-                    }),
-                ),
-                rule_card_collapse_indicator(card_target.clone(), collapsed),
-                card_target.clone(),
-                collapsed,
-                cx,
-            );
-            if rule_card_body_visible(&card_target, collapsed, window) {
-                card = card
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        0,
-                        1,
-                        rule_card_body_row(vec![self.render_launch_priority_cpu_selector(
-                            index,
-                            rule.cpu_priority,
-                            window,
-                            cx,
-                        )]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        1,
-                        1,
-                        rule_card_body_row(vec![self.render_launch_priority_io_selector(
-                            index,
-                            rule.io_priority,
-                            window,
-                            cx,
-                        )]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        2,
-                        1,
-                        rule_card_body_row(vec![self.render_launch_priority_memory_selector(
-                            index,
-                            rule.memory_priority,
-                            window,
-                            cx,
-                        )]),
-                    ))
-                    .child(animated_rule_card_body_child(
-                        &card_target,
-                        3,
-                        1,
-                        rule_card_body_action(
-                            remove_control_button(Button::new(SharedString::from(format!(
-                                "remove-launch-priority-rule-{index}"
-                            ))))
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                app.request_list_item_removal(
-                                    ListItemRemovalTarget::new(
-                                        ListItemRemovalKind::LaunchPriorityRule,
-                                        index,
-                                    ),
-                                    cx,
-                                );
-                            }))
-                            .into_any_element(),
-                        ),
-                    ));
-            }
-            list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::LaunchPriorityRule, index),
-                SharedString::from(format!("launch-priority-rule-{index}")),
-                card.into_any_element(),
-            ));
-        }
-        if self.settings.launch_priority.rules.is_empty() {
-            list = list.child(text_muted(t!("launch_priority.no_rules").to_string()));
-        }
-        list.into_any_element()
-    }
-
-    fn render_launch_priority_cpu_selector(
-        &self,
-        index: usize,
-        selected_priority: ProcessCpuPrioritySetting,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id = format!("launch-priority-cpu-{index}");
-        self.render_dropdown_select(
-            id.clone(),
-            process_cpu_priority_setting_label(selected_priority),
-            true,
-            DropdownSelectWidth::Standard,
-            ProcessCpuPrioritySetting::ALL.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessCpuPrioritySetting::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!("{id}-option-{priority:?}")),
-                            process_cpu_priority_setting_label(priority),
-                            selected_priority == priority,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.launch_priority.rules.get_mut(index) {
-                                rule.cpu_priority = priority;
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        )
-    }
-
-    fn render_launch_priority_io_selector(
-        &self,
-        index: usize,
-        selected_priority: ProcessIoPrioritySetting,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id = format!("launch-priority-io-{index}");
-        self.render_dropdown_select(
-            id.clone(),
-            process_io_priority_setting_label(selected_priority),
-            true,
-            DropdownSelectWidth::Standard,
-            ProcessIoPrioritySetting::ALL.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessIoPrioritySetting::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!("{id}-option-{priority:?}")),
-                            process_io_priority_setting_label(priority),
-                            selected_priority == priority,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.launch_priority.rules.get_mut(index) {
-                                rule.io_priority = priority;
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        )
-    }
-
-    fn render_launch_priority_memory_selector(
-        &self,
-        index: usize,
-        selected_priority: ProcessMemoryPrioritySetting,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let id = format!("launch-priority-memory-{index}");
-        self.render_dropdown_select(
-            id.clone(),
-            process_memory_priority_setting_label(selected_priority),
-            true,
-            DropdownSelectWidth::Standard,
-            ProcessMemoryPrioritySetting::ALL.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for priority in ProcessMemoryPrioritySetting::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!("{id}-option-{priority:?}")),
-                            process_memory_priority_setting_label(priority),
-                            selected_priority == priority,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.launch_priority.rules.get_mut(index) {
-                                rule.memory_priority = priority;
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        )
-    }
-
-    fn render_launch_priority_status_card(&self) -> gpui::Div {
-        let status_message = if self.launch_priority_status.message.is_empty() {
-            t!("launch_priority.not_applied").to_string()
-        } else {
-            self.launch_priority_status.message.clone()
-        };
-        let mut rows = vec![
-            (t!("common.status").to_string(), status_message),
-            (
-                t!("launch_priority.configured_rules").to_string(),
-                self.launch_priority_status.configured_rules.to_string(),
-            ),
-            (
-                t!("launch_priority.applied_rules").to_string(),
-                self.launch_priority_status.applied_rules.to_string(),
-            ),
-            (
-                t!("launch_priority.cleared_rules").to_string(),
-                self.launch_priority_status.cleared_rules.to_string(),
-            ),
-            (
-                t!("launch_priority.failed_actions").to_string(),
-                self.launch_priority_status.failed_actions.to_string(),
-            ),
-        ];
-        if let Some(error) = &self.launch_priority_status.last_error {
-            rows.push((t!("common.last_failure").to_string(), error.clone()));
-        }
-        stat_grid(rows)
-    }
-
-    fn apply_launch_priority_rules(&mut self, cx: &mut Context<Self>) {
-        let snapshot =
-            launch_priority::apply_launch_priority_settings(&self.settings.launch_priority);
-        self.status_message = if let Some(error) = &snapshot.last_error {
-            t!("launch_priority.apply_failed", error = error).to_string()
-        } else {
-            t!(
-                "launch_priority.applied",
-                applied = snapshot.applied_rules,
-                cleared = snapshot.cleared_rules
-            )
-            .to_string()
-        };
-        self.launch_priority_status = snapshot;
-        cx.notify();
     }
 
     fn render_smart_trim_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -11271,11 +10843,11 @@ impl WinderustApp {
     }
 
     fn render_smart_trim_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = v_flex().gap_2();
+        let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self.settings.smart_trim.exclusions.iter().enumerate() {
             let process = rule.process_name.clone();
             let row = compact_rule_row(format!("smart-trim-exclusion-row-{index}"))
-                .child(rule_enable_checkbox(
+                .child(rule_active_cell(
                     format!("smart-trim-exclusion-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -11294,7 +10866,7 @@ impl WinderustApp {
                         .truncate()
                         .child(process),
                 )
-                .child(
+                .child(rule_table_action_cell(
                     remove_control_button(Button::new(SharedString::from(format!(
                         "remove-smart-trim-exclusion-{index}"
                     ))))
@@ -11306,8 +10878,9 @@ impl WinderustApp {
                             ),
                             cx,
                         );
-                    })),
-                );
+                    }))
+                    .into_any_element(),
+                ));
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::SmartTrimExclusion, index),
                 SharedString::from(format!("smart-trim-exclusion-{index}")),
@@ -11315,7 +10888,7 @@ impl WinderustApp {
             ));
         }
         if self.settings.smart_trim.exclusions.is_empty() {
-            list = list.child(text_muted(t!("smart_trim.no_exclusions").to_string()));
+            list = list.child(text_muted(t!("smart_trim.no_exclusions").to_string()).p_4());
         }
         list.into_any_element()
     }
@@ -11403,7 +10976,7 @@ impl WinderustApp {
     }
 
     fn render_affinity_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
+        let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self.settings.cpu_affinity.rules.iter().enumerate() {
             let process = rule.process_name.clone();
             let indicator = affinity_indicator(&self.cpu_affinity_status, &process);
@@ -11411,7 +10984,7 @@ impl WinderustApp {
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
                 self.process_rule_title(&process, cx),
-                rule_enable_checkbox(
+                rule_active_cell(
                     format!("affinity-rule-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -11500,7 +11073,7 @@ impl WinderustApp {
             ));
         }
         if self.settings.cpu_affinity.rules.is_empty() {
-            list = list.child(text_muted(t!("affinity.no_rules").to_string()));
+            list = list.child(text_muted(t!("affinity.no_rules").to_string()).p_4());
         }
         list.into_any_element()
     }
@@ -11833,102 +11406,47 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_network_threshold(
+    fn render_network_threshold_cell(
         &self,
-        spec: NetworkThresholdRenderSpec,
+        field: ThresholdField,
+        threshold_bytes: u64,
+        unit: NetworkThresholdUnit,
+        enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let NetworkThresholdRenderSpec {
-            label,
-            threshold_bytes,
-            unit,
-            field,
-            enabled,
-        } = spec;
         let value = unit.threshold_value_from_bytes(threshold_bytes);
         let value_label = if threshold_bytes == 0 {
-            t!("affinity.unlimited").to_string()
+            "∞".to_owned()
         } else {
             network_threshold_value_label(value)
         };
-        rule_action_row(
-            format!("network-threshold-card-{field:?}"),
-            label,
-            h_flex()
-                .gap_2()
-                .items_center()
-                .flex_wrap()
-                .child(
-                    control_button(Button::new(SharedString::from(format!(
-                        "threshold-down-{:?}",
-                        field
-                    ))))
-                    .label("-")
-                    .disabled(!enabled)
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.adjust_threshold(field, false);
-                        cx.notify();
-                    })),
-                )
-                .child(if enabled {
-                    self.render_numeric_value(
-                        NumericField::NetworkThreshold(field),
-                        value_label,
-                        network_threshold_edit_value(threshold_bytes, unit),
-                        cx,
-                    )
-                } else {
-                    h_flex()
-                        .w(px(numeric_value_width(NumericField::NetworkThreshold(
-                            field,
-                        ))))
-                        .child(value_pill(value_label).w_full())
-                        .into_any_element()
-                })
-                .child(
-                    control_button(Button::new(SharedString::from(format!(
-                        "threshold-up-{:?}",
-                        field
-                    ))))
-                    .label("+")
-                    .disabled(!enabled)
-                    .on_click(cx.listener(move |app, _, _, cx| {
-                        app.adjust_threshold(field, true);
-                        cx.notify();
-                    })),
-                )
-                .child(self.render_network_unit_picker(field, unit, enabled, window, cx))
-                .into_any_element(),
-        )
-        .when(!enabled, |card| card.opacity(0.42).cursor_default())
-        .into_any_element()
-    }
 
-    fn adjust_threshold(&mut self, field: ThresholdField, increase: bool) {
-        let Some(rule) = self.threshold_rule_mut(field) else {
-            return;
-        };
-        let (bytes, unit) = match field {
-            ThresholdField::Download(_) => (
-                &mut rule.network_download_threshold_bytes,
-                rule.network_download_threshold_unit,
-            ),
-            ThresholdField::Upload(_) => (
-                &mut rule.network_upload_threshold_bytes,
-                rule.network_upload_threshold_unit,
-            ),
-        };
-        let current = unit.threshold_value_from_bytes(*bytes);
-        let step = network_threshold_step(unit);
-        let next = if increase {
-            current + step
-        } else {
-            (current - step).max(0.0)
-        };
-        *bytes = unit
-            .threshold_bytes_from_value(next)
-            .min(MAX_NETWORK_THRESHOLD_BYTES);
+        h_flex()
+            .w(px(172.0))
+            .min_w(px(0.0))
+            .flex_shrink_0()
+            .gap_1()
+            .items_center()
+            .justify_center()
+            .when(!enabled, |cell| cell.opacity(0.42))
+            .child(if enabled {
+                self.render_numeric_value(
+                    NumericField::NetworkThreshold(field),
+                    value_label,
+                    network_threshold_edit_value(threshold_bytes, unit),
+                    cx,
+                )
+            } else {
+                h_flex()
+                    .w(px(numeric_value_width(NumericField::NetworkThreshold(
+                        field,
+                    ))))
+                    .child(value_pill(value_label).w_full())
+                    .into_any_element()
+            })
+            .child(self.render_network_unit_picker(field, unit, enabled, window, cx))
+            .into_any_element()
     }
 
     fn threshold_rule_mut(&mut self, field: ThresholdField) -> Option<&mut AppSuspensionRule> {
@@ -11984,6 +11502,9 @@ impl WinderustApp {
         let phase = dropdown_popup_phase(picker_id.as_str(), is_open, cx);
 
         dropdown_select_container(DropdownSelectWidth::Compact)
+            .w(px(NETWORK_UNIT_PICKER_WIDTH))
+            .min_w(px(NETWORK_UNIT_PICKER_WIDTH))
+            .max_w(px(NETWORK_UNIT_PICKER_WIDTH))
             .child(
                 dropdown_select_control(
                     control_id,
@@ -12484,6 +12005,126 @@ impl WinderustApp {
             .into_any_element()
     }
 
+    fn render_settings_experimental_page(
+        &self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.page_shell(Page::SettingsExperimental, cx)
+            .child(setting_action_card_with_help(
+                "experimental-priority-values",
+                t!("settings.expose_all_priority_values").to_string(),
+                t!("settings.expose_all_priority_values_help").to_string(),
+                setting_group_switch_action(
+                    "experimental-priority-values-toggle",
+                    self.settings.advanced.expose_all_priority_values,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.advanced.expose_all_priority_values = *checked;
+                        if !*checked {
+                            app.settings.cpu_priority.background_priority = app
+                                .settings
+                                .cpu_priority
+                                .background_priority
+                                .safe_when_advanced_disabled();
+                            app.settings.cpu_priority.foreground_priority = app
+                                .settings
+                                .cpu_priority
+                                .foreground_priority
+                                .safe_when_advanced_disabled();
+                            app.settings.thread_priority.background_priority = app
+                                .settings
+                                .thread_priority
+                                .background_priority
+                                .safe_when_advanced_disabled();
+                            app.settings.thread_priority.foreground_priority = app
+                                .settings
+                                .thread_priority
+                                .foreground_priority
+                                .safe_when_advanced_disabled();
+                            app.settings.io_priority.background_priority = app
+                                .settings
+                                .io_priority
+                                .background_priority
+                                .safe_when_advanced_disabled();
+                            app.settings.io_priority.foreground_priority = app
+                                .settings
+                                .io_priority
+                                .foreground_priority
+                                .safe_when_advanced_disabled();
+                            app.settings.gpu_priority.background_priority = app
+                                .settings
+                                .gpu_priority
+                                .background_priority
+                                .safe_when_advanced_disabled();
+                            app.settings.gpu_priority.foreground_priority = app
+                                .settings
+                                .gpu_priority
+                                .foreground_priority
+                                .safe_when_advanced_disabled();
+                            for rule in &mut app.settings.cpu_priority.exclusions {
+                                let foreground = rule
+                                    .cpu_priority_override(true)
+                                    .safe_when_advanced_disabled();
+                                let background = rule
+                                    .cpu_priority_override(false)
+                                    .safe_when_advanced_disabled();
+                                rule.set_cpu_priority_override(true, foreground);
+                                rule.set_cpu_priority_override(false, background);
+                            }
+                            for rule in &mut app.settings.thread_priority.exclusions {
+                                let foreground = rule
+                                    .thread_priority_override(true)
+                                    .safe_when_advanced_disabled();
+                                let background = rule
+                                    .thread_priority_override(false)
+                                    .safe_when_advanced_disabled();
+                                rule.set_thread_priority_override(true, foreground);
+                                rule.set_thread_priority_override(false, background);
+                            }
+                            for rule in &mut app.settings.io_priority.exclusions {
+                                let foreground = rule
+                                    .io_priority_override(true)
+                                    .safe_when_advanced_disabled();
+                                let background = rule
+                                    .io_priority_override(false)
+                                    .safe_when_advanced_disabled();
+                                rule.set_io_priority_override(true, foreground);
+                                rule.set_io_priority_override(false, background);
+                            }
+                            for rule in &mut app.settings.gpu_priority.exclusions {
+                                let foreground = rule
+                                    .gpu_priority_override(true)
+                                    .safe_when_advanced_disabled();
+                                let background = rule
+                                    .gpu_priority_override(false)
+                                    .safe_when_advanced_disabled();
+                                rule.set_gpu_priority_override(true, foreground);
+                                rule.set_gpu_priority_override(false, background);
+                            }
+                        }
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .child(setting_action_card_with_help(
+                "experimental-advanced-controls",
+                t!("settings.show_advanced_controls").to_string(),
+                t!("settings.show_advanced_controls_help").to_string(),
+                setting_group_switch_action(
+                    "experimental-advanced-controls-toggle",
+                    self.settings.advanced.show_advanced_controls,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.advanced.show_advanced_controls = *checked;
+                        if !*checked && app.page.section_landing_page() == Page::AdvancedHome {
+                            app.page = Page::SettingsExperimental;
+                        }
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .into_any_element()
+    }
+
     fn render_action_log_mode_selector(
         &self,
         window: &mut Window,
@@ -12635,10 +12276,15 @@ impl WinderustApp {
     }
 
     fn render_timer_resolution_rules(&self, cx: &mut Context<Self>) -> AnyElement {
-        let mut list = rule_list();
+        let mut list = rule_list(vec![
+            rule_table_active_header(),
+            rule_table_title_header(t!("process_list.process_name").to_string()),
+            rule_table_centered_header(t!("timer_resolution.requested").to_string(), 104.0),
+            rule_table_action_header(),
+        ]);
         for (index, rule) in self.settings.timer_resolution.rules.iter().enumerate() {
             let row = compact_rule_row(format!("timer-resolution-rule-row-{index}"))
-                .child(rule_enable_checkbox(
+                .child(rule_active_cell(
                     format!("timer-resolution-rule-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
@@ -12655,7 +12301,7 @@ impl WinderustApp {
                     timer_resolution_edit_value(rule.desired_100ns),
                     cx,
                 ))
-                .child(
+                .child(rule_table_action_cell(
                     remove_control_button(Button::new(SharedString::from(format!(
                         "remove-timer-resolution-rule-{index}"
                     ))))
@@ -12669,7 +12315,7 @@ impl WinderustApp {
                         );
                     }))
                     .into_any_element(),
-                );
+                ));
             list = list.child(self.animated_list_item(
                 ListItemRemovalTarget::new(ListItemRemovalKind::TimerResolutionRule, index),
                 SharedString::from(format!("timer-resolution-rule-{index}")),
@@ -12677,12 +12323,12 @@ impl WinderustApp {
             ));
         }
         if self.settings.timer_resolution.rules.is_empty() {
-            list = list.child(text_muted(t!("timer_resolution.no_rules").to_string()));
+            list = list.child(text_muted(t!("timer_resolution.no_rules").to_string()).p_4());
         }
         list.into_any_element()
     }
 
-    fn render_timer_resolution_status_card(&self) -> AnyElement {
+    fn render_timer_resolution_status_card(&self) -> gpui::Div {
         let status = &self.timer_resolution_status;
         let requested = status
             .requested_100ns
@@ -12702,63 +12348,30 @@ impl WinderustApp {
             }
         });
 
-        v_flex()
-            .w_full()
-            .min_w(px(0.0))
-            .overflow_hidden()
-            .rounded(px(BRAND_RADIUS_CONTROL))
-            .bg(rgb(settings_card_color()))
-            .text_color(rgb(primary_text_color()))
-            .text_size(px(TEXT_BODY_SIZE))
-            .line_height(px(TEXT_BODY_LINE_HEIGHT))
-            .child(win32_priority_row(
-                "timer-resolution-current-row",
+        let mut rows = vec![
+            (
                 t!("timer_resolution.current").to_string(),
-                None,
-                value_pill(format_optional_timer_resolution(status.current_100ns))
-                    .into_any_element(),
-            ))
-            .child(win32_priority_row(
-                "timer-resolution-active-rule-row",
+                format_optional_timer_resolution(status.current_100ns),
+            ),
+            (
                 t!("timer_resolution.foreground_rule").to_string(),
-                None,
-                value_pill(active_rule).into_any_element(),
-            ))
-            .child(win32_priority_row(
-                "timer-resolution-requested-row",
-                t!("timer_resolution.requested").to_string(),
-                None,
-                value_pill(requested).into_any_element(),
-            ))
-            .child(win32_priority_row(
-                "timer-resolution-minimum-row",
+                active_rule,
+            ),
+            (t!("timer_resolution.requested").to_string(), requested),
+            (
                 t!("timer_resolution.minimum").to_string(),
-                Some(t!("timer_resolution.minimum_help").to_string()),
-                value_pill(format_optional_timer_resolution(status.minimum_100ns))
-                    .into_any_element(),
-            ))
-            .child(win32_priority_row(
-                "timer-resolution-maximum-row",
+                format_optional_timer_resolution(status.minimum_100ns),
+            ),
+            (
                 t!("timer_resolution.maximum").to_string(),
-                Some(t!("timer_resolution.maximum_help").to_string()),
-                value_pill(format_optional_timer_resolution(status.maximum_100ns))
-                    .into_any_element(),
-            ))
-            .child(win32_priority_row(
-                "timer-resolution-status-row",
-                t!("common.status").to_string(),
-                None,
-                value_pill(status.message.clone()).into_any_element(),
-            ))
-            .when_some(status.last_error.as_ref(), |card, error| {
-                card.child(win32_priority_row(
-                    "timer-resolution-error-row",
-                    t!("common.last_failure").to_string(),
-                    None,
-                    value_pill(error.clone()).into_any_element(),
-                ))
-            })
-            .into_any_element()
+                format_optional_timer_resolution(status.maximum_100ns),
+            ),
+            (t!("common.status").to_string(), status.message.clone()),
+        ];
+        if let Some(error) = &status.last_error {
+            rows.push((t!("common.last_failure").to_string(), error.clone()));
+        }
+        stat_grid(rows)
     }
 
     fn render_win32_priority_separation_page(
@@ -14234,9 +13847,6 @@ impl WinderustApp {
             SuggestionTarget::CpuLimiter => {
                 clear_input_to(&self.inputs.cpu_limiter_process, process, window, cx);
             }
-            SuggestionTarget::Watchdog => {
-                clear_input_to(&self.inputs.watchdog_process, process, window, cx);
-            }
             SuggestionTarget::PerformanceMode => {
                 clear_input_to(&self.inputs.performance_process, process, window, cx);
             }
@@ -14260,9 +13870,6 @@ impl WinderustApp {
             }
             SuggestionTarget::MemoryPriority => {
                 clear_input_to(&self.inputs.memory_priority_process, process, window, cx);
-            }
-            SuggestionTarget::LaunchPriority => {
-                clear_input_to(&self.inputs.launch_priority_process, process, window, cx);
             }
             SuggestionTarget::TimerResolution => {
                 clear_input_to(&self.inputs.timer_resolution_process, process, window, cx);
@@ -14446,6 +14053,7 @@ fn dropdown_anchor_sensor(
 #[derive(Clone, Copy)]
 enum DropdownSelectWidth {
     Compact,
+    Table,
     Standard,
     Wide,
 }
@@ -14453,6 +14061,7 @@ enum DropdownSelectWidth {
 fn dropdown_select_container(width: DropdownSelectWidth) -> gpui::Div {
     let width = match width {
         DropdownSelectWidth::Compact => DROPDOWN_SELECT_COMPACT_WIDTH,
+        DropdownSelectWidth::Table => DROPDOWN_SELECT_TABLE_WIDTH,
         DropdownSelectWidth::Standard => DROPDOWN_SELECT_STANDARD_WIDTH,
         DropdownSelectWidth::Wide => DROPDOWN_SELECT_WIDE_WIDTH,
     };
@@ -14846,7 +14455,6 @@ enum SuggestionTarget {
     SmartTrim,
     Suspension,
     CpuLimiter,
-    Watchdog,
     PerformanceMode,
     Responsiveness,
     CpuPriority,
@@ -14855,7 +14463,6 @@ enum SuggestionTarget {
     IoPriority,
     GpuPriority,
     MemoryPriority,
-    LaunchPriority,
     TimerResolution,
     Affinity,
 }
@@ -14868,12 +14475,9 @@ enum RuleTitleTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum RuleCardTarget {
-    Schedule(usize),
     Cpu(usize),
     Suspension(String),
     CpuLimiter(String),
-    Watchdog(String),
-    LaunchPriority(String),
     Affinity(String),
 }
 
@@ -14900,7 +14504,6 @@ enum SettingGroupTarget {
     GpuPriorityForegroundDetection,
     MemoryPriorityMaster,
     MemoryPriorityForegroundDetection,
-    LaunchPriorityMaster,
     SmartTrimBehaviour,
     SmartTrimMonitoring,
     SmartTrimSafety,
@@ -14978,7 +14581,6 @@ enum NumericField {
     CpuLimiterSustain(usize),
     CpuLimiterCooldown(usize),
     CpuLimiterMaxProcessors(usize),
-    WatchdogRestartDelay(usize),
     TimerResolutionRule(usize),
     NetworkThreshold(ThresholdField),
 }
@@ -15077,14 +14679,6 @@ struct ActivitySliderCardSpec<'a> {
     state: &'a Entity<SliderState>,
     enabled: bool,
     range: SliderRange,
-}
-
-struct NetworkThresholdRenderSpec {
-    label: SharedString,
-    threshold_bytes: u64,
-    unit: NetworkThresholdUnit,
-    field: ThresholdField,
-    enabled: bool,
 }
 
 struct SettingGroupBody {
@@ -15957,12 +15551,13 @@ fn breadcrumb_exit_overlay(
     overlay
 }
 
-fn dashboard_sections_in_nav_order() -> Vec<&'static ui::PageSection> {
+fn dashboard_sections_in_nav_order(show_advanced_controls: bool) -> Vec<&'static ui::PageSection> {
     Page::sections()
         .iter()
         .filter(|section| {
             section.landing_page != Page::Dashboard && !nav_section_in_footer(section.landing_page)
         })
+        .filter(|section| show_advanced_controls || section.landing_page != Page::AdvancedHome)
         .chain(
             Page::sections()
                 .iter()
@@ -15971,7 +15566,7 @@ fn dashboard_sections_in_nav_order() -> Vec<&'static ui::PageSection> {
         .collect()
 }
 
-fn dashboard_search_pages(query: &str) -> Vec<Page> {
+fn dashboard_search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
@@ -15980,7 +15575,7 @@ fn dashboard_search_pages(query: &str) -> Vec<Page> {
     let mut pages = Vec::new();
     let mut seen = HashSet::new();
 
-    for section in dashboard_sections_in_nav_order() {
+    for section in dashboard_sections_in_nav_order(show_advanced_controls) {
         let section_matches = dashboard_page_matches_query(section.landing_page, &query);
 
         for page in section.pages.iter().copied() {
@@ -16015,7 +15610,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             "power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc".to_string(),
         ],
         Page::WinderustFeatures => vec![
-            "winderust features auto balance foreground responsiveness smart trim working set memory ram background restraint".to_string(),
+            "winderust features background efficiency ecoqos auto balance foreground responsiveness smart trim working set memory ram background restraint".to_string(),
         ],
         Page::ProcessorControls => vec![
             "processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores".to_string(),
@@ -16024,7 +15619,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             "priority control process thread dynamic boost io gpu memory launch registry ifeo scheduler base priority".to_string(),
         ],
         Page::ProcessPolicies => vec![
-            "process policies rules efficiency mode watchdog terminate restart background foreground".to_string(),
+            "process policies rules efficiency mode background foreground".to_string(),
         ],
         Page::MemoryControl => vec![
             "memory control smart trim ram trim working set standby list file cache paging background process".to_string(),
@@ -16124,13 +15719,6 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("suspension.suspendable_help").to_string(),
             "suspend freeze thaw resume background app process job object delay network audio".to_string(),
         ],
-        Page::Watchdog => vec![
-            t!("watchdog.intro_1").to_string(),
-            t!("watchdog.intro_2").to_string(),
-            t!("watchdog.intro_3").to_string(),
-            t!("watchdog.rules_help").to_string(),
-            "watchdog terminate close kill launch restart relaunch process disappeared appeared".to_string(),
-        ],
         Page::PerformanceMode => vec![
             t!("performance_mode.intro_1").to_string(),
             t!("performance_mode.intro_2").to_string(),
@@ -16177,14 +15765,6 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("memory_priority.exclusions_help").to_string(),
             "memory priority page priority ram paging working set very low low medium background foreground detection default exclusion".to_string(),
         ],
-        Page::LaunchPriority => vec![
-            t!("launch_priority.intro_1").to_string(),
-            t!("launch_priority.intro_2").to_string(),
-            t!("launch_priority.intro_3").to_string(),
-            t!("launch_priority.enable").to_string(),
-            t!("launch_priority.rules_help").to_string(),
-            "launch priority ifeo registry perfoptions cpu io memory page priority executable startup process".to_string(),
-        ],
         Page::SmartTrim => vec![
             t!("smart_trim.intro_1").to_string(),
             t!("smart_trim.intro_2").to_string(),
@@ -16213,6 +15793,10 @@ fn dashboard_page_search_text(page: Page) -> String {
         ],
         Page::SettingsAppearance => vec![
             "language appearance theme dark light system accent color palette localization display ui".to_string(),
+        ],
+        Page::SettingsExperimental => vec![
+            t!("settings.expose_all_priority_values_help").to_string(),
+            "experimental features process priority realtime advanced priority values".to_string(),
         ],
         Page::TimerResolution => vec![
             t!("timer_resolution.intro_1").to_string(),
@@ -17261,8 +16845,8 @@ fn rule_card_with_header_action(
         .min_w(px(0.0))
         .relative()
         .overflow_hidden()
-        .rounded(px(BRAND_RADIUS_SURFACE))
-        .bg(rgb(settings_card_color()))
+        .border_b_1()
+        .border_color(rgb(border_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
@@ -17325,8 +16909,107 @@ fn rule_card_collapse_indicator(card_target: RuleCardTarget, collapsed: bool) ->
         .into_any_element()
 }
 
-fn rule_list() -> gpui::Div {
-    v_flex().w_full().min_w(px(0.0)).gap_2()
+fn rule_list(headers: Vec<AnyElement>) -> gpui::Div {
+    let mut header = h_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .h(px(32.0))
+        .items_center()
+        .gap_2()
+        .px_4()
+        .border_b_1()
+        .border_color(rgb(border_color()))
+        .text_size(px(TEXT_LABEL_SIZE))
+        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
+        .text_color(rgb(muted_text_color()));
+    for cell in headers {
+        header = header.child(cell);
+    }
+
+    v_flex()
+        .w_full()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .rounded(px(BRAND_RADIUS_SURFACE))
+        .border_1()
+        .border_color(rgb(border_color()))
+        .bg(rgb(settings_card_color()))
+        .child(header)
+}
+
+fn rule_table_active_header() -> AnyElement {
+    rule_table_centered_header("Active".to_string(), SUSPENSION_ACTIVE_COLUMN_WIDTH)
+}
+
+fn rule_table_title_header(title: impl Into<SharedString>) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w(px(0.0))
+        .truncate()
+        .child(title.into())
+        .into_any_element()
+}
+
+fn rule_table_title_input_header(title: impl Into<SharedString>) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w(px(160.0))
+        .pl_3()
+        .truncate()
+        .child(title.into())
+        .into_any_element()
+}
+
+fn rule_table_title_input_cell(input: gpui::Div) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w(px(160.0))
+        .child(input)
+        .into_any_element()
+}
+
+fn rule_table_centered_header(title: impl Into<SharedString>, width: f32) -> AnyElement {
+    div()
+        .w(px(width))
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .text_align(gpui::TextAlign::Center)
+        .truncate()
+        .child(title.into())
+        .into_any_element()
+}
+
+fn rule_table_left_header(title: impl Into<SharedString>, width: f32) -> AnyElement {
+    div()
+        .w(px(width))
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .truncate()
+        .child(title.into())
+        .into_any_element()
+}
+
+fn rule_table_action_header() -> AnyElement {
+    rule_table_centered_header("Actions".to_string(), SUSPENSION_ACTION_COLUMN_WIDTH)
+}
+
+fn rule_table_action_cell(action: AnyElement) -> AnyElement {
+    h_flex()
+        .w(px(SUSPENSION_ACTION_COLUMN_WIDTH))
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .child(action)
+        .into_any_element()
+}
+
+fn process_rule_table_headers() -> Vec<AnyElement> {
+    vec![
+        rule_table_active_header(),
+        rule_table_title_header(t!("process_list.process_name").to_string()),
+        rule_table_action_header(),
+    ]
 }
 
 fn feature_body(_enabled: bool) -> gpui::Div {
@@ -17456,11 +17139,69 @@ fn compact_rule_row(id: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
         .px_4()
         .relative()
         .overflow_hidden()
-        .rounded(px(BRAND_RADIUS_SURFACE))
-        .bg(rgb(settings_card_color()))
+        .border_b_1()
+        .border_color(rgb(border_color()))
         .text_color(rgb(primary_text_color()))
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
+}
+
+fn priority_exclusion_table_cell(value: impl Into<SharedString>) -> AnyElement {
+    div()
+        .w(px(DROPDOWN_SELECT_TABLE_WIDTH))
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .text_align(gpui::TextAlign::Center)
+        .truncate()
+        .child(value.into())
+        .into_any_element()
+}
+
+fn rule_active_cell(
+    id: impl Into<SharedString>,
+    checked: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    h_flex()
+        .w(px(SUSPENSION_ACTIVE_COLUMN_WIDTH))
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .child(rule_enable_checkbox(id, checked, handler))
+        .into_any_element()
+}
+
+fn rule_table_input_cell(
+    input: Entity<InputState>,
+    width: f32,
+    window: &mut Window,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Div {
+    let focused = input.read(cx).focus_handle(cx).is_focused(window);
+    div()
+        .w(px(width))
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .child(app_input(&input, focused, cx))
+}
+
+fn rule_table_checkbox_cell(
+    id_prefix: &'static str,
+    index: usize,
+    checked: bool,
+    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
+) -> gpui::Div {
+    h_flex()
+        .w(px(SUSPENSION_DETECT_COLUMN_WIDTH))
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .justify_center()
+        .child(rule_enable_checkbox(
+            format!("{id_prefix}-{index}-check"),
+            checked,
+            handler,
+        ))
 }
 
 fn create_rule_card(
@@ -17989,26 +17730,6 @@ fn rule_checkbox_row(
     .into_any_element()
 }
 
-fn rule_toggle_switch(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    enabled: bool,
-    handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
-) -> AnyElement {
-    let id: SharedString = id.into();
-
-    rule_action_row(
-        id.clone(),
-        label,
-        switch_toggle_action(format!("{id}-switch"), enabled, handler),
-    )
-    .into_any_element()
-}
-
-fn rule_notice_row(id: impl Into<SharedString>, notice: AnyElement) -> gpui::Stateful<gpui::Div> {
-    setting_group_action_row_element(id, notice, Empty.into_any_element(), false)
-}
-
 fn setting_action_card(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
@@ -18132,31 +17853,6 @@ fn setting_stepper_card_u64(
             )
             .into_any_element(),
     )
-}
-
-fn setting_input_card(
-    id: impl Into<SharedString>,
-    title: impl Into<SharedString>,
-    input: Entity<InputState>,
-    focused: bool,
-    cx: &mut Context<WinderustApp>,
-) -> gpui::Stateful<gpui::Div> {
-    rule_action_row(
-        id,
-        title,
-        div()
-            .w(px(132.0))
-            .min_w(px(104.0))
-            .child(app_input(&input, focused, cx))
-            .into_any_element(),
-    )
-}
-
-fn setting_notice_card(
-    id: impl Into<SharedString>,
-    notice: AnyElement,
-) -> gpui::Stateful<gpui::Div> {
-    rule_notice_row(id, notice)
 }
 
 fn stat_grid(rows: Vec<(String, String)>) -> gpui::Div {
@@ -19893,10 +19589,7 @@ fn process_list_column_editable(column: ProcessListColumn) -> bool {
             | ProcessListColumn::BackgroundEfficiency
             | ProcessListColumn::CoreLimiter
             | ProcessListColumn::BackgroundCpuRestriction
-            | ProcessListColumn::CpuPriority
-            | ProcessListColumn::IoPriority
             | ProcessListColumn::GpuPriority
-            | ProcessListColumn::MemoryPriority
             | ProcessListColumn::SmartTrim
             | ProcessListColumn::AppSuspension
             | ProcessListColumn::TimerResolution
@@ -19926,11 +19619,12 @@ fn process_list_cell_editor_option_count(column: ProcessListColumn, app: &Winder
         | ProcessListColumn::SmartTrim
         | ProcessListColumn::AppSuspension => 2,
         ProcessListColumn::CoreLimiter => 5,
-        ProcessListColumn::CpuPriority => ProcessCpuPrioritySetting::ALL.len(),
-        ProcessListColumn::IoPriority => ProcessIoPrioritySetting::ALL.len(),
-        ProcessListColumn::MemoryPriority => ProcessMemoryPrioritySetting::ALL.len(),
         ProcessListColumn::TimerResolution => process_list_timer_resolution_options(app).len(),
-        ProcessListColumn::Pid | ProcessListColumn::CoreSteering => 0,
+        ProcessListColumn::Pid
+        | ProcessListColumn::CoreSteering
+        | ProcessListColumn::CpuPriority
+        | ProcessListColumn::IoPriority
+        | ProcessListColumn::MemoryPriority => 0,
     }
 }
 
@@ -20044,30 +19738,6 @@ fn process_list_cell_editor_options(
                 ));
             }
         }
-        ProcessListColumn::CpuPriority => {
-            let selected =
-                launch_priority_cpu_override(&app.settings.launch_priority, &process_name);
-            for priority in ProcessCpuPrioritySetting::ALL {
-                options = options.child(process_list_cpu_priority_editor_option(
-                    &process_name,
-                    priority,
-                    selected == priority,
-                    cx,
-                ));
-            }
-        }
-        ProcessListColumn::IoPriority => {
-            let selected =
-                launch_priority_io_override(&app.settings.launch_priority, &process_name);
-            for priority in ProcessIoPrioritySetting::ALL {
-                options = options.child(process_list_io_priority_editor_option(
-                    &process_name,
-                    priority,
-                    selected == priority,
-                    cx,
-                ));
-            }
-        }
         ProcessListColumn::GpuPriority => {
             let included = !app
                 .settings
@@ -20080,18 +19750,6 @@ fn process_list_cell_editor_options(
                 included,
                 cx,
             );
-        }
-        ProcessListColumn::MemoryPriority => {
-            let selected =
-                launch_priority_memory_override(&app.settings.launch_priority, &process_name);
-            for priority in ProcessMemoryPrioritySetting::ALL {
-                options = options.child(process_list_memory_priority_editor_option(
-                    &process_name,
-                    priority,
-                    selected == priority,
-                    cx,
-                ));
-            }
         }
         ProcessListColumn::SmartTrim => {
             let included = !app.settings.smart_trim.exclusion_enabled_for(&process_name);
@@ -20131,7 +19789,11 @@ fn process_list_cell_editor_options(
                 ));
             }
         }
-        ProcessListColumn::Pid | ProcessListColumn::CoreSteering => {}
+        ProcessListColumn::Pid
+        | ProcessListColumn::CoreSteering
+        | ProcessListColumn::CpuPriority
+        | ProcessListColumn::IoPriority
+        | ProcessListColumn::MemoryPriority => {}
     }
 
     options
@@ -20258,78 +19920,6 @@ fn process_list_cpu_limiter_editor_option(
             cx.stop_propagation();
         }))
         .into_any_element()
-}
-
-fn process_list_cpu_priority_editor_option(
-    process_name: &str,
-    priority: ProcessCpuPrioritySetting,
-    selected: bool,
-    cx: &mut Context<WinderustApp>,
-) -> AnyElement {
-    let process_name = process_name.to_owned();
-    dropdown_option_row(
-        process_list_editor_option_id(
-            &process_name,
-            ProcessListColumn::CpuPriority,
-            format!("{priority:?}"),
-        ),
-        process_cpu_priority_setting_label(priority),
-        selected,
-        cx,
-    )
-    .on_click(cx.listener(move |app, _, _, cx| {
-        app.set_process_list_cpu_priority(process_name.clone(), priority, cx);
-        cx.stop_propagation();
-    }))
-    .into_any_element()
-}
-
-fn process_list_io_priority_editor_option(
-    process_name: &str,
-    priority: ProcessIoPrioritySetting,
-    selected: bool,
-    cx: &mut Context<WinderustApp>,
-) -> AnyElement {
-    let process_name = process_name.to_owned();
-    dropdown_option_row(
-        process_list_editor_option_id(
-            &process_name,
-            ProcessListColumn::IoPriority,
-            format!("{priority:?}"),
-        ),
-        process_io_priority_setting_label(priority),
-        selected,
-        cx,
-    )
-    .on_click(cx.listener(move |app, _, _, cx| {
-        app.set_process_list_io_priority(process_name.clone(), priority, cx);
-        cx.stop_propagation();
-    }))
-    .into_any_element()
-}
-
-fn process_list_memory_priority_editor_option(
-    process_name: &str,
-    priority: ProcessMemoryPrioritySetting,
-    selected: bool,
-    cx: &mut Context<WinderustApp>,
-) -> AnyElement {
-    let process_name = process_name.to_owned();
-    dropdown_option_row(
-        process_list_editor_option_id(
-            &process_name,
-            ProcessListColumn::MemoryPriority,
-            format!("{priority:?}"),
-        ),
-        process_memory_priority_setting_label(priority),
-        selected,
-        cx,
-    )
-    .on_click(cx.listener(move |app, _, _, cx| {
-        app.set_process_list_memory_priority(process_name.clone(), priority, cx);
-        cx.stop_propagation();
-    }))
-    .into_any_element()
 }
 
 fn process_list_timer_resolution_editor_option(
@@ -20656,7 +20246,6 @@ fn action_log_feature_label(feature: ActionLogFeature) -> String {
         ActionLogFeature::EcoQos => t!("nav.efficiency_mode").to_string(),
         ActionLogFeature::CpuLimiter => t!("nav.cpu_limiter").to_string(),
         ActionLogFeature::PerformanceMode => t!("nav.performance_mode").to_string(),
-        ActionLogFeature::Watchdog => t!("nav.watchdog").to_string(),
         ActionLogFeature::ForegroundResponsiveness => {
             t!("nav.foreground_responsiveness").to_string()
         }
@@ -20874,6 +20463,21 @@ fn rule_count_label(count: usize) -> String {
 
 fn yes_no_label(value: bool) -> String {
     if value { "Yes" } else { "No" }.to_owned()
+}
+
+fn schedule_days_label(days: &[WeekdaySetting]) -> String {
+    if days.len() == WeekdaySetting::all().len() {
+        return "All".to_owned();
+    }
+    if days.is_empty() {
+        return t!("common.none").to_string();
+    }
+    WeekdaySetting::all()
+        .into_iter()
+        .filter(|day| days.contains(day))
+        .map(WeekdaySetting::short_label)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn app_input(
@@ -21408,13 +21012,11 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::ProcessList => NavIcon::List,
         Page::EfficiencyMode => NavIcon::Leaf,
         Page::AppSuspension => NavIcon::MonitorPause,
-        Page::Watchdog => NavIcon::ScanEye,
         Page::PerformanceMode => NavIcon::Footprints,
         Page::ForegroundResponsiveness => NavIcon::BrainCog,
         Page::IoPriority => NavIcon::Rotate3d,
         Page::GpuPriority => NavIcon::Gpu,
         Page::MemoryPriority => NavIcon::MemoryStick,
-        Page::LaunchPriority => NavIcon::Rocket,
         Page::SmartTrim => NavIcon::Scissors,
         Page::CpuAffinity => NavIcon::LifeBuoy,
         Page::ForegroundRules => NavIcon::BringToFront,
@@ -21422,6 +21024,7 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::ActionLog => NavIcon::Info,
         Page::Settings => NavIcon::Settings,
         Page::SettingsAppearance => NavIcon::Palette,
+        Page::SettingsExperimental => NavIcon::FlaskConical,
         Page::TimerResolution => NavIcon::Hourglass,
         Page::Win32PrioritySeparation => NavIcon::Wrench,
         Page::About => NavIcon::Info,
@@ -21442,6 +21045,7 @@ enum NavIcon {
     Cpu,
     Drill,
     Feather,
+    FlaskConical,
     Footprints,
     Gpu,
     Hourglass,
@@ -21456,11 +21060,10 @@ enum NavIcon {
     OctagonMinus,
     Palette,
     PanelsTopLeft,
-    Rocket,
     Rotate3d,
-    ScanEye,
     Scissors,
     Settings,
+    Snowflake,
     Spline,
     SquareActivity,
     SquarePen,
@@ -21485,6 +21088,7 @@ impl IconNamed for NavIcon {
             Self::Cpu => "icons/cpu.svg",
             Self::Drill => "icons/drill.svg",
             Self::Feather => "icons/feather.svg",
+            Self::FlaskConical => "icons/flask-conical.svg",
             Self::Footprints => "icons/footprints.svg",
             Self::Gpu => "icons/gpu.svg",
             Self::Hourglass => "icons/hourglass.svg",
@@ -21499,11 +21103,10 @@ impl IconNamed for NavIcon {
             Self::OctagonMinus => "icons/octagon-minus.svg",
             Self::Palette => "icons/palette.svg",
             Self::PanelsTopLeft => "icons/panels-top-left.svg",
-            Self::Rocket => "icons/rocket.svg",
             Self::Rotate3d => "icons/rotate-3d.svg",
-            Self::ScanEye => "icons/scan-eye.svg",
             Self::Scissors => "icons/scissors.svg",
             Self::Settings => "icons/settings.svg",
+            Self::Snowflake => "icons/snowflake.svg",
             Self::Spline => "icons/spline.svg",
             Self::SquareActivity => "icons/square-activity.svg",
             Self::SquarePen => "icons/square-pen.svg",
@@ -21514,18 +21117,6 @@ impl IconNamed for NavIcon {
         }
         .into()
     }
-}
-
-fn toggle_button(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
-    selected: bool,
-) -> Button {
-    let id: SharedString = id.into();
-    Button::new(id)
-        .label(label)
-        .small()
-        .when(selected, |button| button.primary())
 }
 
 fn control_button(button: Button) -> Button {
@@ -21546,8 +21137,9 @@ fn danger_control_button(button: Button) -> Button {
 
 fn remove_control_button(button: Button) -> Button {
     danger_control_button(button)
+        .with_size(px(32.0))
         .icon(Icon::new(NavIcon::Trash2).with_size(px(14.0)))
-        .label(t!("common.remove").to_string())
+        .tooltip(t!("common.remove").to_string())
 }
 
 fn accent_swatch(id_prefix: &'static str, color: u32, selected: bool) -> gpui::Stateful<gpui::Div> {
@@ -21815,6 +21407,7 @@ fn numeric_value_width(field: NumericField) -> f32 {
         NumericField::SmartTrimWorkingSetThreshold
         | NumericField::SmartTrimIdleSeconds
         | NumericField::SmartTrimCooldownSeconds => 112.0,
+        NumericField::NetworkThreshold(_) => 76.0,
         _ => 96.0,
     }
 }
@@ -21839,20 +21432,6 @@ fn text_warning(value: impl Into<SharedString>) -> gpui::Div {
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .text_color(rgb(warning_text_color()))
-        .child(value.into())
-}
-
-fn text_danger(value: impl Into<SharedString>) -> gpui::Div {
-    div()
-        .px_2()
-        .py_1()
-        .rounded(px(BRAND_RADIUS_CONTROL))
-        .border_1()
-        .border_color(rgb(if ui_is_dark() { 0x6a2a22 } else { 0xd19a88 }))
-        .bg(rgb(if ui_is_dark() { 0x321a16 } else { 0xf8dfd5 }))
-        .text_color(rgb(if ui_is_dark() { 0xff8a73 } else { 0x9b2f1f }))
-        .text_size(px(TEXT_BODY_SIZE))
-        .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .child(value.into())
 }
 
@@ -22606,7 +22185,11 @@ fn parse_u64_input(value: &str, min: u64, max: u64) -> Option<u64> {
     value.parse::<u64>().ok().map(|value| value.clamp(min, max))
 }
 
-fn parse_timer_resolution_input_100ns(value: &str) -> Option<u32> {
+fn parse_timer_resolution_input_100ns(
+    value: &str,
+    minimum_100ns: u32,
+    maximum_100ns: u32,
+) -> Option<u32> {
     let value = value.trim();
     let value = value
         .strip_suffix("ms")
@@ -22619,11 +22202,14 @@ fn parse_timer_resolution_input_100ns(value: &str) -> Option<u32> {
         .parse::<f64>()
         .ok()?
         .clamp(TIMER_RESOLUTION_INPUT_MIN_MS, TIMER_RESOLUTION_INPUT_MAX_MS);
-    Some(
-        (milliseconds * 10_000.0)
-            .round()
-            .clamp(1.0, u32::MAX as f64) as u32,
-    )
+    let value_100ns = (milliseconds * 10_000.0)
+        .round()
+        .clamp(1.0, u32::MAX as f64) as u32;
+    Some(timer_resolution::normalize_desired_resolution(
+        value_100ns,
+        minimum_100ns,
+        maximum_100ns,
+    ))
 }
 
 fn cpu_usage_label(percent: Option<f32>) -> String {
@@ -22833,7 +22419,6 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
             can_add_suspension_process(&settings.app_suspension, process)
         }
         SuggestionTarget::CpuLimiter => can_add_cpu_limiter_process(&settings.cpu_limiter, process),
-        SuggestionTarget::Watchdog => can_add_watchdog_process(&settings.watchdog, process),
         SuggestionTarget::PerformanceMode => {
             can_add_performance_mode_process(&settings.performance_mode, process)
         }
@@ -22857,9 +22442,6 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         }
         SuggestionTarget::MemoryPriority => {
             can_add_memory_priority_exclusion(&settings.memory_priority, process)
-        }
-        SuggestionTarget::LaunchPriority => {
-            can_add_launch_priority_process(&settings.launch_priority, process)
         }
         SuggestionTarget::TimerResolution => {
             can_add_timer_resolution_process(&settings.timer_resolution, process)
@@ -22971,8 +22553,8 @@ fn can_add_smart_trim_exclusion(settings: &SmartTrimSettings, process: &str) -> 
 
 fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
     ProcessExclusionRule {
-        enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
+        ..Default::default()
     }
 }
 
@@ -23101,16 +22683,6 @@ fn can_add_memory_priority_exclusion(settings: &MemoryPrioritySettings, process:
     )
 }
 
-fn can_add_launch_priority_process(settings: &LaunchPrioritySettings, process: &str) -> bool {
-    let Some(process) = launch_priority::normalize_process_image_name(process) else {
-        return false;
-    };
-    !settings
-        .rules
-        .iter()
-        .any(|rule| same_process_name(&rule.process_name, &process))
-}
-
 fn can_add_timer_resolution_process(settings: &TimerResolutionSettings, process: &str) -> bool {
     can_add_process_candidate(
         process,
@@ -23140,19 +22712,6 @@ fn can_add_cpu_limiter_process(settings: &CpuLimiterSettings, process: &str) -> 
                 .any(|rule| same_process_name(&rule.process_name, process))
         },
         cpu_limiter::is_builtin_excluded,
-    )
-}
-
-fn can_add_watchdog_process(settings: &WatchdogSettings, process: &str) -> bool {
-    can_add_process_candidate(
-        process,
-        |process| {
-            settings
-                .rules
-                .iter()
-                .any(|rule| same_process_name(&rule.process_name, process))
-        },
-        watchdog::is_builtin_excluded,
     )
 }
 
@@ -23222,123 +22781,6 @@ fn set_timer_resolution_override(
             .rules
             .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
     }
-}
-
-fn new_launch_priority_rule(process: &str) -> LaunchPriorityRule {
-    LaunchPriorityRule {
-        enabled: true,
-        process_name: launch_priority::normalize_process_image_name(process)
-            .unwrap_or_else(|| process.trim().to_ascii_lowercase()),
-        cpu_priority: ProcessCpuPrioritySetting::Default,
-        io_priority: ProcessIoPrioritySetting::Default,
-        memory_priority: ProcessMemoryPrioritySetting::Low,
-    }
-}
-
-fn launch_priority_process_name(process_name: &str) -> String {
-    launch_priority::normalize_process_image_name(process_name)
-        .unwrap_or_else(|| process_name.trim().to_ascii_lowercase())
-}
-
-fn launch_priority_rule_for<'a>(
-    settings: &'a LaunchPrioritySettings,
-    process_name: &str,
-) -> Option<&'a LaunchPriorityRule> {
-    let process_name = launch_priority_process_name(process_name);
-    settings
-        .rules
-        .iter()
-        .find(|rule| rule.enabled && same_process_name(&rule.process_name, &process_name))
-}
-
-fn launch_priority_cpu_override(
-    settings: &LaunchPrioritySettings,
-    process_name: &str,
-) -> ProcessCpuPrioritySetting {
-    launch_priority_rule_for(settings, process_name)
-        .map(|rule| rule.cpu_priority)
-        .unwrap_or_default()
-}
-
-fn launch_priority_io_override(
-    settings: &LaunchPrioritySettings,
-    process_name: &str,
-) -> ProcessIoPrioritySetting {
-    launch_priority_rule_for(settings, process_name)
-        .map(|rule| rule.io_priority)
-        .unwrap_or_default()
-}
-
-fn launch_priority_memory_override(
-    settings: &LaunchPrioritySettings,
-    process_name: &str,
-) -> ProcessMemoryPrioritySetting {
-    launch_priority_rule_for(settings, process_name)
-        .map(|rule| rule.memory_priority)
-        .unwrap_or_default()
-}
-
-fn ensure_launch_priority_rule<'a>(
-    settings: &'a mut LaunchPrioritySettings,
-    process_name: &str,
-) -> &'a mut LaunchPriorityRule {
-    let process_name = launch_priority_process_name(process_name);
-    if let Some(index) = settings
-        .rules
-        .iter()
-        .position(|rule| same_process_name(&rule.process_name, &process_name))
-    {
-        let rule = &mut settings.rules[index];
-        rule.enabled = true;
-        return rule;
-    }
-
-    settings.rules.push(LaunchPriorityRule {
-        enabled: true,
-        process_name,
-        cpu_priority: ProcessCpuPrioritySetting::Default,
-        io_priority: ProcessIoPrioritySetting::Default,
-        memory_priority: ProcessMemoryPrioritySetting::Default,
-    });
-    let index = settings.rules.len() - 1;
-    &mut settings.rules[index]
-}
-
-fn prune_default_launch_priority_rule(settings: &mut LaunchPrioritySettings, process_name: &str) {
-    let process_name = launch_priority_process_name(process_name);
-    settings.rules.retain(|rule| {
-        !same_process_name(&rule.process_name, &process_name)
-            || rule.cpu_priority != ProcessCpuPrioritySetting::Default
-            || rule.io_priority != ProcessIoPrioritySetting::Default
-            || rule.memory_priority != ProcessMemoryPrioritySetting::Default
-    });
-}
-
-fn set_launch_priority_cpu_override(
-    settings: &mut LaunchPrioritySettings,
-    process_name: &str,
-    priority: ProcessCpuPrioritySetting,
-) {
-    ensure_launch_priority_rule(settings, process_name).cpu_priority = priority;
-    prune_default_launch_priority_rule(settings, process_name);
-}
-
-fn set_launch_priority_io_override(
-    settings: &mut LaunchPrioritySettings,
-    process_name: &str,
-    priority: ProcessIoPrioritySetting,
-) {
-    ensure_launch_priority_rule(settings, process_name).io_priority = priority;
-    prune_default_launch_priority_rule(settings, process_name);
-}
-
-fn set_launch_priority_memory_override(
-    settings: &mut LaunchPrioritySettings,
-    process_name: &str,
-    priority: ProcessMemoryPrioritySetting,
-) {
-    ensure_launch_priority_rule(settings, process_name).memory_priority = priority;
-    prune_default_launch_priority_rule(settings, process_name);
 }
 
 fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
@@ -23461,136 +22903,6 @@ fn process_list_timer_resolution_options(app: &WinderustApp) -> Vec<Option<u32>>
         }
     }
     options
-}
-
-fn new_watchdog_rule(process: &str, action: WatchdogAction) -> WatchdogRule {
-    let process_name = process.trim().to_ascii_lowercase();
-    let launch_path = if action == WatchdogAction::RestartIfExited {
-        if Path::new(process).is_absolute() {
-            process_name.clone()
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
-    WatchdogRule {
-        enabled: true,
-        name: process_name.clone(),
-        process_name: process_name.clone(),
-        action,
-        launch_path,
-        launch_args: Vec::new(),
-        restart_delay_seconds: 5,
-    }
-}
-
-fn split_watchdog_args(value: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut token = String::new();
-    let mut in_quotes = false;
-    let mut escaping = false;
-    let mut token_started = false;
-
-    for character in value.chars() {
-        if in_quotes {
-            if escaping {
-                if matches!(character, '"' | '\\') {
-                    token.push(character);
-                } else {
-                    token.push('\\');
-                    token.push(character);
-                }
-                token_started = true;
-                escaping = false;
-                continue;
-            }
-
-            match character {
-                '"' => {
-                    in_quotes = false;
-                    token_started = true;
-                }
-                '\\' => {
-                    escaping = true;
-                }
-                _ => {
-                    token.push(character);
-                    token_started = true;
-                }
-            }
-            continue;
-        }
-
-        match character {
-            '"' => {
-                in_quotes = true;
-                token_started = true;
-            }
-            '\\' => {
-                token.push('\\');
-                token_started = true;
-            }
-            character if character.is_whitespace() => {
-                if token_started {
-                    args.push(sanitize_watchdog_arg(&token));
-                    token = String::new();
-                    token_started = false;
-                }
-            }
-            _ => {
-                token.push(character);
-                token_started = true;
-            }
-        }
-    }
-
-    if escaping {
-        token.push('\\');
-    }
-
-    if token_started {
-        args.push(sanitize_watchdog_arg(&token));
-    }
-
-    args
-}
-
-fn sanitize_watchdog_launch_path(value: &str) -> String {
-    value.trim().trim_matches('"').to_owned()
-}
-
-fn sanitize_watchdog_arg(value: &str) -> String {
-    value.to_owned()
-}
-
-fn watchdog_action_label(action: WatchdogAction) -> String {
-    match action {
-        WatchdogAction::TerminateOnLaunch => t!("watchdog.action_terminate").to_string(),
-        WatchdogAction::RestartIfExited => t!("watchdog.action_restart").to_string(),
-    }
-}
-
-fn watchdog_indicator(status: &WatchdogSnapshot, process: &str) -> (String, u32, u32) {
-    if watchdog::is_builtin_excluded(process) {
-        (
-            t!("affinity.indicator.protected").to_string(),
-            settings_card_hover_color(),
-            accent_color(),
-        )
-    } else if status.enabled {
-        (
-            t!("affinity.indicator.ready").to_string(),
-            panel_active_color(),
-            muted_text_color(),
-        )
-    } else {
-        (
-            t!("affinity.indicator.off").to_string(),
-            panel_active_color(),
-            dim_text_color(),
-        )
-    }
 }
 
 fn cpu_limiter_indicator(status: &CpuLimiterSnapshot, process: &str) -> (String, u32, u32) {
@@ -23741,25 +23053,6 @@ fn process_policy_summary(
         summary.mark_custom(ProcessListColumn::MemoryPriority);
     } else {
         summary.memory_priority = memory_priority_policy_label(&settings.memory_priority);
-    }
-
-    for rule in
-        settings.launch_priority.rules.iter().filter(|rule| {
-            rule.enabled && process_setting_matches(&rule.process_name, process_name)
-        })
-    {
-        if rule.cpu_priority != ProcessCpuPrioritySetting::Default {
-            summary.cpu_priority = process_cpu_priority_setting_label(rule.cpu_priority);
-            summary.mark_custom(ProcessListColumn::CpuPriority);
-        }
-        if rule.io_priority != ProcessIoPrioritySetting::Default {
-            summary.io_priority = process_io_priority_setting_label(rule.io_priority);
-            summary.mark_custom(ProcessListColumn::IoPriority);
-        }
-        if rule.memory_priority != ProcessMemoryPrioritySetting::Default {
-            summary.memory_priority = process_memory_priority_setting_label(rule.memory_priority);
-            summary.mark_custom(ProcessListColumn::MemoryPriority);
-        }
     }
 
     summary.smart_trim = process_list_include_exclude_label(
@@ -24058,6 +23351,7 @@ fn process_priority_label(priority: ProcessPriority) -> String {
 fn process_cpu_priority_setting_label(priority: ProcessCpuPrioritySetting) -> String {
     match priority {
         ProcessCpuPrioritySetting::Default => t!("launch_priority.priority_default").to_string(),
+        ProcessCpuPrioritySetting::Auto => t!("responsiveness.priority_auto").to_string(),
         ProcessCpuPrioritySetting::Realtime => {
             format!("24 ({})", t!("launch_priority.priority_realtime"))
         }
@@ -24078,6 +23372,7 @@ fn process_cpu_priority_setting_label(priority: ProcessCpuPrioritySetting) -> St
 fn process_thread_priority_setting_label(priority: ProcessThreadPrioritySetting) -> String {
     match priority {
         ProcessThreadPrioritySetting::Default => t!("thread_priority.priority_default").to_string(),
+        ProcessThreadPrioritySetting::Auto => t!("responsiveness.priority_auto").to_string(),
         ProcessThreadPrioritySetting::TimeCritical => {
             format!("15 ({})", t!("thread_priority.priority_time_critical"))
         }
@@ -24105,6 +23400,7 @@ fn process_thread_priority_setting_label(priority: ProcessThreadPrioritySetting)
 fn process_priority_boost_setting_label(boost: ProcessPriorityBoostSetting) -> String {
     match boost {
         ProcessPriorityBoostSetting::Default => t!("priority_boost.boost_default").to_string(),
+        ProcessPriorityBoostSetting::Auto => t!("responsiveness.priority_auto").to_string(),
         ProcessPriorityBoostSetting::Enabled => t!("priority_boost.boost_enabled").to_string(),
         ProcessPriorityBoostSetting::Disabled => t!("priority_boost.boost_disabled").to_string(),
     }
@@ -24112,6 +23408,8 @@ fn process_priority_boost_setting_label(boost: ProcessPriorityBoostSetting) -> S
 
 fn process_io_priority_label(priority: ProcessIoPriority) -> String {
     match priority {
+        ProcessIoPriority::Critical => t!("io_priority.priority_critical").to_string(),
+        ProcessIoPriority::High => t!("io_priority.priority_high").to_string(),
         ProcessIoPriority::Normal => t!("io_priority.priority_normal").to_string(),
         ProcessIoPriority::Low => t!("io_priority.priority_low").to_string(),
         ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low").to_string(),
@@ -24121,6 +23419,9 @@ fn process_io_priority_label(priority: ProcessIoPriority) -> String {
 fn process_io_priority_setting_label(priority: ProcessIoPrioritySetting) -> String {
     match priority {
         ProcessIoPrioritySetting::Default => t!("io_priority.priority_default").to_string(),
+        ProcessIoPrioritySetting::Auto => t!("responsiveness.priority_auto").to_string(),
+        ProcessIoPrioritySetting::Critical => t!("io_priority.priority_critical").to_string(),
+        ProcessIoPrioritySetting::High => t!("io_priority.priority_high").to_string(),
         ProcessIoPrioritySetting::Normal => t!("io_priority.priority_normal").to_string(),
         ProcessIoPrioritySetting::Low => t!("io_priority.priority_low").to_string(),
         ProcessIoPrioritySetting::VeryLow => t!("io_priority.priority_very_low").to_string(),
@@ -24130,6 +23431,9 @@ fn process_io_priority_setting_label(priority: ProcessIoPrioritySetting) -> Stri
 fn process_gpu_priority_setting_label(priority: ProcessGpuPrioritySetting) -> String {
     match priority {
         ProcessGpuPrioritySetting::Default => t!("gpu_priority.priority_default").to_string(),
+        ProcessGpuPrioritySetting::Auto => t!("responsiveness.priority_auto").to_string(),
+        ProcessGpuPrioritySetting::Realtime => t!("gpu_priority.priority_realtime").to_string(),
+        ProcessGpuPrioritySetting::High => t!("gpu_priority.priority_high").to_string(),
         ProcessGpuPrioritySetting::AboveNormal => {
             t!("gpu_priority.priority_above_normal").to_string()
         }
@@ -24168,6 +23472,7 @@ fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
 fn process_memory_priority_setting_label(priority: ProcessMemoryPrioritySetting) -> String {
     match priority {
         ProcessMemoryPrioritySetting::Default => t!("memory_priority.priority_default").to_string(),
+        ProcessMemoryPrioritySetting::Auto => t!("responsiveness.priority_auto").to_string(),
         ProcessMemoryPrioritySetting::VeryLow => {
             t!("memory_priority.priority_very_low").to_string()
         }
@@ -24758,16 +24063,6 @@ const fn processor_boost_mode_picker_id(source: ProcessorPowerSource) -> &'stati
     }
 }
 
-fn network_threshold_step(unit: NetworkThresholdUnit) -> f64 {
-    match unit {
-        NetworkThresholdUnit::Bytes => 64.0,
-        NetworkThresholdUnit::Kilobytes | NetworkThresholdUnit::Kilobits => 1.0,
-        NetworkThresholdUnit::Megabytes | NetworkThresholdUnit::Megabits => 0.1,
-        NetworkThresholdUnit::Gigabytes | NetworkThresholdUnit::Gigabits => 0.01,
-        NetworkThresholdUnit::Bits => 512.0,
-    }
-}
-
 fn network_threshold_edit_value(threshold_bytes: u64, unit: NetworkThresholdUnit) -> String {
     let value = unit.threshold_value_from_bytes(threshold_bytes);
     network_threshold_value_label(value)
@@ -24904,7 +24199,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_settings_preserves_live_and_saved_sections() {
+    fn runtime_settings_gates_feature_sections_until_save() {
         let mut current = Settings::default();
         let mut saved = Settings::default();
 
@@ -24934,9 +24229,9 @@ mod tests {
             settings.power_plans.performance_guid.as_deref(),
             Some("saved")
         );
-        assert!(settings.background_cpu_restriction.enabled);
-        assert!(settings.io_priority.enabled);
-        assert!(settings.timer_resolution.enabled);
+        assert!(!settings.background_cpu_restriction.enabled);
+        assert!(!settings.io_priority.enabled);
+        assert!(!settings.timer_resolution.enabled);
         assert!(settings.smart_trim.enabled);
         assert!(runtime_settings_matches(&settings, &current, &saved));
 
@@ -24948,10 +24243,10 @@ mod tests {
             &saved
         ));
 
-        let mut stale_live_section = settings;
-        stale_live_section.timer_resolution.enabled = false;
+        let mut stale_saved_section = settings;
+        stale_saved_section.timer_resolution.enabled = true;
         assert!(!runtime_settings_matches(
-            &stale_live_section,
+            &stale_saved_section,
             &current,
             &saved
         ));
@@ -25173,7 +24468,7 @@ mod tests {
 
     #[test]
     fn process_list_policy_cell_editing_respects_row_editability() {
-        assert!(process_list_policy_cell_editable(
+        assert!(!process_list_policy_cell_editable(
             true,
             ProcessListColumn::CpuPriority
         ));
@@ -25417,32 +24712,8 @@ mod tests {
     }
 
     #[test]
-    fn process_list_rule_edit_helpers_update_priority_and_timer_overrides() {
+    fn process_list_rule_edit_helpers_update_timer_overrides() {
         let mut settings = Settings::default();
-
-        set_launch_priority_cpu_override(
-            &mut settings.launch_priority,
-            "editor.exe",
-            ProcessCpuPrioritySetting::High,
-        );
-        let summary = process_policy_summary(&settings, &[], "editor.exe");
-        assert_eq!(
-            summary.cpu_priority,
-            process_cpu_priority_setting_label(ProcessCpuPrioritySetting::High)
-        );
-        assert!(summary.uses_custom_rule(ProcessListColumn::CpuPriority));
-
-        set_launch_priority_cpu_override(
-            &mut settings.launch_priority,
-            "editor.exe",
-            ProcessCpuPrioritySetting::Default,
-        );
-        let summary = process_policy_summary(&settings, &[], "editor.exe");
-        assert_eq!(
-            summary.cpu_priority,
-            process_cpu_priority_setting_label(ProcessCpuPrioritySetting::Default)
-        );
-        assert!(!summary.uses_custom_rule(ProcessListColumn::CpuPriority));
 
         set_timer_resolution_override(&mut settings.timer_resolution, "editor.exe", Some(5_000));
         let summary = process_policy_summary(&settings, &[], "editor.exe");
@@ -25616,10 +24887,28 @@ mod tests {
 
     #[test]
     fn timer_resolution_input_accepts_decimal_milliseconds() {
-        assert_eq!(parse_timer_resolution_input_100ns("1"), Some(10_000));
-        assert_eq!(parse_timer_resolution_input_100ns("0.5 ms"), Some(5_000));
         assert_eq!(
-            parse_timer_resolution_input_100ns("15.625 MS"),
+            parse_timer_resolution_input_100ns("1", 5_000, 156_250),
+            Some(10_000)
+        );
+        assert_eq!(
+            parse_timer_resolution_input_100ns("0.5 ms", 5_000, 156_250),
+            Some(5_000)
+        );
+        assert_eq!(
+            parse_timer_resolution_input_100ns("15.625 MS", 5_000, 156_250),
+            Some(156_250)
+        );
+    }
+
+    #[test]
+    fn timer_resolution_input_clamps_to_supported_range() {
+        assert_eq!(
+            parse_timer_resolution_input_100ns("0.1", 5_000, 156_250),
+            Some(5_000)
+        );
+        assert_eq!(
+            parse_timer_resolution_input_100ns("1000", 5_000, 156_250),
             Some(156_250)
         );
     }
@@ -25629,7 +24918,7 @@ mod tests {
         let entries = vec![ActionLogEntry {
             sequence: 7,
             timestamp_epoch_ms: 1_700_000_000_000,
-            feature: ActionLogFeature::Watchdog,
+            feature: ActionLogFeature::CpuLimiter,
             process_id: Some(42),
             process_name: "worker.exe".to_owned(),
             action: ActionLogAction::Fail,
@@ -25643,7 +24932,7 @@ mod tests {
             "sequence,timestamp,feature,process_id,process_name,action,result,reason\r\n"
         ));
         assert!(csv.contains(
-            ",Watchdog Rules,42,worker.exe,Fail,Failed,\"Restart failed, access denied\"\r\n"
+            ",Core Limiter,42,worker.exe,Fail,Failed,\"Restart failed, access denied\"\r\n"
         ));
     }
 
@@ -25653,7 +24942,7 @@ mod tests {
             ActionLogEntry {
                 sequence: 1,
                 timestamp_epoch_ms: 1_700_000_000_000,
-                feature: ActionLogFeature::Watchdog,
+                feature: ActionLogFeature::CpuLimiter,
                 process_id: Some(42),
                 process_name: "worker.exe".to_owned(),
                 action: ActionLogAction::Fail,
@@ -25675,7 +24964,7 @@ mod tests {
         let filtered_entries = action_log_filtered_entries(
             &entries,
             ActionLogResultFilter::Failed,
-            ActionLogFeatureFilter::Feature(ActionLogFeature::Watchdog),
+            ActionLogFeatureFilter::Feature(ActionLogFeature::CpuLimiter),
         );
 
         assert_eq!(filtered_entries.len(), 1);
@@ -25810,28 +25099,5 @@ mod tests {
             .force_power_save
             .push("backup.exe".to_owned());
         assert!(foreground_lookup_required(&settings));
-    }
-
-    #[test]
-    fn split_watchdog_args_supports_quoted_and_spaced_values() {
-        assert_eq!(
-            split_watchdog_args(
-                r#"--timeout 5 "C:\Program Files\Test\app.exe" "--label=hello world""#
-            ),
-            vec![
-                "--timeout",
-                "5",
-                r#"C:\Program Files\Test\app.exe"#,
-                "--label=hello world",
-            ]
-        );
-    }
-
-    #[test]
-    fn split_watchdog_args_preserves_quoted_empty_argument() {
-        assert_eq!(
-            split_watchdog_args(r#""--flag" ""#),
-            vec!["--flag".to_owned(), String::new(),]
-        );
     }
 }

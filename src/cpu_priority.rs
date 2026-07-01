@@ -146,32 +146,37 @@ impl CpuPriorityManager {
             if process.id == 0
                 || process.id == current_process_id
                 || process_session_id(process.id) != Some(current_session_id)
-                || settings.exclusion_enabled_for(&process.name)
                 || is_builtin_excluded(&process.name)
             {
                 continue;
             }
 
-            let priority = if settings.foreground_detection_enabled
+            let foreground = settings.foreground_detection_enabled
                 && is_foreground_process(
                     process.id,
                     &process.name,
                     foreground_process_id,
                     foreground_process_name.as_deref(),
-                ) {
-                settings.foreground_priority
-            } else {
-                settings.background_priority
+                );
+            let priority = match settings.override_for(&process.name, foreground) {
+                Some(Some(ProcessCpuPrioritySetting::Auto)) if foreground => {
+                    settings.foreground_priority
+                }
+                Some(Some(ProcessCpuPrioritySetting::Auto)) => settings.background_priority,
+                Some(Some(priority)) => priority,
+                Some(None) => continue,
+                None if foreground => settings.foreground_priority,
+                None => settings.background_priority,
             };
             if let Some(priority_class) = priority_class(priority) {
-                target_processes.insert(process.id, (process.name, priority_class));
+                target_processes.insert(process.id, (process.name, priority_class, foreground));
             }
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(name, _)| process_failure_key(name))
+            .map(|(name, _priority, _foreground)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
@@ -184,13 +189,20 @@ impl CpuPriorityManager {
         let mut skipped_processes = 0;
         let mut applied_processes = 0;
 
-        for (process_id, (process_name, priority_class)) in target_processes {
+        for (process_id, (process_name, priority_class, foreground)) in target_processes {
             if self.is_process_suppressed(process_id, &process_name, action_log) {
                 skipped_processes += 1;
                 continue;
             }
 
-            match self.apply_process(process_id, process_name.clone(), priority_class) {
+            match self.apply_process(
+                process_id,
+                process_name.clone(),
+                priority_class,
+                foreground,
+                settings.preserve_foreground_priority,
+                settings.preserve_background_priority,
+            ) {
                 Ok(ApplyOutcome::Applied { loggable }) => {
                     if loggable {
                         applied_processes += 1;
@@ -198,6 +210,10 @@ impl CpuPriorityManager {
                     self.clear_process_failure(&process_name);
                 }
                 Ok(ApplyOutcome::AlreadyApplied) => {
+                    self.clear_process_failure(&process_name);
+                }
+                Ok(ApplyOutcome::Preserved) => {
+                    skipped_processes += 1;
                     self.clear_process_failure(&process_name);
                 }
                 Err(CpuPriorityError::ProcessExited) => skipped_processes += 1,
@@ -251,6 +267,9 @@ impl CpuPriorityManager {
         process_id: u32,
         process_name: String,
         priority_class: u32,
+        foreground: bool,
+        preserve_foreground: bool,
+        preserve_background: bool,
     ) -> Result<ApplyOutcome, CpuPriorityError> {
         let process = ProcessHandle::open(process_id)?;
         let reusable_existing = self
@@ -261,6 +280,22 @@ impl CpuPriorityManager {
 
         if current_priority_class == REALTIME_PRIORITY_CLASS {
             return Err(CpuPriorityError::AccessDenied);
+        }
+
+        let baseline_priority_class = reusable_existing
+            .map(|adjusted| adjusted.previous_priority_class)
+            .unwrap_or(current_priority_class);
+        if should_preserve_priority(
+            foreground,
+            preserve_foreground,
+            preserve_background,
+            cpu_priority_rank(baseline_priority_class),
+            cpu_priority_rank(priority_class),
+        ) {
+            if let Some(adjusted) = self.adjusted.remove(&process_id) {
+                process.set_priority_class(adjusted.previous_priority_class)?;
+            }
+            return Ok(ApplyOutcome::Preserved);
         }
 
         if reusable_existing.is_some_and(|adjusted| {
@@ -282,14 +317,11 @@ impl CpuPriorityManager {
             }
         }
 
-        let previous_priority_class = reusable_existing
-            .map(|adjusted| adjusted.previous_priority_class)
-            .unwrap_or(current_priority_class);
         self.adjusted.insert(
             process_id,
             AdjustedProcess {
                 process_name,
-                previous_priority_class,
+                previous_priority_class: baseline_priority_class,
                 applied_priority_class: priority_class,
             },
         );
@@ -409,6 +441,7 @@ impl CpuPriorityManager {
 enum ApplyOutcome {
     Applied { loggable: bool },
     AlreadyApplied,
+    Preserved,
 }
 
 #[derive(Default)]
@@ -520,7 +553,7 @@ fn open_process_error(process_id: u32, error: u32) -> CpuPriorityError {
 
 fn priority_class(priority: ProcessCpuPrioritySetting) -> Option<u32> {
     match priority {
-        ProcessCpuPrioritySetting::Default => None,
+        ProcessCpuPrioritySetting::Default | ProcessCpuPrioritySetting::Auto => None,
         ProcessCpuPrioritySetting::Realtime => Some(REALTIME_PRIORITY_CLASS),
         ProcessCpuPrioritySetting::High => Some(HIGH_PRIORITY_CLASS),
         ProcessCpuPrioritySetting::AboveNormal => Some(ABOVE_NORMAL_PRIORITY_CLASS),
@@ -539,6 +572,32 @@ fn priority_class_label(priority_class: u32) -> &'static str {
         BELOW_NORMAL_PRIORITY_CLASS => "Below Normal",
         IDLE_PRIORITY_CLASS => "Idle",
         _ => "Unknown",
+    }
+}
+
+fn cpu_priority_rank(priority_class: u32) -> i32 {
+    match priority_class {
+        IDLE_PRIORITY_CLASS => 0,
+        BELOW_NORMAL_PRIORITY_CLASS => 1,
+        NORMAL_PRIORITY_CLASS => 2,
+        ABOVE_NORMAL_PRIORITY_CLASS => 3,
+        HIGH_PRIORITY_CLASS => 4,
+        REALTIME_PRIORITY_CLASS => 5,
+        _ => 2,
+    }
+}
+
+fn should_preserve_priority(
+    foreground: bool,
+    preserve_foreground: bool,
+    preserve_background: bool,
+    current_rank: i32,
+    desired_rank: i32,
+) -> bool {
+    if foreground {
+        preserve_foreground && current_rank >= desired_rank
+    } else {
+        preserve_background && current_rank <= desired_rank
     }
 }
 

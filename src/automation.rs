@@ -48,7 +48,6 @@ use crate::{
     thread_priority::{ThreadPriorityManager, ThreadPrioritySnapshot},
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
     tray,
-    watchdog::{WatchdogManager, WatchdogSnapshot},
     windows_events::{WindowsAutomationEvent, WindowsEventWatcher},
 };
 
@@ -62,7 +61,6 @@ const CPU_AFFINITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const BACKGROUND_CPU_RESTRICTION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const WATCHDOG_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const FOREGROUND_RESPONSIVENESS_FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const FOREGROUND_RESPONSIVENESS_FAST_REFRESH_WINDOW: Duration = Duration::from_secs(8);
@@ -93,7 +91,6 @@ pub struct AutomationStatusSnapshot {
     pub background_cpu_restriction: CpuAffinitySnapshot,
     pub cpu_limiter: CpuLimiterSnapshot,
     pub performance_mode: PerformanceModeSnapshot,
-    pub watchdog: WatchdogSnapshot,
     pub foreground_responsiveness: ForegroundResponsivenessSnapshot,
     pub cpu_priority: CpuPrioritySnapshot,
     pub thread_priority: ThreadPrioritySnapshot,
@@ -124,7 +121,6 @@ struct AutomationWorkerState {
     background_cpu_restriction_status: CpuAffinitySnapshot,
     cpu_limiter_status: CpuLimiterSnapshot,
     performance_mode_status: PerformanceModeSnapshot,
-    watchdog_status: WatchdogSnapshot,
     foreground_responsiveness_status: ForegroundResponsivenessSnapshot,
     cpu_priority_status: CpuPrioritySnapshot,
     thread_priority_status: ThreadPrioritySnapshot,
@@ -189,7 +185,6 @@ impl BackgroundAutomation {
                 background_cpu_restriction_status: CpuAffinitySnapshot::default(),
                 cpu_limiter_status: CpuLimiterSnapshot::default(),
                 performance_mode_status: PerformanceModeSnapshot::default(),
-                watchdog_status: WatchdogSnapshot::default(),
                 foreground_responsiveness_status: ForegroundResponsivenessSnapshot::default(),
                 cpu_priority_status: CpuPrioritySnapshot::default(),
                 thread_priority_status: ThreadPrioritySnapshot::default(),
@@ -259,7 +254,6 @@ impl BackgroundAutomation {
                 background_cpu_restriction: state.background_cpu_restriction_status.clone(),
                 cpu_limiter: state.cpu_limiter_status.clone(),
                 performance_mode: state.performance_mode_status.clone(),
-                watchdog: state.watchdog_status.clone(),
                 foreground_responsiveness: state.foreground_responsiveness_status.clone(),
                 cpu_priority: state.cpu_priority_status.clone(),
                 thread_priority: state.thread_priority_status.clone(),
@@ -418,7 +412,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_background_cpu_restriction_refresh = Instant::now();
     let mut next_cpu_limiter_refresh = Instant::now();
     let mut next_performance_mode_refresh = Instant::now();
-    let mut next_watchdog_refresh = Instant::now();
     let mut next_foreground_responsiveness_refresh = Instant::now();
     let mut next_cpu_priority_refresh = Instant::now();
     let mut next_thread_priority_refresh = Instant::now();
@@ -458,8 +451,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             automation_refresh_interval(hidden_to_tray, CPU_LIMITER_REFRESH_INTERVAL);
         let performance_mode_refresh_interval =
             automation_refresh_interval(hidden_to_tray, PERFORMANCE_MODE_REFRESH_INTERVAL);
-        let watchdog_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, WATCHDOG_REFRESH_INTERVAL);
         let mut foreground_responsiveness_refresh_interval =
             automation_refresh_interval(hidden_to_tray, FOREGROUND_RESPONSIVENESS_REFRESH_INTERVAL);
         let cpu_priority_refresh_interval =
@@ -489,7 +480,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_background_cpu_restriction_refresh = event_now;
             next_cpu_limiter_refresh = event_now;
             next_performance_mode_refresh = event_now;
-            next_watchdog_refresh = event_now;
             next_foreground_responsiveness_refresh = event_now;
             next_cpu_priority_refresh = event_now;
             next_thread_priority_refresh = event_now;
@@ -578,8 +568,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             settings_changed || feature_refresh_required(&settings, settings.cpu_limiter.enabled);
         let performance_mode_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.performance_mode.enabled);
-        let watchdog_refresh_required =
-            settings_changed || feature_refresh_required(&settings, settings.watchdog.enabled);
         let foreground_responsiveness_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.foreground_responsiveness.enabled);
         let cpu_priority_refresh_required =
@@ -622,7 +610,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_background_cpu_restriction_refresh = now;
                 next_cpu_limiter_refresh = now;
                 next_performance_mode_refresh = now;
-                next_watchdog_refresh = now;
                 next_foreground_responsiveness_refresh = now;
                 next_cpu_priority_refresh = now;
                 next_thread_priority_refresh = now;
@@ -748,12 +735,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             runner.publish_action_log_if_changed(&shared);
             next_performance_mode_refresh = now + performance_mode_refresh_interval;
         }
-        if watchdog_refresh_required && now >= next_watchdog_refresh {
-            let watchdog_status = runner.run_watchdog_update(&settings);
-            update_watchdog_status(&shared, watchdog_status);
-            runner.publish_action_log_if_changed(&shared);
-            next_watchdog_refresh = now + watchdog_refresh_interval;
-        }
         if smart_trim_refresh_required && now >= next_smart_trim_refresh {
             let smart_trim_status = if smart_trim_now_requested {
                 runner.run_smart_trim_now(&settings)
@@ -847,14 +828,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_performance_mode_refresh
                     .saturating_duration_since(wait_now)
                     .min(performance_mode_refresh_interval),
-            ));
-        }
-        if watchdog_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_watchdog_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(watchdog_refresh_interval),
             ));
         }
         if foreground_responsiveness_refresh_required {
@@ -1086,10 +1059,6 @@ fn update_performance_mode_status(shared: &SharedAutomationState, status: Perfor
     update_status(shared, status, |state| &mut state.performance_mode_status);
 }
 
-fn update_watchdog_status(shared: &SharedAutomationState, status: WatchdogSnapshot) {
-    update_status(shared, status, |state| &mut state.watchdog_status);
-}
-
 fn update_foreground_responsiveness_status(
     shared: &SharedAutomationState,
     status: ForegroundResponsivenessSnapshot,
@@ -1264,7 +1233,6 @@ fn process_appearance_scan_required(settings: &Settings) -> bool {
             || settings.background_cpu_restriction.enabled
             || settings.cpu_limiter.enabled
             || settings.performance_mode.enabled
-            || settings.watchdog.enabled
             || settings.foreground_responsiveness.enabled
             || settings.cpu_priority.enabled
             || settings.thread_priority.enabled
@@ -1293,7 +1261,6 @@ fn automation_worker_required(settings: &Settings) -> bool {
             || settings.background_cpu_restriction.enabled
             || settings.cpu_limiter.enabled
             || settings.performance_mode.enabled
-            || settings.watchdog.enabled
             || settings.foreground_responsiveness.enabled
             || settings.cpu_priority.enabled
             || settings.thread_priority.enabled
@@ -1554,7 +1521,6 @@ struct HiddenAutomationRunner {
     background_cpu_restriction_manager: BackgroundCpuRestrictionManager,
     cpu_limiter_manager: CpuLimiterManager,
     performance_mode_manager: PerformanceModeManager,
-    watchdog_manager: WatchdogManager,
     action_log: ActionLog,
     foreground_responsiveness_manager: ForegroundResponsivenessManager,
     launch_boost_active: bool,
@@ -1765,14 +1731,6 @@ impl HiddenAutomationRunner {
         self.performance_mode_manager.update(
             &settings.performance_mode,
             &settings.power_plans,
-            settings.general.enabled,
-            &mut self.action_log,
-        )
-    }
-
-    fn run_watchdog_update(&mut self, settings: &Settings) -> WatchdogSnapshot {
-        self.watchdog_manager.update(
-            &settings.watchdog,
             settings.general.enabled,
             &mut self.action_log,
         )

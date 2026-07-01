@@ -12,7 +12,7 @@ use crate::win_util::{last_error, WinHandle};
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::{IoPrioritySettings, ProcessIoPriority},
+    config::{IoPrioritySettings, ProcessIoPriority, ProcessIoPrioritySetting},
     foreground::{
         contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
         process_count_label, process_failure_key, process_names_by_id, process_session_id,
@@ -147,32 +147,37 @@ impl IoPriorityManager {
             if process.id == 0
                 || process.id == current_process_id
                 || process_session_id(process.id) != Some(current_session_id)
-                || settings.exclusion_enabled_for(&process.name)
                 || is_builtin_excluded(&process.name)
             {
                 continue;
             }
 
-            let priority = if settings.foreground_detection_enabled
+            let foreground = settings.foreground_detection_enabled
                 && is_foreground_process(
                     process.id,
                     &process.name,
                     foreground_process_id,
                     foreground_process_name.as_deref(),
-                ) {
-                settings.foreground_priority
-            } else {
-                settings.background_priority
+                );
+            let priority = match settings.override_for(&process.name, foreground) {
+                Some(Some(ProcessIoPrioritySetting::Auto)) if foreground => {
+                    settings.foreground_priority
+                }
+                Some(Some(ProcessIoPrioritySetting::Auto)) => settings.background_priority,
+                Some(Some(priority)) => priority,
+                Some(None) => continue,
+                None if foreground => settings.foreground_priority,
+                None => settings.background_priority,
             };
             if let Some(priority) = priority.priority() {
-                target_processes.insert(process.id, (process.name, priority));
+                target_processes.insert(process.id, (process.name, priority, foreground));
             }
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(name, _priority)| process_failure_key(name))
+            .map(|(name, _priority, _foreground)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
@@ -185,13 +190,20 @@ impl IoPriorityManager {
         let mut skipped_processes = 0;
         let mut applied_processes = 0;
 
-        for (process_id, (process_name, priority)) in target_processes {
+        for (process_id, (process_name, priority, foreground)) in target_processes {
             if self.is_process_suppressed(process_id, &process_name, action_log) {
                 skipped_processes += 1;
                 continue;
             }
 
-            match self.apply_process(process_id, process_name.clone(), priority) {
+            match self.apply_process(
+                process_id,
+                process_name.clone(),
+                priority,
+                foreground,
+                settings.preserve_foreground_priority,
+                settings.preserve_background_priority,
+            ) {
                 Ok(ApplyOutcome::Applied { loggable }) => {
                     if loggable {
                         applied_processes += 1;
@@ -199,6 +211,10 @@ impl IoPriorityManager {
                     self.clear_process_failure(&process_name);
                 }
                 Ok(ApplyOutcome::AlreadyApplied) => {
+                    self.clear_process_failure(&process_name);
+                }
+                Ok(ApplyOutcome::Preserved) => {
+                    skipped_processes += 1;
                     self.clear_process_failure(&process_name);
                 }
                 Err(IoPriorityError::ProcessExited) => {
@@ -254,6 +270,9 @@ impl IoPriorityManager {
         process_id: u32,
         process_name: String,
         priority: ProcessIoPriority,
+        foreground: bool,
+        preserve_foreground: bool,
+        preserve_background: bool,
     ) -> Result<ApplyOutcome, IoPriorityError> {
         let process = ProcessHandle::open(process_id)?;
         let reusable_existing = self
@@ -261,6 +280,22 @@ impl IoPriorityManager {
             .get(&process_id)
             .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
         let current_priority = process.io_priority()?;
+
+        let baseline_priority = reusable_existing
+            .map(|adjusted| adjusted.previous_priority)
+            .unwrap_or(current_priority);
+        if should_preserve_priority(
+            foreground,
+            preserve_foreground,
+            preserve_background,
+            io_priority_raw(baseline_priority),
+            io_priority_raw(priority),
+        ) {
+            if let Some(adjusted) = self.adjusted.remove(&process_id) {
+                process.set_io_priority(adjusted.previous_priority)?;
+            }
+            return Ok(ApplyOutcome::Preserved);
+        }
 
         if reusable_existing.is_some_and(|adjusted| {
             adjusted.applied_priority == priority && current_priority == priority
@@ -280,14 +315,11 @@ impl IoPriorityManager {
             }
         }
 
-        let previous_priority = reusable_existing
-            .map(|adjusted| adjusted.previous_priority)
-            .unwrap_or(current_priority);
         self.adjusted.insert(
             process_id,
             AdjustedProcess {
                 process_name,
-                previous_priority,
+                previous_priority: baseline_priority,
                 applied_priority: priority,
             },
         );
@@ -405,6 +437,7 @@ impl IoPriorityManager {
 enum ApplyOutcome {
     Applied { loggable: bool },
     AlreadyApplied,
+    Preserved,
 }
 
 #[derive(Default)]
@@ -527,9 +560,11 @@ fn open_process_error(process_id: u32, error: u32) -> IoPriorityError {
 
 fn io_priority_raw(priority: ProcessIoPriority) -> u32 {
     match priority {
+        ProcessIoPriority::Critical => 4,
+        ProcessIoPriority::High => 3,
+        ProcessIoPriority::Normal => 2,
         ProcessIoPriority::VeryLow => 0,
         ProcessIoPriority::Low => 1,
-        ProcessIoPriority::Normal => 2,
     }
 }
 
@@ -537,12 +572,30 @@ fn io_priority_from_raw(priority: u32) -> ProcessIoPriority {
     match priority {
         0 => ProcessIoPriority::VeryLow,
         1 => ProcessIoPriority::Low,
+        3 => ProcessIoPriority::High,
+        4 => ProcessIoPriority::Critical,
         _ => ProcessIoPriority::Normal,
+    }
+}
+
+fn should_preserve_priority(
+    foreground: bool,
+    preserve_foreground: bool,
+    preserve_background: bool,
+    current_rank: u32,
+    desired_rank: u32,
+) -> bool {
+    if foreground {
+        preserve_foreground && current_rank >= desired_rank
+    } else {
+        preserve_background && current_rank <= desired_rank
     }
 }
 
 pub fn io_priority_label(priority: ProcessIoPriority) -> &'static str {
     match priority {
+        ProcessIoPriority::Critical => "Critical",
+        ProcessIoPriority::High => "High",
         ProcessIoPriority::Normal => "Normal",
         ProcessIoPriority::Low => "Low",
         ProcessIoPriority::VeryLow => "Very Low",
@@ -650,6 +703,15 @@ mod tests {
             io_priority_apply_summary_message(68),
             "Applied I/O priority to 68 processes."
         );
+    }
+
+    #[test]
+    fn io_priority_raw_values_match_priority_hint_order() {
+        assert_eq!(io_priority_raw(ProcessIoPriority::VeryLow), 0);
+        assert_eq!(io_priority_raw(ProcessIoPriority::Low), 1);
+        assert_eq!(io_priority_raw(ProcessIoPriority::Normal), 2);
+        assert_eq!(io_priority_raw(ProcessIoPriority::High), 3);
+        assert_eq!(io_priority_raw(ProcessIoPriority::Critical), 4);
     }
 
     #[test]

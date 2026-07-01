@@ -12,7 +12,7 @@ use crate::win_util::{last_error, WinHandle};
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::PriorityBoostSettings,
+    config::{PriorityBoostSettings, ProcessPriorityBoostSetting},
     foreground::{
         is_foreground_process, is_process_exited_message, list_processes, process_failure_key,
         process_names_by_id, process_session_id, same_process_name, unique_app_names,
@@ -144,22 +144,27 @@ impl PriorityBoostManager {
             if process.id == 0
                 || process.id == current_process_id
                 || process_session_id(process.id) != Some(current_session_id)
-                || settings.exclusion_enabled_for(&process.name)
                 || is_builtin_excluded(&process.name)
             {
                 continue;
             }
 
-            let boost = if settings.foreground_detection_enabled
+            let foreground = settings.foreground_detection_enabled
                 && is_foreground_process(
                     process.id,
                     &process.name,
                     foreground_process_id,
                     foreground_process_name.as_deref(),
-                ) {
-                settings.foreground_boost
-            } else {
-                settings.background_boost
+                );
+            let boost = match settings.override_for(&process.name, foreground) {
+                Some(Some(ProcessPriorityBoostSetting::Auto)) if foreground => {
+                    settings.foreground_boost
+                }
+                Some(Some(ProcessPriorityBoostSetting::Auto)) => settings.background_boost,
+                Some(Some(boost)) => boost,
+                Some(None) => continue,
+                None if foreground => settings.foreground_boost,
+                None => settings.background_boost,
             };
             if let Some(disabled) = boost.disabled_flag() {
                 target_processes.insert(process.id, (process.name, disabled));

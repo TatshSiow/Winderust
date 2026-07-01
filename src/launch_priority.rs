@@ -250,7 +250,7 @@ fn perf_options_path(process_name: &str) -> String {
 
 fn io_priority_registry_value(priority: ProcessIoPrioritySetting) -> Option<u32> {
     match priority {
-        ProcessIoPrioritySetting::Default => None,
+        ProcessIoPrioritySetting::Default | ProcessIoPrioritySetting::Auto => None,
         ProcessIoPrioritySetting::VeryLow => Some(0),
         ProcessIoPrioritySetting::Low => Some(1),
         ProcessIoPrioritySetting::Normal => Some(2),
@@ -259,7 +259,7 @@ fn io_priority_registry_value(priority: ProcessIoPrioritySetting) -> Option<u32>
 
 fn memory_priority_registry_value(priority: ProcessMemoryPrioritySetting) -> Option<u32> {
     match priority {
-        ProcessMemoryPrioritySetting::Default => None,
+        ProcessMemoryPrioritySetting::Default | ProcessMemoryPrioritySetting::Auto => None,
         ProcessMemoryPrioritySetting::VeryLow => Some(1),
         ProcessMemoryPrioritySetting::Low => Some(2),
         ProcessMemoryPrioritySetting::Medium => Some(3),

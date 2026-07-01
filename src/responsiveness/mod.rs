@@ -394,6 +394,9 @@ impl ForegroundResponsivenessManager {
                     process_id: *process_id,
                     process_name: process_name.clone(),
                     priority: ProcessMemoryPriority::VeryLow,
+                    foreground: false,
+                    preserve_foreground_priority: false,
+                    preserve_background_priority: false,
                 });
             }
         }
@@ -438,6 +441,9 @@ impl ForegroundResponsivenessManager {
                             process_id: process.id,
                             process_name: process.name.clone(),
                             priority: settings.auto_balance_memory_priority,
+                            foreground: false,
+                            preserve_foreground_priority: false,
+                            preserve_background_priority: false,
                         });
                     }
                     if decision == AutoBalanceDecision::RestrictAffinity {

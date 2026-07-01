@@ -52,6 +52,11 @@ pub struct ThreadPriorityManager {
     failure_suppression: ExecutionFailureTracker,
 }
 
+struct ThreadApplyOutcome {
+    applied_threads: usize,
+    preserved_threads: usize,
+}
+
 #[derive(Clone)]
 struct AdjustedThread {
     process_id: u32,
@@ -156,32 +161,37 @@ impl ThreadPriorityManager {
             if process.id == 0
                 || process.id == current_process_id
                 || process_session_id(process.id) != Some(current_session_id)
-                || settings.exclusion_enabled_for(&process.name)
                 || is_builtin_excluded(&process.name)
             {
                 continue;
             }
 
-            let priority = if settings.foreground_detection_enabled
+            let foreground = settings.foreground_detection_enabled
                 && is_foreground_process(
                     process.id,
                     &process.name,
                     foreground_process_id,
                     foreground_process_name.as_deref(),
-                ) {
-                settings.foreground_priority
-            } else {
-                settings.background_priority
+                );
+            let priority = match settings.override_for(&process.name, foreground) {
+                Some(Some(ProcessThreadPrioritySetting::Auto)) if foreground => {
+                    settings.foreground_priority
+                }
+                Some(Some(ProcessThreadPrioritySetting::Auto)) => settings.background_priority,
+                Some(Some(priority)) => priority,
+                Some(None) => continue,
+                None if foreground => settings.foreground_priority,
+                None => settings.background_priority,
             };
             if let Some(priority) = thread_priority_value(priority) {
-                target_processes.insert(process.id, (process.name, priority));
+                target_processes.insert(process.id, (process.name, priority, foreground));
             }
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(name, _)| process_failure_key(name))
+            .map(|(name, _priority, _foreground)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
@@ -194,15 +204,24 @@ impl ThreadPriorityManager {
         let mut skipped_processes = 0;
         let mut applied_threads = 0;
 
-        for (process_id, (process_name, priority)) in target_processes {
+        for (process_id, (process_name, priority, foreground)) in target_processes {
             if self.is_process_suppressed(process_id, &process_name, action_log) {
                 skipped_processes += 1;
                 continue;
             }
 
-            match self.apply_process_threads(process_id, process_name.clone(), priority) {
-                Ok(count) => {
-                    applied_threads += count;
+            match self.apply_process_threads(
+                process_id,
+                process_name.clone(),
+                priority,
+                foreground,
+                settings.preserve_foreground_priority,
+                settings.preserve_background_priority,
+            ) {
+                Ok(outcome) => {
+                    applied_threads += outcome.applied_threads;
+                    skipped_processes +=
+                        usize::from(outcome.applied_threads == 0 && outcome.preserved_threads > 0);
                     self.clear_process_failure(&process_name);
                 }
                 Err(ThreadPriorityError::ProcessExited) => skipped_processes += 1,
@@ -262,8 +281,12 @@ impl ThreadPriorityManager {
         process_id: u32,
         process_name: String,
         priority: i32,
-    ) -> Result<usize, ThreadPriorityError> {
+        foreground: bool,
+        preserve_foreground: bool,
+        preserve_background: bool,
+    ) -> Result<ThreadApplyOutcome, ThreadPriorityError> {
         let mut applied = 0;
+        let mut preserved = 0;
         for thread_id in process_thread_ids(process_id)? {
             let thread = ThreadHandle::open(thread_id)?;
             let current_priority = thread.priority()?;
@@ -271,6 +294,22 @@ impl ThreadPriorityManager {
                 adjusted.process_id == process_id
                     && same_process_name(&adjusted.process_name, &process_name)
             });
+            let baseline_priority = reusable_existing
+                .map(|adjusted| adjusted.previous_priority)
+                .unwrap_or(current_priority);
+            if should_preserve_priority(
+                foreground,
+                preserve_foreground,
+                preserve_background,
+                baseline_priority,
+                priority,
+            ) {
+                if let Some(adjusted) = self.adjusted.remove(&thread_id) {
+                    thread.set_priority(adjusted.previous_priority)?;
+                }
+                preserved += 1;
+                continue;
+            }
             if reusable_existing.is_some_and(|adjusted| {
                 adjusted.applied_priority == priority && current_priority == priority
             }) {
@@ -287,20 +326,20 @@ impl ThreadPriorityManager {
                 }
                 applied += 1;
             }
-            let previous_priority = reusable_existing
-                .map(|adjusted| adjusted.previous_priority)
-                .unwrap_or(current_priority);
             self.adjusted.insert(
                 thread_id,
                 AdjustedThread {
                     process_id,
                     process_name: process_name.clone(),
-                    previous_priority,
+                    previous_priority: baseline_priority,
                     applied_priority: priority,
                 },
             );
         }
-        Ok(applied)
+        Ok(ThreadApplyOutcome {
+            applied_threads: applied,
+            preserved_threads: preserved,
+        })
     }
 
     fn release_non_targets(
@@ -528,7 +567,7 @@ fn open_thread_error(thread_id: u32, error: u32) -> ThreadPriorityError {
 
 fn thread_priority_value(priority: ProcessThreadPrioritySetting) -> Option<i32> {
     match priority {
-        ProcessThreadPrioritySetting::Default => None,
+        ProcessThreadPrioritySetting::Default | ProcessThreadPrioritySetting::Auto => None,
         ProcessThreadPrioritySetting::TimeCritical => Some(THREAD_PRIORITY_TIME_CRITICAL),
         ProcessThreadPrioritySetting::Highest => Some(THREAD_PRIORITY_HIGHEST),
         ProcessThreadPrioritySetting::AboveNormal => Some(THREAD_PRIORITY_ABOVE_NORMAL),
@@ -549,6 +588,20 @@ fn thread_priority_label(priority: i32) -> &'static str {
         THREAD_PRIORITY_LOWEST => "Lowest",
         THREAD_PRIORITY_IDLE => "Idle",
         _ => "Unknown",
+    }
+}
+
+fn should_preserve_priority(
+    foreground: bool,
+    preserve_foreground: bool,
+    preserve_background: bool,
+    current_rank: i32,
+    desired_rank: i32,
+) -> bool {
+    if foreground {
+        preserve_foreground && current_rank >= desired_rank
+    } else {
+        preserve_background && current_rank <= desired_rank
     }
 }
 

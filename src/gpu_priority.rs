@@ -21,7 +21,7 @@ use crate::win_util::{last_error, WinHandle};
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::{GpuPrioritySettings, ProcessGpuPriority},
+    config::{GpuPrioritySettings, ProcessGpuPriority, ProcessGpuPrioritySetting},
     foreground::{
         contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
         process_count_label, process_failure_key, process_names_by_id, process_session_id,
@@ -167,32 +167,37 @@ impl GpuPriorityManager {
             if process.id == 0
                 || process.id == current_process_id
                 || process_session_id(process.id) != Some(current_session_id)
-                || settings.exclusion_enabled_for(&process.name)
                 || is_builtin_excluded(&process.name)
             {
                 continue;
             }
 
-            let priority = if settings.foreground_detection_enabled
+            let foreground = settings.foreground_detection_enabled
                 && is_foreground_process(
                     process.id,
                     &process.name,
                     foreground_process_id,
                     foreground_process_name.as_deref(),
-                ) {
-                settings.foreground_priority
-            } else {
-                settings.background_priority
+                );
+            let priority = match settings.override_for(&process.name, foreground) {
+                Some(Some(ProcessGpuPrioritySetting::Auto)) if foreground => {
+                    settings.foreground_priority
+                }
+                Some(Some(ProcessGpuPrioritySetting::Auto)) => settings.background_priority,
+                Some(Some(priority)) => priority,
+                Some(None) => continue,
+                None if foreground => settings.foreground_priority,
+                None => settings.background_priority,
             };
             if let Some(priority) = priority.priority() {
-                target_processes.insert(process.id, (process.name, priority));
+                target_processes.insert(process.id, (process.name, priority, foreground));
             }
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(name, _priority)| process_failure_key(name))
+            .map(|(name, _priority, _foreground)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
         self.pending_context
@@ -212,14 +217,21 @@ impl GpuPriorityManager {
         let mut pending_context_log_count = 0;
         let mut access_denied_log_count = 0;
 
-        for (process_id, (process_name, priority)) in target_processes {
+        for (process_id, (process_name, priority, foreground)) in target_processes {
             if self.is_process_suppressed(&process_name) {
                 skipped_processes += 1;
                 suppressed_processes += 1;
                 continue;
             }
 
-            match self.apply_process(process_id, process_name.clone(), priority) {
+            match self.apply_process(
+                process_id,
+                process_name.clone(),
+                priority,
+                foreground,
+                settings.preserve_foreground_priority,
+                settings.preserve_background_priority,
+            ) {
                 Ok(ApplyOutcome::Applied { loggable }) => {
                     if loggable {
                         applied_log_count += 1;
@@ -228,6 +240,11 @@ impl GpuPriorityManager {
                     self.clear_process_pending_context(&process_name);
                 }
                 Ok(ApplyOutcome::AlreadyApplied) => {
+                    self.clear_process_failure(&process_name);
+                    self.clear_process_pending_context(&process_name);
+                }
+                Ok(ApplyOutcome::Preserved) => {
+                    skipped_processes += 1;
                     self.clear_process_failure(&process_name);
                     self.clear_process_pending_context(&process_name);
                 }
@@ -293,6 +310,9 @@ impl GpuPriorityManager {
         process_id: u32,
         process_name: String,
         priority: ProcessGpuPriority,
+        foreground: bool,
+        preserve_foreground: bool,
+        preserve_background: bool,
     ) -> Result<ApplyOutcome, GpuPriorityError> {
         let process = ProcessHandle::open(process_id)?;
         let reusable_existing = self
@@ -301,6 +321,22 @@ impl GpuPriorityManager {
             .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
         let current_priority_raw = process.gpu_priority_raw()?;
         let desired_priority_raw = gpu_priority_raw(priority);
+        let baseline_priority_raw = reusable_existing
+            .map(|adjusted| adjusted.previous_priority_raw)
+            .unwrap_or(current_priority_raw);
+        if should_preserve_priority(
+            foreground,
+            preserve_foreground,
+            preserve_background,
+            baseline_priority_raw,
+            desired_priority_raw,
+        ) {
+            if let Some(adjusted) = self.adjusted.remove(&process_id) {
+                process.set_gpu_priority_raw(adjusted.previous_priority_raw)?;
+            }
+            return Ok(ApplyOutcome::Preserved);
+        }
+
         let changed = current_priority_raw != desired_priority_raw;
         let loggable = reusable_existing
             .map(|adjusted| adjusted.applied_priority != priority)
@@ -326,14 +362,11 @@ impl GpuPriorityManager {
             return Ok(ApplyOutcome::AlreadyApplied);
         }
 
-        let previous_priority_raw = reusable_existing
-            .map(|adjusted| adjusted.previous_priority_raw)
-            .unwrap_or(current_priority_raw);
         self.adjusted.insert(
             process_id,
             AdjustedProcess {
                 process_name,
-                previous_priority_raw,
+                previous_priority_raw: baseline_priority_raw,
                 applied_priority: priority,
             },
         );
@@ -516,6 +549,7 @@ impl GpuPriorityManager {
 enum ApplyOutcome {
     Applied { loggable: bool },
     AlreadyApplied,
+    Preserved,
 }
 
 #[derive(Default)]
@@ -634,15 +668,33 @@ fn open_process_error(process_id: u32, error: u32) -> GpuPriorityError {
 
 fn gpu_priority_raw(priority: ProcessGpuPriority) -> u32 {
     match priority {
+        ProcessGpuPriority::Realtime => 5,
+        ProcessGpuPriority::High => 4,
+        ProcessGpuPriority::AboveNormal => 3,
+        ProcessGpuPriority::Normal => 2,
         ProcessGpuPriority::Idle => 0,
         ProcessGpuPriority::BelowNormal => 1,
-        ProcessGpuPriority::Normal => 2,
-        ProcessGpuPriority::AboveNormal => 3,
+    }
+}
+
+fn should_preserve_priority(
+    foreground: bool,
+    preserve_foreground: bool,
+    preserve_background: bool,
+    current_rank: u32,
+    desired_rank: u32,
+) -> bool {
+    if foreground {
+        preserve_foreground && current_rank >= desired_rank
+    } else {
+        preserve_background && current_rank <= desired_rank
     }
 }
 
 pub fn gpu_priority_label(priority: ProcessGpuPriority) -> &'static str {
     match priority {
+        ProcessGpuPriority::Realtime => "Realtime",
+        ProcessGpuPriority::High => "High",
         ProcessGpuPriority::AboveNormal => "Above Normal",
         ProcessGpuPriority::Normal => "Normal",
         ProcessGpuPriority::BelowNormal => "Below Normal",
@@ -741,6 +793,8 @@ mod tests {
         assert_eq!(gpu_priority_raw(ProcessGpuPriority::BelowNormal), 1);
         assert_eq!(gpu_priority_raw(ProcessGpuPriority::Normal), 2);
         assert_eq!(gpu_priority_raw(ProcessGpuPriority::AboveNormal), 3);
+        assert_eq!(gpu_priority_raw(ProcessGpuPriority::High), 4);
+        assert_eq!(gpu_priority_raw(ProcessGpuPriority::Realtime), 5);
     }
 
     #[test]

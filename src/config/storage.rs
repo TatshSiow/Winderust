@@ -114,8 +114,7 @@ mod tests {
         ProcessExclusionRule, ProcessGpuPrioritySetting, ProcessIoPriority,
         ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
         ProcessPriority, ProcessPriorityBoostSetting, ScheduleModeSettings, ScheduleRule,
-        SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WatchdogAction,
-        WatchdogRule, WatchdogSettings, WeekdaySetting,
+        SmartTrimSettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
     };
 
     #[test]
@@ -137,6 +136,8 @@ mod tests {
             advanced: AdvancedSettings {
                 action_log_mode: ActionLogMode::Error,
                 execution_failure_suppression_threshold: 5,
+                expose_all_priority_values: true,
+                show_advanced_controls: true,
             },
             power_plans: PowerPlanSettings {
                 power_save_guid: Some("idle-guid".to_owned()),
@@ -311,29 +312,6 @@ mod tests {
                     power_plan_guid: Some("gaming-guid".to_owned()),
                 }],
             },
-            watchdog: WatchdogSettings {
-                enabled: true,
-                rules: vec![
-                    WatchdogRule {
-                        enabled: true,
-                        name: "Block updater".to_owned(),
-                        process_name: "updater.exe".to_owned(),
-                        action: WatchdogAction::TerminateOnLaunch,
-                        launch_path: String::new(),
-                        launch_args: Vec::new(),
-                        restart_delay_seconds: 5,
-                    },
-                    WatchdogRule {
-                        enabled: true,
-                        name: "Keep helper running".to_owned(),
-                        process_name: "helper.exe".to_owned(),
-                        action: WatchdogAction::RestartIfExited,
-                        launch_path: "C:\\Tools\\helper.exe".to_owned(),
-                        launch_args: vec!["--minimized".to_owned()],
-                        restart_delay_seconds: 10,
-                    },
-                ],
-            },
             foreground_responsiveness: ForegroundResponsivenessSettings {
                 enabled: true,
                 lower_background_apps: true,
@@ -361,6 +339,7 @@ mod tests {
                 auto_balance_exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "game*.exe".to_owned(),
+                    ..Default::default()
                 }],
                 boost_foreground_app: true,
                 foreground_boost: ForegroundBoostPriority::AboveNormal,
@@ -373,13 +352,15 @@ mod tests {
             },
             cpu_priority: CpuPrioritySettings {
                 enabled: true,
-                advanced_priority_enabled: false,
                 foreground_detection_enabled: true,
                 foreground_priority: ProcessCpuPrioritySetting::Default,
                 background_priority: ProcessCpuPrioritySetting::BelowNormal,
+                preserve_foreground_priority: true,
+                preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
+                    ..Default::default()
                 }],
             },
             thread_priority: crate::config::ThreadPrioritySettings::default(),
@@ -391,6 +372,7 @@ mod tests {
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
+                    ..Default::default()
                 }],
             },
             io_priority: IoPrioritySettings {
@@ -398,9 +380,12 @@ mod tests {
                 foreground_detection_enabled: true,
                 foreground_priority: ProcessIoPrioritySetting::Normal,
                 background_priority: ProcessIoPrioritySetting::VeryLow,
+                preserve_foreground_priority: true,
+                preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
+                    ..Default::default()
                 }],
             },
             gpu_priority: GpuPrioritySettings {
@@ -408,9 +393,12 @@ mod tests {
                 foreground_detection_enabled: true,
                 foreground_priority: ProcessGpuPrioritySetting::AboveNormal,
                 background_priority: ProcessGpuPrioritySetting::BelowNormal,
+                preserve_foreground_priority: true,
+                preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "render.exe".to_owned(),
+                    ..Default::default()
                 }],
             },
             memory_priority: MemoryPrioritySettings {
@@ -418,9 +406,12 @@ mod tests {
                 foreground_detection_enabled: true,
                 foreground_priority: ProcessMemoryPrioritySetting::Default,
                 background_priority: ProcessMemoryPrioritySetting::Low,
+                preserve_foreground_priority: true,
+                preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),
+                    ..Default::default()
                 }],
             },
             launch_priority: LaunchPrioritySettings {
@@ -459,6 +450,7 @@ mod tests {
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "game*.exe".to_owned(),
+                    ..Default::default()
                 }],
             },
         };
@@ -635,6 +627,7 @@ priority = "low"
             vec![ProcessExclusionRule {
                 enabled: true,
                 process_name: "backup.exe".to_owned(),
+                ..Default::default()
             }]
         );
     }
@@ -691,6 +684,7 @@ priority = "below_normal"
             vec![ProcessExclusionRule {
                 enabled: true,
                 process_name: "render.exe".to_owned(),
+                ..Default::default()
             }]
         );
     }
@@ -747,6 +741,7 @@ priority = "low"
             vec![ProcessExclusionRule {
                 enabled: true,
                 process_name: "backup.exe".to_owned(),
+                ..Default::default()
             }]
         );
     }

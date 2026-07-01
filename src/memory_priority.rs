@@ -15,7 +15,7 @@ use crate::win_util::{last_error, WinHandle};
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::{MemoryPrioritySettings, ProcessMemoryPriority},
+    config::{MemoryPrioritySettings, ProcessMemoryPriority, ProcessMemoryPrioritySetting},
     foreground::{
         contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
         process_count_label, process_failure_key, process_session_id, same_process_name,
@@ -47,6 +47,9 @@ pub struct MemoryPriorityTarget {
     pub process_id: u32,
     pub process_name: String,
     pub priority: ProcessMemoryPriority,
+    pub foreground: bool,
+    pub preserve_foreground_priority: bool,
+    pub preserve_background_priority: bool,
 }
 
 #[derive(Clone)]
@@ -168,27 +171,35 @@ impl MemoryPriorityManager {
                     &process.name,
                     current_process_id,
                     current_session_id,
-                    settings,
                 ) {
                     return None;
                 }
 
-                let priority = if settings.foreground_detection_enabled
+                let foreground = settings.foreground_detection_enabled
                     && is_foreground_process(
                         process.id,
                         &process.name,
                         foreground_process_id,
                         foreground_process_name.as_deref(),
-                    ) {
-                    settings.foreground_priority
-                } else {
-                    settings.background_priority
+                    );
+                let priority = match settings.override_for(&process.name, foreground) {
+                    Some(Some(ProcessMemoryPrioritySetting::Auto)) if foreground => {
+                        settings.foreground_priority
+                    }
+                    Some(Some(ProcessMemoryPrioritySetting::Auto)) => settings.background_priority,
+                    Some(Some(priority)) => priority,
+                    Some(None) => return None,
+                    None if foreground => settings.foreground_priority,
+                    None => settings.background_priority,
                 };
 
                 priority.priority().map(|priority| MemoryPriorityTarget {
                     process_id: process.id,
                     process_name: process.name,
                     priority,
+                    foreground,
+                    preserve_foreground_priority: settings.preserve_foreground_priority,
+                    preserve_background_priority: settings.preserve_background_priority,
                 })
             })
             .collect();
@@ -255,6 +266,9 @@ impl MemoryPriorityManager {
                 target.process_id,
                 target.process_name.clone(),
                 target.priority,
+                target.foreground,
+                target.preserve_foreground_priority,
+                target.preserve_background_priority,
             ) {
                 Ok(ApplyOutcome::Applied { loggable }) => {
                     if loggable {
@@ -263,6 +277,10 @@ impl MemoryPriorityManager {
                     self.clear_process_failure(&target.process_name);
                 }
                 Ok(ApplyOutcome::AlreadyApplied) => {
+                    self.clear_process_failure(&target.process_name);
+                }
+                Ok(ApplyOutcome::Preserved) => {
+                    skipped_processes += 1;
                     self.clear_process_failure(&target.process_name);
                 }
                 Err(MemoryPriorityError::ProcessExited) => {
@@ -323,6 +341,9 @@ impl MemoryPriorityManager {
         process_id: u32,
         process_name: String,
         priority: ProcessMemoryPriority,
+        foreground: bool,
+        preserve_foreground: bool,
+        preserve_background: bool,
     ) -> Result<ApplyOutcome, MemoryPriorityError> {
         let process = ProcessHandle::open(process_id)?;
         let reusable_existing = self
@@ -330,6 +351,22 @@ impl MemoryPriorityManager {
             .get(&process_id)
             .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
         let current_priority = process.memory_priority()?;
+
+        let baseline_priority = reusable_existing
+            .map(|adjusted| adjusted.previous_priority)
+            .unwrap_or(current_priority);
+        if should_preserve_priority(
+            foreground,
+            preserve_foreground,
+            preserve_background,
+            memory_priority_raw(baseline_priority),
+            memory_priority_raw(priority),
+        ) {
+            if let Some(adjusted) = self.adjusted.remove(&process_id) {
+                process.set_memory_priority(adjusted.previous_priority)?;
+            }
+            return Ok(ApplyOutcome::Preserved);
+        }
 
         if reusable_existing.is_some_and(|adjusted| {
             adjusted.applied_priority == priority && current_priority == priority
@@ -349,14 +386,11 @@ impl MemoryPriorityManager {
             }
         }
 
-        let previous_priority = reusable_existing
-            .map(|adjusted| adjusted.previous_priority)
-            .unwrap_or(current_priority);
         self.adjusted.insert(
             process_id,
             AdjustedProcess {
                 process_name,
-                previous_priority,
+                previous_priority: baseline_priority,
                 applied_priority: priority,
             },
         );
@@ -503,6 +537,7 @@ impl MemoryPriorityManager {
 enum ApplyOutcome {
     Applied { loggable: bool },
     AlreadyApplied,
+    Preserved,
 }
 
 #[derive(Default)]
@@ -646,6 +681,20 @@ fn memory_priority_from_raw(priority: u32) -> ProcessMemoryPriority {
     }
 }
 
+fn should_preserve_priority(
+    foreground: bool,
+    preserve_foreground: bool,
+    preserve_background: bool,
+    current_rank: u32,
+    desired_rank: u32,
+) -> bool {
+    if foreground {
+        preserve_foreground && current_rank >= desired_rank
+    } else {
+        preserve_background && current_rank <= desired_rank
+    }
+}
+
 pub fn memory_priority_label(priority: ProcessMemoryPriority) -> &'static str {
     match priority {
         ProcessMemoryPriority::VeryLow => "Very Low",
@@ -665,13 +714,11 @@ fn should_skip_process(
     process_name: &str,
     current_process_id: u32,
     current_session_id: u32,
-    settings: &MemoryPrioritySettings,
 ) -> bool {
     process_id == 0
         || process_id == current_process_id
         || process_session_id(process_id) != Some(current_session_id)
         || is_builtin_excluded(process_name)
-        || settings.exclusion_enabled_for(process_name)
 }
 
 fn memory_priority_error_message(error: MemoryPriorityError) -> String {

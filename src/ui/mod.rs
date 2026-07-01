@@ -22,13 +22,11 @@ pub enum Page {
     ProcessList,
     EfficiencyMode,
     AppSuspension,
-    Watchdog,
     PerformanceMode,
     ForegroundResponsiveness,
     IoPriority,
     GpuPriority,
     MemoryPriority,
-    LaunchPriority,
     SmartTrim,
     CpuAffinity,
     ForegroundRules,
@@ -36,6 +34,7 @@ pub enum Page {
     ActionLog,
     Settings,
     SettingsAppearance,
+    SettingsExperimental,
     TimerResolution,
     Win32PrioritySeparation,
     About,
@@ -61,25 +60,32 @@ const CPU_CONTROL_PAGES: [Page; 3] = [
     Page::BackgroundCpuRestriction,
     Page::CpuAffinity,
 ];
-const PRIORITY_CONTROL_PAGES: [Page; 7] = [
+const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::CpuPriority,
     Page::ThreadPriority,
     Page::DynamicPriorityBoost,
     Page::IoPriority,
     Page::GpuPriority,
     Page::MemoryPriority,
-    Page::LaunchPriority,
 ];
-const PROCESS_POLICY_PAGES: [Page; 2] = [Page::EfficiencyMode, Page::Watchdog];
-const WINDERUST_FEATURE_PAGES: [Page; 2] = [Page::ForegroundResponsiveness, Page::SmartTrim];
+const WINDERUST_FEATURE_PAGES: [Page; 3] = [
+    Page::EfficiencyMode,
+    Page::ForegroundResponsiveness,
+    Page::SmartTrim,
+];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
-const APP_PAGES: [Page; 3] = [Page::Settings, Page::SettingsAppearance, Page::About];
+const APP_PAGES: [Page; 4] = [
+    Page::Settings,
+    Page::SettingsAppearance,
+    Page::SettingsExperimental,
+    Page::About,
+];
 const ADVANCED_PAGES: [Page; 3] = [
     Page::AppSuspension,
     Page::TimerResolution,
     Page::Win32PrioritySeparation,
 ];
-const PAGE_SECTIONS: [PageSection; 10] = [
+const PAGE_SECTIONS: [PageSection; 9] = [
     PageSection {
         landing_page: Page::Dashboard,
         pages: &OVERVIEW_PAGES,
@@ -95,10 +101,6 @@ const PAGE_SECTIONS: [PageSection; 10] = [
     PageSection {
         landing_page: Page::PowerPlanAutomation,
         pages: &POWER_AUTOMATION_PAGES,
-    },
-    PageSection {
-        landing_page: Page::ProcessPolicies,
-        pages: &PROCESS_POLICY_PAGES,
     },
     PageSection {
         landing_page: Page::PriorityControl,
@@ -145,13 +147,11 @@ impl Page {
             Self::ProcessList => t!("nav.process_list"),
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
-            Self::Watchdog => t!("nav.watchdog"),
             Self::PerformanceMode => t!("nav.performance_mode"),
             Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
             Self::IoPriority => t!("nav.io_priority"),
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
-            Self::LaunchPriority => t!("nav.launch_priority"),
             Self::SmartTrim => t!("nav.smart_trim"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
@@ -159,6 +159,7 @@ impl Page {
             Self::ActionLog => t!("nav.action_log"),
             Self::Settings => t!("settings.winderust_behaviour"),
             Self::SettingsAppearance => t!("settings.language_and_appearance"),
+            Self::SettingsExperimental => t!("settings.experimental_features"),
             Self::TimerResolution => t!("nav.timer_resolution"),
             Self::Win32PrioritySeparation => t!("nav.win32_priority_separation"),
             Self::About => t!("nav.about"),
@@ -192,12 +193,15 @@ impl Page {
             | Self::DynamicPriorityBoost
             | Self::IoPriority
             | Self::GpuPriority
-            | Self::MemoryPriority
-            | Self::LaunchPriority => t!("nav.priority_control"),
-            Self::EfficiencyMode | Self::Watchdog => t!("nav.process_policies"),
-            Self::ForegroundResponsiveness | Self::SmartTrim => t!("nav.winderust_features"),
+            | Self::MemoryPriority => t!("nav.priority_control"),
+            Self::EfficiencyMode | Self::ForegroundResponsiveness | Self::SmartTrim => {
+                t!("nav.winderust_features")
+            }
             Self::ActionLog => t!("nav.action_log"),
-            Self::Settings | Self::SettingsAppearance | Self::About => t!("nav.settings"),
+            Self::Settings
+            | Self::SettingsAppearance
+            | Self::SettingsExperimental
+            | Self::About => t!("nav.settings"),
             Self::AppSuspension | Self::TimerResolution | Self::Win32PrioritySeparation => {
                 t!("nav.advanced")
             }
@@ -209,9 +213,10 @@ impl Page {
         match self {
             Self::Dashboard => Self::Dashboard,
             Self::ProcessList => Self::ProcessList,
-            Self::WinderustFeatures | Self::ForegroundResponsiveness | Self::SmartTrim => {
-                Self::WinderustFeatures
-            }
+            Self::WinderustFeatures
+            | Self::EfficiencyMode
+            | Self::ForegroundResponsiveness
+            | Self::SmartTrim => Self::WinderustFeatures,
             Self::PowerPlanAutomation
             | Self::Activity
             | Self::Schedule
@@ -229,14 +234,15 @@ impl Page {
             | Self::DynamicPriorityBoost
             | Self::IoPriority
             | Self::GpuPriority
-            | Self::MemoryPriority
-            | Self::LaunchPriority => Self::PriorityControl,
-            Self::ProcessPolicies | Self::EfficiencyMode | Self::Watchdog => Self::ProcessPolicies,
+            | Self::MemoryPriority => Self::PriorityControl,
+            Self::ProcessPolicies => Self::ProcessPolicies,
             Self::MemoryControl => Self::MemoryControl,
             Self::ActionLog => Self::ActionLog,
-            Self::AppHome | Self::Settings | Self::SettingsAppearance | Self::About => {
-                Self::AppHome
-            }
+            Self::AppHome
+            | Self::Settings
+            | Self::SettingsAppearance
+            | Self::SettingsExperimental
+            | Self::About => Self::AppHome,
             Self::AdvancedHome
             | Self::AppSuspension
             | Self::TimerResolution
@@ -252,7 +258,6 @@ impl Page {
             Self::PowerPlanAutomation => Some(&POWER_AUTOMATION_PAGES),
             Self::ProcessorControls => Some(&CPU_CONTROL_PAGES),
             Self::PriorityControl => Some(&PRIORITY_CONTROL_PAGES),
-            Self::ProcessPolicies => Some(&PROCESS_POLICY_PAGES),
             Self::AppHome => Some(&APP_PAGES),
             Self::AdvancedHome => Some(&ADVANCED_PAGES),
             _ => None,
