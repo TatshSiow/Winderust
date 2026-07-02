@@ -85,13 +85,16 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 
 ## Auto Balance Benchmark
 
-Latest paired synthetic benchmark on Intel Core 5 210H, 12 logical processors:
+Latest paired synthetic benchmark on Intel Core 5 210H, 12 logical processors.
+`Off` is the comparison baseline under generated background load; the script
+also emits a no-background `baseline_no_background_load` case for reference.
 
-| Preset | Median foreground improvement | P95 foreground improvement | Background retained | Signal | Tradeoff |
-| --- | ---: | ---: | ---: | --- | --- |
-| Gentle | 10.8% | 41.5% | 100.0% | usable | low |
-| Balance | 10.2% | -62.7% | 117.2% | noisy | low |
-| Responsive | 72.9% | 84.7% | 29.5% | strong | high |
+| Case | Median avg vs Off | Median worst pass | P95 avg vs Off | P95 worst pass | Background retained avg | Background retained worst pass | Agreement | Signal | Tradeoff |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Off baseline | 0.0% | 0.0% | 0.0% | 0.0% | 100.0% | 100.0% | 100.0% | baseline | baseline |
+| Gentle | 10.8% | -2.4% | 41.5% | 23.3% | 100.0% | 97.3% | 66.7% | usable | low |
+| Balance | 10.2% | -6.8% | -62.7% | -276.3% | 117.2% | 99.0% | 66.7% | noisy | low |
+| Responsive | 72.9% | 49.2% | 84.7% | 78.2% | 29.5% | 29.1% | 100.0% | strong | high |
 
 Run the benchmark from the repository root:
 
