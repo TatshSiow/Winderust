@@ -50,10 +50,6 @@ fn main() {
         WindowOptions,
     };
 
-    if privilege::relaunch_as_admin_if_needed() {
-        return;
-    }
-
     let Some(_single_instance_guard) = SingleInstanceGuard::acquire() else {
         return;
     };

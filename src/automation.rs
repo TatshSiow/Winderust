@@ -1272,8 +1272,7 @@ fn io_priority_required(settings: &Settings) -> bool {
                 || settings
                     .foreground_responsiveness
                     .auto_balance_io_priority
-                    .enabled
-                || settings.foreground_responsiveness.auto_balance_enabled))
+                    .enabled))
 }
 
 fn auto_balance_priority_assist_required(settings: &Settings) -> bool {
@@ -1318,24 +1317,11 @@ fn timer_resolution_required(settings: &Settings) -> bool {
 
 fn effective_io_priority_settings(
     settings: &Settings,
-    launch_boost_active: bool,
+    _launch_boost_active: bool,
     auto_balance_active: bool,
 ) -> crate::config::IoPrioritySettings {
     let mut io_priority = settings.io_priority.clone();
-    if launch_boost_active {
-        io_priority.enabled = true;
-        io_priority.foreground_detection_enabled = true;
-        io_priority.foreground_priority = ProcessIoPriority::Normal.into();
-        io_priority.background_priority = ProcessIoPriority::VeryLow.into();
-        io_priority.preserve_foreground_priority = true;
-        io_priority.preserve_background_priority = true;
-        io_priority.exclusions.extend(
-            settings
-                .foreground_responsiveness
-                .auto_balance_exclusions
-                .clone(),
-        );
-    } else if auto_balance_active {
+    if auto_balance_active {
         let auto_io_priority = auto_balance_io_priority_settings(settings);
         if auto_io_priority.enabled {
             io_priority = auto_io_priority;
@@ -2397,20 +2383,11 @@ mod tests {
     }
 
     #[test]
-    fn launch_boost_forces_background_io_assist() {
+    fn launch_boost_does_not_force_background_io_assist() {
         let settings = Settings::default();
         let io_priority = effective_io_priority_settings(&settings, true, false);
 
-        assert!(io_priority.enabled);
-        assert!(io_priority.foreground_detection_enabled);
-        assert_eq!(
-            io_priority.foreground_priority.priority(),
-            Some(ProcessIoPriority::Normal)
-        );
-        assert_eq!(
-            io_priority.background_priority.priority(),
-            Some(ProcessIoPriority::VeryLow)
-        );
+        assert!(!io_priority.enabled);
     }
 
     #[test]
@@ -2605,13 +2582,13 @@ mod tests {
     }
 
     #[test]
-    fn auto_balance_makes_launch_boost_io_refresh_available() {
+    fn auto_balance_without_io_assist_does_not_require_io_refresh() {
         let mut settings = Settings::default();
         settings.foreground_responsiveness.enabled = true;
         settings.foreground_responsiveness.auto_balance_enabled = true;
         settings.foreground_responsiveness.boost_foreground_app = false;
 
-        assert!(io_priority_required(&settings));
+        assert!(!io_priority_required(&settings));
     }
 
     #[test]

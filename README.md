@@ -88,6 +88,9 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 Latest paired synthetic benchmark on AMD Ryzen 7 7735HS, 16 logical processors.
 `Off` is the comparison baseline under generated background load; the script
 also emits a no-background `baseline_no_background_load` case for reference.
+Balance and Responsive now apply the extra priority assists the app preset uses
+where Windows exposes them to the benchmark: priority boost, thread priority,
+memory priority, I/O priority, and GPU priority.
 
 Metrics:
 
@@ -101,9 +104,9 @@ Metrics:
 | Case | Median foreground latency avg | Median foreground latency worst pass | P95 foreground latency avg | P95 foreground latency worst pass | Background CPU work kept avg | Background CPU work kept worst pass | Agreement | Signal | Tradeoff |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | Off baseline | 0.0% | 0.0% | 0.0% | 0.0% | 100.0% | 100.0% | 100.0% | baseline | baseline |
-| Gentle | -13.6% | -22.8% | -13.8% | -24.1% | 99.5% | 99.3% | 0.0% | noisy | low |
-| Balance | 45.1% | 42.1% | 47.9% | 43.5% | 67.0% | 66.8% | 100.0% | strong | moderate |
-| Responsive | 51.7% | 51.3% | 51.8% | 51.3% | 24.9% | 24.9% | 100.0% | strong | high |
+| Gentle | 48.3% | 45.0% | 49.2% | 46.9% | 83.7% | 83.2% | 100.0% | strong | moderate |
+| Balance | 46.8% | 45.3% | 45.2% | 44.5% | 66.0% | 65.6% | 100.0% | strong | moderate |
+| Responsive | 47.2% | 40.9% | 48.7% | 45.3% | 24.7% | 24.5% | 100.0% | strong | high |
 
 Run the benchmark from the repository root:
 
@@ -111,7 +114,31 @@ Run the benchmark from the repository root:
 .\scripts\auto_balance_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
-The script spawns temporary CPU workers and changes their priority and affinity.
+Optional Task Manager launch scenario:
+
+```powershell
+.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario TaskManagerLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+```
+
+Optional Winderust launch scenario:
+
+```powershell
+.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+```
+
+Latest Winderust launch result on the same device after launch-grace tuning:
+
+| Case | Median launch latency avg | Median launch latency worst pass | P95 launch latency avg | P95 launch latency worst pass | Background CPU work kept avg | Agreement | Signal | Tradeoff |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Gentle | 3.8% | 0.0% | 3.8% | 0.0% | 99.8% | 33.3% | noisy | low |
+| Balance | -4.1% | -11.3% | -4.1% | -11.3% | 99.7% | 0.0% | noisy | low |
+| Responsive | -4.8% | -12.5% | -4.8% | -12.5% | 99.9% | 33.3% | noisy | low |
+
+Launch-grace tuning keeps background restraints deferred while the app starts;
+the launch result remains noisy and does not validate stronger launch behavior.
+
+The script spawns temporary CPU workers and changes their priority, affinity,
+thread, memory, I/O, priority-boost, and GPU scheduling controls where possible.
 Treat results as local direction only; validate on more hardware before changing
 global preset defaults. Full guide: `docs/auto-balance-benchmark.md`.
 

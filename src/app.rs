@@ -86,6 +86,7 @@ use crate::{
     },
     power_source,
     priority_boost::{self, PriorityBoostSnapshot},
+    privilege,
     process_icon::load_process_icon,
     responsiveness::{self, ForegroundResponsivenessSnapshot},
     rules::{
@@ -515,6 +516,7 @@ pub struct WinderustApp {
     process_list_sort: ProcessListSort,
     breadcrumb_transition: Option<BreadcrumbTransition>,
     page_transition_generation: u64,
+    admin_rights_prompt_visible: bool,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
     pending_list_item_removals: HashMap<ListItemRemovalTarget, Instant>,
@@ -1168,6 +1170,7 @@ impl WinderustApp {
             process_list_sort: ProcessListSort::default(),
             breadcrumb_transition: None,
             page_transition_generation: 0,
+            admin_rights_prompt_visible: !privilege::is_running_as_admin(),
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
             pending_list_item_removals: HashMap::new(),
@@ -4005,6 +4008,8 @@ impl Render for WinderustApp {
         let unsaved = self.settings != self.saved_settings;
         let unsaved_popup_vanish_progress = self.unsaved_popup_vanish_progress(unsaved, window);
         let show_unsaved_popup = unsaved || unsaved_popup_vanish_progress.is_some();
+        let show_admin_rights_prompt = self.admin_rights_prompt_visible;
+        let admin_rights_prompt_bottom = if show_unsaved_popup { 190.0 } else { 54.0 };
         let page_content = animated_page_content_frame(
             page_content_frame(
                 page_header,
@@ -4089,6 +4094,11 @@ impl Render for WinderustApp {
             .child(if show_unsaved_popup {
                 self.render_unsaved_popup(unsaved_popup_vanish_progress, cx)
                     .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            .child(if show_admin_rights_prompt {
+                self.render_admin_rights_prompt(admin_rights_prompt_bottom, cx)
             } else {
                 div().into_any_element()
             })
@@ -4305,6 +4315,78 @@ impl WinderustApp {
             |popup, delta| {
                 popup
                     .bottom(px(46.0 + 8.0 * delta))
+                    .opacity(0.18 + 0.82 * delta)
+            },
+        )
+    }
+
+    fn render_admin_rights_prompt(&self, bottom: f32, cx: &mut Context<Self>) -> AnyElement {
+        let popup = v_flex()
+            .absolute()
+            .right(px(24.0))
+            .bottom(px(bottom))
+            .w(px(420.0))
+            .occlude()
+            .on_any_mouse_down(|_, _, cx| {
+                cx.stop_propagation();
+            })
+            .gap_2()
+            .p_3()
+            .rounded(px(BRAND_RADIUS_OVERLAY))
+            .border_1()
+            .border_color(rgb(warning_text_color()))
+            .bg(rgb(warning_bg_color()))
+            .text_color(rgb(primary_text_color()))
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(warning_text_color()))
+                    .child(t!("admin_rights.title").to_string()),
+            )
+            .child(
+                div()
+                    .text_size(px(TEXT_BODY_SIZE))
+                    .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                    .child(t!("admin_rights.message").to_string()),
+            )
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("ignore-admin-rights")
+                            .small()
+                            .label(t!("admin_rights.ignore").to_string())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.admin_rights_prompt_visible = false;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("relaunch-admin-rights")
+                            .small()
+                            .primary()
+                            .label(t!("admin_rights.relaunch").to_string())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                if privilege::relaunch_as_admin() {
+                                    cx.quit();
+                                } else {
+                                    app.status_message =
+                                        t!("status.admin_relaunch_failed").to_string();
+                                    cx.notify();
+                                }
+                            })),
+                    ),
+            );
+
+        with_optional_motion(
+            popup,
+            "admin-rights-prompt",
+            MotionSpeed::Standard,
+            |popup| popup,
+            move |popup, delta| {
+                popup
+                    .bottom(px(bottom - 8.0 + 8.0 * delta))
                     .opacity(0.18 + 0.82 * delta)
             },
         )
@@ -24416,25 +24498,25 @@ struct AutoBalancePresetValues {
 fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetValues {
     match preset {
         AutoBalancePreset::Gentle => AutoBalancePresetValues {
-            lower_background_apps: false,
+            lower_background_apps: true,
             background_priority: ProcessPriority::Idle,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::Low,
             auto_balance_memory_priority_enabled: false,
             auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
             auto_balance_memory_priority: ProcessMemoryPriority::Low,
-            auto_balance_affinity_escalation_enabled: false,
-            boost_foreground_app: false,
+            auto_balance_affinity_escalation_enabled: true,
+            boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
-            lower_background_auto_cpu_percent: true,
-            manual_cpu_percent: 90,
-            total_threshold: 78,
-            process_threshold: 30,
-            restore_threshold: 15,
-            sustain_seconds: 3,
+            lower_background_auto_cpu_percent: false,
+            manual_cpu_percent: 60,
+            total_threshold: 70,
+            process_threshold: 20,
+            restore_threshold: 8,
+            sustain_seconds: 2,
             minimum_restraint_seconds: 2,
-            cooldown_seconds: 4,
-            max_targeted_processes: 4,
+            cooldown_seconds: 5,
+            max_targeted_processes: 12,
         },
         AutoBalancePreset::Balanced => AutoBalancePresetValues {
             lower_background_apps: true,
@@ -24936,16 +25018,17 @@ mod tests {
             balanced.auto_balance_foreground_memory_priority,
             ProcessMemoryPrioritySetting::Normal
         );
-        assert_eq!(gentle.max_targeted_processes, 4);
+        assert_eq!(gentle.max_targeted_processes, 12);
         assert_eq!(balanced.max_targeted_processes, 12);
         assert_eq!(responsive.max_targeted_processes, 12);
-        assert!(!gentle.auto_balance_affinity_escalation_enabled);
+        assert!(gentle.auto_balance_affinity_escalation_enabled);
         assert!(balanced.auto_balance_affinity_escalation_enabled);
         assert!(responsive.auto_balance_affinity_escalation_enabled);
         assert!(gentle.total_threshold > balanced.total_threshold);
         assert!(balanced.total_threshold > responsive.total_threshold);
         assert!(gentle.process_threshold > balanced.process_threshold);
         assert!(balanced.process_threshold > responsive.process_threshold);
+        assert_eq!(gentle.manual_cpu_percent, 60);
         assert_eq!(balanced.manual_cpu_percent, 50);
         assert_eq!(responsive.manual_cpu_percent, 16);
     }

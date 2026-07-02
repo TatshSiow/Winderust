@@ -116,10 +116,17 @@ status:
   started_minimized: "已最小化啟動。"
   unsaved_canceled: "已取消未儲存的設定變更。"
   switched_power_plan: "已切換電源計畫：%{reason}"
+  admin_relaunch_failed: "無法以系統管理員身分重新啟動。"
 
 unsaved:
   title: "未儲存的設定"
   message: "請先儲存這些變更，避免設定停留在草稿狀態。"
+
+admin_rights:
+  title: "需要系統管理員權限"
+  message: "Winderust 目前未以系統管理員權限執行。部分程序、記憶體、I/O 與電源控制可能會被略過或失敗。"
+  ignore: "忽略"
+  relaunch: "重新啟動"
 
 dashboard:
   overview: "總覽"

@@ -1,10 +1,11 @@
+use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+
 use windows_sys::Win32::{
-    Foundation::HWND,
     Foundation::{ERROR_NOT_ALL_ASSIGNED, LUID},
     Security::{
         AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_INCREASE_QUOTA_NAME,
-        SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME,
-        TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+        SE_PRIVILEGE_ENABLED, SE_PROF_SINGLE_PROCESS_NAME, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_PRIVILEGES, TOKEN_QUERY,
     },
     System::Threading::{GetCurrentProcess, OpenProcessToken},
     UI::{
@@ -15,37 +16,37 @@ use windows_sys::Win32::{
 
 use crate::win_util::{last_error, WinHandle};
 
-pub fn relaunch_as_admin_if_needed() -> bool {
-    if unsafe { IsUserAnAdmin() } != 0 {
-        return false;
-    }
-
-    let Ok(exe) = std::env::current_exe() else {
-        return true;
-    };
-    let operation = wide("runas");
-    let file = wide(exe.as_os_str());
-
-    unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut::<std::ffi::c_void>() as HWND,
-            operation.as_ptr(),
-            file.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL,
-        );
-    }
-
-    true
-}
-
 pub fn enable_increase_quota_privilege() -> bool {
     enable_privilege(SE_INCREASE_QUOTA_NAME)
 }
 
 pub fn enable_profile_single_process_privilege() -> bool {
     enable_privilege(SE_PROF_SINGLE_PROCESS_NAME)
+}
+
+pub fn is_running_as_admin() -> bool {
+    unsafe { IsUserAnAdmin() != 0 }
+}
+
+pub fn relaunch_as_admin() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+
+    let operation = wide("runas");
+    let file = wide_os(exe.as_os_str());
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+
+    result as isize > 32
 }
 
 fn enable_privilege(name: windows_sys::core::PCWSTR) -> bool {
@@ -96,12 +97,10 @@ fn enable_privilege_for_token(
     adjusted != 0 && last_error() != ERROR_NOT_ALL_ASSIGNED
 }
 
-fn wide(value: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
+}
 
-    value
-        .as_ref()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
+fn wide_os(value: &OsStr) -> Vec<u16> {
+    value.encode_wide().chain(std::iter::once(0)).collect()
 }

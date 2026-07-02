@@ -123,10 +123,17 @@ status:
   started_minimized: "Started minimized."
   unsaved_canceled: "Unsaved settings changes canceled."
   switched_power_plan: "Switched power plan: %{reason}"
+  admin_relaunch_failed: "Could not relaunch as administrator."
 
 unsaved:
   title: "Unsaved settings"
   message: "Save these changes before leaving them in draft state."
+
+admin_rights:
+  title: "Administrator rights required"
+  message: "Winderust is running without administrator rights. Some process, memory, I/O, and power controls may be skipped or fail."
+  ignore: "Ignore"
+  relaunch: "Relaunch"
 
 dashboard:
   overview: "Overview"
@@ -541,7 +548,7 @@ responsiveness:
   auto_efficiency_mode_help: "Controls the Windows Efficiency Mode strength used for eligible background apps when Background Efficiency is not already handling it."
   auto_efficiency_level: "Efficiency mode strength"
   auto_io_priority: "Background I/O priority"
-  auto_io_priority_help: "Optionally lowers disk I/O priority for eligible background processes while Auto Balance is active. Launch boost can also force Very Low I/O briefly while an app starts."
+  auto_io_priority_help: "Optionally lowers disk I/O priority for eligible background processes while Auto Balance is actively restraining background work."
   auto_io_priority_level: "Background I/O level"
   auto_priority_assist: "Priority Assist"
   auto_priority_assist_help: "Tunes the temporary I/O, thread, dynamic boost, and GPU priority defaults Auto Balance applies while pressure is active."

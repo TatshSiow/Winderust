@@ -5,20 +5,39 @@ while tuning Auto Balance presets.
 
 ## What This Measures
 
-The benchmark measures foreground CPU work completion time while temporary
-background CPU workers compete for scheduler time. Lower milliseconds are
-better.
+The default benchmark measures foreground CPU work completion time while
+temporary background CPU workers compete for scheduler time. Lower milliseconds
+are better.
+
+The optional `TaskManagerLaunch` foreground scenario measures Task Manager
+launch-to-window time under the same generated background load. Close any
+visible Task Manager window before running it. If Windows keeps a hidden
+resident `Taskmgr` process alive, the script measures reopen-to-window time.
+
+The optional `WinderustLaunch` foreground scenario measures launching this app
+under the same generated background load. It refuses to run while Winderust is
+already open, then closes only the instance it started for each sample. This is
+a better normal-user proxy than Task Manager when checking app startup behavior.
 
 It is not a full Winderust automation benchmark. It does not launch the app or
 exercise the real automation loop. It models the preset scheduler effects with:
 
 - process priority,
 - foreground process priority,
+- foreground and background dynamic priority boost,
+- background thread priority,
+- background memory priority,
+- background I/O priority,
+- background GPU priority attempts,
 - target count,
-- and hard processor affinity for the Responsive CPU-share approximation.
+- and hard processor affinity for the CPU-share approximation.
 
 PowerShell hard affinity is stricter than Winderust Soft CPU Sets, so affinity
 results should be treated as directional, not exact.
+
+The foreground loop is still CPU-bound. I/O, memory, and GPU controls are applied
+to the generated background workers where Windows accepts them, but the workload
+does not include a dedicated disk, memory-pressure, or GPU-rendering phase.
 
 ## Hardware Scope
 
@@ -56,9 +75,13 @@ Keep this in sync with `auto_balance_preset_values` in `src/app.rs`.
 | Preset | Benchmark model |
 | --- | --- |
 | Off | 12 background workers at `Normal`; foreground benchmark process at `Normal`. |
-| Gentle | 4 selected background workers at `Idle`; remaining background workers at `Normal`; foreground at `Normal`. |
-| Balance | All background workers at `Idle`; first 12 targets affinity-limited to 50% logical processors; foreground at `AboveNormal`. |
-| Responsive | All background workers at `Idle`; first 12 targets affinity-limited to 16% logical processors; foreground at `AboveNormal`. |
+| Gentle | All background workers at `Idle`; first 12 targets affinity-limited to 60% logical processors; foreground at `AboveNormal`; extra I/O, memory, thread, priority-boost, and GPU assists disabled. |
+| Balance | All background workers at `Idle`; first 12 targets affinity-limited to 50% logical processors; foreground at `AboveNormal`; foreground priority boost enabled; background priority boost disabled; background threads `BelowNormal`; background memory `Low`; background I/O `Low`; background GPU `BelowNormal` when available. |
+| Responsive | All background workers at `Idle`; first 12 targets affinity-limited to 16% logical processors; foreground at `AboveNormal`; foreground priority boost enabled; background priority boost disabled; background threads `BelowNormal`; background memory `VeryLow`; background I/O `VeryLow`; background GPU `BelowNormal` when available. |
+
+For launch foreground scenarios, preset cases intentionally use launch grace:
+foreground launch priority is raised to `AboveNormal`, while background
+restraints are deferred until after the app-start window.
 
 ## Before Running
 
@@ -74,6 +97,9 @@ For cleaner benchmark results:
 - Plug in AC power.
 - Close browsers, game launchers, update tools, and other background work.
 - Avoid moving windows or using the machine during the run.
+- Close any visible Task Manager window before using
+  `-ForegroundScenario TaskManagerLaunch`.
+- Close Winderust before using `-ForegroundScenario WinderustLaunch`.
 - Run the benchmark at least twice if results are surprising.
 
 The agent must request escalation for the benchmark command because it spawns
@@ -88,16 +114,35 @@ Preferred repeat-loop command:
 .\scripts\auto_balance_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
+Task Manager launch scenario:
+
+```powershell
+.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario TaskManagerLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+```
+
+Winderust launch scenario:
+
+```powershell
+.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+```
+
+If the release binary is not built, either run `cargo build --release` first or
+pass `-WinderustExePath <path-to-winderust.exe>`.
+
 Trust a local tuning direction only when median and P95 both improve by at least
 3% in at least two of three passes. If median improves but P95 or jitter gets
 worse, the change is not validated; it probably only moved the average.
 
 The script rotates case order between passes to reduce order and thermal bias.
 Each preset is compared with its own adjacent Off run, and the pair order flips
-between passes. It still remains a local synthetic benchmark, not proof of
-universal defaults.
+between passes. The JSON includes `assist_controls`, `assist_status`, and
+`assist_coverage` so a report can show which OS controls were applied and where
+the synthetic workload is only directional. It still remains a local synthetic
+benchmark, not proof of universal defaults.
 
-Legacy inline command, kept for agents that cannot execute repository scripts:
+Legacy inline command, kept only for agents that cannot execute repository
+scripts. It is CPU-only and should not be used for the final insight report when
+the repository script can run:
 
 ```powershell
 $ErrorActionPreference = 'Stop'
@@ -107,9 +152,11 @@ $workerCount = [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
 $iterations = 1250000
 $rounds = 7
 $workerSeconds = 75
-$gentleTargetCount = [Math]::Min(4, $workerCount)
+$gentleTargetCount = $workerCount
+$gentleCorePercent = 0.60
 $balanceCorePercent = 0.50
 $responsiveCorePercent = 0.16
+$gentleCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $gentleCorePercent))
 $balanceCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $balanceCorePercent))
 $responsiveCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $responsiveCorePercent))
 
@@ -120,6 +167,7 @@ function New-Mask([int]$Count) {
     }
     return $mask
 }
+$gentleMask = New-Mask $gentleCoreCount
 $balanceMask = New-Mask $balanceCoreCount
 $responsiveMask = New-Mask $responsiveCoreCount
 
@@ -296,11 +344,11 @@ $off = Run-Case `
     -AffinityMask 0
 $gentle = Run-Case `
     -Name 'gentle' `
-    -Model 'Gentle: 4 selected background workers Idle; foreground Normal.' `
-    -ForegroundPriority 'Normal' `
+    -Model 'Gentle: all background workers Idle; first 12 targets limited to 60% logical processors; foreground AboveNormal.' `
+    -ForegroundPriority 'AboveNormal' `
     -Priorities $gentlePriorities `
-    -AffinitySelectedCount 0 `
-    -AffinityMask 0
+    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+    -AffinityMask $gentleMask
 $balance = Run-Case `
     -Name 'balance' `
     -Model 'Balance: all background workers Idle; first 12 targets limited to 50% logical processors; foreground AboveNormal.' `
@@ -333,6 +381,7 @@ $comparisons = foreach ($case in $cases) {
     worker_count = $workerCount
     foreground_iterations_per_round = $iterations
     rounds = $rounds
+    gentle_affinity_limited_processors = $gentleCoreCount
     balance_affinity_limited_processors = $balanceCoreCount
     responsive_affinity_limited_processors = $responsiveCoreCount
     baseline = $baseline
@@ -423,11 +472,28 @@ This makes the tradeoff clearer: Responsive is the only strong foreground win,
 but it deliberately gives up background throughput. Gentle may be useful for a
 light touch, while Balance still needs real workload traces before more tuning.
 
+Latest Winderust launch scenario on AMD Ryzen 7 7735HS after launch-grace tuning:
+
+| Case | Median improvement avg | Median improvement min | P95 improvement avg | P95 improvement min | Background retained avg | Signal | Tradeoff |
+| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| Gentle | 3.8% | 0.0% | 3.8% | 0.0% | 99.8% | noisy | low |
+| Balance | -4.1% | -11.3% | -4.1% | -11.3% | 99.7% | noisy | low |
+| Responsive | -4.8% | -12.5% | -4.8% | -12.5% | 99.9% | noisy | low |
+
+Launch grace keeps background throughput intact while the foreground app starts,
+but this app-launch scenario still does not validate stronger Balance or
+Responsive launch behavior. Treat the CPU-loop wins as scheduler headroom, not
+guaranteed app-startup improvement.
+
 ## Known Limitations
 
-- The benchmark does not test I/O priority, memory priority, GPU priority, or
-  real foreground-app detection.
-- It does not test real Winderust exclusions, restore, cooldown, launch boost,
+- The benchmark applies I/O and memory priority to workers, but the foreground
+  loop is CPU-bound and does not include dedicated disk or memory-pressure
+  phases.
+- GPU priority is attempted against generated workers; CPU-only workers may not
+  have a GPU context, so `gpu_priority_unavailable` is expected on many systems.
+- It does not test real foreground-app detection, Winderust exclusions, restore,
+  cooldown, launch boost,
   or failure handling.
 - Hard affinity may make CPU-share behavior look harsher than Winderust Soft CPU
   Sets.
