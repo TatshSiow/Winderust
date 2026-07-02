@@ -57,8 +57,8 @@ Keep this in sync with `auto_balance_preset_values` in `src/app.rs`.
 | --- | --- |
 | Off | 12 background workers at `Normal`; foreground benchmark process at `Normal`. |
 | Gentle | 4 selected background workers at `Idle`; remaining background workers at `Normal`; foreground at `Normal`. |
-| Balance | All background workers at `Idle`; foreground at `AboveNormal`; no affinity escalation. |
-| Responsive | All background workers at `Idle`; first 12 targets affinity-limited to 25% logical processors; foreground at `AboveNormal`. |
+| Balance | All background workers at `Idle`; first 12 targets affinity-limited to 50% logical processors; foreground at `AboveNormal`. |
+| Responsive | All background workers at `Idle`; first 12 targets affinity-limited to 16% logical processors; foreground at `AboveNormal`. |
 
 ## Before Running
 
@@ -107,7 +107,11 @@ $workerCount = [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
 $iterations = 1250000
 $rounds = 7
 $workerSeconds = 75
-$responsiveCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * 0.25))
+$gentleTargetCount = [Math]::Min(4, $workerCount)
+$balanceCorePercent = 0.50
+$responsiveCorePercent = 0.16
+$balanceCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $balanceCorePercent))
+$responsiveCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $responsiveCorePercent))
 
 function New-Mask([int]$Count) {
     $mask = 0L
@@ -116,6 +120,7 @@ function New-Mask([int]$Count) {
     }
     return $mask
 }
+$balanceMask = New-Mask $balanceCoreCount
 $responsiveMask = New-Mask $responsiveCoreCount
 
 function Measure-ForegroundWork {
@@ -263,7 +268,7 @@ function Run-Case {
 }
 
 $normalPriorities = New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal'
-$gentlePriorities = New-Priorities -DefaultPriority 'Normal' -RestrainedCount ([Math]::Min(4, $workerCount)) -RestrainedPriority 'Idle'
+$gentlePriorities = New-Priorities -DefaultPriority 'Normal' -RestrainedCount $gentleTargetCount -RestrainedPriority 'Idle'
 $balancePriorities = New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle'
 $responsivePriorities = New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle'
 
@@ -298,14 +303,14 @@ $gentle = Run-Case `
     -AffinityMask 0
 $balance = Run-Case `
     -Name 'balance' `
-    -Model 'Balance: all background workers Idle; foreground AboveNormal; no affinity escalation.' `
+    -Model 'Balance: all background workers Idle; first 12 targets limited to 50% logical processors; foreground AboveNormal.' `
     -ForegroundPriority 'AboveNormal' `
     -Priorities $balancePriorities `
-    -AffinitySelectedCount 0 `
-    -AffinityMask 0
+    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+    -AffinityMask $balanceMask
 $responsive = Run-Case `
     -Name 'responsive' `
-    -Model 'Responsive: all background workers Idle; first 12 targets limited to 25% logical processors; foreground AboveNormal.' `
+    -Model 'Responsive: all background workers Idle; first 12 targets limited to 16% logical processors; foreground AboveNormal.' `
     -ForegroundPriority 'AboveNormal' `
     -Priorities $responsivePriorities `
     -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
@@ -328,6 +333,7 @@ $comparisons = foreach ($case in $cases) {
     worker_count = $workerCount
     foreground_iterations_per_round = $iterations
     rounds = $rounds
+    balance_affinity_limited_processors = $balanceCoreCount
     responsive_affinity_limited_processors = $responsiveCoreCount
     baseline = $baseline
     off = $off
@@ -370,7 +376,7 @@ Prefer changes that improve median and p95 together. Ignore one-off wins where
 average improves only because of a single outlier. If a preset is slower by less
 than about 3%, treat it as neutral unless repeated runs show the same direction.
 
-Recent reference run after the one-parameter optimization pass:
+Previous reference run after the one-parameter optimization pass:
 
 | Case | Average foreground time | Median foreground time | P95 foreground time | Average vs Off |
 | --- | ---: | ---: | ---: | ---: |
@@ -392,7 +398,7 @@ That richer run shows why a single compact score is risky: Responsive improved
 both speed and stability, Gentle mostly improved stability, and Balance had a
 large tail-latency outlier despite being good in the simpler run.
 
-Paired methodology validation on Intel Core 5 210H, 12 logical processors:
+Previous paired methodology validation on Intel Core 5 210H, 12 logical processors:
 
 | Case | Median improvement avg | P95 improvement avg | Agreement | Signal |
 | --- | ---: | ---: | ---: | --- |
@@ -405,7 +411,7 @@ loop. It validates the method for large scheduling changes, but priority-only
 changes need longer runs, more hardware, or real app traces before changing
 global defaults.
 
-Paired validation after adding background-capacity measurement on the same CPU:
+Previous paired validation after adding background-capacity measurement on the same CPU:
 
 | Case | Median improvement avg | P95 improvement avg | Background retained avg | Signal | Tradeoff |
 | --- | ---: | ---: | ---: | --- | --- |

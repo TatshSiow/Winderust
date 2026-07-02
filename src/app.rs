@@ -24444,18 +24444,18 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             auto_balance_memory_priority_enabled: true,
             auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
             auto_balance_memory_priority: ProcessMemoryPriority::Low,
-            auto_balance_affinity_escalation_enabled: false,
+            auto_balance_affinity_escalation_enabled: true,
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
-            lower_background_auto_cpu_percent: true,
-            manual_cpu_percent: 65,
-            total_threshold: 65,
-            process_threshold: 18,
+            lower_background_auto_cpu_percent: false,
+            manual_cpu_percent: 50,
+            total_threshold: 60,
+            process_threshold: 12,
             restore_threshold: 6,
             sustain_seconds: 1,
             minimum_restraint_seconds: 3,
-            cooldown_seconds: 5,
-            max_targeted_processes: 8,
+            cooldown_seconds: 6,
+            max_targeted_processes: 12,
         },
         AutoBalancePreset::Responsive => AutoBalancePresetValues {
             lower_background_apps: true,
@@ -24469,10 +24469,10 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
             lower_background_auto_cpu_percent: false,
-            manual_cpu_percent: 25,
-            total_threshold: 50,
-            process_threshold: 8,
-            restore_threshold: 4,
+            manual_cpu_percent: 16,
+            total_threshold: 45,
+            process_threshold: 6,
+            restore_threshold: 3,
             sustain_seconds: 1,
             minimum_restraint_seconds: 4,
             cooldown_seconds: 6,
@@ -24937,17 +24937,17 @@ mod tests {
             ProcessMemoryPrioritySetting::Normal
         );
         assert_eq!(gentle.max_targeted_processes, 4);
-        assert_eq!(balanced.max_targeted_processes, 8);
+        assert_eq!(balanced.max_targeted_processes, 12);
         assert_eq!(responsive.max_targeted_processes, 12);
         assert!(!gentle.auto_balance_affinity_escalation_enabled);
-        assert!(!balanced.auto_balance_affinity_escalation_enabled);
+        assert!(balanced.auto_balance_affinity_escalation_enabled);
         assert!(responsive.auto_balance_affinity_escalation_enabled);
         assert!(gentle.total_threshold > balanced.total_threshold);
         assert!(balanced.total_threshold > responsive.total_threshold);
         assert!(gentle.process_threshold > balanced.process_threshold);
         assert!(balanced.process_threshold > responsive.process_threshold);
-        assert_eq!(balanced.manual_cpu_percent, 65);
-        assert_eq!(responsive.manual_cpu_percent, 25);
+        assert_eq!(balanced.manual_cpu_percent, 50);
+        assert_eq!(responsive.manual_cpu_percent, 16);
     }
 
     #[test]

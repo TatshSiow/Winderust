@@ -10,7 +10,11 @@ $ErrorActionPreference = 'Stop'
 $powerShellPath = Join-Path $PSHOME 'powershell.exe'
 $logicalProcessors = [Environment]::ProcessorCount
 $workerCount = [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
-$responsiveCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * 0.25))
+$gentleTargetCount = [Math]::Min(4, $workerCount)
+$balanceCorePercent = 0.50
+$responsiveCorePercent = 0.16
+$balanceCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $balanceCorePercent))
+$responsiveCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $responsiveCorePercent))
 
 function New-Mask([int]$Count) {
     $mask = 0L
@@ -20,6 +24,7 @@ function New-Mask([int]$Count) {
     return $mask
 }
 
+$balanceMask = New-Mask $balanceCoreCount
 $responsiveMask = New-Mask $responsiveCoreCount
 
 function Get-CpuName {
@@ -245,23 +250,23 @@ function Run-NamedCase {
                 -Name 'gentle' `
                 -Model '4 selected background workers Idle; foreground Normal.' `
                 -ForegroundPriority 'Normal' `
-                -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount ([Math]::Min(4, $workerCount)) -RestrainedPriority 'Idle') `
+                -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $gentleTargetCount -RestrainedPriority 'Idle') `
                 -AffinitySelectedCount 0 `
                 -AffinityMask 0
         }
         'balance' {
             return Run-Case `
                 -Name 'balance' `
-                -Model 'All background workers Idle; foreground AboveNormal.' `
+                -Model 'All background workers Idle; 50% affinity approximation; foreground AboveNormal.' `
                 -ForegroundPriority 'AboveNormal' `
                 -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount 0 `
-                -AffinityMask 0
+                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                -AffinityMask $balanceMask
         }
         'responsive' {
             return Run-Case `
                 -Name 'responsive' `
-                -Model 'All background workers Idle; 25% affinity approximation; foreground AboveNormal.' `
+                -Model 'All background workers Idle; 16% affinity approximation; foreground AboveNormal.' `
                 -ForegroundPriority 'AboveNormal' `
                 -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
                 -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
@@ -405,6 +410,7 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     worker_count = $workerCount
     passes = $Passes
     rounds = $Rounds
+    balance_affinity_limited_processors = $balanceCoreCount
     foreground_iterations_per_round = $Iterations
     responsive_affinity_limited_processors = $responsiveCoreCount
     methodology_gate = 'Trust a local tuning direction only when median and p95 both improve by at least 3% in at least two of three passes.'

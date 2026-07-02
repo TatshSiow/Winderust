@@ -13,3 +13,6 @@
 *.swo
 Thumbs.db
 Desktop.ini
+
+#graphify
+/graphify-out
