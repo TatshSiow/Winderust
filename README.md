@@ -89,7 +89,16 @@ Latest paired synthetic benchmark on Intel Core 5 210H, 12 logical processors.
 `Off` is the comparison baseline under generated background load; the script
 also emits a no-background `baseline_no_background_load` case for reference.
 
-| Case | Median avg vs Off | Median worst pass | P95 avg vs Off | P95 worst pass | Background retained avg | Background retained worst pass | Agreement | Signal | Tradeoff |
+Metrics:
+
+- Foreground latency improvement: lower foreground work time vs `Off`; higher is better.
+- P95 foreground latency improvement: near-worst latency vs `Off`; higher is better.
+- Background retained: background CPU capacity kept vs `Off`; higher means less background sacrifice.
+- Agreement: share of passes where median and P95 both beat `Off` by at least 3%.
+- Signal: confidence label from repeated passes; `strong` is trustworthy, `noisy` is not.
+- Tradeoff: background throughput cost; `high` means the preset buys latency by giving up background work.
+
+| Case | Median foreground latency avg | Median foreground latency worst pass | P95 foreground latency avg | P95 foreground latency worst pass | Background CPU work kept avg | Background CPU work kept worst pass | Agreement | Signal | Tradeoff |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | Off baseline | 0.0% | 0.0% | 0.0% | 0.0% | 100.0% | 100.0% | 100.0% | baseline | baseline |
 | Gentle | 10.8% | -2.4% | 41.5% | 23.3% | 100.0% | 97.3% | 66.7% | usable | low |
