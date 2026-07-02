@@ -181,6 +181,8 @@ const AUTO_BALANCE_THRESHOLD_MIN_PERCENT: u64 = 1;
 const AUTO_BALANCE_THRESHOLD_MAX_PERCENT: u64 = 100;
 const AUTO_BALANCE_SECONDS_MIN: u64 = 1;
 const AUTO_BALANCE_SECONDS_MAX: u64 = 3_600;
+const AUTO_BALANCE_TARGET_LIMIT_MIN: u64 = 1;
+const AUTO_BALANCE_TARGET_LIMIT_MAX: u64 = 64;
 const WIN32_PRIORITY_SEPARATION_MIN: u64 = 0;
 const WIN32_PRIORITY_SEPARATION_MAX: u64 = 63;
 const WIN32_PRIORITY_SEPARATION_WINDOWS_DEFAULT: u32 = 0x26;
@@ -3408,6 +3410,17 @@ impl WinderustApp {
                     self.settings
                         .foreground_responsiveness
                         .auto_balance_cooldown_seconds = value;
+                }
+            }
+            NumericField::AutoBalanceMaxTargetedProcesses => {
+                if let Some(value) = parse_u64_input(
+                    &value,
+                    AUTO_BALANCE_TARGET_LIMIT_MIN,
+                    AUTO_BALANCE_TARGET_LIMIT_MAX,
+                ) {
+                    self.settings
+                        .foreground_responsiveness
+                        .auto_balance_max_targeted_processes = value as u8;
                 }
             }
             NumericField::ProcessorAcCoreParkingMin => {
@@ -7857,56 +7870,6 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_auto_io_priority_selector(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let selected = self
-            .settings
-            .foreground_responsiveness
-            .lower_background_io_priority_enabled;
-        let priority = self
-            .settings
-            .foreground_responsiveness
-            .lower_background_io_priority;
-        self.render_dropdown_select(
-            "responsiveness-background-io-priority",
-            process_io_priority_label(priority),
-            selected,
-            DropdownSelectWidth::Standard,
-            ProcessIoPriority::ALL.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for option in ProcessIoPriority::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!(
-                                "responsiveness-background-io-priority-option-{option:?}"
-                            )),
-                            process_io_priority_label(option),
-                            priority == option,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.settings
-                                .foreground_responsiveness
-                                .lower_background_io_priority_enabled = true;
-                            app.settings
-                                .foreground_responsiveness
-                                .lower_background_io_priority = option;
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        )
-    }
-
     fn render_auto_balance_preset_selector(
         &self,
         window: &mut Window,
@@ -8000,7 +7963,7 @@ impl WinderustApp {
     ) -> AnyElement {
         let settings = &self.settings.foreground_responsiveness;
         let enabled = settings.enabled;
-        let efficiency_action = if self.settings.eco_qos.enabled {
+        let process_priority_action = if self.settings.eco_qos.enabled {
             value_pill(t!("responsiveness.background_efficiency_handled").to_string())
                 .into_any_element()
         } else {
@@ -8012,6 +7975,12 @@ impl WinderustApp {
                     cx.notify();
                 }),
             )
+        };
+        let efficiency_action = if self.settings.eco_qos.enabled {
+            value_pill(t!("responsiveness.background_efficiency_handled").to_string())
+                .into_any_element()
+        } else {
+            div().into_any_element()
         };
         let affinity_mode_control = if settings.lower_background_auto_cpu_percent {
             value_pill(format!(
@@ -8083,23 +8052,18 @@ impl WinderustApp {
         }
         let rows = vec![
             setting_group_with_help(
-                SettingGroupTarget::AutoBalanceEfficiency,
+                SettingGroupTarget::AutoBalanceProcessPriority,
                 (
-                    t!("responsiveness.auto_efficiency_adjustment").to_string(),
-                    t!("responsiveness.auto_efficiency_adjustment_help").to_string(),
+                    t!("responsiveness.auto_process_priority").to_string(),
+                    t!("responsiveness.auto_process_priority_help").to_string(),
                 ),
-                efficiency_action,
-                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceEfficiency),
+                process_priority_action,
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceProcessPriority),
                 vec![
                     setting_group_action_row(
-                        "responsiveness-auto-efficiency-level",
-                        t!("responsiveness.auto_efficiency_level").to_string(),
-                        self.render_efficiency_aggressiveness_picker(
-                            self.settings.eco_qos.aggressiveness,
-                            enabled,
-                            window,
-                            cx,
-                        ),
+                        "responsiveness-auto-background-process-priority",
+                        t!("responsiveness.background_priority").to_string(),
+                        self.render_auto_balance_background_priority_selector(window, cx),
                         true,
                     )
                     .into_any_element(),
@@ -8109,27 +8073,62 @@ impl WinderustApp {
                 cx,
             )
             .into_any_element(),
+            self.render_auto_balance_priority_assist_group(window, cx),
             setting_group_with_help(
-                SettingGroupTarget::AutoBalanceIoPriority,
+                SettingGroupTarget::AutoBalanceMemoryPriority,
                 (
-                    t!("responsiveness.auto_io_priority").to_string(),
-                    t!("responsiveness.auto_io_priority_help").to_string(),
+                    t!("responsiveness.auto_memory_priority").to_string(),
+                    t!("responsiveness.auto_memory_priority_help").to_string(),
                 ),
                 setting_group_switch_action(
-                    "responsiveness-lower-background-io-toggle",
-                    settings.lower_background_io_priority_enabled,
+                    "responsiveness-auto-memory-priority-switch",
+                    settings.auto_balance_memory_priority_enabled,
                     cx.listener(|app, checked, _, cx| {
                         app.settings
                             .foreground_responsiveness
-                            .lower_background_io_priority_enabled = *checked;
+                            .auto_balance_memory_priority_enabled = *checked;
                         cx.notify();
                     }),
                 ),
-                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceIoPriority),
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceMemoryPriority),
+                vec![
+                    setting_group_action_row(
+                        "responsiveness-auto-foreground-memory-priority-level",
+                        t!("responsiveness.auto_balance_foreground_memory_priority_level")
+                            .to_string(),
+                        self.render_auto_balance_foreground_memory_priority_selector(window, cx),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "responsiveness-auto-memory-priority-level",
+                        t!("responsiveness.auto_balance_memory_priority_level").to_string(),
+                        self.render_auto_balance_memory_priority_selector(window, cx),
+                        true,
+                    )
+                    .into_any_element(),
+                ],
+                window,
+                cx,
+            )
+            .into_any_element(),
+            setting_group_with_help(
+                SettingGroupTarget::AutoBalanceEfficiency,
+                (
+                    t!("responsiveness.auto_efficiency_mode").to_string(),
+                    t!("responsiveness.auto_efficiency_mode_help").to_string(),
+                ),
+                efficiency_action,
+                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceEfficiency),
                 vec![setting_group_action_row(
-                    "responsiveness-auto-io-priority-level",
-                    t!("responsiveness.auto_io_priority_level").to_string(),
-                    self.render_auto_io_priority_selector(window, cx),
+                    "responsiveness-auto-efficiency-level",
+                    t!("responsiveness.auto_efficiency_level").to_string(),
+                    self.render_efficiency_aggressiveness_picker(
+                        self.settings.eco_qos.aggressiveness,
+                        enabled,
+                        window,
+                        cx,
+                    ),
                     true,
                 )
                 .into_any_element()],
@@ -8160,34 +8159,6 @@ impl WinderustApp {
             )
             .into_any_element(),
             setting_group_with_help(
-                SettingGroupTarget::AutoBalanceMemoryPriority,
-                (
-                    t!("responsiveness.auto_memory_priority").to_string(),
-                    t!("responsiveness.auto_memory_priority_help").to_string(),
-                ),
-                setting_group_switch_action(
-                    "responsiveness-auto-memory-priority-switch",
-                    settings.auto_balance_memory_priority_enabled,
-                    cx.listener(|app, checked, _, cx| {
-                        app.settings
-                            .foreground_responsiveness
-                            .auto_balance_memory_priority_enabled = *checked;
-                        cx.notify();
-                    }),
-                ),
-                self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceMemoryPriority),
-                vec![setting_group_action_row(
-                    "responsiveness-auto-memory-priority-level",
-                    t!("responsiveness.auto_balance_memory_priority_level").to_string(),
-                    self.render_auto_balance_memory_priority_selector(window, cx),
-                    true,
-                )
-                .into_any_element()],
-                window,
-                cx,
-            )
-            .into_any_element(),
-            setting_group_with_help(
                 SettingGroupTarget::AutoBalanceBehaviourTuning,
                 (
                     t!("responsiveness.auto_balance_behaviour_tuning").to_string(),
@@ -8196,9 +8167,10 @@ impl WinderustApp {
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceBehaviourTuning),
                 vec![
-                    setting_group_stepper_row_u64(
+                    setting_group_stepper_row_u64_with_help(
                         "responsiveness-auto-total-threshold",
                         t!("responsiveness.auto_balance_total_threshold").to_string(),
+                        t!("responsiveness.auto_balance_total_threshold_help").to_string(),
                         u64::from(settings.auto_balance_total_threshold_percent),
                         self.render_numeric_value(
                             NumericField::AutoBalanceTotalThreshold,
@@ -8225,9 +8197,10 @@ impl WinderustApp {
                             cx.notify();
                         }),
                     ),
-                    setting_group_stepper_row_u64(
+                    setting_group_stepper_row_u64_with_help(
                         "responsiveness-auto-threshold",
                         t!("responsiveness.auto_balance_threshold").to_string(),
+                        t!("responsiveness.auto_balance_threshold_help").to_string(),
                         u64::from(settings.auto_balance_threshold_percent),
                         self.render_numeric_value(
                             NumericField::AutoBalanceThreshold,
@@ -8254,9 +8227,10 @@ impl WinderustApp {
                             cx.notify();
                         }),
                     ),
-                    setting_group_stepper_row_u64(
+                    setting_group_stepper_row_u64_with_help(
                         "responsiveness-auto-restore-threshold",
                         t!("responsiveness.auto_balance_restore_threshold").to_string(),
+                        t!("responsiveness.auto_balance_restore_threshold_help").to_string(),
                         u64::from(settings.auto_balance_restore_threshold_percent),
                         self.render_numeric_value(
                             NumericField::AutoBalanceRestoreThreshold,
@@ -8283,9 +8257,40 @@ impl WinderustApp {
                             cx.notify();
                         }),
                     ),
-                    setting_group_stepper_row_u64(
+                    setting_group_stepper_row_u64_with_help(
+                        "responsiveness-auto-max-targets",
+                        t!("responsiveness.auto_balance_max_targeted_processes").to_string(),
+                        t!("responsiveness.auto_balance_max_targeted_processes_help").to_string(),
+                        u64::from(settings.auto_balance_max_targeted_processes),
+                        self.render_numeric_value(
+                            NumericField::AutoBalanceMaxTargetedProcesses,
+                            settings.auto_balance_max_targeted_processes.to_string(),
+                            settings.auto_balance_max_targeted_processes.to_string(),
+                            cx,
+                        ),
+                        true,
+                        cx.listener(|app, change: &StepChange<u64>, _, cx| {
+                            let current = u64::from(
+                                app.settings
+                                    .foreground_responsiveness
+                                    .auto_balance_max_targeted_processes,
+                            );
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_max_targeted_processes = apply_u64_step(
+                                current,
+                                change,
+                                AUTO_BALANCE_TARGET_LIMIT_MIN,
+                                AUTO_BALANCE_TARGET_LIMIT_MAX,
+                            )
+                                as u8;
+                            cx.notify();
+                        }),
+                    ),
+                    setting_group_stepper_row_u64_with_help(
                         "responsiveness-auto-sustain",
                         t!("responsiveness.auto_balance_sustain").to_string(),
+                        t!("responsiveness.auto_balance_sustain_help").to_string(),
                         settings.auto_balance_sustain_seconds,
                         self.render_numeric_value(
                             NumericField::AutoBalanceSustain,
@@ -8308,9 +8313,10 @@ impl WinderustApp {
                             cx.notify();
                         }),
                     ),
-                    setting_group_stepper_row_u64(
+                    setting_group_stepper_row_u64_with_help(
                         "responsiveness-auto-minimum-restraint",
                         t!("responsiveness.auto_balance_minimum_restraint").to_string(),
+                        t!("responsiveness.auto_balance_minimum_restraint_help").to_string(),
                         settings.auto_balance_minimum_restraint_seconds,
                         self.render_numeric_value(
                             NumericField::AutoBalanceMinimumRestraint,
@@ -8333,9 +8339,10 @@ impl WinderustApp {
                             cx.notify();
                         }),
                     ),
-                    setting_group_stepper_row_u64(
+                    setting_group_stepper_row_u64_with_help(
                         "responsiveness-auto-cooldown",
                         t!("responsiveness.auto_balance_cooldown").to_string(),
+                        t!("responsiveness.auto_balance_cooldown_help").to_string(),
                         settings.auto_balance_cooldown_seconds,
                         self.render_numeric_value(
                             NumericField::AutoBalanceCooldown,
@@ -8366,6 +8373,474 @@ impl WinderustApp {
         ];
 
         v_flex().gap_2().children(rows).into_any_element()
+    }
+
+    fn render_auto_balance_priority_assist_group(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let settings = &self.settings.foreground_responsiveness;
+        let io_enabled = settings.auto_balance_io_priority.enabled;
+        let thread_enabled = settings.auto_balance_thread_priority.enabled;
+        let boost_enabled = settings.auto_balance_priority_boost.enabled;
+        let gpu_enabled = settings.auto_balance_gpu_priority.enabled;
+        v_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .gap_2()
+            .child(
+                setting_group_with_help(
+                    SettingGroupTarget::AutoBalanceThreadPriority,
+                    (
+                        t!("responsiveness.auto_thread_priority").to_string(),
+                        t!("thread_priority.intro_1").to_string(),
+                    ),
+                    setting_group_switch_action(
+                        "responsiveness-auto-thread-enabled-switch",
+                        thread_enabled,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_thread_priority
+                                .enabled = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceThreadPriority),
+                    vec![
+                        setting_group_action_row(
+                            "responsiveness-auto-thread-foreground-priority",
+                            t!("responsiveness.priority_foreground_value").to_string(),
+                            self.render_auto_balance_thread_priority_selector(
+                                ThreadPriorityDefaultTarget::Foreground,
+                                settings.auto_balance_thread_priority.foreground_priority,
+                                thread_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                        setting_group_action_row(
+                            "responsiveness-auto-thread-background-priority",
+                            t!("responsiveness.priority_background_value").to_string(),
+                            self.render_auto_balance_thread_priority_selector(
+                                ThreadPriorityDefaultTarget::Background,
+                                settings.auto_balance_thread_priority.background_priority,
+                                thread_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                    ],
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
+            .child(
+                setting_group_with_help(
+                    SettingGroupTarget::AutoBalancePriorityBoost,
+                    (
+                        t!("responsiveness.auto_priority_boost").to_string(),
+                        t!("priority_boost.intro_1").to_string(),
+                    ),
+                    setting_group_switch_action(
+                        "responsiveness-auto-boost-enabled-switch",
+                        boost_enabled,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_priority_boost
+                                .enabled = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    self.is_setting_group_collapsed(SettingGroupTarget::AutoBalancePriorityBoost),
+                    vec![
+                        setting_group_action_row(
+                            "responsiveness-auto-boost-foreground",
+                            t!("responsiveness.priority_foreground_value").to_string(),
+                            self.render_auto_balance_priority_boost_selector(
+                                PriorityBoostDefaultTarget::Foreground,
+                                settings.auto_balance_priority_boost.foreground_boost,
+                                boost_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                        setting_group_action_row(
+                            "responsiveness-auto-boost-background",
+                            t!("responsiveness.priority_background_value").to_string(),
+                            self.render_auto_balance_priority_boost_selector(
+                                PriorityBoostDefaultTarget::Background,
+                                settings.auto_balance_priority_boost.background_boost,
+                                boost_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                    ],
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
+            .child(
+                setting_group_with_help(
+                    SettingGroupTarget::AutoBalanceIoPriority,
+                    (
+                        t!("responsiveness.auto_io_priority").to_string(),
+                        t!("responsiveness.auto_io_priority_help").to_string(),
+                    ),
+                    setting_group_switch_action(
+                        "responsiveness-auto-io-enabled-switch",
+                        io_enabled,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_io_priority
+                                .enabled = *checked;
+                            if *checked {
+                                app.settings
+                                    .foreground_responsiveness
+                                    .lower_background_io_priority_enabled = false;
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                    self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceIoPriority),
+                    vec![
+                        setting_group_action_row(
+                            "responsiveness-auto-io-foreground-priority",
+                            t!("responsiveness.priority_foreground_value").to_string(),
+                            self.render_auto_balance_io_priority_selector(
+                                IoPriorityDefaultTarget::Foreground,
+                                settings.auto_balance_io_priority.foreground_priority,
+                                io_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                        setting_group_action_row(
+                            "responsiveness-auto-io-background-priority",
+                            t!("responsiveness.priority_background_value").to_string(),
+                            self.render_auto_balance_io_priority_selector(
+                                IoPriorityDefaultTarget::Background,
+                                settings.auto_balance_io_priority.background_priority,
+                                io_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                    ],
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
+            .child(
+                setting_group_with_help(
+                    SettingGroupTarget::AutoBalanceGpuPriority,
+                    (
+                        t!("responsiveness.auto_gpu_priority").to_string(),
+                        t!("gpu_priority.intro_1").to_string(),
+                    ),
+                    setting_group_switch_action(
+                        "responsiveness-auto-gpu-enabled-switch",
+                        gpu_enabled,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_gpu_priority
+                                .enabled = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceGpuPriority),
+                    vec![
+                        setting_group_action_row(
+                            "responsiveness-auto-gpu-foreground-priority",
+                            t!("responsiveness.priority_foreground_value").to_string(),
+                            self.render_auto_balance_gpu_priority_selector(
+                                GpuPriorityDefaultTarget::Foreground,
+                                settings.auto_balance_gpu_priority.foreground_priority,
+                                gpu_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                        setting_group_action_row(
+                            "responsiveness-auto-gpu-background-priority",
+                            t!("responsiveness.priority_background_value").to_string(),
+                            self.render_auto_balance_gpu_priority_selector(
+                                GpuPriorityDefaultTarget::Background,
+                                settings.auto_balance_gpu_priority.background_priority,
+                                gpu_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                    ],
+                    window,
+                    cx,
+                )
+                .into_any_element(),
+            )
+            .into_any_element()
+    }
+
+    fn render_auto_balance_io_priority_selector(
+        &self,
+        target: IoPriorityDefaultTarget,
+        selected_priority: ProcessIoPrioritySetting,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = match target {
+            IoPriorityDefaultTarget::Background => "auto-balance-io-background-priority",
+            IoPriorityDefaultTarget::Foreground => "auto-balance-io-foreground-priority",
+        };
+        let priorities: &[ProcessIoPrioritySetting] =
+            if self.settings.advanced.expose_all_priority_values {
+                &ProcessIoPrioritySetting::ADVANCED_ALL
+            } else {
+                &ProcessIoPrioritySetting::ALL
+            };
+        self.render_dropdown_select(
+            id,
+            process_io_priority_setting_label(selected_priority),
+            enabled,
+            DropdownSelectWidth::Standard,
+            priorities.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in priorities.iter().copied() {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_io_priority_setting_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match target {
+                                IoPriorityDefaultTarget::Background => {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_io_priority
+                                        .background_priority = priority;
+                                }
+                                IoPriorityDefaultTarget::Foreground => {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_io_priority
+                                        .foreground_priority = priority;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_auto_balance_thread_priority_selector(
+        &self,
+        target: ThreadPriorityDefaultTarget,
+        selected_priority: ProcessThreadPrioritySetting,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = match target {
+            ThreadPriorityDefaultTarget::Background => "auto-balance-thread-background-priority",
+            ThreadPriorityDefaultTarget::Foreground => "auto-balance-thread-foreground-priority",
+        };
+        let priorities: &[ProcessThreadPrioritySetting] =
+            if self.settings.advanced.expose_all_priority_values {
+                &ProcessThreadPrioritySetting::ADVANCED_ALL
+            } else {
+                &ProcessThreadPrioritySetting::ALL
+            };
+        self.render_dropdown_select(
+            id,
+            process_thread_priority_setting_label(selected_priority),
+            enabled,
+            DropdownSelectWidth::Standard,
+            priorities.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in priorities.iter().copied() {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_thread_priority_setting_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match target {
+                                ThreadPriorityDefaultTarget::Background => {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_thread_priority
+                                        .background_priority = priority;
+                                }
+                                ThreadPriorityDefaultTarget::Foreground => {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_thread_priority
+                                        .foreground_priority = priority;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_auto_balance_priority_boost_selector(
+        &self,
+        target: PriorityBoostDefaultTarget,
+        selected_boost: ProcessPriorityBoostSetting,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = match target {
+            PriorityBoostDefaultTarget::Background => "auto-balance-boost-background",
+            PriorityBoostDefaultTarget::Foreground => "auto-balance-boost-foreground",
+        };
+        self.render_dropdown_select(
+            id,
+            process_priority_boost_setting_label(selected_boost),
+            enabled,
+            DropdownSelectWidth::Standard,
+            ProcessPriorityBoostSetting::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for boost in ProcessPriorityBoostSetting::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{boost:?}")),
+                            process_priority_boost_setting_label(boost),
+                            selected_boost == boost,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match target {
+                                PriorityBoostDefaultTarget::Background => {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_priority_boost
+                                        .background_boost = boost;
+                                }
+                                PriorityBoostDefaultTarget::Foreground => {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_priority_boost
+                                        .foreground_boost = boost;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_auto_balance_gpu_priority_selector(
+        &self,
+        target: GpuPriorityDefaultTarget,
+        selected_priority: ProcessGpuPrioritySetting,
+        enabled: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = match target {
+            GpuPriorityDefaultTarget::Background => "auto-balance-gpu-background-priority",
+            GpuPriorityDefaultTarget::Foreground => "auto-balance-gpu-foreground-priority",
+        };
+        let priorities: &[ProcessGpuPrioritySetting] =
+            if self.settings.advanced.expose_all_priority_values {
+                &ProcessGpuPrioritySetting::ADVANCED_ALL
+            } else {
+                &ProcessGpuPrioritySetting::ALL
+            };
+        self.render_dropdown_select(
+            id,
+            process_gpu_priority_setting_label(selected_priority),
+            enabled,
+            DropdownSelectWidth::Standard,
+            priorities.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in priorities.iter().copied() {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("{id}-option-{priority:?}")),
+                            process_gpu_priority_setting_label(priority),
+                            selected_priority == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            match target {
+                                GpuPriorityDefaultTarget::Background => {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_gpu_priority
+                                        .background_priority = priority;
+                                }
+                                GpuPriorityDefaultTarget::Foreground => {
+                                    app.settings
+                                        .foreground_responsiveness
+                                        .auto_balance_gpu_priority
+                                        .foreground_priority = priority;
+                                }
+                            }
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
     }
 
     fn render_auto_balance_exclusions_section(
@@ -8505,6 +8980,54 @@ impl WinderustApp {
         .into_any_element()
     }
 
+    fn render_auto_balance_background_priority_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self
+            .settings
+            .foreground_responsiveness
+            .auto_balance_background_priority;
+        let priorities = [
+            ProcessPriority::Normal,
+            ProcessPriority::BelowNormal,
+            ProcessPriority::Idle,
+        ];
+        self.render_dropdown_select(
+            "auto-balance-background-process-priority-select",
+            process_priority_label(selected),
+            self.settings.foreground_responsiveness.enabled,
+            DropdownSelectWidth::Standard,
+            priorities.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in priorities {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "auto-balance-background-process-priority-option-{priority:?}"
+                            )),
+                            process_priority_label(priority),
+                            selected == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_background_priority = priority;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
     fn render_auto_balance_affinity_mode_selector(
         &self,
         window: &mut Window,
@@ -8581,6 +9104,49 @@ impl WinderustApp {
                             app.settings
                                 .foreground_responsiveness
                                 .auto_balance_memory_priority = priority;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_auto_balance_foreground_memory_priority_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self
+            .settings
+            .foreground_responsiveness
+            .auto_balance_foreground_memory_priority;
+        self.render_dropdown_select(
+            "responsiveness-auto-foreground-memory-priority-level",
+            process_memory_priority_setting_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessMemoryPrioritySetting::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessMemoryPrioritySetting::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "responsiveness-auto-foreground-memory-priority-option-{priority:?}"
+                            )),
+                            process_memory_priority_setting_label(priority),
+                            selected == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_foreground_memory_priority = priority;
                             app.active_power_plan_picker = None;
                             cx.notify();
                         })),
@@ -12146,6 +12712,60 @@ impl WinderustApp {
                                 .gpu_priority
                                 .foreground_priority
                                 .safe_when_advanced_disabled();
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_io_priority
+                                .background_priority = app
+                                .settings
+                                .foreground_responsiveness
+                                .auto_balance_io_priority
+                                .background_priority
+                                .safe_when_advanced_disabled();
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_io_priority
+                                .foreground_priority = app
+                                .settings
+                                .foreground_responsiveness
+                                .auto_balance_io_priority
+                                .foreground_priority
+                                .safe_when_advanced_disabled();
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_thread_priority
+                                .background_priority = app
+                                .settings
+                                .foreground_responsiveness
+                                .auto_balance_thread_priority
+                                .background_priority
+                                .safe_when_advanced_disabled();
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_thread_priority
+                                .foreground_priority = app
+                                .settings
+                                .foreground_responsiveness
+                                .auto_balance_thread_priority
+                                .foreground_priority
+                                .safe_when_advanced_disabled();
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_gpu_priority
+                                .background_priority = app
+                                .settings
+                                .foreground_responsiveness
+                                .auto_balance_gpu_priority
+                                .background_priority
+                                .safe_when_advanced_disabled();
+                            app.settings
+                                .foreground_responsiveness
+                                .auto_balance_gpu_priority
+                                .foreground_priority = app
+                                .settings
+                                .foreground_responsiveness
+                                .auto_balance_gpu_priority
+                                .foreground_priority
+                                .safe_when_advanced_disabled();
                             for rule in &mut app.settings.cpu_priority.exclusions {
                                 let foreground = rule
                                     .cpu_priority_override(true)
@@ -14572,8 +15192,12 @@ enum SettingGroupTarget {
     AutoBalanceAffinity,
     AutoBalanceBehaviourTuning,
     AutoBalanceEfficiency,
+    AutoBalanceGpuPriority,
     AutoBalanceIoPriority,
     AutoBalanceMemoryPriority,
+    AutoBalancePriorityBoost,
+    AutoBalanceProcessPriority,
+    AutoBalanceThreadPriority,
     CpuPriorityMaster,
     CpuPriorityForegroundDetection,
     ThreadPriorityMaster,
@@ -14651,6 +15275,7 @@ enum NumericField {
     AutoBalanceSustain,
     AutoBalanceMinimumRestraint,
     AutoBalanceCooldown,
+    AutoBalanceMaxTargetedProcesses,
     ProcessorAcCoreParkingMin,
     ProcessorAcPerformanceMin,
     ProcessorAcPerformanceMax,
@@ -17573,6 +18198,31 @@ fn setting_group_action_row(
     )
 }
 
+fn setting_group_action_row_with_help(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    action: AnyElement,
+    divided: bool,
+) -> gpui::Stateful<gpui::Div> {
+    let id: SharedString = id.into();
+    let label_id = id.clone();
+
+    setting_group_action_row_element(
+        id,
+        h_flex()
+            .flex_1()
+            .min_w(px(0.0))
+            .items_center()
+            .gap_1()
+            .child(div().min_w(px(0.0)).truncate().child(title.into()))
+            .child(title_info_button(format!("{label_id}-info"), help))
+            .into_any_element(),
+        action,
+        divided,
+    )
+}
+
 fn setting_group_action_row_element(
     id: impl Into<SharedString>,
     title: AnyElement,
@@ -17638,52 +18288,84 @@ fn setting_group_stepper_row_u64(
     divided: bool,
     handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    setting_group_stepper_row_u64_inner(id, title, None, value, value_element, divided, handler)
+}
+
+fn setting_group_stepper_row_u64_with_help(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    help: impl Into<SharedString>,
+    value: u64,
+    value_element: AnyElement,
+    divided: bool,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    setting_group_stepper_row_u64_inner(
+        id,
+        title,
+        Some(help.into()),
+        value,
+        value_element,
+        divided,
+        handler,
+    )
+}
+
+fn setting_group_stepper_row_u64_inner(
+    id: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    help: Option<SharedString>,
+    value: u64,
+    value_element: AnyElement,
+    divided: bool,
+    handler: impl Fn(&StepChange<u64>, &mut Window, &mut App) + 'static,
+) -> AnyElement {
     let id: SharedString = id.into();
+    let row_id = id.clone();
     let handler: StepChangeHandler<u64> = Rc::new(handler);
     let down = Rc::clone(&handler);
     let delta = u64_step(value);
+    let action = h_flex()
+        .items_center()
+        .justify_end()
+        .gap_2()
+        .min_w(px(0.0))
+        .flex_shrink_0()
+        .child(
+            control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
+                .label("-")
+                .on_click(move |_, window, cx| {
+                    down(
+                        &StepChange {
+                            delta,
+                            increase: false,
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+        )
+        .child(value_element)
+        .child(
+            control_button(Button::new((gpui::ElementId::from(id), "up")))
+                .label("+")
+                .on_click(move |_, window, cx| {
+                    handler(
+                        &StepChange {
+                            delta,
+                            increase: true,
+                        },
+                        window,
+                        cx,
+                    )
+                }),
+        )
+        .into_any_element();
 
-    setting_group_action_row(
-        id.clone(),
-        title,
-        h_flex()
-            .items_center()
-            .justify_end()
-            .gap_2()
-            .min_w(px(0.0))
-            .flex_shrink_0()
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id.clone()), "down")))
-                    .label("-")
-                    .on_click(move |_, window, cx| {
-                        down(
-                            &StepChange {
-                                delta,
-                                increase: false,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .child(value_element)
-            .child(
-                control_button(Button::new((gpui::ElementId::from(id), "up")))
-                    .label("+")
-                    .on_click(move |_, window, cx| {
-                        handler(
-                            &StepChange {
-                                delta,
-                                increase: true,
-                            },
-                            window,
-                            cx,
-                        )
-                    }),
-            )
-            .into_any_element(),
-        divided,
-    )
+    match help {
+        Some(help) => setting_group_action_row_with_help(row_id, title, help, action, divided),
+        None => setting_group_action_row(row_id, title, action, divided),
+    }
     .into_any_element()
 }
 
@@ -23448,16 +24130,6 @@ fn process_priority_boost_setting_label(boost: ProcessPriorityBoostSetting) -> S
     }
 }
 
-fn process_io_priority_label(priority: ProcessIoPriority) -> String {
-    match priority {
-        ProcessIoPriority::Critical => t!("io_priority.priority_critical").to_string(),
-        ProcessIoPriority::High => t!("io_priority.priority_high").to_string(),
-        ProcessIoPriority::Normal => t!("io_priority.priority_normal").to_string(),
-        ProcessIoPriority::Low => t!("io_priority.priority_low").to_string(),
-        ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low").to_string(),
-    }
-}
-
 fn process_io_priority_setting_label(priority: ProcessIoPrioritySetting) -> String {
     match priority {
         ProcessIoPrioritySetting::Default => t!("io_priority.priority_default").to_string(),
@@ -23576,9 +24248,27 @@ fn begin_auto_balance_preset_control_motions(
                 cx,
             );
             begin_control_motion_if_changed(
-                "switch-responsiveness-lower-background-io-toggle",
-                settings.lower_background_io_priority_enabled,
+                "switch-responsiveness-auto-io-enabled-switch",
+                settings.auto_balance_io_priority.enabled,
                 values.lower_background_io_priority_enabled,
+                cx,
+            );
+            begin_control_motion_if_changed(
+                "switch-responsiveness-auto-thread-enabled-switch",
+                settings.auto_balance_thread_priority.enabled,
+                preset != AutoBalancePreset::Gentle,
+                cx,
+            );
+            begin_control_motion_if_changed(
+                "switch-responsiveness-auto-boost-enabled-switch",
+                settings.auto_balance_priority_boost.enabled,
+                preset != AutoBalancePreset::Gentle,
+                cx,
+            );
+            begin_control_motion_if_changed(
+                "switch-responsiveness-auto-gpu-enabled-switch",
+                settings.auto_balance_gpu_priority.enabled,
+                preset != AutoBalancePreset::Gentle,
                 cx,
             );
             begin_control_motion_if_changed(
@@ -23626,9 +24316,16 @@ fn apply_auto_balance_preset(
 ) {
     let values = auto_balance_preset_values(preset);
     settings.lower_background_apps = values.lower_background_apps;
+    settings.auto_balance_background_priority = values.background_priority;
     settings.lower_background_io_priority_enabled = values.lower_background_io_priority_enabled;
     settings.lower_background_io_priority = values.lower_background_io_priority;
+    settings.auto_balance_io_priority = auto_balance_io_priority_preset_values(values);
+    settings.auto_balance_thread_priority = auto_balance_thread_priority_preset_values(preset);
+    settings.auto_balance_priority_boost = auto_balance_priority_boost_preset_values(preset);
+    settings.auto_balance_gpu_priority = auto_balance_gpu_priority_preset_values(preset);
     settings.auto_balance_memory_priority_enabled = values.auto_balance_memory_priority_enabled;
+    settings.auto_balance_foreground_memory_priority =
+        values.auto_balance_foreground_memory_priority;
     settings.auto_balance_memory_priority = values.auto_balance_memory_priority;
     settings.auto_balance_affinity_escalation_enabled =
         values.auto_balance_affinity_escalation_enabled;
@@ -23644,6 +24341,7 @@ fn apply_auto_balance_preset(
     settings.auto_balance_sustain_seconds = values.sustain_seconds;
     settings.auto_balance_minimum_restraint_seconds = values.minimum_restraint_seconds;
     settings.auto_balance_cooldown_seconds = values.cooldown_seconds;
+    settings.auto_balance_max_targeted_processes = values.max_targeted_processes;
 }
 
 fn auto_balance_matches_preset(
@@ -23651,12 +24349,31 @@ fn auto_balance_matches_preset(
     preset: AutoBalancePreset,
 ) -> bool {
     let values = auto_balance_preset_values(preset);
+    let mut io_priority = settings.auto_balance_io_priority.clone();
+    io_priority.foreground_detection_enabled = true;
+    io_priority.preserve_foreground_priority = true;
+    io_priority.preserve_background_priority = true;
+    let mut thread_priority = settings.auto_balance_thread_priority.clone();
+    thread_priority.foreground_detection_enabled = true;
+    thread_priority.preserve_foreground_priority = true;
+    thread_priority.preserve_background_priority = true;
+    let mut gpu_priority = settings.auto_balance_gpu_priority.clone();
+    gpu_priority.foreground_detection_enabled = true;
+    gpu_priority.preserve_foreground_priority = true;
+    gpu_priority.preserve_background_priority = true;
     settings.lower_background_apps == values.lower_background_apps
+        && settings.auto_balance_background_priority == values.background_priority
         && settings.lower_background_io_priority_enabled
             == values.lower_background_io_priority_enabled
         && settings.lower_background_io_priority == values.lower_background_io_priority
+        && io_priority == auto_balance_io_priority_preset_values(values)
+        && thread_priority == auto_balance_thread_priority_preset_values(preset)
+        && settings.auto_balance_priority_boost == auto_balance_priority_boost_preset_values(preset)
+        && gpu_priority == auto_balance_gpu_priority_preset_values(preset)
         && settings.auto_balance_memory_priority_enabled
             == values.auto_balance_memory_priority_enabled
+        && settings.auto_balance_foreground_memory_priority
+            == values.auto_balance_foreground_memory_priority
         && settings.auto_balance_memory_priority == values.auto_balance_memory_priority
         && settings.auto_balance_affinity_escalation_enabled
             == values.auto_balance_affinity_escalation_enabled
@@ -23670,14 +24387,17 @@ fn auto_balance_matches_preset(
         && settings.auto_balance_sustain_seconds == values.sustain_seconds
         && settings.auto_balance_minimum_restraint_seconds == values.minimum_restraint_seconds
         && settings.auto_balance_cooldown_seconds == values.cooldown_seconds
+        && settings.auto_balance_max_targeted_processes == values.max_targeted_processes
 }
 
 #[derive(Clone, Copy)]
 struct AutoBalancePresetValues {
     lower_background_apps: bool,
+    background_priority: ProcessPriority,
     lower_background_io_priority_enabled: bool,
     lower_background_io_priority: ProcessIoPriority,
     auto_balance_memory_priority_enabled: bool,
+    auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting,
     auto_balance_memory_priority: ProcessMemoryPriority,
     auto_balance_affinity_escalation_enabled: bool,
     boost_foreground_app: bool,
@@ -23690,64 +24410,120 @@ struct AutoBalancePresetValues {
     sustain_seconds: u64,
     minimum_restraint_seconds: u64,
     cooldown_seconds: u64,
+    max_targeted_processes: u8,
 }
 
 fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetValues {
     match preset {
         AutoBalancePreset::Gentle => AutoBalancePresetValues {
             lower_background_apps: false,
+            background_priority: ProcessPriority::Idle,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::Low,
             auto_balance_memory_priority_enabled: false,
+            auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
             auto_balance_memory_priority: ProcessMemoryPriority::Low,
             auto_balance_affinity_escalation_enabled: false,
             boost_foreground_app: false,
             foreground_boost: ForegroundBoostPriority::Auto,
             lower_background_auto_cpu_percent: true,
             manual_cpu_percent: 90,
-            total_threshold: 80,
-            process_threshold: 35,
+            total_threshold: 78,
+            process_threshold: 30,
             restore_threshold: 15,
-            sustain_seconds: 4,
+            sustain_seconds: 3,
             minimum_restraint_seconds: 2,
             cooldown_seconds: 4,
+            max_targeted_processes: 4,
         },
         AutoBalancePreset::Balanced => AutoBalancePresetValues {
             lower_background_apps: true,
+            background_priority: ProcessPriority::Idle,
             lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::Low,
             auto_balance_memory_priority_enabled: true,
+            auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
             auto_balance_memory_priority: ProcessMemoryPriority::Low,
             auto_balance_affinity_escalation_enabled: false,
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
             lower_background_auto_cpu_percent: true,
-            manual_cpu_percent: 75,
-            total_threshold: 70,
-            process_threshold: 22,
-            restore_threshold: 8,
-            sustain_seconds: 2,
+            manual_cpu_percent: 65,
+            total_threshold: 65,
+            process_threshold: 18,
+            restore_threshold: 6,
+            sustain_seconds: 1,
             minimum_restraint_seconds: 3,
             cooldown_seconds: 5,
+            max_targeted_processes: 8,
         },
         AutoBalancePreset::Responsive => AutoBalancePresetValues {
             lower_background_apps: true,
+            background_priority: ProcessPriority::Idle,
             lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             auto_balance_memory_priority_enabled: true,
+            auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
             auto_balance_memory_priority: ProcessMemoryPriority::VeryLow,
             auto_balance_affinity_escalation_enabled: true,
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
             lower_background_auto_cpu_percent: false,
-            manual_cpu_percent: 50,
-            total_threshold: 55,
-            process_threshold: 10,
-            restore_threshold: 5,
+            manual_cpu_percent: 25,
+            total_threshold: 50,
+            process_threshold: 8,
+            restore_threshold: 4,
             sustain_seconds: 1,
-            minimum_restraint_seconds: 3,
+            minimum_restraint_seconds: 4,
             cooldown_seconds: 6,
+            max_targeted_processes: 12,
         },
+    }
+}
+
+fn auto_balance_io_priority_preset_values(values: AutoBalancePresetValues) -> IoPrioritySettings {
+    IoPrioritySettings {
+        enabled: values.lower_background_io_priority_enabled,
+        foreground_detection_enabled: true,
+        foreground_priority: ProcessIoPrioritySetting::Normal,
+        background_priority: values.lower_background_io_priority.into(),
+        preserve_foreground_priority: true,
+        preserve_background_priority: true,
+        exclusions: Vec::new(),
+    }
+}
+
+fn auto_balance_thread_priority_preset_values(preset: AutoBalancePreset) -> ThreadPrioritySettings {
+    ThreadPrioritySettings {
+        enabled: preset != AutoBalancePreset::Gentle,
+        foreground_detection_enabled: true,
+        foreground_priority: ProcessThreadPrioritySetting::Default,
+        background_priority: ProcessThreadPrioritySetting::BelowNormal,
+        preserve_foreground_priority: true,
+        preserve_background_priority: true,
+        exclusions: Vec::new(),
+    }
+}
+
+fn auto_balance_priority_boost_preset_values(preset: AutoBalancePreset) -> PriorityBoostSettings {
+    PriorityBoostSettings {
+        enabled: preset != AutoBalancePreset::Gentle,
+        foreground_detection_enabled: true,
+        foreground_boost: ProcessPriorityBoostSetting::Enabled,
+        background_boost: ProcessPriorityBoostSetting::Disabled,
+        exclusions: Vec::new(),
+    }
+}
+
+fn auto_balance_gpu_priority_preset_values(preset: AutoBalancePreset) -> GpuPrioritySettings {
+    GpuPrioritySettings {
+        enabled: preset != AutoBalancePreset::Gentle,
+        foreground_detection_enabled: true,
+        foreground_priority: ProcessGpuPrioritySetting::Default,
+        background_priority: ProcessGpuPrioritySetting::BelowNormal,
+        preserve_foreground_priority: true,
+        preserve_background_priority: true,
+        exclusions: Vec::new(),
     }
 }
 
@@ -24145,6 +24921,53 @@ mod tests {
             accent_surface_color_with_tint(COLOR_APP_BG, 0.5, 0xffffff, true),
             COLOR_APP_BG
         );
+    }
+
+    #[test]
+    fn auto_balance_presets_set_background_process_priority() {
+        let gentle = auto_balance_preset_values(AutoBalancePreset::Gentle);
+        let balanced = auto_balance_preset_values(AutoBalancePreset::Balanced);
+        let responsive = auto_balance_preset_values(AutoBalancePreset::Responsive);
+
+        assert_eq!(gentle.background_priority, ProcessPriority::Idle);
+        assert_eq!(balanced.background_priority, ProcessPriority::Idle);
+        assert_eq!(responsive.background_priority, ProcessPriority::Idle);
+        assert_eq!(
+            balanced.auto_balance_foreground_memory_priority,
+            ProcessMemoryPrioritySetting::Normal
+        );
+        assert_eq!(gentle.max_targeted_processes, 4);
+        assert_eq!(balanced.max_targeted_processes, 8);
+        assert_eq!(responsive.max_targeted_processes, 12);
+        assert!(!gentle.auto_balance_affinity_escalation_enabled);
+        assert!(!balanced.auto_balance_affinity_escalation_enabled);
+        assert!(responsive.auto_balance_affinity_escalation_enabled);
+        assert!(gentle.total_threshold > balanced.total_threshold);
+        assert!(balanced.total_threshold > responsive.total_threshold);
+        assert!(gentle.process_threshold > balanced.process_threshold);
+        assert!(balanced.process_threshold > responsive.process_threshold);
+        assert_eq!(balanced.manual_cpu_percent, 65);
+        assert_eq!(responsive.manual_cpu_percent, 25);
+    }
+
+    #[test]
+    fn auto_balance_preset_match_ignores_hidden_preserve_flags() {
+        let mut settings = ForegroundResponsivenessSettings::default();
+        apply_auto_balance_preset(&mut settings, AutoBalancePreset::Balanced);
+        settings
+            .auto_balance_io_priority
+            .preserve_foreground_priority = false;
+        settings
+            .auto_balance_thread_priority
+            .preserve_background_priority = false;
+        settings
+            .auto_balance_gpu_priority
+            .foreground_detection_enabled = false;
+
+        assert!(auto_balance_matches_preset(
+            &settings,
+            AutoBalancePreset::Balanced
+        ));
     }
 
     #[test]

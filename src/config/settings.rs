@@ -655,14 +655,26 @@ pub struct ForegroundResponsivenessSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub lower_background_apps: bool,
+    #[serde(default = "default_auto_balance_background_priority")]
+    pub auto_balance_background_priority: ProcessPriority,
     #[serde(default)]
     pub lower_background_affinity_enabled: bool,
     #[serde(default)]
     pub lower_background_io_priority_enabled: bool,
     #[serde(default)]
     pub lower_background_io_priority: ProcessIoPriority,
+    #[serde(default = "default_auto_balance_io_priority_settings")]
+    pub auto_balance_io_priority: IoPrioritySettings,
+    #[serde(default = "default_auto_balance_thread_priority_settings")]
+    pub auto_balance_thread_priority: ThreadPrioritySettings,
+    #[serde(default = "default_auto_balance_priority_boost_settings")]
+    pub auto_balance_priority_boost: PriorityBoostSettings,
+    #[serde(default = "default_auto_balance_gpu_priority_settings")]
+    pub auto_balance_gpu_priority: GpuPrioritySettings,
     #[serde(default)]
     pub auto_balance_memory_priority_enabled: bool,
+    #[serde(default = "default_auto_balance_foreground_memory_priority")]
+    pub auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting,
     #[serde(default)]
     pub auto_balance_memory_priority: ProcessMemoryPriority,
     #[serde(default)]
@@ -697,6 +709,8 @@ pub struct ForegroundResponsivenessSettings {
     pub auto_balance_minimum_restraint_seconds: u64,
     #[serde(default = "default_auto_balance_cooldown_seconds")]
     pub auto_balance_cooldown_seconds: u64,
+    #[serde(default = "default_auto_balance_max_targeted_processes")]
+    pub auto_balance_max_targeted_processes: u8,
     #[serde(default)]
     pub auto_balance_exclusions: Vec<ProcessExclusionRule>,
     #[serde(default)]
@@ -865,10 +879,6 @@ pub enum ProcessIoPriority {
     Low,
     #[default]
     VeryLow,
-}
-
-impl ProcessIoPriority {
-    pub const ALL: [Self; 3] = [Self::VeryLow, Self::Low, Self::Normal];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1603,6 +1613,64 @@ const fn default_auto_balance_cooldown_seconds() -> u64 {
     6
 }
 
+const fn default_auto_balance_max_targeted_processes() -> u8 {
+    6
+}
+
+const fn default_auto_balance_background_priority() -> ProcessPriority {
+    ProcessPriority::BelowNormal
+}
+
+const fn default_auto_balance_foreground_memory_priority() -> ProcessMemoryPrioritySetting {
+    ProcessMemoryPrioritySetting::Default
+}
+
+fn default_auto_balance_io_priority_settings() -> IoPrioritySettings {
+    IoPrioritySettings {
+        enabled: false,
+        foreground_detection_enabled: true,
+        foreground_priority: ProcessIoPrioritySetting::Normal,
+        background_priority: ProcessIoPrioritySetting::VeryLow,
+        preserve_foreground_priority: true,
+        preserve_background_priority: true,
+        exclusions: Vec::new(),
+    }
+}
+
+fn default_auto_balance_thread_priority_settings() -> ThreadPrioritySettings {
+    ThreadPrioritySettings {
+        enabled: true,
+        foreground_detection_enabled: true,
+        foreground_priority: ProcessThreadPrioritySetting::Default,
+        background_priority: ProcessThreadPrioritySetting::BelowNormal,
+        preserve_foreground_priority: true,
+        preserve_background_priority: true,
+        exclusions: Vec::new(),
+    }
+}
+
+fn default_auto_balance_priority_boost_settings() -> PriorityBoostSettings {
+    PriorityBoostSettings {
+        enabled: true,
+        foreground_detection_enabled: true,
+        foreground_boost: ProcessPriorityBoostSetting::Enabled,
+        background_boost: ProcessPriorityBoostSetting::Disabled,
+        exclusions: Vec::new(),
+    }
+}
+
+fn default_auto_balance_gpu_priority_settings() -> GpuPrioritySettings {
+    GpuPrioritySettings {
+        enabled: true,
+        foreground_detection_enabled: true,
+        foreground_priority: ProcessGpuPrioritySetting::Default,
+        background_priority: ProcessGpuPrioritySetting::BelowNormal,
+        preserve_foreground_priority: true,
+        preserve_background_priority: true,
+        exclusions: Vec::new(),
+    }
+}
+
 const fn default_foreground_stability_delay_ms() -> u64 {
     750
 }
@@ -1804,10 +1872,17 @@ impl Default for ForegroundResponsivenessSettings {
         Self {
             enabled: false,
             lower_background_apps: default_true(),
+            auto_balance_background_priority: default_auto_balance_background_priority(),
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
+            auto_balance_io_priority: default_auto_balance_io_priority_settings(),
+            auto_balance_thread_priority: default_auto_balance_thread_priority_settings(),
+            auto_balance_priority_boost: default_auto_balance_priority_boost_settings(),
+            auto_balance_gpu_priority: default_auto_balance_gpu_priority_settings(),
             auto_balance_memory_priority_enabled: false,
+            auto_balance_foreground_memory_priority:
+                default_auto_balance_foreground_memory_priority(),
             auto_balance_memory_priority: ProcessMemoryPriority::Low,
             lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             lower_background_cpu_percent: default_eco_qos_cpu_restriction_percent(),
@@ -1829,6 +1904,7 @@ impl Default for ForegroundResponsivenessSettings {
             auto_balance_minimum_restraint_seconds: default_auto_balance_minimum_restraint_seconds(
             ),
             auto_balance_cooldown_seconds: default_auto_balance_cooldown_seconds(),
+            auto_balance_max_targeted_processes: default_auto_balance_max_targeted_processes(),
             auto_balance_exclusions: Vec::new(),
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,

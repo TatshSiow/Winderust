@@ -585,13 +585,13 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let cpu_priority_refresh_required =
             settings_changed || feature_refresh_required(&settings, settings.cpu_priority.enabled);
         let thread_priority_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.thread_priority.enabled);
+            || feature_refresh_required(&settings, thread_priority_required(&settings));
         let priority_boost_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.priority_boost.enabled);
+            || feature_refresh_required(&settings, priority_boost_required(&settings));
         let io_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, io_priority_required(&settings));
-        let gpu_priority_refresh_required =
-            settings_changed || feature_refresh_required(&settings, settings.gpu_priority.enabled);
+        let gpu_priority_refresh_required = settings_changed
+            || feature_refresh_required(&settings, gpu_priority_required(&settings));
         let memory_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, memory_priority_required(&settings));
         let smart_trim_refresh_required = settings_changed
@@ -1269,7 +1269,43 @@ fn io_priority_required(settings: &Settings) -> bool {
             && (settings
                 .foreground_responsiveness
                 .lower_background_io_priority_enabled
+                || settings
+                    .foreground_responsiveness
+                    .auto_balance_io_priority
+                    .enabled
                 || settings.foreground_responsiveness.auto_balance_enabled))
+}
+
+fn auto_balance_priority_assist_required(settings: &Settings) -> bool {
+    settings.foreground_responsiveness.enabled
+        && settings.foreground_responsiveness.auto_balance_enabled
+}
+
+fn thread_priority_required(settings: &Settings) -> bool {
+    settings.thread_priority.enabled
+        || (auto_balance_priority_assist_required(settings)
+            && settings
+                .foreground_responsiveness
+                .auto_balance_thread_priority
+                .enabled)
+}
+
+fn priority_boost_required(settings: &Settings) -> bool {
+    settings.priority_boost.enabled
+        || (auto_balance_priority_assist_required(settings)
+            && settings
+                .foreground_responsiveness
+                .auto_balance_priority_boost
+                .enabled)
+}
+
+fn gpu_priority_required(settings: &Settings) -> bool {
+    settings.gpu_priority.enabled
+        || (auto_balance_priority_assist_required(settings)
+            && settings
+                .foreground_responsiveness
+                .auto_balance_gpu_priority
+                .enabled)
 }
 
 fn memory_priority_required(settings: &Settings) -> bool {
@@ -1291,21 +1327,135 @@ fn effective_io_priority_settings(
         io_priority.foreground_detection_enabled = true;
         io_priority.foreground_priority = ProcessIoPriority::Normal.into();
         io_priority.background_priority = ProcessIoPriority::VeryLow.into();
-    } else if settings.foreground_responsiveness.enabled
+        io_priority.preserve_foreground_priority = true;
+        io_priority.preserve_background_priority = true;
+        io_priority.exclusions.extend(
+            settings
+                .foreground_responsiveness
+                .auto_balance_exclusions
+                .clone(),
+        );
+    } else if auto_balance_active {
+        let auto_io_priority = auto_balance_io_priority_settings(settings);
+        if auto_io_priority.enabled {
+            io_priority = auto_io_priority;
+            io_priority.exclusions.extend(
+                settings
+                    .foreground_responsiveness
+                    .auto_balance_exclusions
+                    .clone(),
+            );
+        }
+    }
+    io_priority
+}
+
+fn auto_balance_io_priority_settings(settings: &Settings) -> crate::config::IoPrioritySettings {
+    let mut io_priority = settings
+        .foreground_responsiveness
+        .auto_balance_io_priority
+        .clone();
+    if !io_priority.enabled
         && settings
             .foreground_responsiveness
             .lower_background_io_priority_enabled
-        && auto_balance_active
     {
         io_priority.enabled = true;
-        io_priority.foreground_detection_enabled = true;
         io_priority.foreground_priority = ProcessIoPriority::Normal.into();
         io_priority.background_priority = settings
             .foreground_responsiveness
             .lower_background_io_priority
             .into();
     }
+    io_priority.foreground_detection_enabled = true;
+    io_priority.preserve_foreground_priority = true;
+    io_priority.preserve_background_priority = true;
     io_priority
+}
+
+fn effective_thread_priority_settings(
+    settings: &Settings,
+    auto_balance_active: bool,
+) -> crate::config::ThreadPrioritySettings {
+    let mut thread_priority = settings.thread_priority.clone();
+    if auto_balance_active
+        && auto_balance_priority_assist_required(settings)
+        && settings
+            .foreground_responsiveness
+            .auto_balance_thread_priority
+            .enabled
+    {
+        thread_priority = settings
+            .foreground_responsiveness
+            .auto_balance_thread_priority
+            .clone();
+        thread_priority.foreground_detection_enabled = true;
+        thread_priority.preserve_foreground_priority = true;
+        thread_priority.preserve_background_priority = true;
+        thread_priority.exclusions.extend(
+            settings
+                .foreground_responsiveness
+                .auto_balance_exclusions
+                .clone(),
+        );
+    }
+    thread_priority
+}
+
+fn effective_priority_boost_settings(
+    settings: &Settings,
+    auto_balance_active: bool,
+) -> crate::config::PriorityBoostSettings {
+    let mut priority_boost = settings.priority_boost.clone();
+    if auto_balance_active
+        && auto_balance_priority_assist_required(settings)
+        && settings
+            .foreground_responsiveness
+            .auto_balance_priority_boost
+            .enabled
+    {
+        priority_boost = settings
+            .foreground_responsiveness
+            .auto_balance_priority_boost
+            .clone();
+        priority_boost.foreground_detection_enabled = true;
+        priority_boost.exclusions.extend(
+            settings
+                .foreground_responsiveness
+                .auto_balance_exclusions
+                .clone(),
+        );
+    }
+    priority_boost
+}
+
+fn effective_gpu_priority_settings(
+    settings: &Settings,
+    auto_balance_active: bool,
+) -> crate::config::GpuPrioritySettings {
+    let mut gpu_priority = settings.gpu_priority.clone();
+    if auto_balance_active
+        && auto_balance_priority_assist_required(settings)
+        && settings
+            .foreground_responsiveness
+            .auto_balance_gpu_priority
+            .enabled
+    {
+        gpu_priority = settings
+            .foreground_responsiveness
+            .auto_balance_gpu_priority
+            .clone();
+        gpu_priority.foreground_detection_enabled = true;
+        gpu_priority.preserve_foreground_priority = true;
+        gpu_priority.preserve_background_priority = true;
+        gpu_priority.exclusions.extend(
+            settings
+                .foreground_responsiveness
+                .auto_balance_exclusions
+                .clone(),
+        );
+    }
+    gpu_priority
 }
 
 fn effective_memory_priority_settings(
@@ -1323,10 +1473,10 @@ fn process_appearance_scan_required(settings: &Settings) -> bool {
             || settings.performance_mode.enabled
             || settings.foreground_responsiveness.enabled
             || settings.cpu_priority.enabled
-            || settings.thread_priority.enabled
-            || settings.priority_boost.enabled
+            || thread_priority_required(settings)
+            || priority_boost_required(settings)
             || io_priority_required(settings)
-            || settings.gpu_priority.enabled
+            || gpu_priority_required(settings)
             || memory_priority_required(settings)
             || settings.smart_trim.enabled)
 }
@@ -1351,10 +1501,10 @@ fn automation_worker_required(settings: &Settings) -> bool {
             || settings.performance_mode.enabled
             || settings.foreground_responsiveness.enabled
             || settings.cpu_priority.enabled
-            || settings.thread_priority.enabled
-            || settings.priority_boost.enabled
+            || thread_priority_required(settings)
+            || priority_boost_required(settings)
             || io_priority_required(settings)
-            || settings.gpu_priority.enabled
+            || gpu_priority_required(settings)
             || memory_priority_required(settings)
             || settings.smart_trim.enabled
             || timer_resolution_required(settings))
@@ -1874,8 +2024,10 @@ impl HiddenAutomationRunner {
     }
 
     fn run_thread_priority_update(&mut self, settings: &Settings) -> ThreadPrioritySnapshot {
+        let thread_priority_settings =
+            effective_thread_priority_settings(settings, self.auto_balance_active);
         self.thread_priority_manager.update(
-            &settings.thread_priority,
+            &thread_priority_settings,
             settings.general.enabled,
             self.foreground_detector.process_id(),
             &mut self.action_log,
@@ -1883,8 +2035,10 @@ impl HiddenAutomationRunner {
     }
 
     fn run_priority_boost_update(&mut self, settings: &Settings) -> PriorityBoostSnapshot {
+        let priority_boost_settings =
+            effective_priority_boost_settings(settings, self.auto_balance_active);
         self.priority_boost_manager.update(
-            &settings.priority_boost,
+            &priority_boost_settings,
             settings.general.enabled,
             self.foreground_detector.process_id(),
             &mut self.action_log,
@@ -1892,8 +2046,10 @@ impl HiddenAutomationRunner {
     }
 
     fn run_gpu_priority_update(&mut self, settings: &Settings) -> GpuPrioritySnapshot {
+        let gpu_priority_settings =
+            effective_gpu_priority_settings(settings, self.auto_balance_active);
         self.gpu_priority_manager.update(
-            &settings.gpu_priority,
+            &gpu_priority_settings,
             settings.general.enabled,
             self.foreground_detector.process_id(),
             &mut self.action_log,
@@ -2055,7 +2211,10 @@ mod tests {
     use super::*;
     use chrono::{Datelike, Duration as ChronoDuration, Local};
 
-    use crate::config::{ForegroundRule, ScheduleRule, WeekdaySetting};
+    use crate::config::{
+        ForegroundRule, ProcessExclusionRule, ProcessGpuPrioritySetting,
+        ProcessPriorityBoostSetting, ProcessThreadPrioritySetting, ScheduleRule, WeekdaySetting,
+    };
 
     #[test]
     fn process_appearance_detector_ignores_initial_snapshot() {
@@ -2278,6 +2437,170 @@ mod tests {
         assert_eq!(
             io_priority.background_priority.priority(),
             Some(ProcessIoPriority::Low)
+        );
+    }
+
+    #[test]
+    fn auto_balance_pressure_feeds_priority_defaults() {
+        let mut settings = Settings::default();
+        settings.foreground_responsiveness.enabled = true;
+        settings.foreground_responsiveness.auto_balance_enabled = true;
+        settings
+            .foreground_responsiveness
+            .lower_background_io_priority_enabled = true;
+        settings
+            .foreground_responsiveness
+            .lower_background_io_priority = ProcessIoPriority::Low;
+        settings
+            .foreground_responsiveness
+            .auto_balance_io_priority
+            .enabled = true;
+        settings
+            .foreground_responsiveness
+            .auto_balance_io_priority
+            .foreground_detection_enabled = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_io_priority
+            .preserve_foreground_priority = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_io_priority
+            .preserve_background_priority = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_io_priority
+            .background_priority = ProcessIoPriority::Low.into();
+        settings
+            .foreground_responsiveness
+            .auto_balance_thread_priority
+            .foreground_detection_enabled = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_thread_priority
+            .preserve_foreground_priority = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_thread_priority
+            .preserve_background_priority = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_priority_boost
+            .foreground_detection_enabled = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_gpu_priority
+            .foreground_detection_enabled = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_gpu_priority
+            .preserve_foreground_priority = false;
+        settings
+            .foreground_responsiveness
+            .auto_balance_gpu_priority
+            .preserve_background_priority = false;
+        settings.foreground_responsiveness.auto_balance_exclusions = vec![ProcessExclusionRule {
+            process_name: "game.exe".to_owned(),
+            ..Default::default()
+        }];
+
+        assert!(thread_priority_required(&settings));
+        assert!(priority_boost_required(&settings));
+        assert!(gpu_priority_required(&settings));
+
+        let thread_priority = effective_thread_priority_settings(&settings, true);
+        assert!(thread_priority.enabled);
+        assert!(thread_priority.foreground_detection_enabled);
+        assert!(thread_priority.preserve_foreground_priority);
+        assert!(thread_priority.preserve_background_priority);
+        assert_eq!(
+            thread_priority.background_priority,
+            ProcessThreadPrioritySetting::BelowNormal
+        );
+        assert!(thread_priority.contains_exclusion("game.exe"));
+
+        let priority_boost = effective_priority_boost_settings(&settings, true);
+        assert!(priority_boost.enabled);
+        assert!(priority_boost.foreground_detection_enabled);
+        assert_eq!(
+            priority_boost.foreground_boost,
+            ProcessPriorityBoostSetting::Enabled
+        );
+        assert_eq!(
+            priority_boost.background_boost,
+            ProcessPriorityBoostSetting::Disabled
+        );
+        assert!(priority_boost.contains_exclusion("game.exe"));
+
+        let io_priority = effective_io_priority_settings(&settings, false, true);
+        assert_eq!(
+            io_priority.background_priority.priority(),
+            Some(ProcessIoPriority::Low)
+        );
+        assert!(io_priority.foreground_detection_enabled);
+        assert!(io_priority.preserve_foreground_priority);
+        assert!(io_priority.preserve_background_priority);
+        assert!(io_priority.contains_exclusion("game.exe"));
+
+        let gpu_priority = effective_gpu_priority_settings(&settings, true);
+        assert!(gpu_priority.enabled);
+        assert!(gpu_priority.foreground_detection_enabled);
+        assert!(gpu_priority.preserve_foreground_priority);
+        assert!(gpu_priority.preserve_background_priority);
+        assert_eq!(
+            gpu_priority.background_priority,
+            ProcessGpuPrioritySetting::BelowNormal
+        );
+        assert!(gpu_priority.contains_exclusion("game.exe"));
+    }
+
+    #[test]
+    fn auto_balance_priority_assist_temporarily_overrides_global_priority_defaults() {
+        let mut settings = Settings::default();
+        settings.foreground_responsiveness.enabled = true;
+        settings.foreground_responsiveness.auto_balance_enabled = true;
+        settings.thread_priority.enabled = true;
+        settings.thread_priority.background_priority = ProcessThreadPrioritySetting::Idle;
+        settings.priority_boost.enabled = true;
+        settings.priority_boost.background_boost = ProcessPriorityBoostSetting::Enabled;
+        settings.gpu_priority.enabled = true;
+        settings.gpu_priority.background_priority = ProcessGpuPrioritySetting::Idle;
+        settings
+            .foreground_responsiveness
+            .auto_balance_thread_priority
+            .background_priority = ProcessThreadPrioritySetting::BelowNormal;
+        settings
+            .foreground_responsiveness
+            .auto_balance_priority_boost
+            .background_boost = ProcessPriorityBoostSetting::Disabled;
+        settings
+            .foreground_responsiveness
+            .auto_balance_gpu_priority
+            .background_priority = ProcessGpuPrioritySetting::BelowNormal;
+
+        assert_eq!(
+            effective_thread_priority_settings(&settings, true).background_priority,
+            ProcessThreadPrioritySetting::BelowNormal
+        );
+        assert_eq!(
+            effective_priority_boost_settings(&settings, true).background_boost,
+            ProcessPriorityBoostSetting::Disabled
+        );
+        assert_eq!(
+            effective_gpu_priority_settings(&settings, true).background_priority,
+            ProcessGpuPrioritySetting::BelowNormal
+        );
+        assert_eq!(
+            effective_thread_priority_settings(&settings, false).background_priority,
+            ProcessThreadPrioritySetting::Idle
+        );
+        assert_eq!(
+            effective_priority_boost_settings(&settings, false).background_boost,
+            ProcessPriorityBoostSetting::Enabled
+        );
+        assert_eq!(
+            effective_gpu_priority_settings(&settings, false).background_priority,
+            ProcessGpuPrioritySetting::Idle
         );
     }
 

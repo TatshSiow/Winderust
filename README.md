@@ -83,6 +83,26 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 - `App Suspension`
     - Freeze explicit opt-in background apps to squeeze performance and battery.
 
+## Auto Balance Benchmark
+
+Latest paired synthetic benchmark on Intel Core 5 210H, 12 logical processors:
+
+| Preset | Median foreground improvement | P95 foreground improvement | Background retained | Signal | Tradeoff |
+| --- | ---: | ---: | ---: | --- | --- |
+| Gentle | 10.8% | 41.5% | 100.0% | usable | low |
+| Balance | 10.2% | -62.7% | 117.2% | noisy | low |
+| Responsive | 72.9% | 84.7% | 29.5% | strong | high |
+
+Run the benchmark from the repository root:
+
+```powershell
+.\scripts\auto_balance_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+```
+
+The script spawns temporary CPU workers and changes their priority and affinity.
+Treat results as local direction only; validate on more hardware before changing
+global preset defaults. Full guide: `docs/auto-balance-benchmark.md`.
+
 ## Build
 
 Install Rust, then build from this folder:

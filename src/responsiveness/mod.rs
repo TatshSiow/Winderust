@@ -170,12 +170,21 @@ struct AutoBalanceProcess {
     restraint_count: u32,
     decision: Option<AutoBalanceDecision>,
     active: bool,
+    selected: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AutoBalanceDecision {
     LowerPriority,
     RestrictAffinity,
+}
+
+#[derive(Clone)]
+struct AutoBalanceCandidate {
+    process_id: u32,
+    process_name: String,
+    decision: AutoBalanceDecision,
+    score: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -337,7 +346,7 @@ impl ForegroundResponsivenessManager {
                     (rule.priority, PriorityTargetSource::Rule)
                 } else if lower_background_policy_enabled {
                     (
-                        ProcessPriority::Idle,
+                        settings.auto_balance_background_priority,
                         PriorityTargetSource::BackgroundPolicy,
                     )
                 } else {
@@ -389,6 +398,33 @@ impl ForegroundResponsivenessManager {
 
         let mut auto_balance_rules = Vec::new();
         let mut auto_balance_memory_targets = Vec::new();
+        if settings.auto_balance_memory_priority_enabled {
+            if let Some(priority) = settings.auto_balance_foreground_memory_priority.priority() {
+                for process in processes
+                    .iter()
+                    .filter(|process| foreground_process_group_ids.contains(&process.id))
+                    .filter(|process| !eco_qos_process_ids.contains(&process.id))
+                    .filter(|process| !settings.auto_balance_exclusion_enabled_for(&process.name))
+                    .filter(|process| {
+                        foreground_boost_eligible(
+                            process.id,
+                            &process.name,
+                            current_process_id,
+                            current_session_id,
+                        )
+                    })
+                {
+                    auto_balance_memory_targets.push(MemoryPriorityTarget {
+                        process_id: process.id,
+                        process_name: process.name.clone(),
+                        priority,
+                        foreground: true,
+                        preserve_foreground_priority: true,
+                        preserve_background_priority: true,
+                    });
+                }
+            }
+        }
         if launch_boost_running {
             for (process_id, process_name) in &lowerable_background_processes {
                 if settings.auto_balance_exclusion_enabled_for(process_name) {
@@ -406,8 +442,8 @@ impl ForegroundResponsivenessManager {
                     process_name: process_name.clone(),
                     priority: ProcessMemoryPriority::VeryLow,
                     foreground: false,
-                    preserve_foreground_priority: false,
-                    preserve_background_priority: false,
+                    preserve_foreground_priority: true,
+                    preserve_background_priority: true,
                 });
             }
         }
@@ -422,40 +458,66 @@ impl ForegroundResponsivenessManager {
             self.auto_balance
                 .retain(|process_id, _| current_ids.contains(process_id));
 
+            let mut auto_balance_candidates = Vec::new();
             for (process_id, process_name) in &lowerable_background_processes {
                 if settings.auto_balance_exclusion_enabled_for(process_name) {
                     continue;
                 }
 
-                if let Some(decision) =
+                if let Some(candidate) =
                     self.update_auto_balance_process(*process_id, process_name, settings, now)
                 {
-                    target_processes.entry(*process_id).or_insert_with(|| {
+                    auto_balance_candidates.push(candidate);
+                }
+            }
+
+            let selected_candidates = select_auto_balance_candidates(
+                auto_balance_candidates,
+                settings.auto_balance_max_targeted_processes,
+            );
+            let selected_ids = selected_candidates
+                .iter()
+                .map(|candidate| candidate.process_id)
+                .collect::<BTreeSet<_>>();
+            for (process_id, process) in &mut self.auto_balance {
+                if process.active && !selected_ids.contains(process_id) {
+                    process.selected = false;
+                    process.decision = None;
+                }
+            }
+
+            for candidate in selected_candidates {
+                if let Some(process) = self.auto_balance.get_mut(&candidate.process_id) {
+                    process.selected = true;
+                    process.decision = Some(candidate.decision);
+                }
+                target_processes
+                    .entry(candidate.process_id)
+                    .or_insert_with(|| {
                         (
-                            process_name.clone(),
-                            ProcessPriority::BelowNormal,
+                            candidate.process_name.clone(),
+                            settings.auto_balance_background_priority,
                             PriorityTargetSource::AutoBalance,
                         )
                     });
-                    if settings.auto_balance_memory_priority_enabled && !launch_boost_running {
-                        auto_balance_memory_targets.push(MemoryPriorityTarget {
-                            process_id: *process_id,
-                            process_name: process_name.clone(),
-                            priority: settings.auto_balance_memory_priority,
-                            foreground: false,
-                            preserve_foreground_priority: false,
-                            preserve_background_priority: false,
+                if settings.auto_balance_memory_priority_enabled && !launch_boost_running {
+                    auto_balance_memory_targets.push(MemoryPriorityTarget {
+                        process_id: candidate.process_id,
+                        process_name: candidate.process_name.clone(),
+                        priority: settings.auto_balance_memory_priority,
+                        foreground: false,
+                        preserve_foreground_priority: true,
+                        preserve_background_priority: true,
+                    });
+                }
+                if candidate.decision == AutoBalanceDecision::RestrictAffinity {
+                    if let Some(core_mask) = auto_balance_core_mask {
+                        auto_balance_rules.push(CpuAffinityRule {
+                            enabled: true,
+                            mode: auto_balance_affinity_mode(settings),
+                            process_name: candidate.process_name,
+                            core_mask,
                         });
-                    }
-                    if decision == AutoBalanceDecision::RestrictAffinity {
-                        if let Some(core_mask) = auto_balance_core_mask {
-                            auto_balance_rules.push(CpuAffinityRule {
-                                enabled: true,
-                                mode: auto_balance_affinity_mode(settings),
-                                process_name: process_name.clone(),
-                                core_mask,
-                            });
-                        }
                     }
                 }
             }
@@ -1155,7 +1217,7 @@ impl ForegroundResponsivenessManager {
         process_name: &str,
         settings: &ForegroundResponsivenessSettings,
         now: Instant,
-    ) -> Option<AutoBalanceDecision> {
+    ) -> Option<AutoBalanceCandidate> {
         let threshold = f32::from(settings.auto_balance_threshold_percent.min(100));
         let restore_threshold = f32::from(
             settings
@@ -1180,6 +1242,7 @@ impl ForegroundResponsivenessManager {
                 restraint_count: 0,
                 decision: None,
                 active: false,
+                selected: false,
             });
         state.process_name = process_name.to_owned();
         let priority_sustain = auto_balance_priority_sustain(settings, state.restraint_count);
@@ -1205,27 +1268,38 @@ impl ForegroundResponsivenessManager {
                 state.active = true;
                 let decision = auto_balance_process_decision(settings, state.active_since, now);
                 state.decision = Some(decision);
-                return Some(decision);
+                return Some(auto_balance_candidate(process_id, state, decision, now));
             }
             return None;
         }
 
         state.high_since = None;
-        if state.active {
+        if state.active && !state.selected {
+            state.active = false;
+            state.below_since = None;
+            state.active_since = None;
+            state.decision = None;
+        } else if state.active {
             let active_since = state.active_since.unwrap_or(now);
             if usage > restore_threshold || now.duration_since(active_since) < minimum_restraint {
                 state.below_since = None;
                 let decision = auto_balance_process_decision(settings, state.active_since, now);
                 state.decision = Some(decision);
-                return Some(decision);
+                return Some(auto_balance_candidate(process_id, state, decision, now));
             }
 
             let below_since = *state.below_since.get_or_insert(now);
             if now.duration_since(below_since) < cooldown {
                 state.decision = Some(AutoBalanceDecision::LowerPriority);
-                return Some(AutoBalanceDecision::LowerPriority);
+                return Some(auto_balance_candidate(
+                    process_id,
+                    state,
+                    AutoBalanceDecision::LowerPriority,
+                    now,
+                ));
             }
             state.active = false;
+            state.selected = false;
             state.below_since = None;
             state.active_since = None;
             state.decision = None;
@@ -1260,7 +1334,7 @@ impl ForegroundResponsivenessManager {
         self.auto_balance
             .iter()
             .filter_map(|(process_id, process)| {
-                let state = if process.active {
+                let state = if process.active && process.selected {
                     if process.below_since.is_some() {
                         AutoBalanceProcessState::CoolingDown
                     } else if process.decision == Some(AutoBalanceDecision::RestrictAffinity) {
@@ -1683,11 +1757,65 @@ fn auto_balance_priority_sustain(
     }
 }
 
+fn auto_balance_candidate(
+    process_id: u32,
+    process: &AutoBalanceProcess,
+    decision: AutoBalanceDecision,
+    now: Instant,
+) -> AutoBalanceCandidate {
+    let selected_bonus = if process.selected { 500 } else { 0 };
+    let decision_bonus = if decision == AutoBalanceDecision::RestrictAffinity {
+        1_000
+    } else {
+        0
+    };
+    let active_seconds = process
+        .active_since
+        .map(|started| now.duration_since(started).as_secs().min(60) as u32)
+        .unwrap_or_default();
+    AutoBalanceCandidate {
+        process_id,
+        process_name: process.process_name.clone(),
+        decision,
+        score: selected_bonus
+            + decision_bonus
+            + u32::from(process.last_usage_tenths.unwrap_or_default()).saturating_mul(4)
+            + process.restraint_count.saturating_mul(100)
+            + active_seconds.saturating_mul(10),
+    }
+}
+
+fn select_auto_balance_candidates(
+    mut candidates: Vec<AutoBalanceCandidate>,
+    max_targeted_processes: u8,
+) -> Vec<AutoBalanceCandidate> {
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.process_id.cmp(&right.process_id))
+    });
+    candidates.truncate(usize::from(max_targeted_processes.max(1)));
+    candidates
+}
+
 fn auto_balance_effective_cpu_percent(
     settings: &ForegroundResponsivenessSettings,
     foreground_cpu_usage_percent: Option<f32>,
 ) -> u8 {
-    let configured = auto_balance_minimum_cpu_percent(settings);
+    auto_balance_effective_cpu_percent_for_topology(
+        settings,
+        foreground_cpu_usage_percent,
+        auto_balance_has_efficiency_cores(),
+    )
+}
+
+fn auto_balance_effective_cpu_percent_for_topology(
+    settings: &ForegroundResponsivenessSettings,
+    foreground_cpu_usage_percent: Option<f32>,
+    has_efficiency_cores: bool,
+) -> u8 {
+    let configured = auto_balance_minimum_cpu_percent_for_topology(settings, has_efficiency_cores);
     let Some(usage) = foreground_cpu_usage_percent else {
         return configured;
     };
@@ -1712,19 +1840,36 @@ fn auto_balance_effective_cpu_percent(
         .clamp(f32::from(configured), 100.0) as u8
 }
 
-fn auto_balance_minimum_cpu_percent(settings: &ForegroundResponsivenessSettings) -> u8 {
+fn auto_balance_minimum_cpu_percent_for_topology(
+    settings: &ForegroundResponsivenessSettings,
+    has_efficiency_cores: bool,
+) -> u8 {
     if !settings.lower_background_auto_cpu_percent {
         return settings.auto_balance_cpu_percent.clamp(1, 100);
     }
 
     let trigger = settings.auto_balance_total_threshold_percent.min(100);
-    if trigger >= 80 {
-        85
+    if has_efficiency_cores {
+        if trigger >= 80 {
+            80
+        } else if trigger >= 70 {
+            70
+        } else {
+            60
+        }
+    } else if trigger >= 80 {
+        90
     } else if trigger >= 70 {
-        75
+        80
     } else {
-        65
+        70
     }
+}
+
+fn auto_balance_has_efficiency_cores() -> bool {
+    affinity::logical_processors()
+        .iter()
+        .any(|processor| processor.kind == LogicalProcessorKind::Efficiency)
 }
 
 fn limited_efficiency_preferred_core_mask(percent: u8, max_logical_processors: u8) -> Option<u64> {
@@ -2433,7 +2578,7 @@ fn open_process_error(process_id: u32, error: u32) -> PriorityError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ForegroundResponsivenessSettings;
+    use crate::config::{ForegroundResponsivenessSettings, ProcessMemoryPrioritySetting};
 
     #[test]
     fn repeated_failures_suppress_future_responsiveness_attempts_once() {
@@ -2581,10 +2726,16 @@ mod tests {
         let settings = ForegroundResponsivenessSettings {
             enabled: true,
             lower_background_apps: true,
+            auto_balance_background_priority: ProcessPriority::BelowNormal,
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: crate::config::ProcessIoPriority::VeryLow,
+            auto_balance_io_priority: crate::config::IoPrioritySettings::default(),
+            auto_balance_thread_priority: crate::config::ThreadPrioritySettings::default(),
+            auto_balance_priority_boost: crate::config::PriorityBoostSettings::default(),
+            auto_balance_gpu_priority: crate::config::GpuPrioritySettings::default(),
             auto_balance_memory_priority_enabled: false,
+            auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
             auto_balance_memory_priority: crate::config::ProcessMemoryPriority::Low,
             lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             lower_background_cpu_percent: 50,
@@ -2602,6 +2753,7 @@ mod tests {
             auto_balance_sustain_seconds: 2,
             auto_balance_minimum_restraint_seconds: 4,
             auto_balance_cooldown_seconds: 10,
+            auto_balance_max_targeted_processes: 6,
             auto_balance_exclusions: Vec::new(),
             boost_foreground_app: false,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
@@ -2728,6 +2880,93 @@ mod tests {
     }
 
     #[test]
+    fn auto_balance_selects_highest_scored_candidates() {
+        let max_targeted = 6;
+        let candidates = (0..=u32::from(max_targeted))
+            .map(|process_id| AutoBalanceCandidate {
+                process_id,
+                process_name: format!("app{process_id}.exe"),
+                decision: AutoBalanceDecision::LowerPriority,
+                score: process_id,
+            })
+            .collect::<Vec<_>>();
+
+        let selected = select_auto_balance_candidates(candidates, max_targeted);
+
+        assert_eq!(selected.len(), usize::from(max_targeted));
+        assert!(!selected.iter().any(|candidate| candidate.process_id == 0));
+    }
+
+    #[test]
+    fn auto_balance_selection_can_replace_cooler_selected_process() {
+        let now = Instant::now();
+        let selected = AutoBalanceProcess {
+            process_name: "selected.exe".to_owned(),
+            previous_cpu_time: None,
+            last_usage_tenths: Some(100),
+            high_since: Some(now - Duration::from_secs(60)),
+            below_since: None,
+            active_since: Some(now - Duration::from_secs(60)),
+            last_reaction_millis: Some(100),
+            restraint_count: 3,
+            decision: Some(AutoBalanceDecision::LowerPriority),
+            active: true,
+            selected: true,
+        };
+        let hotter = AutoBalanceProcess {
+            process_name: "hotter.exe".to_owned(),
+            previous_cpu_time: None,
+            last_usage_tenths: Some(900),
+            high_since: Some(now),
+            below_since: None,
+            active_since: Some(now),
+            last_reaction_millis: Some(100),
+            restraint_count: 0,
+            decision: Some(AutoBalanceDecision::LowerPriority),
+            active: true,
+            selected: false,
+        };
+
+        let selected = select_auto_balance_candidates(
+            vec![
+                auto_balance_candidate(1, &selected, AutoBalanceDecision::LowerPriority, now),
+                auto_balance_candidate(2, &hotter, AutoBalanceDecision::LowerPriority, now),
+            ],
+            1,
+        );
+
+        assert_eq!(selected[0].process_id, 2);
+    }
+
+    #[test]
+    fn auto_balance_status_treats_unselected_hot_process_as_watching() {
+        let now = Instant::now();
+        let mut manager = ForegroundResponsivenessManager::default();
+        manager.auto_balance.insert(
+            42,
+            AutoBalanceProcess {
+                process_name: "worker.exe".to_owned(),
+                previous_cpu_time: None,
+                last_usage_tenths: Some(900),
+                high_since: Some(now - Duration::from_secs(2)),
+                below_since: None,
+                active_since: Some(now - Duration::from_secs(1)),
+                last_reaction_millis: Some(100),
+                restraint_count: 1,
+                decision: Some(AutoBalanceDecision::RestrictAffinity),
+                active: true,
+                selected: false,
+            },
+        );
+
+        let statuses = manager.auto_balance_statuses(now);
+
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].state, AutoBalanceProcessState::Watching);
+        assert_eq!(statuses[0].elapsed_seconds, Some(2));
+    }
+
+    #[test]
     fn auto_balance_cpu_percent_relaxes_under_moderate_pressure() {
         let settings = ForegroundResponsivenessSettings {
             lower_background_auto_cpu_percent: false,
@@ -2752,7 +2991,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_balance_auto_cpu_percent_uses_behavior_floor() {
+    fn auto_balance_auto_cpu_percent_uses_topology_behavior_floor() {
         let settings = ForegroundResponsivenessSettings {
             lower_background_auto_cpu_percent: true,
             auto_balance_cpu_percent: 25,
@@ -2760,14 +2999,30 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(auto_balance_minimum_cpu_percent(&settings), 75);
         assert_eq!(
-            auto_balance_effective_cpu_percent(&settings, Some(75.0)),
+            auto_balance_minimum_cpu_percent_for_topology(&settings, true),
+            70
+        );
+        assert_eq!(
+            auto_balance_effective_cpu_percent_for_topology(&settings, Some(75.0), true),
             100
         );
         assert_eq!(
-            auto_balance_effective_cpu_percent(&settings, Some(80.0)),
-            88
+            auto_balance_effective_cpu_percent_for_topology(&settings, Some(80.0), true),
+            85
+        );
+
+        assert_eq!(
+            auto_balance_minimum_cpu_percent_for_topology(&settings, false),
+            80
+        );
+        assert_eq!(
+            auto_balance_effective_cpu_percent_for_topology(&settings, Some(75.0), false),
+            100
+        );
+        assert_eq!(
+            auto_balance_effective_cpu_percent_for_topology(&settings, Some(80.0), false),
+            90
         );
     }
 
