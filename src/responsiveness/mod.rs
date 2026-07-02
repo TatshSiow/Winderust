@@ -41,6 +41,7 @@ use crate::{
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 const AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT: f32 = 85.0;
+const AUTO_BALANCE_PRESSURE_RESTORE_BAND_PERCENT: u8 = 5;
 const AUTO_BALANCE_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
 const AUTO_BALANCE_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
 const BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
@@ -53,6 +54,7 @@ pub struct ForegroundResponsivenessSnapshot {
     pub background_adjusted_processes: usize,
     pub foreground_boosted_process: Option<String>,
     pub launch_boost_active: bool,
+    pub auto_balance_active: bool,
     pub auto_balanced_processes: usize,
     pub auto_balance_message: String,
     pub auto_balance_total_cpu_usage_tenths: Option<u16>,
@@ -91,6 +93,7 @@ pub struct ForegroundResponsivenessManager {
     foreground_cpu_sample: Option<(BTreeSet<u32>, ProcessCpuSample)>,
     lower_background_affinity: CpuAffinityManager,
     auto_balance: BTreeMap<u32, AutoBalanceProcess>,
+    auto_balance_pressure_active: bool,
     auto_balance_affinity: CpuAffinityManager,
     auto_balance_memory_priority: MemoryPriorityManager,
     auto_balance_core_selection: Option<AutoBalanceCoreSelection>,
@@ -110,6 +113,7 @@ impl Default for ForegroundResponsivenessManager {
                 ActionLogFeature::ForegroundResponsiveness,
             ),
             auto_balance: BTreeMap::new(),
+            auto_balance_pressure_active: false,
             auto_balance_affinity: CpuAffinityManager::with_action_log_feature(
                 ActionLogFeature::ForegroundResponsiveness,
             ),
@@ -343,7 +347,7 @@ impl ForegroundResponsivenessManager {
             }
         }
 
-        let auto_balance_running = auto_balance_should_run(
+        let auto_balance_running = self.update_auto_balance_pressure(
             settings,
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
@@ -418,35 +422,25 @@ impl ForegroundResponsivenessManager {
             self.auto_balance
                 .retain(|process_id, _| current_ids.contains(process_id));
 
-            for process in &processes {
-                if should_skip_process(
-                    process.id,
-                    &process.name,
-                    current_process_id,
-                    foreground_process_id,
-                    &foreground_process_group_ids,
-                    foreground_process_name.as_deref(),
-                    eco_qos_process_ids,
-                ) || settings.auto_balance_exclusion_enabled_for(&process.name)
-                    || process_session_id(process.id) != Some(current_session_id)
-                {
+            for (process_id, process_name) in &lowerable_background_processes {
+                if settings.auto_balance_exclusion_enabled_for(process_name) {
                     continue;
                 }
 
                 if let Some(decision) =
-                    self.update_auto_balance_process(process.id, &process.name, settings, now)
+                    self.update_auto_balance_process(*process_id, process_name, settings, now)
                 {
-                    target_processes.entry(process.id).or_insert_with(|| {
+                    target_processes.entry(*process_id).or_insert_with(|| {
                         (
-                            process.name.clone(),
+                            process_name.clone(),
                             ProcessPriority::BelowNormal,
                             PriorityTargetSource::AutoBalance,
                         )
                     });
                     if settings.auto_balance_memory_priority_enabled && !launch_boost_running {
                         auto_balance_memory_targets.push(MemoryPriorityTarget {
-                            process_id: process.id,
-                            process_name: process.name.clone(),
+                            process_id: *process_id,
+                            process_name: process_name.clone(),
                             priority: settings.auto_balance_memory_priority,
                             foreground: false,
                             preserve_foreground_priority: false,
@@ -458,7 +452,7 @@ impl ForegroundResponsivenessManager {
                             auto_balance_rules.push(CpuAffinityRule {
                                 enabled: true,
                                 mode: auto_balance_affinity_mode(settings),
-                                process_name: process.name.clone(),
+                                process_name: process_name.clone(),
                                 core_mask,
                             });
                         }
@@ -467,6 +461,7 @@ impl ForegroundResponsivenessManager {
             }
         } else {
             self.auto_balance.clear();
+            self.auto_balance_pressure_active = false;
             self.auto_balance_core_selection = None;
         }
 
@@ -705,6 +700,7 @@ impl ForegroundResponsivenessManager {
                 }
             }),
             launch_boost_active: launch_boost_running,
+            auto_balance_active: auto_balance_running,
             auto_balanced_processes,
             auto_balance_message,
             auto_balance_total_cpu_usage_tenths: foreground_cpu_usage_tenths,
@@ -753,6 +749,7 @@ impl ForegroundResponsivenessManager {
         self.foreground_candidate = None;
         self.foreground_cpu_sample = None;
         self.auto_balance.clear();
+        self.auto_balance_pressure_active = false;
         self.last_background_apply_summary_logged_at = None;
         let affinity_settings = CpuAffinitySettings {
             enabled: false,
@@ -861,6 +858,40 @@ impl ForegroundResponsivenessManager {
 
     fn clear_process_failure(&mut self, process_name: &str) {
         self.failure_suppression.clear_process_failure(process_name);
+    }
+
+    fn update_auto_balance_pressure(
+        &mut self,
+        settings: &ForegroundResponsivenessSettings,
+        foreground_cpu_usage_percent: Option<f32>,
+        total_cpu_usage_percent: Option<f32>,
+    ) -> bool {
+        if !settings.auto_balance_enabled {
+            self.auto_balance_pressure_active = false;
+            return false;
+        }
+
+        if auto_balance_should_run(
+            settings,
+            foreground_cpu_usage_percent,
+            total_cpu_usage_percent,
+        ) {
+            self.auto_balance_pressure_active = true;
+            return true;
+        }
+
+        if self.auto_balance_pressure_active
+            && cpu_pressure_above_restore_threshold(
+                settings,
+                foreground_cpu_usage_percent,
+                total_cpu_usage_percent,
+            )
+        {
+            return true;
+        }
+
+        self.auto_balance_pressure_active = false;
+        false
     }
 
     fn release_processes(
@@ -1356,6 +1387,7 @@ impl Default for ForegroundResponsivenessSnapshot {
             background_adjusted_processes: 0,
             foreground_boosted_process: None,
             launch_boost_active: false,
+            auto_balance_active: false,
             auto_balanced_processes: 0,
             auto_balance_message: "Auto-balance disabled.".to_owned(),
             auto_balance_total_cpu_usage_tenths: None,
@@ -1567,6 +1599,27 @@ fn cpu_pressure_should_run(
         });
 
     foreground_pressure || system_pressure
+}
+
+fn cpu_pressure_above_restore_threshold(
+    settings: &ForegroundResponsivenessSettings,
+    foreground_cpu_usage_percent: Option<f32>,
+    total_cpu_usage_percent: Option<f32>,
+) -> bool {
+    let foreground_saturated =
+        foreground_cpu_usage_percent.is_some_and(foreground_cpu_saturates_workload);
+    if foreground_saturated {
+        return false;
+    }
+
+    let restore_threshold = auto_balance_pressure_restore_threshold(settings);
+    foreground_cpu_usage_percent.is_some_and(|usage| usage >= restore_threshold)
+        || total_cpu_usage_percent.is_some_and(|usage| usage >= restore_threshold)
+}
+
+fn auto_balance_pressure_restore_threshold(settings: &ForegroundResponsivenessSettings) -> f32 {
+    let trigger = settings.auto_balance_total_threshold_percent.min(100);
+    f32::from(trigger.saturating_sub(AUTO_BALANCE_PRESSURE_RESTORE_BAND_PERCENT))
 }
 
 fn foreground_cpu_saturates_workload(usage: f32) -> bool {
@@ -2656,6 +2709,22 @@ mod tests {
         assert!(!auto_balance_should_run(&settings, Some(10.0), Some(69.0)));
         assert!(auto_balance_should_run(&settings, Some(10.0), Some(70.0)));
         assert!(auto_balance_should_run(&settings, None, Some(70.0)));
+    }
+
+    #[test]
+    fn auto_balance_pressure_uses_restore_band_before_stopping() {
+        let settings = ForegroundResponsivenessSettings {
+            auto_balance_enabled: true,
+            auto_balance_total_threshold_percent: 70,
+            auto_balance_restore_threshold_percent: 20,
+            ..Default::default()
+        };
+        let mut manager = ForegroundResponsivenessManager::default();
+
+        assert!(!manager.update_auto_balance_pressure(&settings, Some(10.0), Some(69.0)));
+        assert!(manager.update_auto_balance_pressure(&settings, Some(10.0), Some(70.0)));
+        assert!(manager.update_auto_balance_pressure(&settings, Some(10.0), Some(66.0)));
+        assert!(!manager.update_auto_balance_pressure(&settings, Some(10.0), Some(64.0)));
     }
 
     #[test]

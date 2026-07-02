@@ -74,6 +74,7 @@ const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+const SCHEDULE_RULE_MAX_SLEEP: Duration = Duration::from_secs(60 * 60);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 
 pub struct BackgroundAutomation {
@@ -1282,6 +1283,7 @@ fn timer_resolution_required(settings: &Settings) -> bool {
 fn effective_io_priority_settings(
     settings: &Settings,
     launch_boost_active: bool,
+    auto_balance_active: bool,
 ) -> crate::config::IoPrioritySettings {
     let mut io_priority = settings.io_priority.clone();
     if launch_boost_active {
@@ -1293,6 +1295,7 @@ fn effective_io_priority_settings(
         && settings
             .foreground_responsiveness
             .lower_background_io_priority_enabled
+        && auto_balance_active
     {
         io_priority.enabled = true;
         io_priority.foreground_detection_enabled = true;
@@ -1471,16 +1474,24 @@ fn hidden_power_plan_check_delay(
         return Some(configured_check_interval(settings));
     }
 
+    let mut delay = None;
     if cpu_usage_rules_required(settings) {
-        return Some(CPU_USAGE_REFRESH_INTERVAL);
+        delay = Some(min_worker_wait(delay, CPU_USAGE_REFRESH_INTERVAL));
     }
     if schedule_rules_required(settings) {
-        return Some(configured_check_interval(settings));
+        let schedule_delay = Scheduler
+            .next_change_delay(&settings.schedule_mode)
+            .map(|delay| delay.min(SCHEDULE_RULE_MAX_SLEEP))
+            .unwrap_or_else(|| configured_check_interval(settings));
+        delay = Some(min_worker_wait(delay, schedule_delay));
     }
     if performance_mode_required(settings) {
-        return Some(PERFORMANCE_MODE_REFRESH_INTERVAL);
+        delay = Some(min_worker_wait(delay, PERFORMANCE_MODE_REFRESH_INTERVAL));
     }
-    activity_idle_check_delay(settings)
+    if let Some(activity_delay) = activity_idle_check_delay(settings) {
+        delay = Some(min_worker_wait(delay, activity_delay));
+    }
+    delay
 }
 
 fn activity_idle_check_delay(settings: &Settings) -> Option<Duration> {
@@ -1602,6 +1613,7 @@ struct HiddenAutomationRunner {
     action_log: ActionLog,
     foreground_responsiveness_manager: ForegroundResponsivenessManager,
     launch_boost_active: bool,
+    auto_balance_active: bool,
     cpu_priority_manager: CpuPriorityManager,
     thread_priority_manager: ThreadPriorityManager,
     priority_boost_manager: PriorityBoostManager,
@@ -1834,12 +1846,16 @@ impl HiddenAutomationRunner {
             &mut self.action_log,
         );
         self.launch_boost_active = snapshot.launch_boost_active;
+        self.auto_balance_active = snapshot.auto_balance_active;
         snapshot
     }
 
     fn run_io_priority_update(&mut self, settings: &Settings) -> IoPrioritySnapshot {
-        let io_priority_settings =
-            effective_io_priority_settings(settings, self.launch_boost_active);
+        let io_priority_settings = effective_io_priority_settings(
+            settings,
+            self.launch_boost_active,
+            self.auto_balance_active,
+        );
         self.io_priority_manager.update(
             &io_priority_settings,
             settings.general.enabled,
@@ -2037,7 +2053,9 @@ fn switch_failure_key(target_guid: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ForegroundRule;
+    use chrono::{Datelike, Duration as ChronoDuration, Local};
+
+    use crate::config::{ForegroundRule, ScheduleRule, WeekdaySetting};
 
     #[test]
     fn process_appearance_detector_ignores_initial_snapshot() {
@@ -2222,7 +2240,7 @@ mod tests {
     #[test]
     fn launch_boost_forces_background_io_assist() {
         let settings = Settings::default();
-        let io_priority = effective_io_priority_settings(&settings, true);
+        let io_priority = effective_io_priority_settings(&settings, true, false);
 
         assert!(io_priority.enabled);
         assert!(io_priority.foreground_detection_enabled);
@@ -2233,6 +2251,33 @@ mod tests {
         assert_eq!(
             io_priority.background_priority.priority(),
             Some(ProcessIoPriority::VeryLow)
+        );
+    }
+
+    #[test]
+    fn auto_balance_io_assist_waits_for_pressure() {
+        let mut settings = Settings::default();
+        settings.foreground_responsiveness.enabled = true;
+        settings
+            .foreground_responsiveness
+            .lower_background_io_priority_enabled = true;
+        settings
+            .foreground_responsiveness
+            .lower_background_io_priority = ProcessIoPriority::Low;
+
+        assert!(!effective_io_priority_settings(&settings, false, false).enabled);
+
+        let io_priority = effective_io_priority_settings(&settings, false, true);
+
+        assert!(io_priority.enabled);
+        assert!(io_priority.foreground_detection_enabled);
+        assert_eq!(
+            io_priority.foreground_priority.priority(),
+            Some(ProcessIoPriority::Normal)
+        );
+        assert_eq!(
+            io_priority.background_priority.priority(),
+            Some(ProcessIoPriority::Low)
         );
     }
 
@@ -2322,6 +2367,50 @@ mod tests {
         assert!(windows_event_watcher_required(&settings));
         assert!(hidden_power_plan_check_delay(&settings, true).is_none());
         assert!(hidden_power_plan_check_delay(&settings, false).is_some());
+    }
+
+    #[test]
+    fn hidden_schedule_checks_sleep_until_next_time_boundary() {
+        let mut settings = Settings::default();
+        settings.activity_mode.enabled = false;
+        settings.schedule_mode.enabled = true;
+        let starts_at = Local::now() + ChronoDuration::minutes(3);
+        let ends_at = starts_at + ChronoDuration::minutes(1);
+        settings.schedule_mode.rules = vec![ScheduleRule {
+            enabled: true,
+            name: "Soon".to_owned(),
+            days: vec![WeekdaySetting::from_chrono(starts_at.weekday())],
+            start_time: starts_at.format("%H:%M").to_string(),
+            end_time: ends_at.format("%H:%M").to_string(),
+            power_plan_guid: Some("scheduled-guid".to_owned()),
+        }];
+
+        let delay = hidden_power_plan_check_delay(&settings, true).unwrap();
+
+        assert!(delay > configured_check_interval(&settings));
+        assert!(delay <= Duration::from_secs(180));
+    }
+
+    #[test]
+    fn hidden_schedule_checks_cap_long_sleeps() {
+        let mut settings = Settings::default();
+        settings.activity_mode.enabled = false;
+        settings.schedule_mode.enabled = true;
+        let starts_at = Local::now() + ChronoDuration::days(1);
+        let ends_at = starts_at + ChronoDuration::minutes(1);
+        settings.schedule_mode.rules = vec![ScheduleRule {
+            enabled: true,
+            name: "Tomorrow".to_owned(),
+            days: vec![WeekdaySetting::from_chrono(starts_at.weekday())],
+            start_time: starts_at.format("%H:%M").to_string(),
+            end_time: ends_at.format("%H:%M").to_string(),
+            power_plan_guid: Some("scheduled-guid".to_owned()),
+        }];
+
+        assert_eq!(
+            hidden_power_plan_check_delay(&settings, true),
+            Some(SCHEDULE_RULE_MAX_SLEEP)
+        );
     }
 
     #[test]
