@@ -27,14 +27,14 @@ pub enum ActionLogFeature {
     EcoQos,
     CpuLimiter,
     PerformanceMode,
-    ForegroundResponsiveness,
-    CpuPriority,
+    WorkloadEngine,
+    ProcessPriority,
     ThreadPriority,
     PriorityBoost,
     IoPriority,
     GpuPriority,
     MemoryPriority,
-    SmartTrim,
+    MemoryTrim,
     TimerResolution,
 }
 

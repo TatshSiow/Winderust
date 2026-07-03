@@ -31,9 +31,9 @@ pub struct Settings {
     #[serde(default)]
     pub performance_mode: PerformanceModeSettings,
     #[serde(default)]
-    pub foreground_responsiveness: ForegroundResponsivenessSettings,
+    pub workload_engine: WorkloadEngineSettings,
     #[serde(default)]
-    pub cpu_priority: CpuPrioritySettings,
+    pub process_priority: ProcessPrioritySettings,
     #[serde(default)]
     pub thread_priority: ThreadPrioritySettings,
     #[serde(default)]
@@ -45,7 +45,7 @@ pub struct Settings {
     #[serde(default)]
     pub memory_priority: MemoryPrioritySettings,
     #[serde(default)]
-    pub smart_trim: SmartTrimSettings,
+    pub memory_trim: MemoryTrimSettings,
     #[serde(default)]
     pub timer_resolution: TimerResolutionSettings,
 }
@@ -405,9 +405,9 @@ pub struct ProcessExclusionRule {
     pub enabled: bool,
     pub process_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_foreground_priority: Option<ProcessCpuPrioritySetting>,
+    pub process_foreground_priority: Option<ProcessPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cpu_background_priority: Option<ProcessCpuPrioritySetting>,
+    pub process_background_priority: Option<ProcessPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_foreground_priority: Option<ProcessThreadPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -435,8 +435,8 @@ impl Default for ProcessExclusionRule {
         Self {
             enabled: true,
             process_name: String::new(),
-            cpu_foreground_priority: None,
-            cpu_background_priority: None,
+            process_foreground_priority: None,
+            process_background_priority: None,
             thread_foreground_priority: None,
             thread_background_priority: None,
             priority_boost_foreground: None,
@@ -452,24 +452,24 @@ impl Default for ProcessExclusionRule {
 }
 
 impl ProcessExclusionRule {
-    pub fn cpu_priority_override(&self, foreground: bool) -> ProcessCpuPrioritySetting {
+    pub fn process_priority_override(&self, foreground: bool) -> ProcessPrioritySetting {
         if foreground {
-            self.cpu_foreground_priority.unwrap_or_default()
+            self.process_foreground_priority.unwrap_or_default()
         } else {
-            self.cpu_background_priority.unwrap_or_default()
+            self.process_background_priority.unwrap_or_default()
         }
     }
 
-    pub fn set_cpu_priority_override(
+    pub fn set_process_priority_override(
         &mut self,
         foreground: bool,
-        priority: ProcessCpuPrioritySetting,
+        priority: ProcessPrioritySetting,
     ) {
         set_optional_default(
             if foreground {
-                &mut self.cpu_foreground_priority
+                &mut self.process_foreground_priority
             } else {
-                &mut self.cpu_background_priority
+                &mut self.process_background_priority
             },
             priority,
         );
@@ -651,34 +651,34 @@ pub struct PerformanceModeRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ForegroundResponsivenessSettings {
+pub struct WorkloadEngineSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub lower_background_apps: bool,
     #[serde(default = "default_true")]
-    pub auto_balance_efficiency_mode_enabled: bool,
-    #[serde(default = "default_auto_balance_background_priority")]
-    pub auto_balance_background_priority: ProcessPriority,
+    pub workload_engine_efficiency_mode_enabled: bool,
+    #[serde(default = "default_workload_engine_background_priority")]
+    pub workload_engine_background_priority: ProcessPriority,
     #[serde(default)]
     pub lower_background_affinity_enabled: bool,
     #[serde(default)]
     pub lower_background_io_priority_enabled: bool,
     #[serde(default)]
     pub lower_background_io_priority: ProcessIoPriority,
-    #[serde(default = "default_auto_balance_io_priority_settings")]
-    pub auto_balance_io_priority: IoPrioritySettings,
-    #[serde(default = "default_auto_balance_thread_priority_settings")]
-    pub auto_balance_thread_priority: ThreadPrioritySettings,
-    #[serde(default = "default_auto_balance_priority_boost_settings")]
-    pub auto_balance_priority_boost: PriorityBoostSettings,
-    #[serde(default = "default_auto_balance_gpu_priority_settings")]
-    pub auto_balance_gpu_priority: GpuPrioritySettings,
+    #[serde(default = "default_workload_engine_io_priority_settings")]
+    pub workload_engine_io_priority: IoPrioritySettings,
+    #[serde(default = "default_workload_engine_thread_priority_settings")]
+    pub workload_engine_thread_priority: ThreadPrioritySettings,
+    #[serde(default = "default_workload_engine_priority_boost_settings")]
+    pub workload_engine_priority_boost: PriorityBoostSettings,
+    #[serde(default = "default_workload_engine_gpu_priority_settings")]
+    pub workload_engine_gpu_priority: GpuPrioritySettings,
     #[serde(default)]
-    pub auto_balance_memory_priority_enabled: bool,
-    #[serde(default = "default_auto_balance_foreground_memory_priority")]
-    pub auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting,
+    pub workload_engine_memory_priority_enabled: bool,
+    #[serde(default = "default_workload_engine_foreground_memory_priority")]
+    pub workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting,
     #[serde(default)]
-    pub auto_balance_memory_priority: ProcessMemoryPriority,
+    pub workload_engine_memory_priority: ProcessMemoryPriority,
     #[serde(default)]
     pub lower_background_affinity_mode: EcoQosCpuRestrictionMode,
     #[serde(default = "default_eco_qos_cpu_restriction_percent")]
@@ -688,33 +688,33 @@ pub struct ForegroundResponsivenessSettings {
     #[serde(default = "default_true")]
     pub lower_background_auto_cpu_percent: bool,
     #[serde(default)]
-    pub auto_balance_enabled: bool,
+    pub workload_engine_enabled: bool,
     #[serde(default)]
-    pub auto_balance_advanced_settings_enabled: bool,
+    pub workload_engine_advanced_settings_enabled: bool,
     #[serde(default)]
-    pub auto_balance_affinity_escalation_enabled: bool,
+    pub workload_engine_affinity_escalation_enabled: bool,
     #[serde(default)]
-    pub auto_balance_affinity_mode: EcoQosCpuRestrictionMode,
-    #[serde(default = "default_auto_balance_cpu_percent")]
-    pub auto_balance_cpu_percent: u8,
+    pub workload_engine_affinity_mode: EcoQosCpuRestrictionMode,
+    #[serde(default = "default_workload_engine_cpu_percent")]
+    pub workload_engine_cpu_percent: u8,
     #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
-    pub auto_balance_max_logical_processors: u8,
-    #[serde(default = "default_auto_balance_total_threshold_percent")]
-    pub auto_balance_total_threshold_percent: u8,
-    #[serde(default = "default_auto_balance_threshold_percent")]
-    pub auto_balance_threshold_percent: u8,
-    #[serde(default = "default_auto_balance_restore_threshold_percent")]
-    pub auto_balance_restore_threshold_percent: u8,
-    #[serde(default = "default_auto_balance_sustain_seconds")]
-    pub auto_balance_sustain_seconds: u64,
-    #[serde(default = "default_auto_balance_minimum_restraint_seconds")]
-    pub auto_balance_minimum_restraint_seconds: u64,
-    #[serde(default = "default_auto_balance_cooldown_seconds")]
-    pub auto_balance_cooldown_seconds: u64,
-    #[serde(default = "default_auto_balance_max_targeted_processes")]
-    pub auto_balance_max_targeted_processes: u8,
+    pub workload_engine_max_logical_processors: u8,
+    #[serde(default = "default_workload_engine_total_threshold_percent")]
+    pub workload_engine_total_threshold_percent: u8,
+    #[serde(default = "default_workload_engine_threshold_percent")]
+    pub workload_engine_threshold_percent: u8,
+    #[serde(default = "default_workload_engine_restore_threshold_percent")]
+    pub workload_engine_restore_threshold_percent: u8,
+    #[serde(default = "default_workload_engine_sustain_seconds")]
+    pub workload_engine_sustain_seconds: u64,
+    #[serde(default = "default_workload_engine_minimum_restraint_seconds")]
+    pub workload_engine_minimum_restraint_seconds: u64,
+    #[serde(default = "default_workload_engine_cooldown_seconds")]
+    pub workload_engine_cooldown_seconds: u64,
+    #[serde(default = "default_workload_engine_max_targeted_processes")]
+    pub workload_engine_max_targeted_processes: u8,
     #[serde(default)]
-    pub auto_balance_exclusions: Vec<ProcessExclusionRule>,
+    pub workload_engine_exclusions: Vec<ProcessExclusionRule>,
     #[serde(default)]
     pub boost_foreground_app: bool,
     #[serde(default)]
@@ -743,14 +743,14 @@ pub struct IoPrioritySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CpuPrioritySettings {
+pub struct ProcessPrioritySettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
-    #[serde(default = "default_cpu_priority_foreground")]
-    pub foreground_priority: ProcessCpuPrioritySetting,
-    #[serde(default = "default_cpu_priority_background")]
-    pub background_priority: ProcessCpuPrioritySetting,
+    #[serde(default = "default_process_priority_foreground")]
+    pub foreground_priority: ProcessPrioritySetting,
+    #[serde(default = "default_process_priority_background")]
+    pub background_priority: ProcessPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
     #[serde(default = "default_true")]
@@ -833,23 +833,23 @@ pub struct TimerResolutionSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SmartTrimSettings {
+pub struct MemoryTrimSettings {
     pub enabled: bool,
-    #[serde(default = "default_smart_trim_check_interval_minutes")]
+    #[serde(default = "default_memory_trim_check_interval_minutes")]
     pub check_interval_minutes: u64,
     #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default = "default_true")]
     pub trim_working_sets: bool,
-    #[serde(default = "default_smart_trim_system_memory_load_threshold_percent")]
+    #[serde(default = "default_memory_trim_system_memory_load_threshold_percent")]
     pub system_memory_load_threshold_percent: u8,
-    #[serde(default = "default_smart_trim_process_working_set_threshold_mb")]
+    #[serde(default = "default_memory_trim_process_working_set_threshold_mb")]
     pub process_working_set_threshold_mb: u64,
-    #[serde(default = "default_smart_trim_process_cpu_idle_threshold_percent")]
+    #[serde(default = "default_memory_trim_process_cpu_idle_threshold_percent")]
     pub process_cpu_idle_threshold_percent: u8,
-    #[serde(default = "default_smart_trim_process_idle_seconds")]
+    #[serde(default = "default_memory_trim_process_idle_seconds")]
     pub process_idle_seconds: u64,
-    #[serde(default = "default_smart_trim_cooldown_seconds")]
+    #[serde(default = "default_memory_trim_cooldown_seconds")]
     pub trim_cooldown_seconds: u64,
     #[serde(default)]
     pub purge_standby_list: bool,
@@ -857,7 +857,7 @@ pub struct SmartTrimSettings {
     pub purge_system_file_cache: bool,
     #[serde(default = "default_true")]
     pub purge_only_in_performance_mode: bool,
-    #[serde(default = "default_smart_trim_purge_free_ram_threshold_mb")]
+    #[serde(default = "default_memory_trim_purge_free_ram_threshold_mb")]
     pub purge_free_ram_threshold_mb: u64,
     #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
@@ -1128,7 +1128,7 @@ impl From<ProcessMemoryPriority> for ProcessMemoryPrioritySetting {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProcessCpuPrioritySetting {
+pub enum ProcessPrioritySetting {
     #[default]
     Default,
     Auto,
@@ -1205,7 +1205,7 @@ impl ProcessThreadPrioritySetting {
     }
 }
 
-impl ProcessCpuPrioritySetting {
+impl ProcessPrioritySetting {
     pub const ALL: [Self; 6] = [
         Self::Default,
         Self::Idle,
@@ -1435,14 +1435,14 @@ impl Default for Settings {
             background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
             cpu_limiter: CpuLimiterSettings::default(),
             performance_mode: PerformanceModeSettings::default(),
-            foreground_responsiveness: ForegroundResponsivenessSettings::default(),
-            cpu_priority: CpuPrioritySettings::default(),
+            workload_engine: WorkloadEngineSettings::default(),
+            process_priority: ProcessPrioritySettings::default(),
             thread_priority: ThreadPrioritySettings::default(),
             priority_boost: PriorityBoostSettings::default(),
             io_priority: IoPrioritySettings::default(),
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
-            smart_trim: SmartTrimSettings::default(),
+            memory_trim: MemoryTrimSettings::default(),
             timer_resolution: TimerResolutionSettings::default(),
         }
     }
@@ -1547,12 +1547,12 @@ const fn default_io_priority_background() -> ProcessIoPrioritySetting {
     ProcessIoPrioritySetting::VeryLow
 }
 
-const fn default_cpu_priority_foreground() -> ProcessCpuPrioritySetting {
-    ProcessCpuPrioritySetting::Default
+const fn default_process_priority_foreground() -> ProcessPrioritySetting {
+    ProcessPrioritySetting::Default
 }
 
-const fn default_cpu_priority_background() -> ProcessCpuPrioritySetting {
-    ProcessCpuPrioritySetting::BelowNormal
+const fn default_process_priority_background() -> ProcessPrioritySetting {
+    ProcessPrioritySetting::BelowNormal
 }
 
 const fn default_thread_priority_foreground() -> ProcessThreadPrioritySetting {
@@ -1587,47 +1587,47 @@ const fn default_memory_priority_background() -> ProcessMemoryPrioritySetting {
     ProcessMemoryPrioritySetting::Low
 }
 
-const fn default_auto_balance_threshold_percent() -> u8 {
+const fn default_workload_engine_threshold_percent() -> u8 {
     30
 }
 
-const fn default_auto_balance_restore_threshold_percent() -> u8 {
+const fn default_workload_engine_restore_threshold_percent() -> u8 {
     10
 }
 
-const fn default_auto_balance_total_threshold_percent() -> u8 {
+const fn default_workload_engine_total_threshold_percent() -> u8 {
     75
 }
 
-const fn default_auto_balance_cpu_percent() -> u8 {
+const fn default_workload_engine_cpu_percent() -> u8 {
     75
 }
 
-const fn default_auto_balance_sustain_seconds() -> u64 {
+const fn default_workload_engine_sustain_seconds() -> u64 {
     3
 }
 
-const fn default_auto_balance_minimum_restraint_seconds() -> u64 {
+const fn default_workload_engine_minimum_restraint_seconds() -> u64 {
     3
 }
 
-const fn default_auto_balance_cooldown_seconds() -> u64 {
+const fn default_workload_engine_cooldown_seconds() -> u64 {
     6
 }
 
-const fn default_auto_balance_max_targeted_processes() -> u8 {
+const fn default_workload_engine_max_targeted_processes() -> u8 {
     6
 }
 
-const fn default_auto_balance_background_priority() -> ProcessPriority {
+const fn default_workload_engine_background_priority() -> ProcessPriority {
     ProcessPriority::BelowNormal
 }
 
-const fn default_auto_balance_foreground_memory_priority() -> ProcessMemoryPrioritySetting {
+const fn default_workload_engine_foreground_memory_priority() -> ProcessMemoryPrioritySetting {
     ProcessMemoryPrioritySetting::Default
 }
 
-fn default_auto_balance_io_priority_settings() -> IoPrioritySettings {
+fn default_workload_engine_io_priority_settings() -> IoPrioritySettings {
     IoPrioritySettings {
         enabled: false,
         foreground_detection_enabled: true,
@@ -1639,7 +1639,7 @@ fn default_auto_balance_io_priority_settings() -> IoPrioritySettings {
     }
 }
 
-fn default_auto_balance_thread_priority_settings() -> ThreadPrioritySettings {
+fn default_workload_engine_thread_priority_settings() -> ThreadPrioritySettings {
     ThreadPrioritySettings {
         enabled: true,
         foreground_detection_enabled: true,
@@ -1651,7 +1651,7 @@ fn default_auto_balance_thread_priority_settings() -> ThreadPrioritySettings {
     }
 }
 
-fn default_auto_balance_priority_boost_settings() -> PriorityBoostSettings {
+fn default_workload_engine_priority_boost_settings() -> PriorityBoostSettings {
     PriorityBoostSettings {
         enabled: true,
         foreground_detection_enabled: true,
@@ -1661,7 +1661,7 @@ fn default_auto_balance_priority_boost_settings() -> PriorityBoostSettings {
     }
 }
 
-fn default_auto_balance_gpu_priority_settings() -> GpuPrioritySettings {
+fn default_workload_engine_gpu_priority_settings() -> GpuPrioritySettings {
     GpuPrioritySettings {
         enabled: true,
         foreground_detection_enabled: true,
@@ -1693,31 +1693,31 @@ const fn default_cpu_limiter_max_logical_processors() -> u8 {
     1
 }
 
-const fn default_smart_trim_system_memory_load_threshold_percent() -> u8 {
+const fn default_memory_trim_system_memory_load_threshold_percent() -> u8 {
     65
 }
 
-const fn default_smart_trim_process_working_set_threshold_mb() -> u64 {
+const fn default_memory_trim_process_working_set_threshold_mb() -> u64 {
     196
 }
 
-const fn default_smart_trim_process_cpu_idle_threshold_percent() -> u8 {
+const fn default_memory_trim_process_cpu_idle_threshold_percent() -> u8 {
     1
 }
 
-const fn default_smart_trim_process_idle_seconds() -> u64 {
+const fn default_memory_trim_process_idle_seconds() -> u64 {
     300
 }
 
-const fn default_smart_trim_cooldown_seconds() -> u64 {
+const fn default_memory_trim_cooldown_seconds() -> u64 {
     900
 }
 
-const fn default_smart_trim_check_interval_minutes() -> u64 {
+const fn default_memory_trim_check_interval_minutes() -> u64 {
     15
 }
 
-const fn default_smart_trim_purge_free_ram_threshold_mb() -> u64 {
+const fn default_memory_trim_purge_free_ram_threshold_mb() -> u64 {
     1024
 }
 
@@ -1869,46 +1869,48 @@ impl Default for CpuLimiterSettings {
     }
 }
 
-impl Default for ForegroundResponsivenessSettings {
+impl Default for WorkloadEngineSettings {
     fn default() -> Self {
         Self {
             enabled: false,
             lower_background_apps: default_true(),
-            auto_balance_efficiency_mode_enabled: default_true(),
-            auto_balance_background_priority: default_auto_balance_background_priority(),
+            workload_engine_efficiency_mode_enabled: default_true(),
+            workload_engine_background_priority: default_workload_engine_background_priority(),
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
-            auto_balance_io_priority: default_auto_balance_io_priority_settings(),
-            auto_balance_thread_priority: default_auto_balance_thread_priority_settings(),
-            auto_balance_priority_boost: default_auto_balance_priority_boost_settings(),
-            auto_balance_gpu_priority: default_auto_balance_gpu_priority_settings(),
-            auto_balance_memory_priority_enabled: false,
-            auto_balance_foreground_memory_priority:
-                default_auto_balance_foreground_memory_priority(),
-            auto_balance_memory_priority: ProcessMemoryPriority::Low,
+            workload_engine_io_priority: default_workload_engine_io_priority_settings(),
+            workload_engine_thread_priority: default_workload_engine_thread_priority_settings(),
+            workload_engine_priority_boost: default_workload_engine_priority_boost_settings(),
+            workload_engine_gpu_priority: default_workload_engine_gpu_priority_settings(),
+            workload_engine_memory_priority_enabled: false,
+            workload_engine_foreground_memory_priority:
+                default_workload_engine_foreground_memory_priority(),
+            workload_engine_memory_priority: ProcessMemoryPriority::Low,
             lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             lower_background_cpu_percent: default_eco_qos_cpu_restriction_percent(),
             lower_background_max_logical_processors:
                 default_eco_qos_cpu_restriction_max_logical_processors(),
             lower_background_auto_cpu_percent: default_true(),
-            auto_balance_enabled: false,
-            auto_balance_advanced_settings_enabled: false,
-            auto_balance_affinity_escalation_enabled: false,
-            auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            auto_balance_cpu_percent: default_auto_balance_cpu_percent(),
-            auto_balance_max_logical_processors:
+            workload_engine_enabled: false,
+            workload_engine_advanced_settings_enabled: false,
+            workload_engine_affinity_escalation_enabled: false,
+            workload_engine_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            workload_engine_cpu_percent: default_workload_engine_cpu_percent(),
+            workload_engine_max_logical_processors:
                 default_eco_qos_cpu_restriction_max_logical_processors(),
-            auto_balance_total_threshold_percent: default_auto_balance_total_threshold_percent(),
-            auto_balance_threshold_percent: default_auto_balance_threshold_percent(),
-            auto_balance_restore_threshold_percent: default_auto_balance_restore_threshold_percent(
+            workload_engine_total_threshold_percent:
+                default_workload_engine_total_threshold_percent(),
+            workload_engine_threshold_percent: default_workload_engine_threshold_percent(),
+            workload_engine_restore_threshold_percent:
+                default_workload_engine_restore_threshold_percent(),
+            workload_engine_sustain_seconds: default_workload_engine_sustain_seconds(),
+            workload_engine_minimum_restraint_seconds:
+                default_workload_engine_minimum_restraint_seconds(),
+            workload_engine_cooldown_seconds: default_workload_engine_cooldown_seconds(),
+            workload_engine_max_targeted_processes: default_workload_engine_max_targeted_processes(
             ),
-            auto_balance_sustain_seconds: default_auto_balance_sustain_seconds(),
-            auto_balance_minimum_restraint_seconds: default_auto_balance_minimum_restraint_seconds(
-            ),
-            auto_balance_cooldown_seconds: default_auto_balance_cooldown_seconds(),
-            auto_balance_max_targeted_processes: default_auto_balance_max_targeted_processes(),
-            auto_balance_exclusions: Vec::new(),
+            workload_engine_exclusions: Vec::new(),
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
             foreground_stability_delay_ms: default_foreground_stability_delay_ms(),
@@ -1931,13 +1933,13 @@ impl Default for IoPrioritySettings {
     }
 }
 
-impl Default for CpuPrioritySettings {
+impl Default for ProcessPrioritySettings {
     fn default() -> Self {
         Self {
             enabled: false,
             foreground_detection_enabled: default_true(),
-            foreground_priority: default_cpu_priority_foreground(),
-            background_priority: default_cpu_priority_background(),
+            foreground_priority: default_process_priority_foreground(),
+            background_priority: default_process_priority_background(),
             preserve_foreground_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
@@ -2009,24 +2011,25 @@ impl Default for TimerResolutionSettings {
     }
 }
 
-impl Default for SmartTrimSettings {
+impl Default for MemoryTrimSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            check_interval_minutes: default_smart_trim_check_interval_minutes(),
+            check_interval_minutes: default_memory_trim_check_interval_minutes(),
             exclude_foreground_app: default_true(),
             trim_working_sets: default_true(),
             system_memory_load_threshold_percent:
-                default_smart_trim_system_memory_load_threshold_percent(),
-            process_working_set_threshold_mb: default_smart_trim_process_working_set_threshold_mb(),
+                default_memory_trim_system_memory_load_threshold_percent(),
+            process_working_set_threshold_mb: default_memory_trim_process_working_set_threshold_mb(
+            ),
             process_cpu_idle_threshold_percent:
-                default_smart_trim_process_cpu_idle_threshold_percent(),
-            process_idle_seconds: default_smart_trim_process_idle_seconds(),
-            trim_cooldown_seconds: default_smart_trim_cooldown_seconds(),
+                default_memory_trim_process_cpu_idle_threshold_percent(),
+            process_idle_seconds: default_memory_trim_process_idle_seconds(),
+            trim_cooldown_seconds: default_memory_trim_cooldown_seconds(),
             purge_standby_list: false,
             purge_system_file_cache: false,
             purge_only_in_performance_mode: default_true(),
-            purge_free_ram_threshold_mb: default_smart_trim_purge_free_ram_threshold_mb(),
+            purge_free_ram_threshold_mb: default_memory_trim_purge_free_ram_threshold_mb(),
             exclusions: Vec::new(),
         }
     }
@@ -2063,7 +2066,7 @@ impl IoPrioritySettings {
     }
 }
 
-impl CpuPrioritySettings {
+impl ProcessPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
@@ -2074,12 +2077,12 @@ impl CpuPrioritySettings {
         &self,
         process_name: &str,
         foreground: bool,
-    ) -> Option<Option<ProcessCpuPrioritySetting>> {
+    ) -> Option<Option<ProcessPrioritySetting>> {
         process_custom_rule_override(
             &self.exclusions,
             process_name,
             foreground,
-            |rule, foreground| rule.cpu_priority_override(foreground),
+            |rule, foreground| rule.process_priority_override(foreground),
         )
     }
 }
@@ -2232,7 +2235,7 @@ impl TimerResolutionSettings {
     }
 }
 
-impl SmartTrimSettings {
+impl MemoryTrimSettings {
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
         self.exclusions.iter().any(|rule| {
             rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
@@ -2321,21 +2324,21 @@ impl CpuAffinitySettings {
     }
 }
 
-impl ForegroundResponsivenessSettings {
+impl WorkloadEngineSettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules
             .iter()
             .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
-    pub fn contains_auto_balance_exclusion(&self, process_name: &str) -> bool {
-        self.auto_balance_exclusions
+    pub fn contains_workload_engine_exclusion(&self, process_name: &str) -> bool {
+        self.workload_engine_exclusions
             .iter()
             .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
-    pub fn auto_balance_exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.auto_balance_exclusions.iter().any(|rule| {
+    pub fn workload_engine_exclusion_enabled_for(&self, process_name: &str) -> bool {
+        self.workload_engine_exclusions.iter().any(|rule| {
             rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
         })
     }
@@ -2538,9 +2541,9 @@ mod tests {
     }
 
     #[test]
-    fn auto_balance_exclusions_support_wildcards() {
-        let settings = ForegroundResponsivenessSettings {
-            auto_balance_exclusions: vec![
+    fn workload_engine_exclusions_support_wildcards() {
+        let settings = WorkloadEngineSettings {
+            workload_engine_exclusions: vec![
                 ProcessExclusionRule {
                     enabled: true,
                     process_name: "game*.exe".to_owned(),
@@ -2560,21 +2563,21 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(settings.auto_balance_exclusion_enabled_for("GameClient.exe"));
-        assert!(settings.auto_balance_exclusion_enabled_for("worker1.exe"));
-        assert!(!settings.auto_balance_exclusion_enabled_for("worker12.exe"));
-        assert!(!settings.auto_balance_exclusion_enabled_for("disabled.exe"));
+        assert!(settings.workload_engine_exclusion_enabled_for("GameClient.exe"));
+        assert!(settings.workload_engine_exclusion_enabled_for("worker1.exe"));
+        assert!(!settings.workload_engine_exclusion_enabled_for("worker12.exe"));
+        assert!(!settings.workload_engine_exclusion_enabled_for("disabled.exe"));
     }
 
     #[test]
-    fn realtime_cpu_priority_downgrades_when_advanced_is_hidden() {
+    fn realtime_process_priority_downgrades_when_advanced_is_hidden() {
         assert_eq!(
-            ProcessCpuPrioritySetting::Realtime.safe_when_advanced_disabled(),
-            ProcessCpuPrioritySetting::High
+            ProcessPrioritySetting::Realtime.safe_when_advanced_disabled(),
+            ProcessPrioritySetting::High
         );
         assert_eq!(
-            ProcessCpuPrioritySetting::BelowNormal.safe_when_advanced_disabled(),
-            ProcessCpuPrioritySetting::BelowNormal
+            ProcessPrioritySetting::BelowNormal.safe_when_advanced_disabled(),
+            ProcessPrioritySetting::BelowNormal
         );
     }
 

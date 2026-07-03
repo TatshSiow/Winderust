@@ -14,7 +14,7 @@ use crate::win_util::{last_error, WinHandle};
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::{CpuPrioritySettings, ProcessCpuPrioritySetting},
+    config::{ProcessPrioritySetting, ProcessPrioritySettings},
     foreground::{
         is_foreground_process, is_process_exited_message, list_processes, process_failure_key,
         process_names_by_id, process_session_id, same_process_name, unique_app_names,
@@ -26,7 +26,7 @@ use crate::{
 const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CpuPrioritySnapshot {
+pub struct ProcessPrioritySnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
@@ -39,7 +39,7 @@ pub struct CpuPrioritySnapshot {
 }
 
 #[derive(Default)]
-pub struct CpuPriorityManager {
+pub struct ProcessPriorityManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
     failure_suppression: ExecutionFailureTracker,
 }
@@ -52,24 +52,24 @@ struct AdjustedProcess {
 }
 
 #[derive(Debug)]
-enum CpuPriorityError {
+enum ProcessPriorityError {
     AccessDenied,
     ProcessExited,
     Failed(String),
 }
 
-impl CpuPriorityManager {
+impl ProcessPriorityManager {
     pub fn update(
         &mut self,
-        settings: &CpuPrioritySettings,
+        settings: &ProcessPrioritySettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
-    ) -> CpuPrioritySnapshot {
+    ) -> ProcessPrioritySnapshot {
         if !automation_enabled {
             let failures = self.clear_all(action_log, "automation disabled");
             self.failure_suppression.clear();
-            return CpuPrioritySnapshot {
+            return ProcessPrioritySnapshot {
                 enabled: false,
                 failed_processes: failures.count,
                 message: "Automation disabled.".to_owned(),
@@ -81,7 +81,7 @@ impl CpuPriorityManager {
         if !settings.enabled {
             let failures = self.clear_all(action_log, "Process priority defaults disabled");
             self.failure_suppression.clear();
-            return CpuPrioritySnapshot {
+            return ProcessPrioritySnapshot {
                 enabled: false,
                 failed_processes: failures.count,
                 message: "Process priority defaults disabled.".to_owned(),
@@ -94,7 +94,7 @@ impl CpuPriorityManager {
             && settings.foreground_priority != settings.background_priority;
         if foreground_sensitive && foreground_process_id.is_none() {
             let failures = self.clear_all(action_log, "foreground app is unknown");
-            return CpuPrioritySnapshot {
+            return ProcessPrioritySnapshot {
                 enabled: true,
                 failed_processes: failures.count,
                 message: "Paused: foreground app is unknown.".to_owned(),
@@ -106,7 +106,7 @@ impl CpuPriorityManager {
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(action_log, "current Windows session is unknown");
-            return CpuPrioritySnapshot {
+            return ProcessPrioritySnapshot {
                 enabled: true,
                 failed_processes: failures.count,
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -119,7 +119,7 @@ impl CpuPriorityManager {
             Ok(processes) => processes,
             Err(err) => {
                 let failures = self.clear_all(action_log, "process list unavailable");
-                return CpuPrioritySnapshot {
+                return ProcessPrioritySnapshot {
                     enabled: true,
                     failed_processes: failures.count,
                     message: err,
@@ -160,10 +160,10 @@ impl CpuPriorityManager {
                     foreground_process_name.as_deref(),
                 );
             let priority = match settings.override_for(&process.name, foreground) {
-                Some(Some(ProcessCpuPrioritySetting::Auto)) if foreground => {
+                Some(Some(ProcessPrioritySetting::Auto)) if foreground => {
                     settings.foreground_priority
                 }
-                Some(Some(ProcessCpuPrioritySetting::Auto)) => settings.background_priority,
+                Some(Some(ProcessPrioritySetting::Auto)) => settings.background_priority,
                 Some(Some(priority)) => priority,
                 Some(None) => continue,
                 None if foreground => settings.foreground_priority,
@@ -223,12 +223,12 @@ impl CpuPriorityManager {
                     skipped_processes += 1;
                     self.clear_process_failure(&process_name);
                 }
-                Err(CpuPriorityError::ProcessExited) => skipped_processes += 1,
-                Err(CpuPriorityError::AccessDenied) => {
+                Err(ProcessPriorityError::ProcessExited) => skipped_processes += 1,
+                Err(ProcessPriorityError::AccessDenied) => {
                     skipped_processes += 1;
                     self.record_process_failure(&process_name);
                     action_log.record(
-                        ActionLogFeature::CpuPriority,
+                        ActionLogFeature::ProcessPriority,
                         Some(process_id),
                         process_name,
                         ActionLogAction::Skip,
@@ -244,7 +244,7 @@ impl CpuPriorityManager {
         }
         if applied_processes > 0 {
             action_log.record(
-                ActionLogFeature::CpuPriority,
+                ActionLogFeature::ProcessPriority,
                 None,
                 "Process Priority",
                 ActionLogAction::Apply,
@@ -253,7 +253,7 @@ impl CpuPriorityManager {
             );
         }
 
-        CpuPrioritySnapshot {
+        ProcessPrioritySnapshot {
             enabled: true,
             scanned_processes,
             adjusted_processes: self.adjusted.len(),
@@ -278,7 +278,7 @@ impl CpuPriorityManager {
         foreground: bool,
         preserve_foreground: bool,
         preserve_background: bool,
-    ) -> Result<ApplyOutcome, CpuPriorityError> {
+    ) -> Result<ApplyOutcome, ProcessPriorityError> {
         let process = ProcessHandle::open(process_id)?;
         let reusable_existing = self
             .adjusted
@@ -287,7 +287,7 @@ impl CpuPriorityManager {
         let current_priority_class = process.priority_class()?;
 
         if current_priority_class == REALTIME_PRIORITY_CLASS {
-            return Err(CpuPriorityError::AccessDenied);
+            return Err(ProcessPriorityError::AccessDenied);
         }
 
         let baseline_priority_class = reusable_existing
@@ -297,8 +297,8 @@ impl CpuPriorityManager {
             foreground,
             preserve_foreground,
             preserve_background,
-            cpu_priority_rank(baseline_priority_class),
-            cpu_priority_rank(priority_class),
+            process_priority_rank(baseline_priority_class),
+            process_priority_rank(priority_class),
         ) {
             if let Some(adjusted) = self.adjusted.remove(&process_id) {
                 process.set_priority_class(adjusted.previous_priority_class)?;
@@ -317,7 +317,7 @@ impl CpuPriorityManager {
             process.set_priority_class(priority_class)?;
             let refreshed_priority_class = process.priority_class()?;
             if refreshed_priority_class != priority_class {
-                return Err(CpuPriorityError::Failed(format!(
+                return Err(ProcessPriorityError::Failed(format!(
                     "Process priority remained {} after requesting {}.",
                     priority_class_label(refreshed_priority_class),
                     priority_class_label(priority_class)
@@ -344,7 +344,7 @@ impl CpuPriorityManager {
         current_process_names: &BTreeMap<u32, String>,
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> CpuPriorityFailures {
+    ) -> ProcessPriorityFailures {
         let process_ids = self
             .adjusted
             .keys()
@@ -359,7 +359,7 @@ impl CpuPriorityManager {
         )
     }
 
-    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> CpuPriorityFailures {
+    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> ProcessPriorityFailures {
         let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
         self.release_processes(&process_ids, None, action_log, reason)
     }
@@ -370,8 +370,8 @@ impl CpuPriorityManager {
         current_process_names: Option<&BTreeMap<u32, String>>,
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> CpuPriorityFailures {
-        let mut failures = CpuPriorityFailures::default();
+    ) -> ProcessPriorityFailures {
+        let mut failures = ProcessPriorityFailures::default();
         let mut restored_processes = 0;
         for process_id in process_ids {
             let Some(process_state) = self.adjusted.remove(process_id) else {
@@ -386,7 +386,7 @@ impl CpuPriorityManager {
                     self.clear_process_failure(&log_name);
                     restored_processes += 1;
                 }
-                Err(CpuPriorityError::ProcessExited) => {}
+                Err(ProcessPriorityError::ProcessExited) => {}
                 Err(err) => {
                     self.record_process_failure(&log_name);
                     failures.record("Restore", *process_id, &log_name, err, action_log);
@@ -395,7 +395,7 @@ impl CpuPriorityManager {
         }
         if restored_processes > 0 {
             action_log.record(
-                ActionLogFeature::CpuPriority,
+                ActionLogFeature::ProcessPriority,
                 None,
                 "Process Priority",
                 ActionLogAction::Restore,
@@ -423,7 +423,7 @@ impl CpuPriorityManager {
         if suppression.newly_suppressed {
             auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
-                ActionLogFeature::CpuPriority,
+                ActionLogFeature::ProcessPriority,
                 Some(process_id),
                 process_name.to_owned(),
                 ActionLogAction::Skip,
@@ -455,21 +455,21 @@ enum ApplyOutcome {
 }
 
 #[derive(Default)]
-struct CpuPriorityFailures {
+struct ProcessPriorityFailures {
     count: usize,
     last_error: Option<String>,
 }
 
-impl CpuPriorityFailures {
+impl ProcessPriorityFailures {
     fn record(
         &mut self,
         action: &str,
         process_id: u32,
         process_name: &str,
-        error: CpuPriorityError,
+        error: ProcessPriorityError,
         action_log: &mut ActionLog,
     ) {
-        let message = cpu_priority_error_message(error);
+        let message = process_priority_error_message(error);
         if is_process_exited_message(&message) {
             return;
         }
@@ -478,7 +478,7 @@ impl CpuPriorityFailures {
         }
         self.count += 1;
         action_log.record(
-            ActionLogFeature::CpuPriority,
+            ActionLogFeature::ProcessPriority,
             Some(process_id),
             process_name.to_owned(),
             ActionLogAction::Fail,
@@ -491,7 +491,7 @@ impl CpuPriorityFailures {
 struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, CpuPriorityError> {
+    fn open(process_id: u32) -> Result<Self, ProcessPriorityError> {
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -506,23 +506,23 @@ impl ProcessHandle {
         }
     }
 
-    fn priority_class(&self) -> Result<u32, CpuPriorityError> {
+    fn priority_class(&self) -> Result<u32, ProcessPriorityError> {
         let priority_class = unsafe { GetPriorityClass(self.0.raw()) };
         if priority_class != 0 {
             Ok(priority_class)
         } else {
-            Err(CpuPriorityError::Failed(format!(
+            Err(ProcessPriorityError::Failed(format!(
                 "GetPriorityClass failed with error {}.",
                 last_error()
             )))
         }
     }
 
-    fn set_priority_class(&self, priority_class: u32) -> Result<(), CpuPriorityError> {
+    fn set_priority_class(&self, priority_class: u32) -> Result<(), ProcessPriorityError> {
         if unsafe { SetPriorityClass(self.0.raw(), priority_class) } != 0 {
             Ok(())
         } else {
-            Err(CpuPriorityError::Failed(format!(
+            Err(ProcessPriorityError::Failed(format!(
                 "SetPriorityClass failed with error {}.",
                 last_error()
             )))
@@ -533,7 +533,7 @@ impl ProcessHandle {
 fn restore_process(
     process_id: u32,
     process_state: AdjustedProcess,
-) -> Result<(), CpuPriorityError> {
+) -> Result<(), ProcessPriorityError> {
     let process = ProcessHandle::open(process_id)?;
     if process.priority_class()? == REALTIME_PRIORITY_CLASS {
         return Ok(());
@@ -543,7 +543,7 @@ fn restore_process(
     if refreshed_priority_class == process_state.previous_priority_class {
         Ok(())
     } else {
-        Err(CpuPriorityError::Failed(format!(
+        Err(ProcessPriorityError::Failed(format!(
             "Process priority remained {} after restoring {}.",
             priority_class_label(refreshed_priority_class),
             priority_class_label(process_state.previous_priority_class)
@@ -551,25 +551,25 @@ fn restore_process(
     }
 }
 
-fn open_process_error(process_id: u32, error: u32) -> CpuPriorityError {
+fn open_process_error(process_id: u32, error: u32) -> ProcessPriorityError {
     match error {
-        ERROR_ACCESS_DENIED => CpuPriorityError::AccessDenied,
-        ERROR_INVALID_PARAMETER => CpuPriorityError::ProcessExited,
-        _ => CpuPriorityError::Failed(format!(
+        ERROR_ACCESS_DENIED => ProcessPriorityError::AccessDenied,
+        ERROR_INVALID_PARAMETER => ProcessPriorityError::ProcessExited,
+        _ => ProcessPriorityError::Failed(format!(
             "OpenProcess({process_id}) failed with error {error}."
         )),
     }
 }
 
-fn priority_class(priority: ProcessCpuPrioritySetting) -> Option<u32> {
+fn priority_class(priority: ProcessPrioritySetting) -> Option<u32> {
     match priority {
-        ProcessCpuPrioritySetting::Default | ProcessCpuPrioritySetting::Auto => None,
-        ProcessCpuPrioritySetting::Realtime => Some(REALTIME_PRIORITY_CLASS),
-        ProcessCpuPrioritySetting::High => Some(HIGH_PRIORITY_CLASS),
-        ProcessCpuPrioritySetting::AboveNormal => Some(ABOVE_NORMAL_PRIORITY_CLASS),
-        ProcessCpuPrioritySetting::Normal => Some(NORMAL_PRIORITY_CLASS),
-        ProcessCpuPrioritySetting::BelowNormal => Some(BELOW_NORMAL_PRIORITY_CLASS),
-        ProcessCpuPrioritySetting::Idle => Some(IDLE_PRIORITY_CLASS),
+        ProcessPrioritySetting::Default | ProcessPrioritySetting::Auto => None,
+        ProcessPrioritySetting::Realtime => Some(REALTIME_PRIORITY_CLASS),
+        ProcessPrioritySetting::High => Some(HIGH_PRIORITY_CLASS),
+        ProcessPrioritySetting::AboveNormal => Some(ABOVE_NORMAL_PRIORITY_CLASS),
+        ProcessPrioritySetting::Normal => Some(NORMAL_PRIORITY_CLASS),
+        ProcessPrioritySetting::BelowNormal => Some(BELOW_NORMAL_PRIORITY_CLASS),
+        ProcessPrioritySetting::Idle => Some(IDLE_PRIORITY_CLASS),
     }
 }
 
@@ -585,7 +585,7 @@ fn priority_class_label(priority_class: u32) -> &'static str {
     }
 }
 
-fn cpu_priority_rank(priority_class: u32) -> i32 {
+fn process_priority_rank(priority_class: u32) -> i32 {
     match priority_class {
         IDLE_PRIORITY_CLASS => 0,
         BELOW_NORMAL_PRIORITY_CLASS => 1,
@@ -611,11 +611,11 @@ fn should_preserve_priority(
     }
 }
 
-fn cpu_priority_error_message(error: CpuPriorityError) -> String {
+fn process_priority_error_message(error: ProcessPriorityError) -> String {
     match error {
-        CpuPriorityError::AccessDenied => "Access denied.".to_owned(),
-        CpuPriorityError::ProcessExited => "Process exited.".to_owned(),
-        CpuPriorityError::Failed(message) => message,
+        ProcessPriorityError::AccessDenied => "Access denied.".to_owned(),
+        ProcessPriorityError::ProcessExited => "Process exited.".to_owned(),
+        ProcessPriorityError::Failed(message) => message,
     }
 }
 

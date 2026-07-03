@@ -748,7 +748,7 @@ fn memory_priority_restore_summary_message(count: usize, reason: &str) -> String
 
 fn memory_priority_summary_process_name(action_log_feature: ActionLogFeature) -> &'static str {
     match action_log_feature {
-        ActionLogFeature::ForegroundResponsiveness => "Auto Balance",
+        ActionLogFeature::WorkloadEngine => "Workload Engine",
         _ => "Memory Priority",
     }
 }
@@ -777,7 +777,7 @@ mod tests {
         assert!(!manager.is_process_suppressed(
             42,
             "app.exe",
-            ActionLogFeature::ForegroundResponsiveness,
+            ActionLogFeature::WorkloadEngine,
             &mut log,
             &mut BTreeSet::new()
         ));
@@ -786,24 +786,21 @@ mod tests {
         assert!(manager.is_process_suppressed(
             42,
             "app.exe",
-            ActionLogFeature::ForegroundResponsiveness,
+            ActionLogFeature::WorkloadEngine,
             &mut log,
             &mut BTreeSet::new()
         ));
         assert!(manager.is_process_suppressed(
             43,
             "APP.exe",
-            ActionLogFeature::ForegroundResponsiveness,
+            ActionLogFeature::WorkloadEngine,
             &mut log,
             &mut BTreeSet::new()
         ));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].feature,
-            ActionLogFeature::ForegroundResponsiveness
-        );
+        assert_eq!(entries[0].feature, ActionLogFeature::WorkloadEngine);
         assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0]
@@ -838,8 +835,8 @@ mod tests {
             "Memory Priority"
         );
         assert_eq!(
-            memory_priority_summary_process_name(ActionLogFeature::ForegroundResponsiveness),
-            "Auto Balance"
+            memory_priority_summary_process_name(ActionLogFeature::WorkloadEngine),
+            "Workload Engine"
         );
     }
 }

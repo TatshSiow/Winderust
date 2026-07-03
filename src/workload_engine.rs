@@ -25,7 +25,7 @@ use crate::{
     affinity::{self, CpuAffinityManager, LogicalProcessorInfo, LogicalProcessorKind},
     config::{
         CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, EcoQosCpuRestrictionMode,
-        ForegroundBoostPriority, ForegroundResponsivenessSettings, PriorityRule, ProcessPriority,
+        ForegroundBoostPriority, PriorityRule, ProcessPriority, WorkloadEngineSettings,
     },
     cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
     foreground::{
@@ -39,25 +39,25 @@ use crate::{
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
-const AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT: f32 = 85.0;
-const AUTO_BALANCE_PRESSURE_RESTORE_BAND_PERCENT: u8 = 5;
-const AUTO_BALANCE_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
-const AUTO_BALANCE_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
+const WORKLOAD_ENGINE_FOREGROUND_SATURATION_PERCENT: f32 = 85.0;
+const WORKLOAD_ENGINE_PRESSURE_RESTORE_BAND_PERCENT: u8 = 5;
+const WORKLOAD_ENGINE_CORE_REBALANCE_INTERVAL_SECS: u64 = 3;
+const WORKLOAD_ENGINE_CORE_REBALANCE_IMPROVEMENT_PERCENT: f32 = 15.0;
 const BACKGROUND_APPLY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 const FOREGROUND_LAUNCH_BOOST_WINDOW: Duration = Duration::from_secs(8);
-const AUTO_BALANCE_REPEAT_OFFENDER_SUSTAIN_DIVISOR: u32 = 2;
+const WORKLOAD_ENGINE_REPEAT_OFFENDER_SUSTAIN_DIVISOR: u32 = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ForegroundResponsivenessSnapshot {
+pub struct WorkloadEngineSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub background_adjusted_processes: usize,
     pub foreground_boosted_process: Option<String>,
     pub launch_boost_active: bool,
-    pub auto_balance_active: bool,
-    pub auto_balanced_processes: usize,
-    pub auto_balance_message: String,
-    pub auto_balance_total_cpu_usage_tenths: Option<u16>,
-    pub auto_balance_details: Vec<AutoBalanceProcessStatus>,
+    pub workload_engine_active: bool,
+    pub workload_managed_processes: usize,
+    pub workload_engine_message: String,
+    pub workload_engine_total_cpu_usage_tenths: Option<u16>,
+    pub workload_engine_details: Vec<WorkloadEngineProcessStatus>,
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub adjusted_apps: Vec<String>,
@@ -67,10 +67,10 @@ pub struct ForegroundResponsivenessSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AutoBalanceProcessStatus {
+pub struct WorkloadEngineProcessStatus {
     pub process_id: u32,
     pub process_name: String,
-    pub state: AutoBalanceProcessState,
+    pub state: WorkloadEngineProcessState,
     pub cpu_usage_tenths: Option<u16>,
     pub elapsed_seconds: Option<u64>,
     pub reaction_millis: Option<u64>,
@@ -78,30 +78,30 @@ pub struct AutoBalanceProcessStatus {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutoBalanceProcessState {
+pub enum WorkloadEngineProcessState {
     Watching,
     Lowered,
     AffinityRestrained,
     CoolingDown,
 }
 
-pub struct ForegroundResponsivenessManager {
+pub struct WorkloadEngineManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
     boosted: BTreeMap<u32, BoostedProcess>,
     foreground_candidate: Option<ForegroundCandidate>,
     foreground_cpu_sample: Option<(BTreeSet<u32>, ProcessCpuSample)>,
     lower_background_affinity: CpuAffinityManager,
-    auto_balance: BTreeMap<u32, AutoBalanceProcess>,
-    auto_balance_pressure_active: bool,
-    auto_balance_affinity: CpuAffinityManager,
-    auto_balance_memory_priority: MemoryPriorityManager,
-    auto_balance_core_selection: Option<AutoBalanceCoreSelection>,
+    workload_engine: BTreeMap<u32, WorkloadEngineProcess>,
+    workload_engine_pressure_active: bool,
+    workload_engine_affinity: CpuAffinityManager,
+    workload_engine_memory_priority: MemoryPriorityManager,
+    workload_engine_core_selection: Option<WorkloadEngineCoreSelection>,
     last_background_apply_summary_logged_at: Option<Instant>,
     per_processor_usage: PerProcessorUsageMonitor,
     failure_suppression: ExecutionFailureTracker,
 }
 
-impl Default for ForegroundResponsivenessManager {
+impl Default for WorkloadEngineManager {
     fn default() -> Self {
         Self {
             adjusted: BTreeMap::new(),
@@ -109,15 +109,15 @@ impl Default for ForegroundResponsivenessManager {
             foreground_candidate: None,
             foreground_cpu_sample: None,
             lower_background_affinity: CpuAffinityManager::with_action_log_feature(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
             ),
-            auto_balance: BTreeMap::new(),
-            auto_balance_pressure_active: false,
-            auto_balance_affinity: CpuAffinityManager::with_action_log_feature(
-                ActionLogFeature::ForegroundResponsiveness,
+            workload_engine: BTreeMap::new(),
+            workload_engine_pressure_active: false,
+            workload_engine_affinity: CpuAffinityManager::with_action_log_feature(
+                ActionLogFeature::WorkloadEngine,
             ),
-            auto_balance_memory_priority: MemoryPriorityManager::default(),
-            auto_balance_core_selection: None,
+            workload_engine_memory_priority: MemoryPriorityManager::default(),
+            workload_engine_core_selection: None,
             last_background_apply_summary_logged_at: None,
             per_processor_usage: PerProcessorUsageMonitor::default(),
             failure_suppression: ExecutionFailureTracker::default(),
@@ -158,7 +158,7 @@ struct ForegroundBoostGroupResult {
 }
 
 #[derive(Clone)]
-struct AutoBalanceProcess {
+struct WorkloadEngineProcess {
     process_name: String,
     previous_cpu_time: Option<ProcessCpuSample>,
     last_usage_tenths: Option<u16>,
@@ -167,40 +167,40 @@ struct AutoBalanceProcess {
     active_since: Option<Instant>,
     last_reaction_millis: Option<u64>,
     restraint_count: u32,
-    decision: Option<AutoBalanceDecision>,
+    decision: Option<WorkloadEngineDecision>,
     active: bool,
     selected: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum AutoBalanceDecision {
+enum WorkloadEngineDecision {
     LowerPriority,
     RestrictAffinity,
 }
 
 #[derive(Clone)]
-struct AutoBalanceCandidate {
+struct WorkloadEngineCandidate {
     process_id: u32,
     process_name: String,
-    decision: AutoBalanceDecision,
+    decision: WorkloadEngineDecision,
     score: u32,
 }
 
 #[derive(Clone, Copy)]
-struct AutoBalanceCoreSelection {
+struct WorkloadEngineCoreSelection {
     mask: u64,
     selected_at: Instant,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PriorityTargetSource {
-    AutoBalance,
+    WorkloadEngine,
     BackgroundPolicy,
     Rule,
 }
 
-pub struct ForegroundResponsivenessUpdate<'a> {
-    pub settings: &'a ForegroundResponsivenessSettings,
+pub struct WorkloadEngineUpdate<'a> {
+    pub settings: &'a WorkloadEngineSettings,
     pub automation_enabled: bool,
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
@@ -229,13 +229,13 @@ struct ApplyPriorityRequest<'a> {
     log_success: bool,
 }
 
-impl ForegroundResponsivenessManager {
+impl WorkloadEngineManager {
     pub fn update(
         &mut self,
-        input: ForegroundResponsivenessUpdate<'_>,
+        input: WorkloadEngineUpdate<'_>,
         action_log: &mut ActionLog,
-    ) -> ForegroundResponsivenessSnapshot {
-        let ForegroundResponsivenessUpdate {
+    ) -> WorkloadEngineSnapshot {
+        let WorkloadEngineUpdate {
             settings,
             automation_enabled,
             foreground_process_id,
@@ -247,7 +247,7 @@ impl ForegroundResponsivenessManager {
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
             self.failure_suppression.clear();
-            return ForegroundResponsivenessSnapshot {
+            return WorkloadEngineSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
                 message: "Automation disabled.".to_owned(),
@@ -257,12 +257,12 @@ impl ForegroundResponsivenessManager {
         }
 
         if !settings.enabled {
-            let failed = self.clear_all(action_log, "Foreground Responsiveness disabled");
+            let failed = self.clear_all(action_log, "Workload Engine disabled");
             self.failure_suppression.clear();
-            return ForegroundResponsivenessSnapshot {
+            return WorkloadEngineSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
-                message: "Foreground Responsiveness disabled.".to_owned(),
+                message: "Workload Engine disabled.".to_owned(),
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -271,7 +271,7 @@ impl ForegroundResponsivenessManager {
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
-            return ForegroundResponsivenessSnapshot {
+            return WorkloadEngineSnapshot {
                 enabled: true,
                 failed_processes: failed.count,
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -284,7 +284,7 @@ impl ForegroundResponsivenessManager {
             Ok(processes) => processes,
             Err(err) => {
                 let failed = self.clear_all(action_log, "process list unavailable");
-                return ForegroundResponsivenessSnapshot {
+                return WorkloadEngineSnapshot {
                     enabled: true,
                     failed_processes: failed.count,
                     message: err,
@@ -345,7 +345,7 @@ impl ForegroundResponsivenessManager {
                     && foreground_launch_boost_eligible(process_id)
             });
         let launch_boost_running =
-            auto_balance_launch_boost_enabled(settings, foreground_launch_boost_target);
+            workload_engine_launch_boost_enabled(settings, foreground_launch_boost_target);
         let background_policy_can_run = !background_efficiency_managed
             && !launch_boost_running
             && smart_efficiency_should_run(
@@ -356,8 +356,8 @@ impl ForegroundResponsivenessManager {
         let lower_background_policy_enabled =
             settings.lower_background_apps && background_policy_can_run;
         let auto_efficiency_policy_enabled =
-            settings.auto_balance_efficiency_mode_enabled && background_policy_can_run;
-        if (settings.lower_background_apps || settings.auto_balance_efficiency_mode_enabled)
+            settings.workload_engine_efficiency_mode_enabled && background_policy_can_run;
+        if (settings.lower_background_apps || settings.workload_engine_efficiency_mode_enabled)
             && !background_efficiency_managed
         {
             for (process_id, process_name) in &lowerable_background_processes {
@@ -369,7 +369,7 @@ impl ForegroundResponsivenessManager {
                     (rule.priority, PriorityTargetSource::Rule, true)
                 } else if lower_background_policy_enabled || auto_efficiency_policy_enabled {
                     (
-                        settings.auto_balance_background_priority,
+                        settings.workload_engine_background_priority,
                         PriorityTargetSource::BackgroundPolicy,
                         settings.lower_background_apps,
                     )
@@ -383,12 +383,12 @@ impl ForegroundResponsivenessManager {
             }
         }
 
-        let auto_balance_running = self.update_auto_balance_pressure(
+        let workload_engine_running = self.update_workload_engine_pressure(
             settings,
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
         );
-        let auto_balance_restraints_running = auto_balance_running && !launch_boost_running;
+        let workload_engine_restraints_running = workload_engine_running && !launch_boost_running;
         let lower_background_affinity_settings = CpuAffinitySettings {
             enabled: false,
             exclude_foreground_app: true,
@@ -410,15 +410,20 @@ impl ForegroundResponsivenessManager {
             failures.last_error = lower_background_affinity_snapshot.last_error.clone();
         }
 
-        let mut auto_balance_rules = Vec::new();
-        let mut auto_balance_memory_targets = Vec::new();
-        if settings.auto_balance_memory_priority_enabled {
-            if let Some(priority) = settings.auto_balance_foreground_memory_priority.priority() {
+        let mut workload_engine_rules = Vec::new();
+        let mut workload_engine_memory_targets = Vec::new();
+        if settings.workload_engine_memory_priority_enabled {
+            if let Some(priority) = settings
+                .workload_engine_foreground_memory_priority
+                .priority()
+            {
                 for process in processes
                     .iter()
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
                     .filter(|process| !eco_qos_process_ids.contains(&process.id))
-                    .filter(|process| !settings.auto_balance_exclusion_enabled_for(&process.name))
+                    .filter(|process| {
+                        !settings.workload_engine_exclusion_enabled_for(&process.name)
+                    })
                     .filter(|process| {
                         foreground_boost_eligible(
                             process.id,
@@ -428,7 +433,7 @@ impl ForegroundResponsivenessManager {
                         )
                     })
                 {
-                    auto_balance_memory_targets.push(MemoryPriorityTarget {
+                    workload_engine_memory_targets.push(MemoryPriorityTarget {
                         process_id: process.id,
                         process_name: process.name.clone(),
                         priority,
@@ -439,39 +444,39 @@ impl ForegroundResponsivenessManager {
                 }
             }
         }
-        if auto_balance_restraints_running {
+        if workload_engine_restraints_running {
             let now = Instant::now();
-            let auto_balance_core_mask =
-                self.auto_balance_core_mask(settings, foreground_cpu_usage_percent, now);
+            let workload_engine_core_mask =
+                self.workload_engine_core_mask(settings, foreground_cpu_usage_percent, now);
             let current_ids = processes
                 .iter()
                 .map(|process| process.id)
                 .collect::<BTreeSet<_>>();
-            self.auto_balance
+            self.workload_engine
                 .retain(|process_id, _| current_ids.contains(process_id));
 
-            let mut auto_balance_candidates = Vec::new();
+            let mut workload_engine_candidates = Vec::new();
             for (process_id, process_name) in &lowerable_background_processes {
-                if settings.auto_balance_exclusion_enabled_for(process_name) {
+                if settings.workload_engine_exclusion_enabled_for(process_name) {
                     continue;
                 }
 
                 if let Some(candidate) =
-                    self.update_auto_balance_process(*process_id, process_name, settings, now)
+                    self.update_workload_engine_process(*process_id, process_name, settings, now)
                 {
-                    auto_balance_candidates.push(candidate);
+                    workload_engine_candidates.push(candidate);
                 }
             }
 
-            let selected_candidates = select_auto_balance_candidates(
-                auto_balance_candidates,
-                settings.auto_balance_max_targeted_processes,
+            let selected_candidates = select_workload_engine_candidates(
+                workload_engine_candidates,
+                settings.workload_engine_max_targeted_processes,
             );
             let selected_ids = selected_candidates
                 .iter()
                 .map(|candidate| candidate.process_id)
                 .collect::<BTreeSet<_>>();
-            for (process_id, process) in &mut self.auto_balance {
+            for (process_id, process) in &mut self.workload_engine {
                 if process.active && !selected_ids.contains(process_id) {
                     process.selected = false;
                     process.decision = None;
@@ -479,7 +484,7 @@ impl ForegroundResponsivenessManager {
             }
 
             for candidate in selected_candidates {
-                if let Some(process) = self.auto_balance.get_mut(&candidate.process_id) {
+                if let Some(process) = self.workload_engine.get_mut(&candidate.process_id) {
                     process.selected = true;
                     process.decision = Some(candidate.decision);
                 }
@@ -488,26 +493,26 @@ impl ForegroundResponsivenessManager {
                     .or_insert_with(|| {
                         (
                             candidate.process_name.clone(),
-                            settings.auto_balance_background_priority,
-                            PriorityTargetSource::AutoBalance,
+                            settings.workload_engine_background_priority,
+                            PriorityTargetSource::WorkloadEngine,
                             true,
                         )
                     });
-                if settings.auto_balance_memory_priority_enabled {
-                    auto_balance_memory_targets.push(MemoryPriorityTarget {
+                if settings.workload_engine_memory_priority_enabled {
+                    workload_engine_memory_targets.push(MemoryPriorityTarget {
                         process_id: candidate.process_id,
                         process_name: candidate.process_name.clone(),
-                        priority: settings.auto_balance_memory_priority,
+                        priority: settings.workload_engine_memory_priority,
                         foreground: false,
                         preserve_foreground_priority: true,
                         preserve_background_priority: true,
                     });
                 }
-                if candidate.decision == AutoBalanceDecision::RestrictAffinity {
-                    if let Some(core_mask) = auto_balance_core_mask {
-                        auto_balance_rules.push(CpuAffinityRule {
+                if candidate.decision == WorkloadEngineDecision::RestrictAffinity {
+                    if let Some(core_mask) = workload_engine_core_mask {
+                        workload_engine_rules.push(CpuAffinityRule {
                             enabled: true,
-                            mode: auto_balance_affinity_mode(settings),
+                            mode: workload_engine_affinity_mode(settings),
                             process_name: candidate.process_name,
                             core_mask,
                         });
@@ -515,57 +520,57 @@ impl ForegroundResponsivenessManager {
                 }
             }
         } else {
-            self.auto_balance.clear();
-            self.auto_balance_pressure_active = false;
-            self.auto_balance_core_selection = None;
+            self.workload_engine.clear();
+            self.workload_engine_pressure_active = false;
+            self.workload_engine_core_selection = None;
         }
 
         let affinity_settings = CpuAffinitySettings {
             enabled: settings.enabled
-                && settings.auto_balance_enabled
-                && auto_balance_restraints_running,
+                && settings.workload_engine_enabled
+                && workload_engine_restraints_running,
             exclude_foreground_app: true,
-            rules: auto_balance_rules,
+            rules: workload_engine_rules,
         };
-        let auto_balance_affinity_snapshot = self.auto_balance_affinity.update(
+        let workload_engine_affinity_snapshot = self.workload_engine_affinity.update(
             &affinity_settings,
             automation_enabled,
             foreground_process_id,
             action_log,
         );
         auto_excluded_processes.extend(
-            auto_balance_affinity_snapshot
+            workload_engine_affinity_snapshot
                 .auto_excluded_processes
                 .iter()
                 .map(|name| process_failure_key(name)),
         );
-        failures.count += auto_balance_affinity_snapshot.failed_processes;
+        failures.count += workload_engine_affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
-            failures.last_error = auto_balance_affinity_snapshot.last_error.clone();
+            failures.last_error = workload_engine_affinity_snapshot.last_error.clone();
         }
-        let auto_balance_memory_snapshot = self.auto_balance_memory_priority.update(
+        let workload_engine_memory_snapshot = self.workload_engine_memory_priority.update(
             if settings.enabled
-                && settings.auto_balance_enabled
-                && auto_balance_restraints_running
-                && settings.auto_balance_memory_priority_enabled
+                && settings.workload_engine_enabled
+                && workload_engine_restraints_running
+                && settings.workload_engine_memory_priority_enabled
             {
-                auto_balance_memory_targets
+                workload_engine_memory_targets
             } else {
                 Vec::new()
             },
             automation_enabled,
-            ActionLogFeature::ForegroundResponsiveness,
+            ActionLogFeature::WorkloadEngine,
             action_log,
         );
         auto_excluded_processes.extend(
-            auto_balance_memory_snapshot
+            workload_engine_memory_snapshot
                 .auto_excluded_processes
                 .iter()
                 .map(|name| process_failure_key(name)),
         );
-        failures.count += auto_balance_memory_snapshot.failed_processes;
+        failures.count += workload_engine_memory_snapshot.failed_processes;
         if failures.last_error.is_none() {
-            failures.last_error = auto_balance_memory_snapshot.last_error.clone();
+            failures.last_error = workload_engine_memory_snapshot.last_error.clone();
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
@@ -581,10 +586,10 @@ impl ForegroundResponsivenessManager {
             &target_ids,
             &current_process_names,
             action_log,
-            "process no longer matches a responsiveness rule",
+            "process no longer matches a Workload Engine rule",
         ));
         let mut skipped_processes = 0;
-        skipped_processes += auto_balance_memory_snapshot.skipped_processes;
+        skipped_processes += workload_engine_memory_snapshot.skipped_processes;
         let mut summarized_background_applies = 0;
 
         for (process_id, (process_name, priority, source, apply_priority_class)) in target_processes
@@ -607,8 +612,8 @@ impl ForegroundResponsivenessManager {
                     existing: self.adjusted.get(&process_id),
                     source,
                     apply_priority_class,
-                    apply_efficiency_mode: settings.auto_balance_efficiency_mode_enabled
-                        && source != PriorityTargetSource::AutoBalance,
+                    apply_efficiency_mode: settings.workload_engine_efficiency_mode_enabled
+                        && source != PriorityTargetSource::WorkloadEngine,
                     disable_priority_boost: false,
                     log_success: source == PriorityTargetSource::Rule,
                 },
@@ -633,7 +638,7 @@ impl ForegroundResponsivenessManager {
                     skipped_processes += 1;
                     self.record_process_failure(&failure_process_name);
                     action_log.record(
-                        ActionLogFeature::ForegroundResponsiveness,
+                        ActionLogFeature::WorkloadEngine,
                         Some(process_id),
                         failure_process_name,
                         ActionLogAction::Skip,
@@ -664,32 +669,33 @@ impl ForegroundResponsivenessManager {
         {
             self.last_background_apply_summary_logged_at = Some(now);
             action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
                 None,
-                "Auto Balance",
+                "Workload Engine",
                 ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 background_apply_summary_message(summarized_background_applies),
             );
         }
 
-        let auto_balance_details = self.auto_balance_statuses(now);
-        let auto_balanced_processes = auto_balance_details
+        let workload_engine_details = self.workload_engine_statuses(now);
+        let workload_managed_processes = workload_engine_details
             .iter()
             .filter(|status| {
                 matches!(
                     status.state,
-                    AutoBalanceProcessState::Lowered | AutoBalanceProcessState::AffinityRestrained
+                    WorkloadEngineProcessState::Lowered
+                        | WorkloadEngineProcessState::AffinityRestrained
                 )
             })
             .count();
-        let auto_balance_message = auto_balance_status_message(
+        let workload_engine_message = workload_engine_status_message(
             settings,
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
             launch_boost_running,
-            auto_balance_running,
-            auto_balanced_processes,
+            workload_engine_running,
+            workload_managed_processes,
         );
 
         if let Some(foreground_id) = foreground_process_id {
@@ -743,7 +749,7 @@ impl ForegroundResponsivenessManager {
             failures.merge(error);
         }
 
-        ForegroundResponsivenessSnapshot {
+        WorkloadEngineSnapshot {
             enabled: true,
             scanned_processes,
             background_adjusted_processes: self.adjusted.len(),
@@ -760,11 +766,11 @@ impl ForegroundResponsivenessManager {
                 }
             }),
             launch_boost_active: launch_boost_running,
-            auto_balance_active: auto_balance_restraints_running,
-            auto_balanced_processes,
-            auto_balance_message,
-            auto_balance_total_cpu_usage_tenths: foreground_cpu_usage_tenths,
-            auto_balance_details,
+            workload_engine_active: workload_engine_restraints_running,
+            workload_managed_processes,
+            workload_engine_message,
+            workload_engine_total_cpu_usage_tenths: foreground_cpu_usage_tenths,
+            workload_engine_details,
             skipped_processes,
             failed_processes: failures.count,
             adjusted_apps: unique_app_names(
@@ -773,7 +779,7 @@ impl ForegroundResponsivenessManager {
                     .map(|process| process.process_name.as_str()),
             ),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "Foreground Responsiveness active.".to_owned(),
+            message: "Workload Engine active.".to_owned(),
             last_error: failures.last_error,
         }
     }
@@ -808,8 +814,8 @@ impl ForegroundResponsivenessManager {
         failures.merge(self.release_processes(&process_ids, None, action_log, reason));
         self.foreground_candidate = None;
         self.foreground_cpu_sample = None;
-        self.auto_balance.clear();
-        self.auto_balance_pressure_active = false;
+        self.workload_engine.clear();
+        self.workload_engine_pressure_active = false;
         self.last_background_apply_summary_logged_at = None;
         let affinity_settings = CpuAffinitySettings {
             enabled: false,
@@ -824,16 +830,16 @@ impl ForegroundResponsivenessManager {
             failures.last_error = lower_affinity_snapshot.last_error;
         }
         let affinity_snapshot =
-            self.auto_balance_affinity
+            self.workload_engine_affinity
                 .update(&affinity_settings, true, None, action_log);
         failures.count += affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
             failures.last_error = affinity_snapshot.last_error;
         }
-        let memory_snapshot = self.auto_balance_memory_priority.update(
+        let memory_snapshot = self.workload_engine_memory_priority.update(
             Vec::new(),
             true,
-            ActionLogFeature::ForegroundResponsiveness,
+            ActionLogFeature::WorkloadEngine,
             action_log,
         );
         failures.count += memory_snapshot.failed_processes;
@@ -870,9 +876,9 @@ impl ForegroundResponsivenessManager {
         }
         if restored_processes > 0 {
             action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
                 None,
-                "Auto Balance",
+                "Workload Engine",
                 ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 foreground_boost_restore_summary_message(restored_processes, reason),
@@ -896,13 +902,13 @@ impl ForegroundResponsivenessManager {
         if suppression.newly_suppressed {
             auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 process_name.trim().to_owned(),
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Foreground Responsiveness after {} failed attempts.",
+                    "Stopped retrying Workload Engine after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -920,27 +926,27 @@ impl ForegroundResponsivenessManager {
         self.failure_suppression.clear_process_failure(process_name);
     }
 
-    fn update_auto_balance_pressure(
+    fn update_workload_engine_pressure(
         &mut self,
-        settings: &ForegroundResponsivenessSettings,
+        settings: &WorkloadEngineSettings,
         foreground_cpu_usage_percent: Option<f32>,
         total_cpu_usage_percent: Option<f32>,
     ) -> bool {
-        if !settings.auto_balance_enabled {
-            self.auto_balance_pressure_active = false;
+        if !settings.workload_engine_enabled {
+            self.workload_engine_pressure_active = false;
             return false;
         }
 
-        if auto_balance_should_run(
+        if workload_engine_should_run(
             settings,
             foreground_cpu_usage_percent,
             total_cpu_usage_percent,
         ) {
-            self.auto_balance_pressure_active = true;
+            self.workload_engine_pressure_active = true;
             return true;
         }
 
-        if self.auto_balance_pressure_active
+        if self.workload_engine_pressure_active
             && cpu_pressure_above_restore_threshold(
                 settings,
                 foreground_cpu_usage_percent,
@@ -950,7 +956,7 @@ impl ForegroundResponsivenessManager {
             return true;
         }
 
-        self.auto_balance_pressure_active = false;
+        self.workload_engine_pressure_active = false;
         false
     }
 
@@ -989,9 +995,9 @@ impl ForegroundResponsivenessManager {
         }
         if restored_processes > 0 {
             action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
                 None,
-                "Auto Balance",
+                "Workload Engine",
                 ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 background_priority_restore_summary_message(restored_processes, reason),
@@ -1103,7 +1109,7 @@ impl ForegroundResponsivenessManager {
                     result.skipped += 1;
                     self.record_process_failure(process_name);
                     action_log.record(
-                        ActionLogFeature::ForegroundResponsiveness,
+                        ActionLogFeature::WorkloadEngine,
                         Some(*process_id),
                         process_name.clone(),
                         ActionLogAction::Skip,
@@ -1150,7 +1156,7 @@ impl ForegroundResponsivenessManager {
             let boosted_process_name = boosted.process_name.clone();
             restore_boosted_priority(boosted)?;
             action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 boosted_process_name,
                 ActionLogAction::Restore,
@@ -1186,7 +1192,7 @@ impl ForegroundResponsivenessManager {
         if current_priority != priority_class {
             process.set_priority_class(priority_class)?;
             action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 process_name.to_owned(),
                 ActionLogAction::Apply,
@@ -1209,41 +1215,41 @@ impl ForegroundResponsivenessManager {
         Ok(())
     }
 
-    fn update_auto_balance_process(
+    fn update_workload_engine_process(
         &mut self,
         process_id: u32,
         process_name: &str,
-        settings: &ForegroundResponsivenessSettings,
+        settings: &WorkloadEngineSettings,
         now: Instant,
-    ) -> Option<AutoBalanceCandidate> {
-        let threshold = f32::from(settings.auto_balance_threshold_percent.min(100));
+    ) -> Option<WorkloadEngineCandidate> {
+        let threshold = f32::from(settings.workload_engine_threshold_percent.min(100));
         let restore_threshold = f32::from(
             settings
-                .auto_balance_restore_threshold_percent
-                .min(settings.auto_balance_threshold_percent)
+                .workload_engine_restore_threshold_percent
+                .min(settings.workload_engine_threshold_percent)
                 .min(100),
         );
         let minimum_restraint =
-            Duration::from_secs(settings.auto_balance_minimum_restraint_seconds);
-        let cooldown = Duration::from_secs(settings.auto_balance_cooldown_seconds);
-        let state = self
-            .auto_balance
-            .entry(process_id)
-            .or_insert_with(|| AutoBalanceProcess {
-                process_name: process_name.to_owned(),
-                previous_cpu_time: None,
-                last_usage_tenths: None,
-                high_since: None,
-                below_since: None,
-                active_since: None,
-                last_reaction_millis: None,
-                restraint_count: 0,
-                decision: None,
-                active: false,
-                selected: false,
-            });
+            Duration::from_secs(settings.workload_engine_minimum_restraint_seconds);
+        let cooldown = Duration::from_secs(settings.workload_engine_cooldown_seconds);
+        let state =
+            self.workload_engine
+                .entry(process_id)
+                .or_insert_with(|| WorkloadEngineProcess {
+                    process_name: process_name.to_owned(),
+                    previous_cpu_time: None,
+                    last_usage_tenths: None,
+                    high_since: None,
+                    below_since: None,
+                    active_since: None,
+                    last_reaction_millis: None,
+                    restraint_count: 0,
+                    decision: None,
+                    active: false,
+                    selected: false,
+                });
         state.process_name = process_name.to_owned();
-        let priority_sustain = auto_balance_priority_sustain(settings, state.restraint_count);
+        let priority_sustain = workload_engine_priority_sustain(settings, state.restraint_count);
 
         let current = process_cpu_sample(process_id).ok()?;
         let usage = state
@@ -1264,9 +1270,9 @@ impl ForegroundResponsivenessManager {
                     state.restraint_count = state.restraint_count.saturating_add(1);
                 }
                 state.active = true;
-                let decision = auto_balance_process_decision(settings, state.active_since, now);
+                let decision = workload_engine_process_decision(settings, state.active_since, now);
                 state.decision = Some(decision);
-                return Some(auto_balance_candidate(process_id, state, decision, now));
+                return Some(workload_engine_candidate(process_id, state, decision, now));
             }
             return None;
         }
@@ -1281,18 +1287,18 @@ impl ForegroundResponsivenessManager {
             let active_since = state.active_since.unwrap_or(now);
             if usage > restore_threshold || now.duration_since(active_since) < minimum_restraint {
                 state.below_since = None;
-                let decision = auto_balance_process_decision(settings, state.active_since, now);
+                let decision = workload_engine_process_decision(settings, state.active_since, now);
                 state.decision = Some(decision);
-                return Some(auto_balance_candidate(process_id, state, decision, now));
+                return Some(workload_engine_candidate(process_id, state, decision, now));
             }
 
             let below_since = *state.below_since.get_or_insert(now);
             if now.duration_since(below_since) < cooldown {
-                state.decision = Some(AutoBalanceDecision::LowerPriority);
-                return Some(auto_balance_candidate(
+                state.decision = Some(WorkloadEngineDecision::LowerPriority);
+                return Some(workload_engine_candidate(
                     process_id,
                     state,
-                    AutoBalanceDecision::LowerPriority,
+                    WorkloadEngineDecision::LowerPriority,
                     now,
                 ));
             }
@@ -1328,35 +1334,35 @@ impl ForegroundResponsivenessManager {
         usage
     }
 
-    fn auto_balance_statuses(&self, now: Instant) -> Vec<AutoBalanceProcessStatus> {
-        self.auto_balance
+    fn workload_engine_statuses(&self, now: Instant) -> Vec<WorkloadEngineProcessStatus> {
+        self.workload_engine
             .iter()
             .filter_map(|(process_id, process)| {
                 let state = if process.active && process.selected {
                     if process.below_since.is_some() {
-                        AutoBalanceProcessState::CoolingDown
-                    } else if process.decision == Some(AutoBalanceDecision::RestrictAffinity) {
-                        AutoBalanceProcessState::AffinityRestrained
+                        WorkloadEngineProcessState::CoolingDown
+                    } else if process.decision == Some(WorkloadEngineDecision::RestrictAffinity) {
+                        WorkloadEngineProcessState::AffinityRestrained
                     } else {
-                        AutoBalanceProcessState::Lowered
+                        WorkloadEngineProcessState::Lowered
                     }
                 } else if process.high_since.is_some() {
-                    AutoBalanceProcessState::Watching
+                    WorkloadEngineProcessState::Watching
                 } else {
                     return None;
                 };
 
                 let elapsed_seconds = match state {
-                    AutoBalanceProcessState::Watching => process.high_since,
-                    AutoBalanceProcessState::Lowered
-                    | AutoBalanceProcessState::AffinityRestrained
-                    | AutoBalanceProcessState::CoolingDown => {
+                    WorkloadEngineProcessState::Watching => process.high_since,
+                    WorkloadEngineProcessState::Lowered
+                    | WorkloadEngineProcessState::AffinityRestrained
+                    | WorkloadEngineProcessState::CoolingDown => {
                         process.active_since.or(process.below_since)
                     }
                 }
                 .map(|started| now.duration_since(started).as_secs());
 
-                Some(AutoBalanceProcessStatus {
+                Some(WorkloadEngineProcessStatus {
                     process_id: *process_id,
                     process_name: process.process_name.clone(),
                     state,
@@ -1369,23 +1375,23 @@ impl ForegroundResponsivenessManager {
             .collect()
     }
 
-    fn auto_balance_core_mask(
+    fn workload_engine_core_mask(
         &mut self,
-        settings: &ForegroundResponsivenessSettings,
+        settings: &WorkloadEngineSettings,
         foreground_cpu_usage_percent: Option<f32>,
         now: Instant,
     ) -> Option<u64> {
-        let percent = auto_balance_effective_cpu_percent(settings, foreground_cpu_usage_percent);
+        let percent = workload_engine_effective_cpu_percent(settings, foreground_cpu_usage_percent);
         if percent >= 100 {
             return None;
         }
 
-        if auto_balance_effective_restriction_mode(settings)
+        if workload_engine_effective_restriction_mode(settings)
             == EcoQosCpuRestrictionMode::SoftCpuSets
         {
-            if let Some(mask) = self.load_aware_auto_balance_core_mask(
+            if let Some(mask) = self.load_aware_workload_engine_core_mask(
                 percent,
-                settings.auto_balance_max_logical_processors,
+                settings.workload_engine_max_logical_processors,
                 now,
             ) {
                 return Some(mask);
@@ -1394,11 +1400,11 @@ impl ForegroundResponsivenessManager {
 
         limited_efficiency_preferred_core_mask(
             percent,
-            settings.auto_balance_max_logical_processors,
+            settings.workload_engine_max_logical_processors,
         )
     }
 
-    fn load_aware_auto_balance_core_mask(
+    fn load_aware_workload_engine_core_mask(
         &mut self,
         percent: u8,
         max_logical_processors: u8,
@@ -1409,18 +1415,19 @@ impl ForegroundResponsivenessManager {
         let next_mask =
             load_aware_limited_core_mask(&processors, &usages, percent, max_logical_processors)?;
 
-        let mask = if let Some(previous) = self.auto_balance_core_selection {
+        let mask = if let Some(previous) = self.workload_engine_core_selection {
             let previous_count = previous.mask.count_ones();
             let next_count = next_mask.count_ones();
             let elapsed = now.duration_since(previous.selected_at);
             let previous_load = average_masked_core_load(previous.mask, &usages);
             let next_load = average_masked_core_load(next_mask, &usages);
             if previous_count == next_count
-                && elapsed < Duration::from_secs(AUTO_BALANCE_CORE_REBALANCE_INTERVAL_SECS)
+                && elapsed < Duration::from_secs(WORKLOAD_ENGINE_CORE_REBALANCE_INTERVAL_SECS)
                 && previous_load
                     .zip(next_load)
                     .is_none_or(|(previous_load, next_load)| {
-                        previous_load - next_load < AUTO_BALANCE_CORE_REBALANCE_IMPROVEMENT_PERCENT
+                        previous_load - next_load
+                            < WORKLOAD_ENGINE_CORE_REBALANCE_IMPROVEMENT_PERCENT
                     })
             {
                 previous.mask
@@ -1432,10 +1439,10 @@ impl ForegroundResponsivenessManager {
         };
 
         if self
-            .auto_balance_core_selection
+            .workload_engine_core_selection
             .is_none_or(|selection| selection.mask != mask)
         {
-            self.auto_balance_core_selection = Some(AutoBalanceCoreSelection {
+            self.workload_engine_core_selection = Some(WorkloadEngineCoreSelection {
                 mask,
                 selected_at: now,
             });
@@ -1444,14 +1451,14 @@ impl ForegroundResponsivenessManager {
     }
 }
 
-impl Drop for ForegroundResponsivenessManager {
+impl Drop for WorkloadEngineManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
-        self.clear_all(&mut action_log, "Foreground Responsiveness manager dropped");
+        self.clear_all(&mut action_log, "Workload Engine manager dropped");
     }
 }
 
-impl Default for ForegroundResponsivenessSnapshot {
+impl Default for WorkloadEngineSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -1459,16 +1466,16 @@ impl Default for ForegroundResponsivenessSnapshot {
             background_adjusted_processes: 0,
             foreground_boosted_process: None,
             launch_boost_active: false,
-            auto_balance_active: false,
-            auto_balanced_processes: 0,
-            auto_balance_message: "Auto-balance disabled.".to_owned(),
-            auto_balance_total_cpu_usage_tenths: None,
-            auto_balance_details: Vec::new(),
+            workload_engine_active: false,
+            workload_managed_processes: 0,
+            workload_engine_message: "Workload Engine disabled.".to_owned(),
+            workload_engine_total_cpu_usage_tenths: None,
+            workload_engine_details: Vec::new(),
             skipped_processes: 0,
             failed_processes: 0,
             adjusted_apps: Vec::new(),
             auto_excluded_processes: Vec::new(),
-            message: "Foreground Responsiveness disabled.".to_owned(),
+            message: "Workload Engine disabled.".to_owned(),
             last_error: None,
         }
     }
@@ -1486,16 +1493,16 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-fn auto_balance_status_message(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_status_message(
+    settings: &WorkloadEngineSettings,
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
     launch_boost_running: bool,
     running: bool,
     restrained_count: usize,
 ) -> String {
-    if !settings.auto_balance_enabled {
-        return "Auto-balance disabled.".to_owned();
+    if !settings.workload_engine_enabled {
+        return "Workload Engine disabled.".to_owned();
     }
 
     if launch_boost_running {
@@ -1513,20 +1520,20 @@ fn auto_balance_status_message(
                 "Waiting for CPU pressure: foreground {:.1}%, system {:.1}% of {}%.",
                 foreground.clamp(0.0, 100.0),
                 total.clamp(0.0, 100.0),
-                settings.auto_balance_total_threshold_percent.min(100)
+                settings.workload_engine_total_threshold_percent.min(100)
             ),
             (Some(foreground), None) => format!(
                 "Waiting for CPU pressure: foreground {:.1}% of {}%.",
                 foreground.clamp(0.0, 100.0),
-                settings.auto_balance_total_threshold_percent.min(100)
+                settings.workload_engine_total_threshold_percent.min(100)
             ),
             (None, Some(total)) => format!(
                 "Waiting for CPU pressure: system {:.1}% of {}%.",
                 total.clamp(0.0, 100.0),
-                settings.auto_balance_total_threshold_percent.min(100)
+                settings.workload_engine_total_threshold_percent.min(100)
             ),
             (None, None) => {
-                "Waiting for a CPU pressure sample before auto-balance can act.".to_owned()
+                "Waiting for a CPU pressure sample before Workload Engine can act.".to_owned()
             }
         };
     }
@@ -1537,13 +1544,13 @@ fn auto_balance_status_message(
     }
 
     format!(
-        "Balancing {restrained_count} background process{} to preserve foreground responsiveness.",
+        "Balancing {restrained_count} background process{} to preserve foreground work.",
         if restrained_count == 1 { "" } else { "es" }
     )
 }
 
 fn matching_rule<'a>(
-    settings: &'a ForegroundResponsivenessSettings,
+    settings: &'a WorkloadEngineSettings,
     process_name: &str,
 ) -> Option<&'a PriorityRule> {
     settings
@@ -1625,12 +1632,12 @@ fn foreground_process_group_ids(
     group
 }
 
-fn auto_balance_should_run(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_should_run(
+    settings: &WorkloadEngineSettings,
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
-    settings.auto_balance_enabled
+    settings.workload_engine_enabled
         && cpu_pressure_should_run(
             settings,
             foreground_cpu_usage_percent,
@@ -1639,7 +1646,7 @@ fn auto_balance_should_run(
 }
 
 fn smart_efficiency_should_run(
-    settings: &ForegroundResponsivenessSettings,
+    settings: &WorkloadEngineSettings,
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
@@ -1655,26 +1662,26 @@ fn smart_efficiency_should_run(
 }
 
 fn cpu_pressure_should_run(
-    settings: &ForegroundResponsivenessSettings,
+    settings: &WorkloadEngineSettings,
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
     let foreground_saturated =
         foreground_cpu_usage_percent.is_some_and(foreground_cpu_saturates_workload);
     let foreground_pressure = foreground_cpu_usage_percent.is_some_and(|usage| {
-        usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
+        usage >= f32::from(settings.workload_engine_total_threshold_percent.min(100))
             && !foreground_cpu_saturates_workload(usage)
     });
     let system_pressure = !foreground_saturated
         && total_cpu_usage_percent.is_some_and(|usage| {
-            usage >= f32::from(settings.auto_balance_total_threshold_percent.min(100))
+            usage >= f32::from(settings.workload_engine_total_threshold_percent.min(100))
         });
 
     foreground_pressure || system_pressure
 }
 
 fn cpu_pressure_above_restore_threshold(
-    settings: &ForegroundResponsivenessSettings,
+    settings: &WorkloadEngineSettings,
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
@@ -1684,85 +1691,85 @@ fn cpu_pressure_above_restore_threshold(
         return false;
     }
 
-    let restore_threshold = auto_balance_pressure_restore_threshold(settings);
+    let restore_threshold = workload_engine_pressure_restore_threshold(settings);
     foreground_cpu_usage_percent.is_some_and(|usage| usage >= restore_threshold)
         || total_cpu_usage_percent.is_some_and(|usage| usage >= restore_threshold)
 }
 
-fn auto_balance_pressure_restore_threshold(settings: &ForegroundResponsivenessSettings) -> f32 {
-    let trigger = settings.auto_balance_total_threshold_percent.min(100);
-    f32::from(trigger.saturating_sub(AUTO_BALANCE_PRESSURE_RESTORE_BAND_PERCENT))
+fn workload_engine_pressure_restore_threshold(settings: &WorkloadEngineSettings) -> f32 {
+    let trigger = settings.workload_engine_total_threshold_percent.min(100);
+    f32::from(trigger.saturating_sub(WORKLOAD_ENGINE_PRESSURE_RESTORE_BAND_PERCENT))
 }
 
 fn foreground_cpu_saturates_workload(usage: f32) -> bool {
-    usage >= AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT
+    usage >= WORKLOAD_ENGINE_FOREGROUND_SATURATION_PERCENT
 }
 
-fn auto_balance_effective_restriction_mode(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_effective_restriction_mode(
+    settings: &WorkloadEngineSettings,
 ) -> EcoQosCpuRestrictionMode {
     if settings.lower_background_auto_cpu_percent {
         EcoQosCpuRestrictionMode::SoftCpuSets
     } else {
-        settings.auto_balance_affinity_mode
+        settings.workload_engine_affinity_mode
     }
 }
 
-fn auto_balance_affinity_mode(settings: &ForegroundResponsivenessSettings) -> CpuAffinityMode {
-    match auto_balance_effective_restriction_mode(settings) {
+fn workload_engine_affinity_mode(settings: &WorkloadEngineSettings) -> CpuAffinityMode {
+    match workload_engine_effective_restriction_mode(settings) {
         EcoQosCpuRestrictionMode::SoftCpuSets => CpuAffinityMode::Soft,
         EcoQosCpuRestrictionMode::HardAffinity => CpuAffinityMode::Hard,
     }
 }
 
-fn auto_balance_process_decision(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_process_decision(
+    settings: &WorkloadEngineSettings,
     active_since: Option<Instant>,
     now: Instant,
-) -> AutoBalanceDecision {
+) -> WorkloadEngineDecision {
     if !settings.lower_background_auto_cpu_percent {
-        return AutoBalanceDecision::RestrictAffinity;
+        return WorkloadEngineDecision::RestrictAffinity;
     }
 
-    if !settings.auto_balance_affinity_escalation_enabled {
-        return AutoBalanceDecision::LowerPriority;
+    if !settings.workload_engine_affinity_escalation_enabled {
+        return WorkloadEngineDecision::LowerPriority;
     }
 
     let Some(active_since) = active_since else {
-        return AutoBalanceDecision::LowerPriority;
+        return WorkloadEngineDecision::LowerPriority;
     };
-    let escalation_delay = Duration::from_secs(settings.auto_balance_sustain_seconds.max(1));
+    let escalation_delay = Duration::from_secs(settings.workload_engine_sustain_seconds.max(1));
     if now.duration_since(active_since) >= escalation_delay {
-        AutoBalanceDecision::RestrictAffinity
+        WorkloadEngineDecision::RestrictAffinity
     } else {
-        AutoBalanceDecision::LowerPriority
+        WorkloadEngineDecision::LowerPriority
     }
 }
 
-fn auto_balance_priority_sustain(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_priority_sustain(
+    settings: &WorkloadEngineSettings,
     restraint_count: u32,
 ) -> Duration {
-    if settings.lower_background_auto_cpu_percent && settings.auto_balance_sustain_seconds <= 1 {
+    if settings.lower_background_auto_cpu_percent && settings.workload_engine_sustain_seconds <= 1 {
         return Duration::ZERO;
     }
 
-    let sustain = Duration::from_secs(settings.auto_balance_sustain_seconds);
+    let sustain = Duration::from_secs(settings.workload_engine_sustain_seconds);
     if settings.lower_background_auto_cpu_percent && restraint_count > 0 {
-        sustain / AUTO_BALANCE_REPEAT_OFFENDER_SUSTAIN_DIVISOR
+        sustain / WORKLOAD_ENGINE_REPEAT_OFFENDER_SUSTAIN_DIVISOR
     } else {
         sustain
     }
 }
 
-fn auto_balance_candidate(
+fn workload_engine_candidate(
     process_id: u32,
-    process: &AutoBalanceProcess,
-    decision: AutoBalanceDecision,
+    process: &WorkloadEngineProcess,
+    decision: WorkloadEngineDecision,
     now: Instant,
-) -> AutoBalanceCandidate {
+) -> WorkloadEngineCandidate {
     let selected_bonus = if process.selected { 500 } else { 0 };
-    let decision_bonus = if decision == AutoBalanceDecision::RestrictAffinity {
+    let decision_bonus = if decision == WorkloadEngineDecision::RestrictAffinity {
         1_000
     } else {
         0
@@ -1771,7 +1778,7 @@ fn auto_balance_candidate(
         .active_since
         .map(|started| now.duration_since(started).as_secs().min(60) as u32)
         .unwrap_or_default();
-    AutoBalanceCandidate {
+    WorkloadEngineCandidate {
         process_id,
         process_name: process.process_name.clone(),
         decision,
@@ -1783,10 +1790,10 @@ fn auto_balance_candidate(
     }
 }
 
-fn select_auto_balance_candidates(
-    mut candidates: Vec<AutoBalanceCandidate>,
+fn select_workload_engine_candidates(
+    mut candidates: Vec<WorkloadEngineCandidate>,
     max_targeted_processes: u8,
-) -> Vec<AutoBalanceCandidate> {
+) -> Vec<WorkloadEngineCandidate> {
     candidates.sort_by(|left, right| {
         right
             .score
@@ -1797,28 +1804,29 @@ fn select_auto_balance_candidates(
     candidates
 }
 
-fn auto_balance_effective_cpu_percent(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_effective_cpu_percent(
+    settings: &WorkloadEngineSettings,
     foreground_cpu_usage_percent: Option<f32>,
 ) -> u8 {
-    auto_balance_effective_cpu_percent_for_topology(
+    workload_engine_effective_cpu_percent_for_topology(
         settings,
         foreground_cpu_usage_percent,
-        auto_balance_has_efficiency_cores(),
+        workload_engine_has_efficiency_cores(),
     )
 }
 
-fn auto_balance_effective_cpu_percent_for_topology(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_effective_cpu_percent_for_topology(
+    settings: &WorkloadEngineSettings,
     foreground_cpu_usage_percent: Option<f32>,
     has_efficiency_cores: bool,
 ) -> u8 {
-    let configured = auto_balance_minimum_cpu_percent_for_topology(settings, has_efficiency_cores);
+    let configured =
+        workload_engine_minimum_cpu_percent_for_topology(settings, has_efficiency_cores);
     let Some(usage) = foreground_cpu_usage_percent else {
         return configured;
     };
-    let threshold = f32::from(settings.auto_balance_total_threshold_percent.min(100));
-    let saturation = AUTO_BALANCE_FOREGROUND_SATURATION_PERCENT;
+    let threshold = f32::from(settings.workload_engine_total_threshold_percent.min(100));
+    let saturation = WORKLOAD_ENGINE_FOREGROUND_SATURATION_PERCENT;
     if usage >= saturation || threshold >= saturation {
         return if settings.lower_background_auto_cpu_percent {
             100
@@ -1838,15 +1846,15 @@ fn auto_balance_effective_cpu_percent_for_topology(
         .clamp(f32::from(configured), 100.0) as u8
 }
 
-fn auto_balance_minimum_cpu_percent_for_topology(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_minimum_cpu_percent_for_topology(
+    settings: &WorkloadEngineSettings,
     has_efficiency_cores: bool,
 ) -> u8 {
     if !settings.lower_background_auto_cpu_percent {
-        return settings.auto_balance_cpu_percent.clamp(1, 100);
+        return settings.workload_engine_cpu_percent.clamp(1, 100);
     }
 
-    let trigger = settings.auto_balance_total_threshold_percent.min(100);
+    let trigger = settings.workload_engine_total_threshold_percent.min(100);
     if has_efficiency_cores {
         if trigger >= 80 {
             80
@@ -1864,7 +1872,7 @@ fn auto_balance_minimum_cpu_percent_for_topology(
     }
 }
 
-fn auto_balance_has_efficiency_cores() -> bool {
+fn workload_engine_has_efficiency_cores() -> bool {
     affinity::logical_processors()
         .iter()
         .any(|processor| processor.kind == LogicalProcessorKind::Efficiency)
@@ -1994,11 +2002,11 @@ fn foreground_launch_boost_eligible(process_id: u32) -> bool {
         .is_some_and(|age| process_age_in_launch_boost_window(age, FOREGROUND_LAUNCH_BOOST_WINDOW))
 }
 
-fn auto_balance_launch_boost_enabled(
-    settings: &ForegroundResponsivenessSettings,
+fn workload_engine_launch_boost_enabled(
+    settings: &WorkloadEngineSettings,
     foreground_is_launching: bool,
 ) -> bool {
-    settings.auto_balance_enabled && foreground_is_launching
+    settings.workload_engine_enabled && foreground_is_launching
 }
 
 fn process_age_in_launch_boost_window(age: Duration, launch_window: Duration) -> bool {
@@ -2035,7 +2043,7 @@ fn apply_priority(
         if !same_process_name(&adjusted.process_name, &process_name) {
             restore_adjusted_process(&process, adjusted)?;
             action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 adjusted.process_name.clone(),
                 ActionLogAction::Restore,
@@ -2060,12 +2068,12 @@ fn apply_priority(
             changed = true;
             if log_success {
                 action_log.record(
-                    ActionLogFeature::ForegroundResponsiveness,
+                    ActionLogFeature::WorkloadEngine,
                     Some(process_id),
                     process_name.clone(),
                     ActionLogAction::Apply,
                     ActionLogResult::Applied,
-                    "Disabled Windows dynamic priority boost for background responsiveness.",
+                    "Disabled Windows dynamic priority boost for Workload Engine.",
                 );
             }
         }
@@ -2090,12 +2098,12 @@ fn apply_priority(
             changed = true;
             if log_success {
                 action_log.record(
-                    ActionLogFeature::ForegroundResponsiveness,
+                    ActionLogFeature::WorkloadEngine,
                     Some(process_id),
                     process_name.clone(),
                     ActionLogAction::Apply,
                     ActionLogResult::Applied,
-                    "Enabled Windows Efficiency Mode for background responsiveness.",
+                    "Enabled Windows Efficiency Mode for Workload Engine.",
                 );
             }
         }
@@ -2146,7 +2154,7 @@ fn apply_priority(
         changed = true;
         if log_success {
             action_log.record(
-                ActionLogFeature::ForegroundResponsiveness,
+                ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 process_name.clone(),
                 ActionLogAction::Apply,
@@ -2346,7 +2354,7 @@ impl PriorityFailures {
             ));
         }
         action_log.record(
-            ActionLogFeature::ForegroundResponsiveness,
+            ActionLogFeature::WorkloadEngine,
             Some(process_id),
             process_name.to_owned(),
             ActionLogAction::Fail,
@@ -2372,7 +2380,7 @@ fn process_failure_message(
 
 fn priority_source_label(source: PriorityTargetSource) -> &'static str {
     match source {
-        PriorityTargetSource::AutoBalance => "Auto Balance",
+        PriorityTargetSource::WorkloadEngine => "Workload Engine",
         PriorityTargetSource::BackgroundPolicy => "Background policy",
         PriorityTargetSource::Rule => "Rule",
     }
@@ -2380,9 +2388,9 @@ fn priority_source_label(source: PriorityTargetSource) -> &'static str {
 
 fn background_apply_summary_message(count: usize) -> String {
     if count == 1 {
-        "Applied background responsiveness to 1 process.".to_owned()
+        "Applied Workload Engine background restraint to 1 process.".to_owned()
     } else {
-        format!("Applied background responsiveness to {count} processes.")
+        format!("Applied Workload Engine background restraint to {count} processes.")
     }
 }
 
@@ -2600,11 +2608,11 @@ fn open_process_error(process_id: u32, error: u32) -> PriorityError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ForegroundResponsivenessSettings, ProcessMemoryPrioritySetting};
+    use crate::config::{ProcessMemoryPrioritySetting, WorkloadEngineSettings};
 
     #[test]
-    fn repeated_failures_suppress_future_responsiveness_attempts_once() {
-        let mut manager = ForegroundResponsivenessManager::default();
+    fn repeated_failures_suppress_future_workload_engine_attempts_once() {
+        let mut manager = WorkloadEngineManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("APP.exe");
@@ -2668,18 +2676,18 @@ mod tests {
     }
 
     #[test]
-    fn launch_boost_runs_for_any_auto_balance_preset_while_app_is_launching() {
-        let settings = ForegroundResponsivenessSettings {
-            auto_balance_enabled: true,
+    fn launch_boost_runs_for_any_workload_engine_preset_while_app_is_launching() {
+        let settings = WorkloadEngineSettings {
+            workload_engine_enabled: true,
             boost_foreground_app: false,
             ..Default::default()
         };
 
-        assert!(auto_balance_launch_boost_enabled(&settings, true));
-        assert!(!auto_balance_launch_boost_enabled(&settings, false));
-        assert!(!auto_balance_launch_boost_enabled(
-            &ForegroundResponsivenessSettings {
-                auto_balance_enabled: false,
+        assert!(workload_engine_launch_boost_enabled(&settings, true));
+        assert!(!workload_engine_launch_boost_enabled(&settings, false));
+        assert!(!workload_engine_launch_boost_enabled(
+            &WorkloadEngineSettings {
+                workload_engine_enabled: false,
                 ..settings.clone()
             },
             true
@@ -2687,14 +2695,14 @@ mod tests {
     }
 
     #[test]
-    fn auto_balance_status_reports_launch_boost_before_cpu_waiting() {
-        let settings = ForegroundResponsivenessSettings {
-            auto_balance_enabled: true,
+    fn workload_engine_status_reports_launch_boost_before_cpu_waiting() {
+        let settings = WorkloadEngineSettings {
+            workload_engine_enabled: true,
             ..Default::default()
         };
 
         assert_eq!(
-            auto_balance_status_message(&settings, None, None, true, false, 0),
+            workload_engine_status_message(&settings, None, None, true, false, 0),
             "Launch boost active: boosting the foreground app while background restraints wait."
         );
     }
@@ -2703,23 +2711,23 @@ mod tests {
     fn background_apply_summary_message_uses_process_count() {
         assert_eq!(
             background_apply_summary_message(1),
-            "Applied background responsiveness to 1 process."
+            "Applied Workload Engine background restraint to 1 process."
         );
         assert_eq!(
             background_apply_summary_message(3),
-            "Applied background responsiveness to 3 processes."
+            "Applied Workload Engine background restraint to 3 processes."
         );
     }
 
     #[test]
-    fn responsiveness_restore_summary_messages_use_process_count() {
+    fn workload_engine_restore_summary_messages_use_process_count() {
         assert_eq!(
-            background_priority_restore_summary_message(1, "process no longer matches a responsiveness rule"),
-            "Restored background priority for 1 process: process no longer matches a responsiveness rule."
+            background_priority_restore_summary_message(1, "process no longer matches a Workload Engine rule"),
+            "Restored background priority for 1 process: process no longer matches a Workload Engine rule."
         );
         assert_eq!(
-            background_priority_restore_summary_message(20, "process no longer matches a responsiveness rule"),
-            "Restored background priority for 20 processes: process no longer matches a responsiveness rule."
+            background_priority_restore_summary_message(20, "process no longer matches a Workload Engine rule"),
+            "Restored background priority for 20 processes: process no longer matches a Workload Engine rule."
         );
         assert_eq!(
             foreground_boost_restore_summary_message(17, "foreground app changed before stability delay"),
@@ -2745,39 +2753,39 @@ mod tests {
 
     #[test]
     fn matching_rule_is_case_insensitive() {
-        let settings = ForegroundResponsivenessSettings {
+        let settings = WorkloadEngineSettings {
             enabled: true,
             lower_background_apps: true,
-            auto_balance_efficiency_mode_enabled: true,
-            auto_balance_background_priority: ProcessPriority::BelowNormal,
+            workload_engine_efficiency_mode_enabled: true,
+            workload_engine_background_priority: ProcessPriority::BelowNormal,
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: crate::config::ProcessIoPriority::VeryLow,
-            auto_balance_io_priority: crate::config::IoPrioritySettings::default(),
-            auto_balance_thread_priority: crate::config::ThreadPrioritySettings::default(),
-            auto_balance_priority_boost: crate::config::PriorityBoostSettings::default(),
-            auto_balance_gpu_priority: crate::config::GpuPrioritySettings::default(),
-            auto_balance_memory_priority_enabled: false,
-            auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
-            auto_balance_memory_priority: crate::config::ProcessMemoryPriority::Low,
+            workload_engine_io_priority: crate::config::IoPrioritySettings::default(),
+            workload_engine_thread_priority: crate::config::ThreadPrioritySettings::default(),
+            workload_engine_priority_boost: crate::config::PriorityBoostSettings::default(),
+            workload_engine_gpu_priority: crate::config::GpuPrioritySettings::default(),
+            workload_engine_memory_priority_enabled: false,
+            workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
+            workload_engine_memory_priority: crate::config::ProcessMemoryPriority::Low,
             lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
             lower_background_cpu_percent: 50,
             lower_background_max_logical_processors: 0,
             lower_background_auto_cpu_percent: false,
-            auto_balance_enabled: false,
-            auto_balance_advanced_settings_enabled: false,
-            auto_balance_affinity_escalation_enabled: false,
-            auto_balance_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            auto_balance_cpu_percent: 50,
-            auto_balance_max_logical_processors: 0,
-            auto_balance_total_threshold_percent: 70,
-            auto_balance_threshold_percent: 25,
-            auto_balance_restore_threshold_percent: 5,
-            auto_balance_sustain_seconds: 2,
-            auto_balance_minimum_restraint_seconds: 4,
-            auto_balance_cooldown_seconds: 10,
-            auto_balance_max_targeted_processes: 6,
-            auto_balance_exclusions: Vec::new(),
+            workload_engine_enabled: false,
+            workload_engine_advanced_settings_enabled: false,
+            workload_engine_affinity_escalation_enabled: false,
+            workload_engine_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            workload_engine_cpu_percent: 50,
+            workload_engine_max_logical_processors: 0,
+            workload_engine_total_threshold_percent: 70,
+            workload_engine_threshold_percent: 25,
+            workload_engine_restore_threshold_percent: 5,
+            workload_engine_sustain_seconds: 2,
+            workload_engine_minimum_restraint_seconds: 4,
+            workload_engine_cooldown_seconds: 10,
+            workload_engine_max_targeted_processes: 6,
+            workload_engine_exclusions: Vec::new(),
             boost_foreground_app: false,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
             foreground_stability_delay_ms: 750,
@@ -2859,71 +2867,83 @@ mod tests {
     }
 
     #[test]
-    fn auto_balance_pauses_when_foreground_saturates_cpu() {
-        let settings = ForegroundResponsivenessSettings {
-            auto_balance_enabled: true,
-            auto_balance_total_threshold_percent: 70,
+    fn workload_engine_pauses_when_foreground_saturates_cpu() {
+        let settings = WorkloadEngineSettings {
+            workload_engine_enabled: true,
+            workload_engine_total_threshold_percent: 70,
             ..Default::default()
         };
 
-        assert!(!auto_balance_should_run(&settings, Some(69.0), None));
-        assert!(auto_balance_should_run(&settings, Some(70.0), None));
-        assert!(!auto_balance_should_run(&settings, Some(85.0), None));
-        assert!(!auto_balance_should_run(&settings, Some(100.0), None));
-        assert!(!auto_balance_should_run(&settings, Some(85.0), Some(100.0)));
+        assert!(!workload_engine_should_run(&settings, Some(69.0), None));
+        assert!(workload_engine_should_run(&settings, Some(70.0), None));
+        assert!(!workload_engine_should_run(&settings, Some(85.0), None));
+        assert!(!workload_engine_should_run(&settings, Some(100.0), None));
+        assert!(!workload_engine_should_run(
+            &settings,
+            Some(85.0),
+            Some(100.0)
+        ));
     }
 
     #[test]
-    fn auto_balance_runs_under_system_cpu_pressure() {
-        let settings = ForegroundResponsivenessSettings {
-            auto_balance_enabled: true,
-            auto_balance_total_threshold_percent: 70,
+    fn workload_engine_runs_under_system_cpu_pressure() {
+        let settings = WorkloadEngineSettings {
+            workload_engine_enabled: true,
+            workload_engine_total_threshold_percent: 70,
             ..Default::default()
         };
 
-        assert!(!auto_balance_should_run(&settings, Some(10.0), Some(69.0)));
-        assert!(auto_balance_should_run(&settings, Some(10.0), Some(70.0)));
-        assert!(auto_balance_should_run(&settings, None, Some(70.0)));
+        assert!(!workload_engine_should_run(
+            &settings,
+            Some(10.0),
+            Some(69.0)
+        ));
+        assert!(workload_engine_should_run(
+            &settings,
+            Some(10.0),
+            Some(70.0)
+        ));
+        assert!(workload_engine_should_run(&settings, None, Some(70.0)));
     }
 
     #[test]
-    fn auto_balance_pressure_uses_restore_band_before_stopping() {
-        let settings = ForegroundResponsivenessSettings {
-            auto_balance_enabled: true,
-            auto_balance_total_threshold_percent: 70,
-            auto_balance_restore_threshold_percent: 20,
+    fn workload_engine_pressure_uses_restore_band_before_stopping() {
+        let settings = WorkloadEngineSettings {
+            workload_engine_enabled: true,
+            workload_engine_total_threshold_percent: 70,
+            workload_engine_restore_threshold_percent: 20,
             ..Default::default()
         };
-        let mut manager = ForegroundResponsivenessManager::default();
+        let mut manager = WorkloadEngineManager::default();
 
-        assert!(!manager.update_auto_balance_pressure(&settings, Some(10.0), Some(69.0)));
-        assert!(manager.update_auto_balance_pressure(&settings, Some(10.0), Some(70.0)));
-        assert!(manager.update_auto_balance_pressure(&settings, Some(10.0), Some(66.0)));
-        assert!(!manager.update_auto_balance_pressure(&settings, Some(10.0), Some(64.0)));
+        assert!(!manager.update_workload_engine_pressure(&settings, Some(10.0), Some(69.0)));
+        assert!(manager.update_workload_engine_pressure(&settings, Some(10.0), Some(70.0)));
+        assert!(manager.update_workload_engine_pressure(&settings, Some(10.0), Some(66.0)));
+        assert!(!manager.update_workload_engine_pressure(&settings, Some(10.0), Some(64.0)));
     }
 
     #[test]
-    fn auto_balance_selects_highest_scored_candidates() {
+    fn workload_engine_selects_highest_scored_candidates() {
         let max_targeted = 6;
         let candidates = (0..=u32::from(max_targeted))
-            .map(|process_id| AutoBalanceCandidate {
+            .map(|process_id| WorkloadEngineCandidate {
                 process_id,
                 process_name: format!("app{process_id}.exe"),
-                decision: AutoBalanceDecision::LowerPriority,
+                decision: WorkloadEngineDecision::LowerPriority,
                 score: process_id,
             })
             .collect::<Vec<_>>();
 
-        let selected = select_auto_balance_candidates(candidates, max_targeted);
+        let selected = select_workload_engine_candidates(candidates, max_targeted);
 
         assert_eq!(selected.len(), usize::from(max_targeted));
         assert!(!selected.iter().any(|candidate| candidate.process_id == 0));
     }
 
     #[test]
-    fn auto_balance_selection_can_replace_cooler_selected_process() {
+    fn workload_engine_selection_can_replace_cooler_selected_process() {
         let now = Instant::now();
-        let selected = AutoBalanceProcess {
+        let selected = WorkloadEngineProcess {
             process_name: "selected.exe".to_owned(),
             previous_cpu_time: None,
             last_usage_tenths: Some(100),
@@ -2932,11 +2952,11 @@ mod tests {
             active_since: Some(now - Duration::from_secs(60)),
             last_reaction_millis: Some(100),
             restraint_count: 3,
-            decision: Some(AutoBalanceDecision::LowerPriority),
+            decision: Some(WorkloadEngineDecision::LowerPriority),
             active: true,
             selected: true,
         };
-        let hotter = AutoBalanceProcess {
+        let hotter = WorkloadEngineProcess {
             process_name: "hotter.exe".to_owned(),
             previous_cpu_time: None,
             last_usage_tenths: Some(900),
@@ -2945,15 +2965,15 @@ mod tests {
             active_since: Some(now),
             last_reaction_millis: Some(100),
             restraint_count: 0,
-            decision: Some(AutoBalanceDecision::LowerPriority),
+            decision: Some(WorkloadEngineDecision::LowerPriority),
             active: true,
             selected: false,
         };
 
-        let selected = select_auto_balance_candidates(
+        let selected = select_workload_engine_candidates(
             vec![
-                auto_balance_candidate(1, &selected, AutoBalanceDecision::LowerPriority, now),
-                auto_balance_candidate(2, &hotter, AutoBalanceDecision::LowerPriority, now),
+                workload_engine_candidate(1, &selected, WorkloadEngineDecision::LowerPriority, now),
+                workload_engine_candidate(2, &hotter, WorkloadEngineDecision::LowerPriority, now),
             ],
             1,
         );
@@ -2962,12 +2982,12 @@ mod tests {
     }
 
     #[test]
-    fn auto_balance_status_treats_unselected_hot_process_as_watching() {
+    fn workload_engine_status_treats_unselected_hot_process_as_watching() {
         let now = Instant::now();
-        let mut manager = ForegroundResponsivenessManager::default();
-        manager.auto_balance.insert(
+        let mut manager = WorkloadEngineManager::default();
+        manager.workload_engine.insert(
             42,
-            AutoBalanceProcess {
+            WorkloadEngineProcess {
                 process_name: "worker.exe".to_owned(),
                 previous_cpu_time: None,
                 last_usage_tenths: Some(900),
@@ -2976,163 +2996,163 @@ mod tests {
                 active_since: Some(now - Duration::from_secs(1)),
                 last_reaction_millis: Some(100),
                 restraint_count: 1,
-                decision: Some(AutoBalanceDecision::RestrictAffinity),
+                decision: Some(WorkloadEngineDecision::RestrictAffinity),
                 active: true,
                 selected: false,
             },
         );
 
-        let statuses = manager.auto_balance_statuses(now);
+        let statuses = manager.workload_engine_statuses(now);
 
         assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0].state, AutoBalanceProcessState::Watching);
+        assert_eq!(statuses[0].state, WorkloadEngineProcessState::Watching);
         assert_eq!(statuses[0].elapsed_seconds, Some(2));
     }
 
     #[test]
-    fn auto_balance_cpu_percent_relaxes_under_moderate_pressure() {
-        let settings = ForegroundResponsivenessSettings {
+    fn workload_engine_cpu_percent_relaxes_under_moderate_pressure() {
+        let settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: false,
-            auto_balance_cpu_percent: 50,
-            auto_balance_total_threshold_percent: 70,
+            workload_engine_cpu_percent: 50,
+            workload_engine_total_threshold_percent: 70,
             ..Default::default()
         };
 
-        assert_eq!(auto_balance_effective_cpu_percent(&settings, None), 50);
+        assert_eq!(workload_engine_effective_cpu_percent(&settings, None), 50);
         assert_eq!(
-            auto_balance_effective_cpu_percent(&settings, Some(70.0)),
+            workload_engine_effective_cpu_percent(&settings, Some(70.0)),
             75
         );
         assert_eq!(
-            auto_balance_effective_cpu_percent(&settings, Some(77.5)),
+            workload_engine_effective_cpu_percent(&settings, Some(77.5)),
             63
         );
         assert_eq!(
-            auto_balance_effective_cpu_percent(&settings, Some(85.0)),
+            workload_engine_effective_cpu_percent(&settings, Some(85.0)),
             50
         );
     }
 
     #[test]
-    fn auto_balance_auto_cpu_percent_uses_topology_behavior_floor() {
-        let settings = ForegroundResponsivenessSettings {
+    fn workload_engine_auto_cpu_percent_uses_topology_behavior_floor() {
+        let settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: true,
-            auto_balance_cpu_percent: 25,
-            auto_balance_total_threshold_percent: 75,
+            workload_engine_cpu_percent: 25,
+            workload_engine_total_threshold_percent: 75,
             ..Default::default()
         };
 
         assert_eq!(
-            auto_balance_minimum_cpu_percent_for_topology(&settings, true),
+            workload_engine_minimum_cpu_percent_for_topology(&settings, true),
             70
         );
         assert_eq!(
-            auto_balance_effective_cpu_percent_for_topology(&settings, Some(75.0), true),
+            workload_engine_effective_cpu_percent_for_topology(&settings, Some(75.0), true),
             100
         );
         assert_eq!(
-            auto_balance_effective_cpu_percent_for_topology(&settings, Some(80.0), true),
+            workload_engine_effective_cpu_percent_for_topology(&settings, Some(80.0), true),
             85
         );
 
         assert_eq!(
-            auto_balance_minimum_cpu_percent_for_topology(&settings, false),
+            workload_engine_minimum_cpu_percent_for_topology(&settings, false),
             80
         );
         assert_eq!(
-            auto_balance_effective_cpu_percent_for_topology(&settings, Some(75.0), false),
+            workload_engine_effective_cpu_percent_for_topology(&settings, Some(75.0), false),
             100
         );
         assert_eq!(
-            auto_balance_effective_cpu_percent_for_topology(&settings, Some(80.0), false),
+            workload_engine_effective_cpu_percent_for_topology(&settings, Some(80.0), false),
             90
         );
     }
 
     #[test]
-    fn auto_balance_auto_mode_escalates_from_priority_to_affinity() {
-        let settings = ForegroundResponsivenessSettings {
+    fn workload_engine_auto_mode_escalates_from_priority_to_affinity() {
+        let settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: true,
-            auto_balance_affinity_escalation_enabled: false,
-            auto_balance_sustain_seconds: 3,
+            workload_engine_affinity_escalation_enabled: false,
+            workload_engine_sustain_seconds: 3,
             ..Default::default()
         };
         let now = Instant::now();
 
         assert_eq!(
-            auto_balance_process_decision(&settings, Some(now), now + Duration::from_secs(2)),
-            AutoBalanceDecision::LowerPriority
+            workload_engine_process_decision(&settings, Some(now), now + Duration::from_secs(2)),
+            WorkloadEngineDecision::LowerPriority
         );
         assert_eq!(
-            auto_balance_process_decision(&settings, Some(now), now + Duration::from_secs(3)),
-            AutoBalanceDecision::LowerPriority
+            workload_engine_process_decision(&settings, Some(now), now + Duration::from_secs(3)),
+            WorkloadEngineDecision::LowerPriority
         );
 
-        let escalating_settings = ForegroundResponsivenessSettings {
-            auto_balance_affinity_escalation_enabled: true,
+        let escalating_settings = WorkloadEngineSettings {
+            workload_engine_affinity_escalation_enabled: true,
             ..settings.clone()
         };
         assert_eq!(
-            auto_balance_process_decision(
+            workload_engine_process_decision(
                 &escalating_settings,
                 Some(now),
                 now + Duration::from_secs(3)
             ),
-            AutoBalanceDecision::RestrictAffinity
+            WorkloadEngineDecision::RestrictAffinity
         );
 
-        let manual_settings = ForegroundResponsivenessSettings {
+        let manual_settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: false,
             ..escalating_settings
         };
         assert_eq!(
-            auto_balance_process_decision(&manual_settings, Some(now), now),
-            AutoBalanceDecision::RestrictAffinity
+            workload_engine_process_decision(&manual_settings, Some(now), now),
+            WorkloadEngineDecision::RestrictAffinity
         );
     }
 
     #[test]
-    fn auto_balance_responsive_priority_sustain_is_immediate() {
-        let responsive_settings = ForegroundResponsivenessSettings {
+    fn workload_engine_fast_priority_sustain_is_immediate() {
+        let fast_settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: true,
-            auto_balance_sustain_seconds: 1,
+            workload_engine_sustain_seconds: 1,
             ..Default::default()
         };
         assert_eq!(
-            auto_balance_priority_sustain(&responsive_settings, 0),
+            workload_engine_priority_sustain(&fast_settings, 0),
             Duration::ZERO
         );
 
-        let balanced_settings = ForegroundResponsivenessSettings {
+        let balanced_settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: true,
-            auto_balance_sustain_seconds: 2,
+            workload_engine_sustain_seconds: 2,
             ..Default::default()
         };
         assert_eq!(
-            auto_balance_priority_sustain(&balanced_settings, 0),
+            workload_engine_priority_sustain(&balanced_settings, 0),
             Duration::from_secs(2)
         );
         assert_eq!(
-            auto_balance_priority_sustain(&balanced_settings, 1),
+            workload_engine_priority_sustain(&balanced_settings, 1),
             Duration::from_secs(1)
         );
 
-        let manual_settings = ForegroundResponsivenessSettings {
+        let manual_settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: false,
-            auto_balance_sustain_seconds: 1,
+            workload_engine_sustain_seconds: 1,
             ..Default::default()
         };
         assert_eq!(
-            auto_balance_priority_sustain(&manual_settings, 1),
+            workload_engine_priority_sustain(&manual_settings, 1),
             Duration::from_secs(1)
         );
     }
 
     #[test]
     fn smart_efficiency_auto_mode_runs_under_cpu_pressure() {
-        let settings = ForegroundResponsivenessSettings {
+        let settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: true,
-            auto_balance_total_threshold_percent: 75,
+            workload_engine_total_threshold_percent: 75,
             ..Default::default()
         };
 
@@ -3150,7 +3170,7 @@ mod tests {
             Some(100.0)
         ));
 
-        let manual_settings = ForegroundResponsivenessSettings {
+        let manual_settings = WorkloadEngineSettings {
             lower_background_auto_cpu_percent: false,
             ..settings
         };
@@ -3229,7 +3249,7 @@ mod tests {
 
     #[test]
     fn release_processes_skips_restore_when_process_identity_is_unknown() {
-        let mut manager = ForegroundResponsivenessManager::default();
+        let mut manager = WorkloadEngineManager::default();
         manager.adjusted.insert(
             0,
             AdjustedProcess {

@@ -9,9 +9,9 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 ## Features
 
 ### Winderust Features
-- `Auto Balance`: protects the active app by temporarily lowering hot background work. It can tune process priority, efficiency mode, I/O priority, thread priority, dynamic boost, GPU priority, memory priority, and CPU affinity escalation.
+- `Workload Engine`: protects the active app by temporarily lowering hot background work. It can tune process priority, efficiency mode, I/O priority, thread priority, dynamic boost, GPU priority, memory priority, and CPU affinity escalation.
 - `Background Efficiency`: applies Windows Efficiency Mode / EcoQoS to eligible background apps with protection lists and per-app rules.
-- `Smart Trim`: trims idle high-memory background processes during memory pressure while protecting foreground and excluded apps.
+- `Memory Trim`: trims idle high-memory background processes during memory pressure while protecting foreground and excluded apps.
 
 ### Power Automation
 - Switches power plans by foreground app, running app, CPU load, user activity, and schedule.
@@ -36,13 +36,13 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 
 ## Recommended Starting Points
 
-- Use `Auto Balance` first when foreground responsiveness is the goal.
+- Use `Workload Engine` first when foreground interactivity is the goal.
 - Use `Background Efficiency` for low-risk battery and heat reduction.
-- Use `Smart Trim` for memory-pressure cleanup without trimming the foreground app.
+- Use `Memory Trim` for memory-pressure cleanup without trimming the foreground app.
 - Use `Power Automation` when a workload should choose or hold a specific power plan.
-- Use `Priority Control` or `Processor Controls` only when you need per-subsystem or per-app tuning beyond Auto Balance.
+- Use `Priority Control` or `Processor Controls` only when you need per-subsystem or per-app tuning beyond Workload Engine.
 
-## Auto Balance Benchmark
+## Workload Engine Benchmark
 
 `Off` is the comparison baseline under generated background load; the script
 also emits a no-background `baseline_no_background_load` case for reference.
@@ -62,7 +62,7 @@ Metrics:
 
 The README tables compare each preset directly to the displayed `Off` row. The
 benchmark script still records adjacent paired-Off comparisons in
-`docs/auto-balance-benchmark.md` for deeper validation.
+`docs/workload-engine-benchmark.md` for deeper validation.
 
 Latest CPU-loop validation on Intel Core 5 210H, 12 logical processors:
 
@@ -76,13 +76,13 @@ Latest CPU-loop validation on Intel Core 5 210H, 12 logical processors:
 Run the benchmark from the repository root:
 
 ```powershell
-.\scripts\auto_balance_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+.\scripts\workload_engine_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
 The script spawns temporary CPU workers and changes their priority, affinity,
 thread, memory, I/O, priority-boost, and GPU scheduling controls where possible.
 Treat results as local direction only. I/O-loop and Winderust-launch scenarios
-and the message-loop scenario are documented in `docs/auto-balance-benchmark.md`.
+and the message-loop scenario are documented in `docs/workload-engine-benchmark.md`.
 
 ## Build
 

@@ -17,7 +17,7 @@ use windows_sys::Win32::{
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::SmartTrimSettings,
+    config::MemoryTrimSettings,
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
@@ -36,7 +36,7 @@ const MEMORY_PURGE_STANDBY_LIST: u32 = 4;
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SmartTrimSnapshot {
+pub struct MemoryTrimSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub candidate_processes: usize,
@@ -54,7 +54,7 @@ pub struct SmartTrimSnapshot {
 }
 
 #[derive(Default)]
-pub struct SmartTrimManager {
+pub struct MemoryTrimManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     last_trimmed: BTreeMap<u32, Instant>,
     failure_suppression: ExecutionFailureTracker,
@@ -73,62 +73,62 @@ struct ProcessMemorySample {
     working_set_bytes: u64,
 }
 
-enum SmartTrimError {
+enum MemoryTrimError {
     AccessDenied,
     ProcessExited,
     Failed(String),
 }
 
-impl SmartTrimManager {
+impl MemoryTrimManager {
     pub fn update(
         &mut self,
-        settings: &SmartTrimSettings,
+        settings: &MemoryTrimSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         performance_mode_active: bool,
         action_log: &mut ActionLog,
-    ) -> SmartTrimSnapshot {
+    ) -> MemoryTrimSnapshot {
         self.update_with_mode(
             settings,
             automation_enabled,
             foreground_process_id,
             performance_mode_active,
-            SmartTrimMode::Automatic,
+            MemoryTrimMode::Automatic,
             action_log,
         )
     }
 
     pub fn trim_now(
         &mut self,
-        settings: &SmartTrimSettings,
+        settings: &MemoryTrimSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         performance_mode_active: bool,
         action_log: &mut ActionLog,
-    ) -> SmartTrimSnapshot {
+    ) -> MemoryTrimSnapshot {
         self.update_with_mode(
             settings,
             automation_enabled,
             foreground_process_id,
             performance_mode_active,
-            SmartTrimMode::Manual,
+            MemoryTrimMode::Manual,
             action_log,
         )
     }
 
     fn update_with_mode(
         &mut self,
-        settings: &SmartTrimSettings,
+        settings: &MemoryTrimSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         performance_mode_active: bool,
-        mode: SmartTrimMode,
+        mode: MemoryTrimMode,
         action_log: &mut ActionLog,
-    ) -> SmartTrimSnapshot {
+    ) -> MemoryTrimSnapshot {
         if !automation_enabled {
             self.clear_tracking();
             self.clear_failure_suppression();
-            return SmartTrimSnapshot {
+            return MemoryTrimSnapshot {
                 enabled: false,
                 message: "Automation disabled.".to_owned(),
                 ..Default::default()
@@ -138,16 +138,16 @@ impl SmartTrimManager {
         if !settings.enabled {
             self.clear_tracking();
             self.clear_failure_suppression();
-            return SmartTrimSnapshot {
+            return MemoryTrimSnapshot {
                 enabled: false,
-                message: "Smart Trim disabled.".to_owned(),
+                message: "Memory Trim disabled.".to_owned(),
                 ..Default::default()
             };
         }
 
         if settings.exclude_foreground_app && foreground_process_id.is_none() {
             self.clear_tracking();
-            return SmartTrimSnapshot {
+            return MemoryTrimSnapshot {
                 enabled: true,
                 message: "Paused: foreground app is unknown.".to_owned(),
                 ..Default::default()
@@ -158,7 +158,7 @@ impl SmartTrimManager {
             Ok(percent) => percent,
             Err(err) => {
                 self.clear_tracking();
-                return SmartTrimSnapshot {
+                return MemoryTrimSnapshot {
                     enabled: true,
                     message: err.clone(),
                     last_error: Some(err),
@@ -168,12 +168,12 @@ impl SmartTrimManager {
         };
 
         let threshold = settings.system_memory_load_threshold_percent.min(100);
-        if mode == SmartTrimMode::Automatic && memory_load_percent < threshold {
+        if mode == MemoryTrimMode::Automatic && memory_load_percent < threshold {
             self.clear_tracking();
-            return SmartTrimSnapshot {
+            return MemoryTrimSnapshot {
                 enabled: true,
                 memory_load_percent: Some(memory_load_percent),
-                message: format!("Smart Trim waiting for system memory load >= {threshold}%."),
+                message: format!("Memory Trim waiting for system memory load >= {threshold}%."),
                 ..Default::default()
             };
         }
@@ -181,7 +181,7 @@ impl SmartTrimManager {
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             self.clear_tracking();
-            return SmartTrimSnapshot {
+            return MemoryTrimSnapshot {
                 enabled: true,
                 memory_load_percent: Some(memory_load_percent),
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -193,7 +193,7 @@ impl SmartTrimManager {
             Ok(processes) => processes,
             Err(err) => {
                 self.clear_tracking();
-                return SmartTrimSnapshot {
+                return MemoryTrimSnapshot {
                     enabled: true,
                     memory_load_percent: Some(memory_load_percent),
                     message: err,
@@ -249,7 +249,7 @@ impl SmartTrimManager {
         let mut candidate_processes = 0;
         let mut trimmed_processes = 0;
         let mut skipped_processes = 0;
-        let mut failures = SmartTrimFailures::default();
+        let mut failures = MemoryTrimFailures::default();
         let mut trimmed_apps = BTreeSet::new();
         let mut auto_excluded_processes = BTreeSet::new();
         let now = Instant::now();
@@ -279,7 +279,7 @@ impl SmartTrimManager {
                     trimmed_apps.insert(process_name.clone());
                     self.clear_process_failure(&process_name);
                     action_log.record(
-                        ActionLogFeature::SmartTrim,
+                        ActionLogFeature::MemoryTrim,
                         Some(process_id),
                         process_name,
                         ActionLogAction::Apply,
@@ -287,16 +287,16 @@ impl SmartTrimManager {
                         trim_reason(mode, freed_bytes),
                     );
                 }
-                Err(SmartTrimError::ProcessExited) => {
+                Err(MemoryTrimError::ProcessExited) => {
                     skipped_processes += 1;
                     self.tracked.remove(&process_id);
                     self.last_trimmed.remove(&process_id);
                 }
-                Err(SmartTrimError::AccessDenied) => {
+                Err(MemoryTrimError::AccessDenied) => {
                     skipped_processes += 1;
                     self.record_process_failure(&process_name);
                     action_log.record(
-                        ActionLogFeature::SmartTrim,
+                        ActionLogFeature::MemoryTrim,
                         Some(process_id),
                         process_name,
                         ActionLogAction::Skip,
@@ -332,7 +332,7 @@ impl SmartTrimManager {
                         purged_standby_list = true;
                         self.clear_system_action_failure("purge-standby-list");
                         action_log.record(
-                            ActionLogFeature::SmartTrim,
+                            ActionLogFeature::MemoryTrim,
                             None,
                             "System".to_owned(),
                             ActionLogAction::Apply,
@@ -361,7 +361,7 @@ impl SmartTrimManager {
                         purged_system_file_cache = true;
                         self.clear_system_action_failure("purge-system-file-cache");
                         action_log.record(
-                            ActionLogFeature::SmartTrim,
+                            ActionLogFeature::MemoryTrim,
                             None,
                             "System".to_owned(),
                             ActionLogAction::Apply,
@@ -379,7 +379,7 @@ impl SmartTrimManager {
             self.clear_system_action_failure("purge-system-file-cache");
         }
 
-        SmartTrimSnapshot {
+        MemoryTrimSnapshot {
             enabled: true,
             scanned_processes,
             candidate_processes,
@@ -393,8 +393,8 @@ impl SmartTrimManager {
             trimmed_apps: trimmed_apps.into_iter().collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: match mode {
-                SmartTrimMode::Automatic => "Smart Trim active.".to_owned(),
-                SmartTrimMode::Manual => "Manual Smart Trim pass completed.".to_owned(),
+                MemoryTrimMode::Automatic => "Memory Trim active.".to_owned(),
+                MemoryTrimMode::Manual => "Manual Memory Trim pass completed.".to_owned(),
             },
             last_error: failures.last_error,
         }
@@ -404,10 +404,10 @@ impl SmartTrimManager {
         &mut self,
         process_id: u32,
         process_name: String,
-        settings: &SmartTrimSettings,
-        mode: SmartTrimMode,
+        settings: &MemoryTrimSettings,
+        mode: MemoryTrimMode,
         now: Instant,
-    ) -> Result<ProcessUpdate, SmartTrimError> {
+    ) -> Result<ProcessUpdate, MemoryTrimError> {
         let process = ProcessHandle::open(process_id)?;
         let memory = process.memory_sample()?;
         if !settings.trim_working_sets {
@@ -421,7 +421,7 @@ impl SmartTrimManager {
             return Ok(ProcessUpdate::Waiting);
         }
 
-        if mode == SmartTrimMode::Automatic
+        if mode == MemoryTrimMode::Automatic
             && self
                 .last_trimmed
                 .get(&process_id)
@@ -433,7 +433,7 @@ impl SmartTrimManager {
             return Ok(ProcessUpdate::Candidate);
         }
 
-        if mode == SmartTrimMode::Manual {
+        if mode == MemoryTrimMode::Manual {
             let before = memory.working_set_bytes;
             process.empty_working_set()?;
             let after = process
@@ -514,13 +514,13 @@ impl SmartTrimManager {
         if suppression.newly_suppressed {
             auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
-                ActionLogFeature::SmartTrim,
+                ActionLogFeature::MemoryTrim,
                 Some(process_id),
                 process_name.to_owned(),
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Smart Trim after {} failed attempts.",
+                    "Stopped retrying Memory Trim after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -551,13 +551,13 @@ impl SmartTrimManager {
 
         if suppression.newly_suppressed {
             action_log.record(
-                ActionLogFeature::SmartTrim,
+                ActionLogFeature::MemoryTrim,
                 None,
                 "System".to_owned(),
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Smart Trim {label} after {} failed attempts.",
+                    "Stopped retrying Memory Trim {label} after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -576,7 +576,7 @@ impl SmartTrimManager {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SmartTrimMode {
+enum MemoryTrimMode {
     Automatic,
     Manual,
 }
@@ -587,13 +587,13 @@ enum ProcessUpdate {
     Trimmed { freed_bytes: u64 },
 }
 
-fn trim_reason(mode: SmartTrimMode, freed_bytes: u64) -> String {
+fn trim_reason(mode: MemoryTrimMode, freed_bytes: u64) -> String {
     match mode {
-        SmartTrimMode::Automatic => format!(
+        MemoryTrimMode::Automatic => format!(
             "Trimmed working set; estimated freed {}.",
             size_label(freed_bytes)
         ),
-        SmartTrimMode::Manual => format!(
+        MemoryTrimMode::Manual => format!(
             "Manually trimmed working set; estimated freed {}.",
             size_label(freed_bytes)
         ),
@@ -601,20 +601,20 @@ fn trim_reason(mode: SmartTrimMode, freed_bytes: u64) -> String {
 }
 
 #[derive(Default)]
-struct SmartTrimFailures {
+struct MemoryTrimFailures {
     count: usize,
     last_error: Option<String>,
 }
 
-impl SmartTrimFailures {
+impl MemoryTrimFailures {
     fn record(
         &mut self,
         process_id: u32,
         process_name: &str,
-        error: SmartTrimError,
+        error: MemoryTrimError,
         action_log: &mut ActionLog,
     ) {
-        let message = smart_trim_error_message(error);
+        let message = memory_trim_error_message(error);
         if is_process_exited_message(&message) {
             return;
         }
@@ -623,7 +623,7 @@ impl SmartTrimFailures {
             self.last_error = Some(format!("Trim {process_name} ({process_id}): {message}"));
         }
         action_log.record(
-            ActionLogFeature::SmartTrim,
+            ActionLogFeature::MemoryTrim,
             Some(process_id),
             process_name.to_owned(),
             ActionLogAction::Fail,
@@ -638,7 +638,7 @@ impl SmartTrimFailures {
             self.last_error = Some(format!("{operation}: {message}"));
         }
         action_log.record(
-            ActionLogFeature::SmartTrim,
+            ActionLogFeature::MemoryTrim,
             None,
             "System".to_owned(),
             ActionLogAction::Fail,
@@ -649,8 +649,8 @@ impl SmartTrimFailures {
 }
 
 fn purge_allowed(
-    settings: &SmartTrimSettings,
-    mode: SmartTrimMode,
+    settings: &MemoryTrimSettings,
+    mode: MemoryTrimMode,
     performance_mode_active: bool,
     free_ram_excluding_cache_mb: Option<u64>,
 ) -> bool {
@@ -658,7 +658,7 @@ fn purge_allowed(
         return false;
     }
 
-    if mode == SmartTrimMode::Manual {
+    if mode == MemoryTrimMode::Manual {
         return true;
     }
 
@@ -732,7 +732,7 @@ fn nt_status_result(status: i32) -> Result<(), u32> {
 struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, SmartTrimError> {
+    fn open(process_id: u32) -> Result<Self, MemoryTrimError> {
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA,
@@ -747,7 +747,7 @@ impl ProcessHandle {
         }
     }
 
-    fn memory_sample(&self) -> Result<ProcessMemorySample, SmartTrimError> {
+    fn memory_sample(&self) -> Result<ProcessMemorySample, MemoryTrimError> {
         let mut counters = ProcessMemoryCounters {
             cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
             ..Default::default()
@@ -760,7 +760,7 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(SmartTrimError::Failed(format!(
+            Err(MemoryTrimError::Failed(format!(
                 "K32GetProcessMemoryInfo failed with error {}.",
                 last_error()
             )))
@@ -771,7 +771,7 @@ impl ProcessHandle {
         }
     }
 
-    fn cpu_sample(&self) -> Result<ProcessCpuSample, SmartTrimError> {
+    fn cpu_sample(&self) -> Result<ProcessCpuSample, MemoryTrimError> {
         let mut creation = FILETIME::default();
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
@@ -786,7 +786,7 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(SmartTrimError::Failed(format!(
+            Err(MemoryTrimError::Failed(format!(
                 "GetProcessTimes failed with error {}.",
                 last_error()
             )))
@@ -798,10 +798,10 @@ impl ProcessHandle {
         }
     }
 
-    fn empty_working_set(&self) -> Result<(), SmartTrimError> {
+    fn empty_working_set(&self) -> Result<(), MemoryTrimError> {
         let ok = unsafe { SetProcessWorkingSetSize(self.0.raw(), usize::MAX, usize::MAX) };
         if ok == 0 {
-            Err(SmartTrimError::Failed(format!(
+            Err(MemoryTrimError::Failed(format!(
                 "SetProcessWorkingSetSize failed with error {}.",
                 last_error()
             )))
@@ -831,21 +831,21 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
-fn open_process_error(process_id: u32, error: u32) -> SmartTrimError {
+fn open_process_error(process_id: u32, error: u32) -> MemoryTrimError {
     match error {
-        ERROR_ACCESS_DENIED => SmartTrimError::AccessDenied,
-        ERROR_INVALID_PARAMETER => SmartTrimError::ProcessExited,
-        _ => SmartTrimError::Failed(format!(
+        ERROR_ACCESS_DENIED => MemoryTrimError::AccessDenied,
+        ERROR_INVALID_PARAMETER => MemoryTrimError::ProcessExited,
+        _ => MemoryTrimError::Failed(format!(
             "OpenProcess({process_id}) failed with error {error}."
         )),
     }
 }
 
-fn smart_trim_error_message(error: SmartTrimError) -> String {
+fn memory_trim_error_message(error: MemoryTrimError) -> String {
     match error {
-        SmartTrimError::AccessDenied => "Access denied.".to_owned(),
-        SmartTrimError::ProcessExited => "Process exited.".to_owned(),
-        SmartTrimError::Failed(message) => message,
+        MemoryTrimError::AccessDenied => "Access denied.".to_owned(),
+        MemoryTrimError::ProcessExited => "Process exited.".to_owned(),
+        MemoryTrimError::Failed(message) => message,
     }
 }
 
@@ -934,7 +934,7 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-impl Default for SmartTrimSnapshot {
+impl Default for MemoryTrimSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -949,7 +949,7 @@ impl Default for SmartTrimSnapshot {
             memory_load_percent: None,
             trimmed_apps: Vec::new(),
             auto_excluded_processes: Vec::new(),
-            message: "Smart Trim disabled.".to_owned(),
+            message: "Memory Trim disabled.".to_owned(),
             last_error: None,
         }
     }
@@ -960,8 +960,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn repeated_process_failures_suppress_smart_trim_retries() {
-        let mut manager = SmartTrimManager::default();
+    fn repeated_process_failures_suppress_memory_trim_retries() {
+        let mut manager = MemoryTrimManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("APP.exe");
@@ -974,15 +974,15 @@ mod tests {
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::SmartTrim);
+        assert_eq!(entries[0].feature, ActionLogFeature::MemoryTrim);
         assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
-        assert!(entries[0].reason.contains("Stopped retrying Smart Trim"));
+        assert!(entries[0].reason.contains("Stopped retrying Memory Trim"));
     }
 
     #[test]
-    fn successful_process_clears_smart_trim_failure_suppression() {
-        let mut manager = SmartTrimManager::default();
+    fn successful_process_clears_memory_trim_failure_suppression() {
+        let mut manager = MemoryTrimManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("app.exe");
@@ -995,8 +995,8 @@ mod tests {
     }
 
     #[test]
-    fn repeated_system_failures_suppress_smart_trim_system_actions_once() {
-        let mut manager = SmartTrimManager::default();
+    fn repeated_system_failures_suppress_memory_trim_system_actions_once() {
+        let mut manager = MemoryTrimManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_system_action_failure("purge-standby-list");
@@ -1021,17 +1021,17 @@ mod tests {
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::SmartTrim);
+        assert_eq!(entries[0].feature, ActionLogFeature::MemoryTrim);
         assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0]
             .reason
-            .contains("Stopped retrying Smart Trim Purge standby list"));
+            .contains("Stopped retrying Memory Trim Purge standby list"));
     }
 
     #[test]
-    fn successful_system_action_clears_smart_trim_failure_suppression() {
-        let mut manager = SmartTrimManager::default();
+    fn successful_system_action_clears_memory_trim_failure_suppression() {
+        let mut manager = MemoryTrimManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_system_action_failure("purge-standby-list");
@@ -1060,7 +1060,7 @@ mod tests {
 
     #[test]
     fn foreground_skip_matches_pid_or_name() {
-        let settings = SmartTrimSettings {
+        let settings = MemoryTrimSettings {
             enabled: true,
             check_interval_minutes: 15,
             exclude_foreground_app: true,

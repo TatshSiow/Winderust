@@ -12,7 +12,7 @@ pub enum Page {
     Activity,
     CpuUsage,
     CoreParking,
-    CpuPriority,
+    ProcessPriority,
     ThreadPriority,
     DynamicPriorityBoost,
     CpuLimiter,
@@ -21,11 +21,11 @@ pub enum Page {
     EfficiencyMode,
     AppSuspension,
     PerformanceMode,
-    ForegroundResponsiveness,
+    WorkloadEngine,
     IoPriority,
     GpuPriority,
     MemoryPriority,
-    SmartTrim,
+    MemoryTrim,
     CpuAffinity,
     ForegroundRules,
     Schedule,
@@ -59,18 +59,15 @@ const CPU_CONTROL_PAGES: [Page; 3] = [
     Page::CpuAffinity,
 ];
 const PRIORITY_CONTROL_PAGES: [Page; 6] = [
-    Page::CpuPriority,
+    Page::ProcessPriority,
     Page::ThreadPriority,
     Page::DynamicPriorityBoost,
     Page::IoPriority,
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 3] = [
-    Page::ForegroundResponsiveness,
-    Page::EfficiencyMode,
-    Page::SmartTrim,
-];
+const WINDERUST_FEATURE_PAGES: [Page; 3] =
+    [Page::WorkloadEngine, Page::EfficiencyMode, Page::MemoryTrim];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const APP_PAGES: [Page; 4] = [
     Page::Settings,
@@ -135,7 +132,7 @@ impl Page {
             Self::Activity => t!("nav.activity"),
             Self::CpuUsage => t!("nav.cpu_usage"),
             Self::CoreParking => t!("nav.core_parking"),
-            Self::CpuPriority => t!("nav.cpu_priority"),
+            Self::ProcessPriority => t!("nav.process_priority"),
             Self::ThreadPriority => t!("nav.thread_priority"),
             Self::DynamicPriorityBoost => t!("nav.dynamic_priority_boost"),
             Self::CpuLimiter => t!("nav.cpu_limiter"),
@@ -144,11 +141,11 @@ impl Page {
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
             Self::PerformanceMode => t!("nav.performance_mode"),
-            Self::ForegroundResponsiveness => t!("nav.foreground_responsiveness"),
+            Self::WorkloadEngine => t!("nav.workload_engine"),
             Self::IoPriority => t!("nav.io_priority"),
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
-            Self::SmartTrim => t!("nav.smart_trim"),
+            Self::MemoryTrim => t!("nav.memory_trim"),
             Self::CpuAffinity => t!("nav.cpu_affinity"),
             Self::ForegroundRules => t!("nav.foreground_rules"),
             Self::Schedule => t!("nav.schedule"),
@@ -182,13 +179,13 @@ impl Page {
             Self::CpuLimiter | Self::BackgroundCpuRestriction | Self::CpuAffinity => {
                 t!("nav.processor_controls")
             }
-            Self::CpuPriority
+            Self::ProcessPriority
             | Self::ThreadPriority
             | Self::DynamicPriorityBoost
             | Self::IoPriority
             | Self::GpuPriority
             | Self::MemoryPriority => t!("nav.priority_control"),
-            Self::EfficiencyMode | Self::ForegroundResponsiveness | Self::SmartTrim => {
+            Self::EfficiencyMode | Self::WorkloadEngine | Self::MemoryTrim => {
                 t!("nav.winderust_features")
             }
             Self::ActionLog => t!("nav.action_log"),
@@ -209,8 +206,8 @@ impl Page {
             Self::ProcessList => Self::ProcessList,
             Self::WinderustFeatures
             | Self::EfficiencyMode
-            | Self::ForegroundResponsiveness
-            | Self::SmartTrim => Self::WinderustFeatures,
+            | Self::WorkloadEngine
+            | Self::MemoryTrim => Self::WinderustFeatures,
             Self::PowerPlanAutomation
             | Self::Activity
             | Self::Schedule
@@ -223,7 +220,7 @@ impl Page {
             | Self::BackgroundCpuRestriction
             | Self::CpuAffinity => Self::ProcessorControls,
             Self::PriorityControl
-            | Self::CpuPriority
+            | Self::ProcessPriority
             | Self::ThreadPriority
             | Self::DynamicPriorityBoost
             | Self::IoPriority

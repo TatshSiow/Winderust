@@ -32,12 +32,12 @@ function New-Mask([int]$Count) {
 
 $maxForegroundMask = New-Mask $maxForegroundCoreCount
 
-if (-not ('AutoBalanceBenchmarkNative' -as [type])) {
+if (-not ('WorkloadEngineBenchmarkNative' -as [type])) {
     Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 
-public static class AutoBalanceBenchmarkNative
+public static class WorkloadEngineBenchmarkNative
 {
     [StructLayout(LayoutKind.Sequential)]
     public struct MEMORY_PRIORITY_INFORMATION
@@ -161,7 +161,7 @@ function Set-ProcessIoPrioritySetting {
     }
 
     $raw = [uint32]$ioPriorityRaw[$Setting]
-    $status = [AutoBalanceBenchmarkNative]::NtSetInformationProcess($Process.Handle, [uint32]$processIoPriorityClass, [ref]$raw, [uint32]4)
+    $status = [WorkloadEngineBenchmarkNative]::NtSetInformationProcess($Process.Handle, [uint32]$processIoPriorityClass, [ref]$raw, [uint32]4)
     if ($status -lt 0) {
         throw "NtSetInformationProcess failed with status $status"
     }
@@ -175,7 +175,7 @@ function Set-ProcessGpuPrioritySetting {
     }
 
     $raw = [int]$gpuPriorityRaw[$Setting]
-    $status = [AutoBalanceBenchmarkNative]::D3DKMTSetProcessSchedulingPriorityClass($Process.Handle, $raw)
+    $status = [WorkloadEngineBenchmarkNative]::D3DKMTSetProcessSchedulingPriorityClass($Process.Handle, $raw)
     if ($status -ge 0) {
         return 'Applied'
     }
@@ -277,9 +277,9 @@ function Apply-WorkerAssistControls {
     }
     if ($memoryPriorityRaw.ContainsKey($AssistControls.memory_priority)) {
         try {
-            $info = New-Object 'AutoBalanceBenchmarkNative+MEMORY_PRIORITY_INFORMATION'
+            $info = New-Object 'WorkloadEngineBenchmarkNative+MEMORY_PRIORITY_INFORMATION'
             $info.MemoryPriority = [uint32]$memoryPriorityRaw[$AssistControls.memory_priority]
-            if ([AutoBalanceBenchmarkNative]::SetProcessInformation($Process.Handle, $processMemoryPriorityClass, [ref]$info, [uint32]4)) {
+            if ([WorkloadEngineBenchmarkNative]::SetProcessInformation($Process.Handle, $processMemoryPriorityClass, [ref]$info, [uint32]4)) {
                 $AssistStatus.memory_priority_processes_applied += 1
             } else {
                 $AssistStatus.failed_actions += 1
@@ -482,7 +482,7 @@ function Measure-ForegroundIoWork {
         $buffer[$index] = [byte]($index % 251)
     }
     for ($round = 0; $round -lt $Rounds; $round++) {
-        $path = Join-Path ([IO.Path]::GetTempPath()) ("winderust-auto-balance-bench-$PID-$round.bin")
+        $path = Join-Path ([IO.Path]::GetTempPath()) ("winderust-workload-engine-bench-$PID-$round.bin")
         [GC]::Collect()
         $stream = $null
         $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -698,7 +698,7 @@ function Format-CaseWithBaseline {
     return ('{0:N2} ms vs {1:N2} ms paired Off ({2}{3:N2} ms, {4}{5:N1}%)' -f $CaseMs, $OffMs, $deltaSign, $DeltaMs, $percentSign, $Percent)
 }
 
-function Get-ResponsivenessPercent {
+function Get-ForegroundLatencyBaselinePercent {
     param([double]$BaselineMs, [double]$CaseMs)
     if ($BaselineMs -le 0.0 -or $CaseMs -le 0.0) {
         return 0.0
@@ -981,7 +981,7 @@ function Summarize-Method {
         foreground_latency_avg_ms = $offAvg
         foreground_latency_median_avg_ms = $offMedian
         foreground_latency_p95_avg_ms = $offP95
-        system_average_responsiveness_percent = Get-ResponsivenessPercent -BaselineMs $baselineAvg -CaseMs $offAvg
+        foreground_latency_baseline_percent = Get-ForegroundLatencyBaselinePercent -BaselineMs $baselineAvg -CaseMs $offAvg
         no_background_avg_ms = $baselineAvg
         no_background_median_ms = $baselineMedian
         no_background_p95_ms = $baselineP95
@@ -1034,7 +1034,7 @@ function Summarize-Method {
             foreground_latency_avg_ms = Get-AverageProperty -Items $caseRows -Name 'avg_ms'
             foreground_latency_median_avg_ms = [Math]::Round($medianCaseAvg, 2)
             foreground_latency_p95_avg_ms = [Math]::Round($p95CaseAvg, 2)
-            system_average_responsiveness_percent = Get-ResponsivenessPercent -BaselineMs $baselineAvg -CaseMs (Get-AverageProperty -Items $caseRows -Name 'avg_ms')
+            foreground_latency_baseline_percent = Get-ForegroundLatencyBaselinePercent -BaselineMs $baselineAvg -CaseMs (Get-AverageProperty -Items $caseRows -Name 'avg_ms')
             foreground_iterations_per_sec_avg = Get-AverageProperty -Items $caseRows -Name 'iterations_per_sec'
             foreground_iops_avg = Get-AverageProperty -Items $caseRows -Name 'foreground_iops'
             message_loop_avg_delay_ms_avg = Get-AverageProperty -Items $caseRows -Name 'message_loop_avg_delay_ms'

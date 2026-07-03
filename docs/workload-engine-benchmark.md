@@ -1,7 +1,7 @@
-# Auto Balance Benchmark Guide
+# Workload Engine Benchmark Guide
 
 This guide is for the next agent run. It documents the synthetic benchmark used
-while tuning Auto Balance presets.
+while tuning Workload Engine presets.
 
 ## What This Measures
 
@@ -16,7 +16,7 @@ rating storage hardware.
 
 The optional `MessageLoop` foreground scenario measures hidden WinForms timer
 delay under the same generated background load. It is useful for checking
-foreground UI/message-pump responsiveness, not raw CPU throughput.
+foreground UI/message-pump latency, not raw CPU throughput.
 
 The optional `WinderustLaunch` foreground scenario measures launching this app
 under the same generated background load. It refuses to run while Winderust is
@@ -54,7 +54,7 @@ Do not treat one local benchmark as universal. Record the CPU model, logical
 processor count, Windows power mode, and whether the machine has Intel-style
 P-cores plus E-cores or an all-P-core layout such as most AMD desktop CPUs.
 
-Auto Balance runtime masking is topology-aware:
+Workload Engine runtime masking is topology-aware:
 
 - Hybrid CPUs: background affinity candidates prefer E-cores, then choose the
   least-loaded allowed E-cores when load data is available.
@@ -79,7 +79,7 @@ reasoning and topology-specific unit tests.
 
 ## Current Preset Model
 
-Keep this in sync with `auto_balance_preset_values` in `src/app.rs`.
+Keep this in sync with the Workload Engine preset values in `src/app.rs`.
 
 | Preset | Benchmark model |
 | --- | --- |
@@ -98,7 +98,7 @@ Run from the repository root:
 
 ```powershell
 rtk cargo check
-rtk cargo test auto_balance
+rtk cargo test workload_engine
 ```
 
 For cleaner benchmark results:
@@ -118,25 +118,25 @@ and kills the workers during cleanup.
 Preferred repeat-loop command:
 
 ```powershell
-.\scripts\auto_balance_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
+.\scripts\workload_engine_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
 Foreground file-I/O scenario:
 
 ```powershell
-.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
+.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
 ```
 
 Foreground message-loop scenario:
 
 ```powershell
-.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
+.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
 ```
 
 Winderust launch scenario:
 
 ```powershell
-.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+.\scripts\workload_engine_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
 ```
 
 If the release binary is not built, either run `cargo build --release` first or
@@ -187,8 +187,8 @@ Use `avg_ms`, `median_ms`, and `p95_ms`. Lower is better.
   certification benchmark.
 - `Message-loop delay`: average and P95 timer delay in the optional
   `MessageLoop` scenario. Lower is better; this is closer to UI pump
-  responsiveness than CPU-loop throughput.
-- `System average responsiveness percent`: foreground average latency compared
+  interactive latency than CPU-loop throughput.
+- `System average interactivity percent`: foreground average latency compared
   with the no-background baseline from the same pass. `100%` means equal to the
   no-background baseline; lower means the foreground loop slowed down under
   generated load. Values above `100%` can happen when priority changes make the
@@ -252,7 +252,7 @@ Low Impact may be useful for a light touch.
 
 Latest foreground I/O-loop validation on Intel Core 5 210H, 12 logical processors:
 
-| Case | Avg latency vs Off | Foreground IOPS vs Off | Median latency vs Off | P95 latency vs Off | Responsiveness vs no-load | Background throughput vs Off | Repeat passes won |
+| Case | Avg latency vs Off | Foreground IOPS vs Off | Median latency vs Off | P95 latency vs Off | Interactivity vs no-load | Background throughput vs Off | Repeat passes won |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Off | 74.61 ms | 55,604 | 75.45 ms | 80.11 ms | 36.7% | 100.0% | baseline |
 | Low Impact | 52.38 ms (+29.8%) | 76,377 (+37.4%) | 54.79 ms (+27.4%) | 55.68 ms (+30.5%) | 52.3% | 75.2% | 3/3 |
@@ -292,8 +292,7 @@ Run:
 
 ```powershell
 rtk cargo check
-rtk cargo test auto_balance
-rtk cargo test responsiveness
+rtk cargo test workload_engine
 rtk cargo test
 rtk git diff --check
 ```
