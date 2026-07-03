@@ -3270,11 +3270,6 @@ impl WinderustApp {
                         .execution_failure_suppression_threshold = value as u8;
                 }
             }
-            NumericField::EcoQosRestrictionPercent => {
-                if let Some(value) = parse_u64_input(&value, 1, 100) {
-                    self.settings.eco_qos.cpu_restriction_percent = value as u8;
-                }
-            }
             NumericField::BackgroundCpuRestrictionPercent => {
                 if let Some(value) = parse_u64_input(&value, 1, 100) {
                     self.settings.background_cpu_restriction.percent = value as u8;
@@ -6222,17 +6217,9 @@ impl WinderustApp {
             t!("efficiency.intro_2").to_string(),
             t!("efficiency.intro_3").to_string(),
         ]);
-        let cpu_restriction =
-            feature_body(enabled).child(self.render_efficiency_cpu_set_preference(window, cx));
 
         self.page_shell(Page::EfficiencyMode, cx)
             .child(self.render_efficiency_enable_card(enabled, help, window, cx))
-            .child(disabled_feature_body(
-                "efficiency-cpu-restriction-body",
-                cpu_restriction,
-                enabled,
-                cx,
-            ))
             .child(disabled_feature_body(
                 "efficiency-exclusions-body",
                 body,
@@ -6337,288 +6324,6 @@ impl WinderustApp {
                 options
             },
         )
-    }
-
-    fn render_efficiency_cpu_set_preference(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let processors = affinity::logical_processors();
-        let has_efficiency_cores =
-            affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency) != 0;
-        let has_multiple_processors = processors.len() > 1;
-        let selected = self.effective_eco_qos_cpu_restriction_strategy();
-        let restriction_enabled = selected != EcoQosCpuRestrictionStrategy::Off;
-        let collapsed =
-            self.is_setting_group_collapsed(SettingGroupTarget::EfficiencyCpuRestriction);
-        let selected_mode = self.settings.eco_qos.cpu_restriction_mode;
-        let mode_dropdown = self.render_dropdown_select(
-            "eco-qos-cpu-restriction-mode",
-            efficiency_cpu_restriction_mode_label(selected_mode),
-            restriction_enabled,
-            DropdownSelectWidth::Standard,
-            EcoQosCpuRestrictionMode::ALL.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for mode in EcoQosCpuRestrictionMode::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!(
-                                "eco-qos-cpu-restriction-mode-option-{mode:?}"
-                            )),
-                            efficiency_cpu_restriction_mode_label(mode),
-                            selected_mode == mode,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.settings.eco_qos.cpu_restriction_mode = mode;
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        );
-
-        let strategy_options = [
-            EcoQosCpuRestrictionStrategy::Auto,
-            EcoQosCpuRestrictionStrategy::PreferEfficiencyCores,
-            EcoQosCpuRestrictionStrategy::LimitLogicalCpus,
-        ];
-        let strategy_dropdown = self.render_dropdown_select(
-            "eco-qos-cpu-restriction-strategy",
-            efficiency_cpu_restriction_strategy_label(selected),
-            restriction_enabled,
-            DropdownSelectWidth::Wide,
-            strategy_options.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for strategy in strategy_options {
-                    let option_enabled = match strategy {
-                        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
-                        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
-                        EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::Off => {
-                            true
-                        }
-                    };
-                    let row = dropdown_option_row(
-                        SharedString::from(format!(
-                            "eco-qos-cpu-restriction-strategy-option-{strategy:?}"
-                        )),
-                        efficiency_cpu_restriction_strategy_label(strategy),
-                        selected == strategy,
-                        cx,
-                    )
-                    .when(!option_enabled, |row| row.opacity(0.48).cursor_default());
-                    let row = if option_enabled {
-                        row.on_click(cx.listener(move |app, _, _, cx| {
-                            app.settings.eco_qos.cpu_restriction_strategy = strategy;
-                            if app.settings.eco_qos.cpu_restriction_control_style
-                                == EcoQosCpuRestrictionControlStyle::CoreToggle
-                            {
-                                let processors = affinity::logical_processors();
-                                let mask = eco_qos_strategy_core_mask(&processors, strategy);
-                                if mask != 0 {
-                                    app.settings.eco_qos.cpu_restriction_core_mask = mask;
-                                }
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        }))
-                    } else {
-                        row
-                    };
-                    options = options.child(row);
-                }
-                options
-            },
-        );
-
-        let percent = self.settings.eco_qos.cpu_restriction_percent.clamp(1, 100);
-        let percentage_control = h_flex()
-            .gap_2()
-            .items_center()
-            .justify_end()
-            .flex_wrap()
-            .child(self.render_numeric_value(
-                NumericField::EcoQosRestrictionPercent,
-                format!("{percent}%"),
-                percent.to_string(),
-                cx,
-            ));
-
-        let selected_style = self.settings.eco_qos.cpu_restriction_control_style;
-        let style_dropdown = self.render_dropdown_select(
-            "eco-qos-cpu-restriction-style",
-            efficiency_cpu_restriction_control_style_label(selected_style),
-            restriction_enabled,
-            DropdownSelectWidth::Standard,
-            EcoQosCpuRestrictionControlStyle::ALL.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for style in EcoQosCpuRestrictionControlStyle::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!(
-                                "eco-qos-cpu-restriction-style-option-{style:?}"
-                            )),
-                            efficiency_cpu_restriction_control_style_label(style),
-                            selected_style == style,
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.settings.eco_qos.cpu_restriction_control_style = style;
-                            if style == EcoQosCpuRestrictionControlStyle::CoreToggle
-                                && app.settings.eco_qos.cpu_restriction_core_mask == 0
-                            {
-                                let strategy = app.effective_eco_qos_cpu_restriction_strategy();
-                                let processors = affinity::logical_processors();
-                                app.settings.eco_qos.cpu_restriction_core_mask =
-                                    eco_qos_strategy_core_mask(&processors, strategy);
-                            }
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        );
-
-        let mut rows = vec![
-            setting_group_action_row(
-                "eco-qos-core-affinity-control",
-                t!("efficiency.core_affinity_control").to_string(),
-                mode_dropdown,
-                true,
-            )
-            .when(!restriction_enabled, |row| {
-                row.opacity(0.42).cursor_default()
-            })
-            .into_any_element(),
-            setting_group_action_row(
-                "eco-qos-core-suppression-rule",
-                t!("efficiency.core_suppression_rule").to_string(),
-                strategy_dropdown,
-                true,
-            )
-            .into_any_element(),
-            setting_group_action_row(
-                "eco-qos-control-style",
-                t!("efficiency.control_style").to_string(),
-                style_dropdown,
-                true,
-            )
-            .when(!restriction_enabled, |row| {
-                row.opacity(0.42).cursor_default()
-            })
-            .into_any_element(),
-        ];
-
-        rows.push(match self.settings.eco_qos.cpu_restriction_control_style {
-            EcoQosCpuRestrictionControlStyle::Percentage => setting_group_action_row(
-                "eco-qos-core-allocation-percentage",
-                t!("efficiency.core_allocation_percentage").to_string(),
-                percentage_control.into_any_element(),
-                true,
-            )
-            .when(!restriction_enabled, |row| {
-                row.opacity(0.42).cursor_default()
-            })
-            .into_any_element(),
-            EcoQosCpuRestrictionControlStyle::CoreToggle => setting_group_stacked_action_row(
-                "eco-qos-core-toggle-list",
-                t!("efficiency.selected_cores").to_string(),
-                self.render_efficiency_core_toggle_selector(&processors, restriction_enabled, cx),
-                true,
-            )
-            .when(!restriction_enabled, |row| {
-                row.opacity(0.42).cursor_default()
-            })
-            .into_any_element(),
-        });
-
-        let body_animation_height = match selected_style {
-            EcoQosCpuRestrictionControlStyle::Percentage => {
-                CARD_ROW_HEIGHT * rows.len().max(1) as f32
-            }
-            EcoQosCpuRestrictionControlStyle::CoreToggle => setting_group_core_grid_body_height(3),
-        };
-
-        setting_group_with_title_element_with_body_height(
-            SettingGroupTarget::EfficiencyCpuRestriction,
-            h_flex()
-                .flex_1()
-                .min_w(px(0.0))
-                .items_center()
-                .gap_1()
-                .child(
-                    div()
-                        .min_w(px(0.0))
-                        .truncate()
-                        .child(t!("efficiency.cpu_set_preference").to_string()),
-                )
-                .child(title_info_button(
-                    "eco-qos-cpu-set-preference-info",
-                    t!("efficiency.cpu_set_preference_help").to_string(),
-                ))
-                .into_any_element(),
-            setting_group_switch_action(
-                "eco-qos-cpu-restriction-enabled",
-                restriction_enabled,
-                cx.listener(|app, checked, _, cx| {
-                    if *checked {
-                        if app.effective_eco_qos_cpu_restriction_strategy()
-                            == EcoQosCpuRestrictionStrategy::Off
-                        {
-                            app.settings.eco_qos.cpu_restriction_strategy =
-                                EcoQosCpuRestrictionStrategy::Auto;
-                        }
-                    } else {
-                        app.settings.eco_qos.cpu_restriction_strategy =
-                            EcoQosCpuRestrictionStrategy::Off;
-                    }
-                    cx.notify();
-                }),
-            ),
-            SettingGroupBody {
-                collapsed,
-                rows,
-                animation_height: Some(body_animation_height),
-            },
-            window,
-            cx,
-        )
-        .into_any_element()
-    }
-
-    fn render_efficiency_core_toggle_selector(
-        &self,
-        processors: &[LogicalProcessorInfo],
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let available_mask = affinity_processors_mask(processors);
-        self.render_core_tile_grid(
-            processors,
-            self.settings.eco_qos.cpu_restriction_core_mask,
-            enabled,
-            "eco-qos-core-toggle",
-            CoreTileGridAction::EcoQosCpuRestriction { available_mask },
-            cx,
-        )
-    }
-
-    fn effective_eco_qos_cpu_restriction_strategy(&self) -> EcoQosCpuRestrictionStrategy {
-        self.settings.eco_qos.cpu_restriction_strategy
     }
 
     fn effective_background_cpu_restriction_strategy(&self) -> EcoQosCpuRestrictionStrategy {
@@ -12097,13 +11802,6 @@ impl WinderustApp {
                         .disabled(!enabled)
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match action {
-                                CoreTileGridAction::EcoQosCpuRestriction { available_mask } => {
-                                    toggle_affinity_core_with_available_mask(
-                                        &mut app.settings.eco_qos.cpu_restriction_core_mask,
-                                        core,
-                                        available_mask,
-                                    );
-                                }
                                 CoreTileGridAction::BackgroundCpuRestriction { available_mask } => {
                                     toggle_affinity_core_with_available_mask(
                                         &mut app.settings.background_cpu_restriction.core_mask,
@@ -15349,7 +15047,6 @@ enum SettingGroupTarget {
     IoPriorityMaster,
     IoPriorityForegroundDetection,
     EfficiencyEnable,
-    EfficiencyCpuRestriction,
     BackgroundCpuRestriction,
     GpuPriorityMaster,
     GpuPriorityForegroundDetection,
@@ -15396,7 +15093,6 @@ enum NumericField {
     ActivityIdleTimeout,
     GeneralCheckInterval,
     ExecutionFailureSuppressionThreshold,
-    EcoQosRestrictionPercent,
     BackgroundCpuRestrictionPercent,
     MemoryTrimCheckIntervalMinutes,
     MemoryTrimMemoryLoadThreshold,
@@ -16556,7 +16252,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("efficiency.intro_3").to_string(),
             t!("efficiency.focus_detection_help").to_string(),
             t!("efficiency.whitelist_help").to_string(),
-            "efficiency mode ecoqos qos throttle background priority cpu set e cores exclusion whitelist".to_string(),
+            "efficiency mode ecoqos qos throttle background priority exclusion whitelist".to_string(),
         ],
         Page::AppSuspension => vec![
             t!("suspension.intro_1").to_string(),
@@ -18279,9 +17975,7 @@ fn setting_group_body_animation_height(
     row_count: usize,
 ) -> Option<f32> {
     match target {
-        SettingGroupTarget::AccentColor
-        | SettingGroupTarget::EfficiencyCpuRestriction
-        | SettingGroupTarget::BackgroundCpuRestriction => None,
+        SettingGroupTarget::AccentColor | SettingGroupTarget::BackgroundCpuRestriction => None,
         _ => Some(CARD_ROW_HEIGHT * row_count.max(1) as f32),
     }
 }
@@ -22297,7 +21991,6 @@ fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorDcPerformanceMin
         | NumericField::ProcessorDcPerformanceMax
         | NumericField::ProcessorDcBoostPolicy
-        | NumericField::EcoQosRestrictionPercent
         | NumericField::BackgroundCpuRestrictionPercent
         | NumericField::MemoryTrimMemoryLoadThreshold
         | NumericField::MemoryTrimCpuIdleThreshold
@@ -24749,7 +24442,6 @@ struct AffinityIndicator {
 
 #[derive(Clone, Copy)]
 enum CoreTileGridAction {
-    EcoQosCpuRestriction { available_mask: u64 },
     BackgroundCpuRestriction { available_mask: u64 },
     CpuAffinityRule { index: usize },
 }

@@ -1527,7 +1527,7 @@ impl Default for EcoQosSettings {
             enabled: false,
             exclude_foreground_app: default_true(),
             cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Auto,
+            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
             cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
             cpu_restriction_percent: default_eco_qos_cpu_restriction_percent(),
             cpu_restriction_max_logical_processors:
@@ -2537,6 +2537,14 @@ mod tests {
         assert_eq!(
             NetworkThresholdUnit::Megabits.threshold_value_from_bytes(125_000),
             1.0
+        );
+    }
+
+    #[test]
+    fn background_efficiency_defaults_without_cpu_restriction() {
+        assert_eq!(
+            EcoQosSettings::default().cpu_restriction_strategy,
+            EcoQosCpuRestrictionStrategy::Off
         );
     }
 

@@ -246,7 +246,7 @@ mod tests {
                 enabled: true,
                 exclude_foreground_app: false,
                 cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-                cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Auto,
+                cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
                 cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
                 cpu_restriction_percent: 50,
                 cpu_restriction_max_logical_processors: 0,

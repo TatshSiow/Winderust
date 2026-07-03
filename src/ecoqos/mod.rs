@@ -868,7 +868,8 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
 fn cpu_restriction(settings: &EcoQosSettings) -> EcoQosCpuRestriction {
     EcoQosCpuRestriction {
         mode: settings.cpu_restriction_mode,
-        strategy: settings.cpu_restriction_strategy,
+        // ponytail: Background Efficiency is EcoQoS + priority only; re-enable this if CPU steering returns.
+        strategy: EcoQosCpuRestrictionStrategy::Off,
         control_style: settings.cpu_restriction_control_style,
         percent: settings.cpu_restriction_percent.clamp(1, 100),
         max_logical_processors: settings.cpu_restriction_max_logical_processors,
@@ -1352,6 +1353,19 @@ mod tests {
         assert!(!is_process_excluded("SearchHost.exe", &settings));
         assert!(!is_process_excluded("dwm.exe", &settings));
         assert!(is_process_excluded("winlogon.exe", &settings));
+    }
+
+    #[test]
+    fn background_efficiency_ignores_saved_cpu_restriction_strategy() {
+        let settings = EcoQosSettings {
+            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Auto,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            cpu_restriction(&settings).strategy,
+            EcoQosCpuRestrictionStrategy::Off
+        );
     }
 
     #[test]
