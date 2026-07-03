@@ -6704,7 +6704,13 @@ impl WinderustApp {
                         .min_w(px(0.0))
                         .flex_shrink_0()
                         .items_center()
-                        .child(status_pill(indicator.label, indicator.bg, indicator.fg)),
+                        .child(status_pill_with_tooltip(
+                            format!("suspension-status-pill-{index}"),
+                            indicator.label,
+                            indicator.bg,
+                            indicator.fg,
+                            indicator.hover,
+                        )),
                 )
                 .child(self.process_rule_title(&process, cx))
                 .child(
@@ -21154,6 +21160,24 @@ fn rule_card_title(name: &str) -> String {
 }
 
 fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
+    status_pill_div(label, bg, fg).into_any_element()
+}
+
+fn status_pill_with_tooltip(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    bg: u32,
+    fg: u32,
+    tooltip: impl Into<SharedString>,
+) -> AnyElement {
+    let tooltip = tooltip.into();
+    status_pill_div(label, bg, fg)
+        .id(id.into())
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .into_any_element()
+}
+
+fn status_pill_div(label: impl Into<SharedString>, bg: u32, fg: u32) -> gpui::Div {
     let label: SharedString = label.into();
 
     div()
@@ -21166,7 +21190,6 @@ fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
         .text_size(px(TEXT_LABEL_SIZE))
         .line_height(px(TEXT_LABEL_LINE_HEIGHT))
         .child(label)
-        .into_any_element()
 }
 
 fn animated_checkmark(id: impl Into<SharedString>, check_color: u32, progress: f32) -> AnyElement {
@@ -24431,6 +24454,7 @@ struct SuspensionIndicator {
     label: String,
     bg: u32,
     fg: u32,
+    hover: String,
 }
 
 struct AffinityIndicator {
@@ -24454,48 +24478,70 @@ fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> Suspen
             label: t!("suspension.indicator.protected").to_string(),
             bg: accent_bg,
             fg: accent,
+            hover: t!("suspension.indicator.protected_help").to_string(),
         }
     } else if suspension::contains_process(&status.network_wake_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.network").to_string(),
             bg: accent_bg,
             fg: accent,
+            hover: t!("suspension.indicator.network_help").to_string(),
         }
     } else if suspension::contains_process(&status.audio_wake_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.audio").to_string(),
             bg: accent_bg,
             fg: accent,
+            hover: t!("suspension.indicator.audio_help").to_string(),
         }
     } else if suspension::contains_process(&status.suspended_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.frozen").to_string(),
             bg: success_bg_color(),
             fg: success_text_color(),
+            hover: t!("suspension.indicator.frozen_help").to_string(),
         }
     } else if suspension::contains_process(&status.temporary_thawed_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.thawed").to_string(),
             bg: accent_bg,
             fg: accent,
+            hover: t!("suspension.indicator.thawed_help").to_string(),
         }
-    } else if suspension::contains_process(&status.tracked_apps, process) {
+    } else if suspension::contains_process(&status.background_grace_apps, process) {
         SuspensionIndicator {
             label: t!("suspension.indicator.waiting").to_string(),
             bg: warning_bg_color(),
             fg: warning_text_color(),
+            hover: t!("suspension.indicator.waiting_help").to_string(),
+        }
+    } else if status.status_unknown {
+        SuspensionIndicator {
+            label: t!("suspension.indicator.unknown").to_string(),
+            bg: panel_active_color(),
+            fg: muted_text_color(),
+            hover: t!("suspension.indicator.unknown_help").to_string(),
+        }
+    } else if suspension::contains_process(&status.running_apps, process) {
+        SuspensionIndicator {
+            label: t!("suspension.indicator.running").to_string(),
+            bg: panel_active_color(),
+            fg: muted_text_color(),
+            hover: t!("suspension.indicator.running_help").to_string(),
         }
     } else if status.enabled {
         SuspensionIndicator {
             label: t!("suspension.indicator.not_running").to_string(),
             bg: panel_active_color(),
             fg: muted_text_color(),
+            hover: t!("suspension.indicator.not_running_help").to_string(),
         }
     } else {
         SuspensionIndicator {
             label: t!("suspension.indicator.off").to_string(),
             bg: panel_active_color(),
             fg: dim_text_color(),
+            hover: t!("suspension.indicator.off_help").to_string(),
         }
     }
 }
@@ -24790,6 +24836,68 @@ mod tests {
         ];
         assert_eq!(windows_accent_palette_tint(&palette), Some(0xa5c7d1));
         assert_eq!(windows_accent_palette_tint(&palette[..4]), None);
+    }
+
+    #[test]
+    fn suspension_indicator_reports_network_intent_before_suspended_state() {
+        let status = AppSuspensionSnapshot {
+            enabled: true,
+            network_wake_apps: vec!["vivaldi.exe".to_owned()],
+            suspended_apps: vec!["vivaldi.exe".to_owned()],
+            ..Default::default()
+        };
+
+        let indicator = suspension_indicator(&status, "vivaldi.exe");
+
+        assert_eq!(
+            indicator.label,
+            t!("suspension.indicator.network").to_string()
+        );
+        assert_eq!(
+            indicator.hover,
+            t!("suspension.indicator.network_help").to_string()
+        );
+    }
+
+    #[test]
+    fn suspension_indicator_reports_running_before_not_running() {
+        let status = AppSuspensionSnapshot {
+            enabled: true,
+            running_apps: vec!["vivaldi.exe".to_owned()],
+            ..Default::default()
+        };
+
+        let indicator = suspension_indicator(&status, "vivaldi.exe");
+
+        assert_eq!(
+            indicator.label,
+            t!("suspension.indicator.running").to_string()
+        );
+        assert_eq!(
+            indicator.hover,
+            t!("suspension.indicator.running_help").to_string()
+        );
+    }
+
+    #[test]
+    fn suspension_indicator_reports_unknown_before_stale_running_state() {
+        let status = AppSuspensionSnapshot {
+            enabled: true,
+            running_apps: vec!["vivaldi.exe".to_owned()],
+            status_unknown: true,
+            ..Default::default()
+        };
+
+        let indicator = suspension_indicator(&status, "vivaldi.exe");
+
+        assert_eq!(
+            indicator.label,
+            t!("suspension.indicator.unknown").to_string()
+        );
+        assert_eq!(
+            indicator.hover,
+            t!("suspension.indicator.unknown_help").to_string()
+        );
     }
 
     #[test]
