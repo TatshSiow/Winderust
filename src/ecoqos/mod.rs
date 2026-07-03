@@ -180,12 +180,12 @@ impl EcoQosManager {
         }
 
         if !settings.enabled {
-            let failed = self.clear_all(action_log, "Efficiency Mode disabled");
+            let failed = self.clear_all(action_log, "Background Efficiency disabled");
             self.failure_suppression.clear();
             return EcoQosSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
-                message: "Efficiency Mode disabled.".to_owned(),
+                message: "Background Efficiency disabled.".to_owned(),
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -343,7 +343,7 @@ impl EcoQosManager {
             skipped_processes,
             failed_processes: failures.count,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            message: "Efficiency Mode active.".to_owned(),
+            message: "Background Efficiency active.".to_owned(),
             last_error: failures.last_error,
         }
     }
@@ -419,7 +419,7 @@ impl EcoQosManager {
                 ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
-                    "Stopped retrying Efficiency Mode after {} failed attempts.",
+                    "Stopped retrying Background Efficiency after {} failed attempts.",
                     execution_failure_suppression_threshold(),
                 ),
             );
@@ -468,7 +468,7 @@ impl Default for EcoQosSnapshot {
             skipped_processes: 0,
             failed_processes: 0,
             auto_excluded_processes: Vec::new(),
-            message: "Efficiency Mode disabled.".to_owned(),
+            message: "Background Efficiency disabled.".to_owned(),
             last_error: None,
         }
     }
@@ -577,21 +577,13 @@ fn apply_efficiency_mode_to_process(
 
     let process = enable_efficiency_mode(process_id, process_name.clone(), restriction)?;
     throttled.insert(process_id, process);
-    let cpu_sets_note = if matches!(
-        restriction.strategy,
-        EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::PreferEfficiencyCores
-    ) {
-        " and preferred efficiency CPU sets"
-    } else {
-        ""
-    };
     action_log.record(
         ActionLogFeature::EcoQos,
         Some(process_id),
         process_name,
         ActionLogAction::Apply,
         ActionLogResult::Applied,
-        format!("Enabled Windows Efficiency Mode, lowered priority{cpu_sets_note}."),
+        "Applied Background Efficiency: enabled EcoQoS and lowered priority.".to_owned(),
     );
     Ok(true)
 }

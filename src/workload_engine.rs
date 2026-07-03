@@ -2103,7 +2103,7 @@ fn apply_priority(
                     process_name.clone(),
                     ActionLogAction::Apply,
                     ActionLogResult::Applied,
-                    "Enabled Windows Efficiency Mode for Workload Engine.",
+                    "Applied Background Efficiency: enabled EcoQoS.",
                 );
             }
         }

@@ -36,9 +36,9 @@ User-facing behavior:
 | `LocalFree` | Frees the GUID pointer returned by `PowerGetActiveScheme`. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-localfree |
 | System error codes | Power APIs return Win32 error codes such as `ERROR_SUCCESS`, `ERROR_MORE_DATA`, and `ERROR_NO_MORE_ITEMS`. | https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes |
 
-## Efficiency Mode / EcoQoS
+## Background Efficiency / EcoQoS
 
-Winderust Efficiency Mode applies Windows EcoQoS to selected background user-session processes. It also lowers the target process priority to idle priority, matching the practical behavior users expect from Task Manager-style Efficiency Mode.
+Winderust Background Efficiency applies Windows EcoQoS to selected background user-session processes. It also lowers the target process priority to idle priority, matching the practical behavior users expect from Task Manager-style Efficiency Mode.
 
 Implementation entry point:
 
@@ -47,12 +47,12 @@ Implementation entry point:
 User-facing behavior:
 
 - Winderust finds background processes in the current Windows session.
-- It skips Winderust itself, built-in Windows shell/input/system processes, protected/elevated processes it cannot open, and apps in `Efficiency Whitelist`.
+- It skips Winderust itself, built-in Windows shell/input/system processes, protected/elevated processes it cannot open, and apps in Background Efficiency custom rules.
 - If `Exclude foreground app` is enabled, it also skips the focused app and same-name foreground app processes.
 - It reads the process's existing power throttling state and priority class when possible.
 - It enables EcoQoS by setting `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` through `SetProcessInformation`.
 - It sets the process priority class to `IDLE_PRIORITY_CLASS`.
-- It restores the previous throttling state and priority class when the process stops being a target, Efficiency Mode is disabled, automation is disabled, or Winderust exits.
+- It restores the previous throttling state and priority class when the process stops being a target, Background Efficiency is disabled, automation is disabled, or Winderust exits.
 
 ### EcoQoS APIs
 
@@ -71,7 +71,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 | API | Used for | Reference |
 | --- | --- | --- |
 | `GetPriorityClass` | Reads the existing priority class before Winderust changes it. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getpriorityclass |
-| `SetPriorityClass` | Sets `IDLE_PRIORITY_CLASS` while Efficiency Mode is active, then restores the previous class or `NORMAL_PRIORITY_CLASS`. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass |
+| `SetPriorityClass` | Sets `IDLE_PRIORITY_CLASS` while Background Efficiency is active, then restores the previous class or `NORMAL_PRIORITY_CLASS`. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass |
 | Scheduling Priorities | Documents process priority classes such as idle and normal. | https://learn.microsoft.com/en-us/windows/win32/procthread/scheduling-priorities |
 
 ### Process Access APIs
