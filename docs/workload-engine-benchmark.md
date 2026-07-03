@@ -41,8 +41,10 @@ exercise the real automation loop. It models the preset scheduler effects with:
 - and hard processor affinity for manual benchmark approximations.
 
 PowerShell hard affinity is stricter than Winderust Soft CPU Sets. The benchmark
-therefore omits affinity for adaptive presets when the synthetic foreground work
-is low CPU, and uses hard affinity only for manual aggressive approximation.
+therefore omits adaptive affinity for likely hybrid CPUs, where Windows can
+already push Idle background workers toward E-cores, but applies a hard-affinity
+approximation for standard/all-P CPUs so shared-core machines are tested against
+the same foreground-lane intent as the runtime preset.
 
 The default foreground loop is CPU-bound. I/O and GPU controls are applied where
 Windows accepts them, but the default workload does not include a dedicated
@@ -60,10 +62,9 @@ Workload Engine runtime masking is topology-aware:
   least-loaded allowed E-cores when load data is available.
 - All-P-core CPUs: background affinity candidates use all logical processors
   and choose the least-loaded allowed cores when load data is available.
-- Automatic CPU-share floors are intentionally different: hybrid systems can be
-  more assertive because E-cores give background work a separate lane, while
-  all-P-core systems keep a higher floor to avoid over-restricting background
-  work on shared performance cores.
+- Automatic CPU-share floors are intentionally different: hybrid systems prefer
+  E-cores, while all-P-core systems reserve a clearer foreground lane without
+  going as far as Max Foreground.
 
 Benchmark matrix for preset changes:
 
@@ -249,6 +250,18 @@ Previous paired validation after adding background-throughput measurement on the
 This shows the foreground/background cost directly: Foreground First is the
 only large foreground win, but it deliberately gives up background throughput.
 Low Impact may be useful for a light touch.
+
+Latest CPU-loop validation after standard/all-P topology tuning on AMD Ryzen 7 7735HS, 16 logical processors:
+
+| Case | Median improvement avg | P95 improvement avg | Background throughput retained avg | Repeat passes won |
+| --- | ---: | ---: | ---: | ---: |
+| Low Impact | 34.3% | 44.1% | 91.0% | 3/3 |
+| Foreground First | 49.9% | 52.9% | 66.2% | 3/3 |
+| Max Foreground | 50.5% | 55.5% | 16.6% | 3/3 |
+
+This run used the standard/all-P benchmark approximation: Low Impact limited
+background workers to 11 logical processors, Foreground First to 8, and Max
+Foreground to 2.
 
 Latest foreground I/O-loop validation on Intel Core 5 210H, 12 logical processors:
 

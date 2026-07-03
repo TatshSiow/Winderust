@@ -64,14 +64,14 @@ The README tables compare each preset directly to the displayed `Off` row. The
 benchmark script still records adjacent paired-Off comparisons in
 `docs/workload-engine-benchmark.md` for deeper validation.
 
-Latest CPU-loop validation on Intel Core 5 210H, 12 logical processors:
+Latest CPU-loop validation on AMD Ryzen 7 7735HS, 16 logical processors, after standard/all-P topology tuning:
 
 | Case | Avg latency vs Off | Median latency vs Off | P95 latency vs Off | Background throughput vs Off | Repeat passes won |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Off | 679.10 ms | 616.47 ms | 682.97 ms | 100.0% | baseline |
-| Low Impact | 348.20 ms (+48.7%) | 326.29 ms (+47.1%) | 364.75 ms (+46.6%) | 124.4% | 2/3 |
-| Foreground First | 202.27 ms (+70.2%) | 200.82 ms (+67.4%) | 201.14 ms (+70.5%) | 33.6% | 3/3 |
-| Max Foreground | 209.11 ms (+69.2%) | 207.01 ms (+66.4%) | 210.01 ms (+69.3%) | 16.5% | 3/3 |
+| Off | 247.64 ms | 245.18 ms | 273.99 ms | 100.0% | baseline |
+| Low Impact | 150.30 ms (+39.3%) | 148.59 ms (+39.4%) | 149.70 ms (+45.4%) | 91.0% | 3/3 |
+| Foreground First | 134.02 ms (+45.9%) | 133.80 ms (+45.4%) | 134.78 ms (+50.8%) | 66.2% | 3/3 |
+| Max Foreground | 115.15 ms (+53.5%) | 114.77 ms (+53.2%) | 115.37 ms (+57.9%) | 16.6% | 3/3 |
 
 Run the benchmark from the repository root:
 

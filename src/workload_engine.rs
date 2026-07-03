@@ -1864,11 +1864,11 @@ fn workload_engine_minimum_cpu_percent_for_topology(
             60
         }
     } else if trigger >= 80 {
-        90
-    } else if trigger >= 70 {
         80
+    } else if trigger >= 70 {
+        65
     } else {
-        70
+        50
     }
 }
 
@@ -3057,7 +3057,7 @@ mod tests {
 
         assert_eq!(
             workload_engine_minimum_cpu_percent_for_topology(&settings, false),
-            80
+            65
         );
         assert_eq!(
             workload_engine_effective_cpu_percent_for_topology(&settings, Some(75.0), false),
@@ -3065,7 +3065,7 @@ mod tests {
         );
         assert_eq!(
             workload_engine_effective_cpu_percent_for_topology(&settings, Some(80.0), false),
-            90
+            83
         );
     }
 

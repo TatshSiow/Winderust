@@ -17,6 +17,8 @@ $powerShellPath = Join-Path $PSHOME 'powershell.exe'
 $logicalProcessors = [Environment]::ProcessorCount
 $workerCount = [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
 $lowImpactTargetCount = $workerCount
+$lowImpactAllPCorePercent = 0.65
+$foregroundFirstAllPCorePercent = 0.50
 $maxForegroundCorePercent = 0.10
 $lowImpactCoreCount = 0
 $foregroundFirstCoreCount = 0
@@ -30,6 +32,26 @@ function New-Mask([int]$Count) {
     return $mask
 }
 
+function Test-LikelyHybridTopology {
+    try {
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        if ($cpu.Manufacturer -notlike '*Intel*') {
+            return $false
+        }
+        $fullSmtLogicalCount = [int]$cpu.NumberOfCores * 2
+        return [int]$cpu.NumberOfLogicalProcessors -ne $fullSmtLogicalCount
+    } catch {
+        return $false
+    }
+}
+
+$hasHybridTopology = Test-LikelyHybridTopology
+if (-not $hasHybridTopology) {
+    $lowImpactCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $lowImpactAllPCorePercent))
+    $foregroundFirstCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $foregroundFirstAllPCorePercent))
+}
+$lowImpactMask = New-Mask $lowImpactCoreCount
+$foregroundFirstMask = New-Mask $foregroundFirstCoreCount
 $maxForegroundMask = New-Mask $maxForegroundCoreCount
 
 if (-not ('WorkloadEngineBenchmarkNative' -as [type])) {
@@ -827,8 +849,8 @@ function Run-NamedCase {
                 -Model 'Low Impact: all background workers Idle; adaptive CPU share; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case; background threads BelowNormal; priority boost disabled.' `
                 -ForegroundPriority 'AboveNormal' `
                 -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount 0 `
-                -AffinityMask 0 `
+                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                -AffinityMask $lowImpactMask `
                 -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal')
         }
         'foreground_first' {
@@ -840,8 +862,8 @@ function Run-NamedCase {
                 -Model 'Foreground First: all background workers Idle; adaptive CPU share; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case; background I/O VeryLow; memory VeryLow; threads BelowNormal; priority boost disabled; GPU BelowNormal when available.' `
                 -ForegroundPriority 'AboveNormal' `
                 -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount 0 `
-                -AffinityMask 0 `
+                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                -AffinityMask $foregroundFirstMask `
                 -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'BelowNormal')
         }
         'max_foreground' {
@@ -1066,7 +1088,7 @@ function Summarize-Method {
 $assistCoverage = [pscustomobject][ordered]@{
     process_priority = 'applied to generated background workers'
     foreground_process_priority = 'applied to the benchmark process'
-    affinity = 'applied as hard affinity for Max Foreground; adaptive presets omit affinity in low foreground CPU synthetic cases'
+    affinity = 'applied as hard affinity for Max Foreground, and for adaptive presets on standard/all-P CPUs to approximate runtime Soft CPU Sets'
     foreground_priority_boost = 'applied to the benchmark process when preset enables it'
     foreground_thread_priority = 'applied to the benchmark thread when preset enables it'
     foreground_io_priority = 'applied to the benchmark process when preset enables it; CPU loop has minimal I/O'
@@ -1092,6 +1114,7 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     passes = $Passes
     rounds = $Rounds
     foreground_scenario = $ForegroundScenario
+    topology_class = if ($hasHybridTopology) { 'hybrid_or_asymmetric' } else { 'standard_all_p' }
     low_impact_affinity_limited_processors = $lowImpactCoreCount
     foreground_iterations_per_round = $Iterations
     foreground_io_operations_per_round = $IoOperations * 2
