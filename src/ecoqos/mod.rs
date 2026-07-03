@@ -1,24 +1,17 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
-    mem::size_of,
-    ptr::{null_mut, read_unaligned},
-    slice,
 };
 
 use windows_sys::Win32::{
     Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED},
-    System::{
-        SystemInformation::{GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION},
-        Threading::{
-            GetCurrentProcessId, GetPriorityClass, GetProcessAffinityMask,
-            GetProcessDefaultCpuSets, GetProcessInformation, OpenProcess, ProcessPowerThrottling,
-            SetPriorityClass, SetProcessAffinityMask, SetProcessDefaultCpuSets,
-            SetProcessInformation, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
-            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION,
-            PROCESS_SET_INFORMATION, PROCESS_SET_LIMITED_INFORMATION,
-        },
+    System::Threading::{
+        GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess,
+        ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS,
+        NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        PROCESS_SET_LIMITED_INFORMATION,
     },
 };
 
@@ -26,11 +19,7 @@ use crate::win_util::{last_error, WinHandle};
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    affinity::{self, LogicalProcessorKind},
-    config::{
-        EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode,
-        EcoQosCpuRestrictionStrategy, EcoQosSettings,
-    },
+    config::{EcoQosAggressiveness, EcoQosSettings},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
         process_session_id, should_ignore_foreground_process,
@@ -125,34 +114,6 @@ struct ThrottledProcess {
     process_name: String,
     previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     previous_priority: Option<u32>,
-    previous_cpu_set_ids: Option<Vec<u32>>,
-    applied_cpu_set_ids: Option<Vec<u32>>,
-    previous_affinity: Option<usize>,
-    applied_affinity: Option<usize>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct EcoQosCpuRestriction {
-    mode: EcoQosCpuRestrictionMode,
-    strategy: EcoQosCpuRestrictionStrategy,
-    control_style: EcoQosCpuRestrictionControlStyle,
-    percent: u8,
-    max_logical_processors: u8,
-    core_mask: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum EcoQosRestrictionTarget {
-    None,
-    SoftCpuSets(Vec<u32>),
-    HardAffinity(usize),
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CpuSetInformationHeader {
-    size: u32,
-    cpu_set_type: u32,
 }
 
 impl EcoQosManager {
@@ -289,7 +250,6 @@ impl EcoQosManager {
                 process_id,
                 name.clone(),
                 &mut self.throttled,
-                cpu_restriction(settings),
                 action_log,
             ) {
                 Ok(enabled_new_process) => {
@@ -561,21 +521,13 @@ fn apply_efficiency_mode_to_process(
     process_id: u32,
     process_name: String,
     throttled: &mut BTreeMap<u32, ThrottledProcess>,
-    restriction: EcoQosCpuRestriction,
     action_log: &mut ActionLog,
 ) -> Result<bool, EcoQosError> {
-    if let Some(process_state) = throttled.get_mut(&process_id) {
-        sync_efficiency_cpu_sets(
-            process_id,
-            &process_name,
-            process_state,
-            restriction,
-            action_log,
-        )?;
+    if throttled.contains_key(&process_id) {
         return Ok(false);
     }
 
-    let process = enable_efficiency_mode(process_id, process_name.clone(), restriction)?;
+    let process = enable_efficiency_mode(process_id, process_name.clone())?;
     throttled.insert(process_id, process);
     action_log.record(
         ActionLogFeature::EcoQos,
@@ -609,25 +561,10 @@ fn process_failure_message(
 fn enable_efficiency_mode(
     process_id: u32,
     process_name: String,
-    restriction: EcoQosCpuRestriction,
 ) -> Result<ThrottledProcess, EcoQosError> {
     let process = ProcessHandle::open(process_id)?;
     let previous_state = process.power_throttling_state().ok();
     let previous_priority = process.priority_class().ok();
-    let target = efficiency_restriction_target(restriction)?;
-    let previous_cpu_set_ids = match &target {
-        EcoQosRestrictionTarget::SoftCpuSets(ids) if !ids.is_empty() => {
-            Some(process.default_cpu_set_ids()?)
-        }
-        _ => None,
-    };
-    let previous_affinity = match target {
-        EcoQosRestrictionTarget::HardAffinity(_) => {
-            let (current_affinity, _) = process.affinity_mask()?;
-            Some(current_affinity)
-        }
-        EcoQosRestrictionTarget::None | EcoQosRestrictionTarget::SoftCpuSets(_) => None,
-    };
 
     let mut next_state = previous_state.unwrap_or_default();
     next_state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
@@ -640,71 +577,12 @@ fn enable_efficiency_mode(
         );
         return Err(err);
     }
-    match &target {
-        EcoQosRestrictionTarget::SoftCpuSets(target_cpu_set_ids)
-            if !target_cpu_set_ids.is_empty() =>
-        {
-            if let Err(err) = process.set_default_cpu_set_ids(target_cpu_set_ids) {
-                let _ =
-                    process.set_priority_class(previous_priority.unwrap_or(NORMAL_PRIORITY_CLASS));
-                let _ = process.set_power_throttling_state(
-                    previous_state.unwrap_or_else(power_throttling_disabled_state),
-                );
-                return Err(err);
-            }
-        }
-        EcoQosRestrictionTarget::HardAffinity(target_affinity) => {
-            if let Err(err) = process.set_affinity_mask(*target_affinity) {
-                let _ =
-                    process.set_priority_class(previous_priority.unwrap_or(NORMAL_PRIORITY_CLASS));
-                let _ = process.set_power_throttling_state(
-                    previous_state.unwrap_or_else(power_throttling_disabled_state),
-                );
-                return Err(err);
-            }
-        }
-        EcoQosRestrictionTarget::None | EcoQosRestrictionTarget::SoftCpuSets(_) => {}
-    }
-
-    let (applied_cpu_set_ids, applied_affinity) = match target {
-        EcoQosRestrictionTarget::SoftCpuSets(ids) if !ids.is_empty() => (Some(ids), None),
-        EcoQosRestrictionTarget::HardAffinity(mask) => (None, Some(mask)),
-        EcoQosRestrictionTarget::None | EcoQosRestrictionTarget::SoftCpuSets(_) => (None, None),
-    };
 
     Ok(ThrottledProcess {
         process_name,
         previous_state,
         previous_priority,
-        previous_cpu_set_ids,
-        applied_cpu_set_ids,
-        previous_affinity,
-        applied_affinity,
     })
-}
-
-fn restore_cpu_restriction(
-    process: &ProcessHandle,
-    process_state: &mut ThrottledProcess,
-) -> Result<(), EcoQosError> {
-    let mut last_error = None;
-    if let Some(previous_cpu_set_ids) = process_state.previous_cpu_set_ids.take() {
-        if let Err(err) = process.set_default_cpu_set_ids(&previous_cpu_set_ids) {
-            last_error = Some(err);
-        }
-        process_state.applied_cpu_set_ids = None;
-    }
-    if let Some(previous_affinity) = process_state.previous_affinity.take() {
-        if let Err(err) = process.set_affinity_mask(previous_affinity) {
-            last_error = Some(err);
-        }
-        process_state.applied_affinity = None;
-    }
-
-    match last_error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
 }
 
 fn restore_efficiency_mode(
@@ -730,123 +608,10 @@ fn restore_efficiency_mode(
         last_error = Some(err);
     }
 
-    if let Some(previous_cpu_set_ids) = process_state.previous_cpu_set_ids {
-        if let Err(err) = process.set_default_cpu_set_ids(&previous_cpu_set_ids) {
-            last_error = Some(err);
-        }
-    }
-
-    if let Some(previous_affinity) = process_state.previous_affinity {
-        if let Err(err) = process.set_affinity_mask(previous_affinity) {
-            last_error = Some(err);
-        }
-    }
-
     match last_error {
         Some(err) => Err(err),
         None => Ok(()),
     }
-}
-
-fn sync_efficiency_cpu_sets(
-    process_id: u32,
-    process_name: &str,
-    process_state: &mut ThrottledProcess,
-    restriction: EcoQosCpuRestriction,
-    action_log: &mut ActionLog,
-) -> Result<(), EcoQosError> {
-    let target = efficiency_restriction_target(restriction)?;
-
-    match target {
-        EcoQosRestrictionTarget::None => {
-            if process_state.previous_cpu_set_ids.is_none()
-                && process_state.previous_affinity.is_none()
-            {
-                return Ok(());
-            }
-            let process = ProcessHandle::open(process_id)?;
-            restore_cpu_restriction(&process, process_state)?;
-            action_log.record(
-                ActionLogFeature::EcoQos,
-                Some(process_id),
-                process_name.to_owned(),
-                ActionLogAction::Restore,
-                ActionLogResult::Applied,
-                "Restored previous CPU restriction.",
-            );
-        }
-        EcoQosRestrictionTarget::SoftCpuSets(ref ids) if ids.is_empty() => {
-            if process_state.previous_cpu_set_ids.is_none()
-                && process_state.previous_affinity.is_none()
-            {
-                return Ok(());
-            }
-            let process = ProcessHandle::open(process_id)?;
-            restore_cpu_restriction(&process, process_state)?;
-            action_log.record(
-                ActionLogFeature::EcoQos,
-                Some(process_id),
-                process_name.to_owned(),
-                ActionLogAction::Restore,
-                ActionLogResult::Applied,
-                "Restored previous CPU restriction.",
-            );
-        }
-        EcoQosRestrictionTarget::SoftCpuSets(target_cpu_set_ids) => {
-            if process_state
-                .applied_cpu_set_ids
-                .as_ref()
-                .is_some_and(|applied| *applied == target_cpu_set_ids)
-                && process_state.applied_affinity.is_none()
-            {
-                return Ok(());
-            }
-
-            let process = ProcessHandle::open(process_id)?;
-            if process_state.previous_affinity.is_some() {
-                restore_cpu_restriction(&process, process_state)?;
-            }
-            if process_state.previous_cpu_set_ids.is_none() {
-                process_state.previous_cpu_set_ids = Some(process.default_cpu_set_ids()?);
-            }
-            process.set_default_cpu_set_ids(&target_cpu_set_ids)?;
-            process_state.applied_cpu_set_ids = Some(target_cpu_set_ids.clone());
-            action_log.record(
-                ActionLogFeature::EcoQos,
-                Some(process_id),
-                process_name.to_owned(),
-                ActionLogAction::Apply,
-                ActionLogResult::Applied,
-                format!("Applied efficiency CPU Sets: {}.", target_cpu_set_ids.len()),
-            );
-        }
-        EcoQosRestrictionTarget::HardAffinity(target_affinity) => {
-            if process_state.applied_affinity == Some(target_affinity)
-                && process_state.applied_cpu_set_ids.is_none()
-            {
-                return Ok(());
-            }
-            let process = ProcessHandle::open(process_id)?;
-            if process_state.previous_cpu_set_ids.is_some() {
-                restore_cpu_restriction(&process, process_state)?;
-            }
-            if process_state.previous_affinity.is_none() {
-                let (current_affinity, _) = process.affinity_mask()?;
-                process_state.previous_affinity = Some(current_affinity);
-            }
-            process.set_affinity_mask(target_affinity)?;
-            process_state.applied_affinity = Some(target_affinity);
-            action_log.record(
-                ActionLogFeature::EcoQos,
-                Some(process_id),
-                process_name.to_owned(),
-                ActionLogAction::Apply,
-                ActionLogResult::Applied,
-                format!("Applied efficiency affinity mask {target_affinity:#x}."),
-            );
-        }
-    }
-    Ok(())
 }
 
 fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
@@ -855,266 +620,6 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
         ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         StateMask: 0,
     }
-}
-
-fn cpu_restriction(settings: &EcoQosSettings) -> EcoQosCpuRestriction {
-    EcoQosCpuRestriction {
-        mode: settings.cpu_restriction_mode,
-        // ponytail: Background Efficiency is EcoQoS + priority only; re-enable this if CPU steering returns.
-        strategy: EcoQosCpuRestrictionStrategy::Off,
-        control_style: settings.cpu_restriction_control_style,
-        percent: settings.cpu_restriction_percent.clamp(1, 100),
-        max_logical_processors: settings.cpu_restriction_max_logical_processors,
-        core_mask: settings.cpu_restriction_core_mask,
-    }
-}
-
-fn efficiency_restriction_target(
-    restriction: EcoQosCpuRestriction,
-) -> Result<EcoQosRestrictionTarget, EcoQosError> {
-    if restriction.strategy == EcoQosCpuRestrictionStrategy::Off {
-        return Ok(EcoQosRestrictionTarget::None);
-    }
-
-    match restriction.mode {
-        EcoQosCpuRestrictionMode::SoftCpuSets => Ok(EcoQosRestrictionTarget::SoftCpuSets(
-            efficiency_cpu_set_ids(restriction)?,
-        )),
-        EcoQosCpuRestrictionMode::HardAffinity => Ok(efficiency_affinity_mask(restriction)
-            .map(EcoQosRestrictionTarget::HardAffinity)
-            .unwrap_or(EcoQosRestrictionTarget::None)),
-    }
-}
-
-fn efficiency_affinity_mask(restriction: EcoQosCpuRestriction) -> Option<usize> {
-    let processors = affinity::logical_processors();
-    if restriction.control_style == EcoQosCpuRestrictionControlStyle::CoreToggle {
-        return logical_indices_to_mask(&selected_logical_indices_from_mask(
-            restriction.core_mask,
-            &processors,
-        ));
-    }
-
-    let has_efficiency_cores = processors
-        .iter()
-        .any(|processor| processor.kind == LogicalProcessorKind::Efficiency);
-    let selected = match restriction.strategy {
-        EcoQosCpuRestrictionStrategy::Off => Vec::new(),
-        EcoQosCpuRestrictionStrategy::Auto if has_efficiency_cores => processors
-            .iter()
-            .filter(|processor| processor.kind == LogicalProcessorKind::Efficiency)
-            .map(|processor| processor.index)
-            .collect::<Vec<_>>(),
-        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => processors
-            .iter()
-            .filter(|processor| processor.kind == LogicalProcessorKind::Efficiency)
-            .map(|processor| processor.index)
-            .collect::<Vec<_>>(),
-        EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::LimitLogicalCpus => {
-            processors
-                .iter()
-                .map(|processor| processor.index)
-                .collect::<Vec<_>>()
-        }
-    };
-
-    logical_indices_to_limited_mask(
-        &selected,
-        restriction.percent,
-        restriction.max_logical_processors,
-    )
-}
-
-fn selected_logical_indices_from_mask(
-    core_mask: u64,
-    processors: &[affinity::LogicalProcessorInfo],
-) -> Vec<usize> {
-    processors
-        .iter()
-        .filter_map(|processor| {
-            (processor.index < u64::BITS as usize && (core_mask & (1_u64 << processor.index)) != 0)
-                .then_some(processor.index)
-        })
-        .collect()
-}
-
-fn logical_indices_to_mask(indices: &[usize]) -> Option<usize> {
-    let mut mask = 0_usize;
-    for index in indices {
-        if *index < usize::BITS as usize {
-            mask |= 1_usize << index;
-        }
-    }
-    (mask != 0).then_some(mask)
-}
-
-fn logical_indices_to_limited_mask(
-    indices: &[usize],
-    percent: u8,
-    max_logical_processors: u8,
-) -> Option<usize> {
-    if indices.is_empty() {
-        return None;
-    }
-    let percent_count = (indices.len() * usize::from(percent.clamp(1, 100))).div_ceil(100);
-    let max_count = usize::from(max_logical_processors);
-    let limit = if max_count == 0 {
-        percent_count
-    } else {
-        percent_count.min(max_count)
-    }
-    .clamp(1, indices.len());
-
-    let mut mask = 0_usize;
-    for index in indices.iter().take(limit) {
-        if *index < usize::BITS as usize {
-            mask |= 1_usize << index;
-        }
-    }
-    (mask != 0).then_some(mask)
-}
-
-fn efficiency_cpu_set_ids(restriction: EcoQosCpuRestriction) -> Result<Vec<u32>, EcoQosError> {
-    let mut returned_length = 0;
-    unsafe {
-        GetSystemCpuSetInformation(null_mut(), 0, &mut returned_length, null_mut(), 0);
-    }
-
-    if returned_length == 0 {
-        return Ok(Vec::new());
-    }
-
-    let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
-    let mut buffer = vec![0_usize; word_count];
-    let ok = unsafe {
-        GetSystemCpuSetInformation(
-            buffer.as_mut_ptr() as *mut SYSTEM_CPU_SET_INFORMATION,
-            returned_length,
-            &mut returned_length,
-            null_mut(),
-            0,
-        )
-    };
-    if ok == 0 {
-        return Err(EcoQosError::Failed(format!(
-            "GetSystemCpuSetInformation failed with error {}.",
-            last_error()
-        )));
-    }
-
-    Ok(efficiency_cpu_set_ids_from_bytes(
-        unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) },
-        restriction,
-    ))
-}
-
-fn efficiency_cpu_set_ids_from_bytes(buffer: &[u8], restriction: EcoQosCpuRestriction) -> Vec<u32> {
-    let mut records = Vec::new();
-    let mut offset = 0;
-    let header_size = size_of::<CpuSetInformationHeader>();
-
-    while offset + header_size <= buffer.len() {
-        let header = unsafe {
-            read_unaligned(buffer.as_ptr().add(offset) as *const CpuSetInformationHeader)
-        };
-        let record_size = header.size as usize;
-        if record_size < header_size || offset + record_size > buffer.len() {
-            break;
-        }
-
-        if header.cpu_set_type == 0 && record_size >= size_of::<SYSTEM_CPU_SET_INFORMATION>() {
-            let info = unsafe {
-                read_unaligned(buffer.as_ptr().add(offset) as *const SYSTEM_CPU_SET_INFORMATION)
-            };
-            let cpu_set = unsafe { info.Anonymous.CpuSet };
-            if cpu_set.Group == 0 {
-                records.push((
-                    cpu_set.Id,
-                    cpu_set.EfficiencyClass,
-                    cpu_set.LogicalProcessorIndex,
-                ));
-            }
-        }
-
-        offset += record_size;
-    }
-
-    cpu_set_target_ids_from_records(&records, restriction)
-}
-
-fn cpu_set_target_ids_from_records(
-    records: &[(u32, u8, u8)],
-    restriction: EcoQosCpuRestriction,
-) -> Vec<u32> {
-    if restriction.control_style == EcoQosCpuRestrictionControlStyle::CoreToggle {
-        let mut ids = records
-            .iter()
-            .filter_map(|(id, _, logical_index)| {
-                let index = usize::from(*logical_index);
-                (index < u64::BITS as usize && (restriction.core_mask & (1_u64 << index)) != 0)
-                    .then_some(*id)
-            })
-            .collect::<Vec<_>>();
-        ids.sort_unstable();
-        ids.dedup();
-        return ids;
-    }
-
-    let Some(min_efficiency_class) = records.iter().map(|(_, class, _)| *class).min() else {
-        return Vec::new();
-    };
-    let max_efficiency_class = records
-        .iter()
-        .map(|(_, class, _)| *class)
-        .max()
-        .unwrap_or(min_efficiency_class);
-    let has_hybrid_classes = min_efficiency_class != max_efficiency_class;
-    let mut selected = match restriction.strategy {
-        EcoQosCpuRestrictionStrategy::Off => Vec::new(),
-        EcoQosCpuRestrictionStrategy::Auto if has_hybrid_classes => records
-            .iter()
-            .filter(|(_, class, _)| *class == min_efficiency_class)
-            .copied()
-            .collect::<Vec<_>>(),
-        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => {
-            if !has_hybrid_classes {
-                Vec::new()
-            } else {
-                records
-                    .iter()
-                    .filter(|(_, class, _)| *class == min_efficiency_class)
-                    .copied()
-                    .collect::<Vec<_>>()
-            }
-        }
-        EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::LimitLogicalCpus => {
-            records.to_vec()
-        }
-    };
-
-    if selected.is_empty() {
-        return Vec::new();
-    }
-
-    selected.sort_by_key(|(_, _, logical_index)| *logical_index);
-    let percent_count =
-        (selected.len() * usize::from(restriction.percent.clamp(1, 100))).div_ceil(100);
-    let max_count = usize::from(restriction.max_logical_processors);
-    let limit = if max_count == 0 {
-        percent_count
-    } else {
-        percent_count.min(max_count)
-    }
-    .clamp(1, selected.len());
-
-    let mut ids = selected
-        .into_iter()
-        .take(limit)
-        .map(|(id, _, _)| id)
-        .collect::<Vec<_>>();
-    ids.sort_unstable();
-    ids.dedup();
-    ids
 }
 
 struct ProcessHandle(WinHandle);
@@ -1203,80 +708,6 @@ impl ProcessHandle {
             Ok(())
         }
     }
-
-    fn affinity_mask(&self) -> Result<(usize, usize), EcoQosError> {
-        let mut process_affinity = 0;
-        let mut system_affinity = 0;
-        let ok = unsafe {
-            GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
-        };
-        if ok == 0 {
-            Err(EcoQosError::Failed(format!(
-                "GetProcessAffinityMask failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok((process_affinity, system_affinity))
-        }
-    }
-
-    fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), EcoQosError> {
-        let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
-        if ok == 0 {
-            Err(EcoQosError::Failed(format!(
-                "SetProcessAffinityMask failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn default_cpu_set_ids(&self) -> Result<Vec<u32>, EcoQosError> {
-        let mut required_id_count = 0;
-        unsafe {
-            GetProcessDefaultCpuSets(self.0.raw(), null_mut(), 0, &mut required_id_count);
-        }
-        if required_id_count == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut ids = vec![0_u32; required_id_count as usize];
-        let ok = unsafe {
-            GetProcessDefaultCpuSets(
-                self.0.raw(),
-                ids.as_mut_ptr(),
-                ids.len() as u32,
-                &mut required_id_count,
-            )
-        };
-        if ok == 0 {
-            Err(EcoQosError::Failed(format!(
-                "GetProcessDefaultCpuSets failed with error {}.",
-                last_error()
-            )))
-        } else {
-            ids.truncate(required_id_count as usize);
-            Ok(ids)
-        }
-    }
-
-    fn set_default_cpu_set_ids(&self, ids: &[u32]) -> Result<(), EcoQosError> {
-        let (ptr, count) = if ids.is_empty() {
-            (null_mut(), 0)
-        } else {
-            (ids.as_ptr() as *mut u32, ids.len() as u32)
-        };
-        let ok = unsafe { SetProcessDefaultCpuSets(self.0.raw(), ptr, count) };
-        if ok == 0 {
-            Err(EcoQosError::Failed(format!(
-                "SetProcessDefaultCpuSets failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(())
-        }
-    }
 }
 
 fn process_power_throttling_error(operation: &str, error: u32) -> EcoQosError {
@@ -1305,12 +736,6 @@ mod tests {
         let settings = EcoQosSettings {
             enabled: true,
             exclude_foreground_app: true,
-            cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
-            cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
-            cpu_restriction_percent: 50,
-            cpu_restriction_max_logical_processors: 0,
-            cpu_restriction_core_mask: 0,
             aggressiveness: EcoQosAggressiveness::Safe,
             efficiency_whitelist: vec![crate::config::EcoQosExclusionRule {
                 enabled: true,
@@ -1348,29 +773,10 @@ mod tests {
     }
 
     #[test]
-    fn background_efficiency_ignores_saved_cpu_restriction_strategy() {
-        let settings = EcoQosSettings {
-            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Auto,
-            ..Default::default()
-        };
-
-        assert_eq!(
-            cpu_restriction(&settings).strategy,
-            EcoQosCpuRestrictionStrategy::Off
-        );
-    }
-
-    #[test]
     fn disabled_user_exclusions_do_not_exclude_processes() {
         let settings = EcoQosSettings {
             enabled: true,
             exclude_foreground_app: true,
-            cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
-            cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
-            cpu_restriction_percent: 50,
-            cpu_restriction_max_logical_processors: 0,
-            cpu_restriction_core_mask: 0,
             aggressiveness: EcoQosAggressiveness::Safe,
             efficiency_whitelist: vec![crate::config::EcoQosExclusionRule {
                 enabled: false,
@@ -1459,35 +865,6 @@ mod tests {
     }
 
     #[test]
-    fn non_hybrid_cpu_sets_can_be_limited() {
-        let records = [(10, 0), (11, 0), (12, 0), (13, 0)];
-
-        assert_eq!(
-            limited_cpu_set_ids_for_test(&records, EcoQosCpuRestrictionStrategy::LimitLogicalCpus),
-            vec![10, 11]
-        );
-        assert!(limited_cpu_set_ids_for_test(
-            &records,
-            EcoQosCpuRestrictionStrategy::PreferEfficiencyCores
-        )
-        .is_empty());
-    }
-
-    #[test]
-    fn hybrid_cpu_sets_prefer_efficiency_class() {
-        let records = [(20, 0), (21, 0), (30, 1), (31, 1)];
-
-        assert_eq!(
-            limited_cpu_set_ids_for_test(&records, EcoQosCpuRestrictionStrategy::Auto),
-            vec![20]
-        );
-        assert_eq!(
-            limited_cpu_set_ids_for_test(&records, EcoQosCpuRestrictionStrategy::LimitLogicalCpus),
-            vec![20, 21]
-        );
-    }
-
-    #[test]
     fn foreground_ignore_matches_pid_or_process_name() {
         let mut settings = EcoQosSettings {
             exclude_foreground_app: true,
@@ -1535,10 +912,6 @@ mod tests {
                 process_name: "exited.exe".to_owned(),
                 previous_state: None,
                 previous_priority: None,
-                previous_cpu_set_ids: None,
-                applied_cpu_set_ids: None,
-                previous_affinity: None,
-                applied_affinity: None,
             },
         );
         let mut log = ActionLog::new(8);
@@ -1548,70 +921,5 @@ mod tests {
         assert_eq!(failures.count, 0);
         assert!(log.entries().is_empty());
         assert!(manager.throttled.is_empty());
-    }
-
-    fn limited_cpu_set_ids_for_test(
-        records: &[(u32, u8)],
-        strategy: EcoQosCpuRestrictionStrategy,
-    ) -> Vec<u32> {
-        let records = records
-            .iter()
-            .enumerate()
-            .map(|(index, (id, class))| (*id, *class, index as u8))
-            .collect::<Vec<_>>();
-        cpu_set_target_ids_from_records(
-            &records,
-            EcoQosCpuRestriction {
-                mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-                strategy,
-                control_style: EcoQosCpuRestrictionControlStyle::Percentage,
-                percent: 50,
-                max_logical_processors: 0,
-                core_mask: 0,
-            },
-        )
-    }
-
-    #[test]
-    fn logical_limit_respects_percentage_and_maximum() {
-        let records = [(10, 0, 0), (11, 0, 1), (12, 0, 2), (13, 0, 3)];
-        assert_eq!(
-            cpu_set_target_ids_from_records(
-                &records,
-                EcoQosCpuRestriction {
-                    mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-                    strategy: EcoQosCpuRestrictionStrategy::LimitLogicalCpus,
-                    control_style: EcoQosCpuRestrictionControlStyle::Percentage,
-                    percent: 75,
-                    max_logical_processors: 2,
-                    core_mask: 0,
-                },
-            ),
-            vec![10, 11]
-        );
-        assert_eq!(
-            logical_indices_to_limited_mask(&[0, 1, 2, 3], 50, 1),
-            Some(0b0001)
-        );
-    }
-
-    #[test]
-    fn core_toggle_cpu_sets_use_selected_logical_indices() {
-        let records = [(10, 0, 0), (11, 0, 1), (12, 1, 2), (13, 1, 3)];
-
-        assert_eq!(
-            cpu_set_target_ids_from_records(
-                &records,
-                EcoQosCpuRestriction {
-                    mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-                    strategy: EcoQosCpuRestrictionStrategy::Auto,
-                    control_style: EcoQosCpuRestrictionControlStyle::CoreToggle,
-                    percent: 50,
-                    max_logical_processors: 0,
-                    core_mask: 0b1010,
-                },
-            ),
-            vec![11, 13]
-        );
     }
 }

@@ -143,16 +143,16 @@ mod tests {
         AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
         BackgroundCpuRestrictionSettings, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
         CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule,
-        EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode,
-        EcoQosCpuRestrictionStrategy, EcoQosExclusionRule, EcoQosSettings, ForegroundBoostPriority,
-        ForegroundRule, ForegroundRules, GeneralSettings, GpuPrioritySettings,
-        InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings,
-        PriorityBoostSettings, PriorityRule, ProcessExclusionRule, ProcessGpuPrioritySetting,
-        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
-        ProcessMemoryPrioritySetting, ProcessPriority, ProcessPriorityBoostSetting,
-        ProcessPrioritySetting, ProcessPrioritySettings, ScheduleModeSettings, ScheduleRule,
-        TimerResolutionRule, TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
+        EcoQosAggressiveness, EcoQosCpuRestrictionMode, EcoQosExclusionRule, EcoQosSettings,
+        ForegroundBoostPriority, ForegroundRule, ForegroundRules, GeneralSettings,
+        GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings,
+        MemoryTrimSettings, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
+        PowerPlanSettings, PriorityBoostSettings, PriorityRule, ProcessExclusionRule,
+        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
+        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
+        ProcessPriorityBoostSetting, ProcessPrioritySetting, ProcessPrioritySettings,
+        ScheduleModeSettings, ScheduleRule, TimerResolutionRule, TimerResolutionSettings,
+        WeekdaySetting, WorkloadEngineSettings,
     };
 
     #[test]
@@ -245,12 +245,6 @@ mod tests {
             eco_qos: EcoQosSettings {
                 enabled: true,
                 exclude_foreground_app: false,
-                cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-                cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
-                cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
-                cpu_restriction_percent: 50,
-                cpu_restriction_max_logical_processors: 0,
-                cpu_restriction_core_mask: 0,
                 aggressiveness: EcoQosAggressiveness::Safe,
                 efficiency_whitelist: vec![
                     EcoQosExclusionRule {
@@ -458,7 +452,7 @@ mod tests {
                 rules: vec![TimerResolutionRule {
                     enabled: true,
                     process_name: "game.exe".to_owned(),
-                    desired_100ns: 5_000,
+                    desired_100ns: 20_000,
                 }],
             },
             memory_trim: MemoryTrimSettings {

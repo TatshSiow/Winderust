@@ -28,7 +28,7 @@ pub struct TimerResolutionManager {
 pub struct TimerResolutionInfo {
     pub maximum_100ns: u32,
     pub minimum_100ns: u32,
-    pub current_100ns: u32,
+    pub current_100ns: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -147,8 +147,8 @@ impl TimerResolutionManager {
             }
 
             match request_timer_resolution(desired_100ns) {
-                Ok(current_100ns) => {
-                    self.active_request_100ns = Some(desired_100ns);
+                Ok(applied_100ns) => {
+                    self.active_request_100ns = Some(applied_100ns);
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
@@ -156,10 +156,9 @@ impl TimerResolutionManager {
                         ActionLogAction::Apply,
                         ActionLogResult::Applied,
                         format!(
-                            "Requested timer resolution {} while {} is foreground; current is {}.",
-                            format_resolution_ms(desired_100ns),
-                            rule_process_name,
-                            format_resolution_ms(current_100ns)
+                            "Requested timer resolution {} while {} is foreground.",
+                            format_resolution_ms(applied_100ns),
+                            rule_process_name
                         ),
                     );
                     self.active_rule_process = Some(rule_process_name.clone());
@@ -189,10 +188,12 @@ impl TimerResolutionManager {
             self.active_rule_process = Some(rule_process_name.clone());
         }
 
-        let refreshed = query_timer_resolution().unwrap_or(info);
+        let requested_100ns = self.active_request_100ns;
+        let mut refreshed = query_timer_resolution().unwrap_or(info);
+        refreshed.current_100ns = requested_100ns;
         snapshot_from_query(
             true,
-            Some(desired_100ns),
+            requested_100ns,
             Some(rule_process_name),
             Some(refreshed),
             0,
@@ -210,7 +211,7 @@ impl TimerResolutionManager {
                 .take()
                 .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
             match release_timer_resolution(previous_100ns) {
-                Ok(current_100ns) => {
+                Ok(()) => {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
@@ -218,9 +219,8 @@ impl TimerResolutionManager {
                         ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         format!(
-                            "Released timer resolution request {}: {reason}. Current is {}.",
-                            format_resolution_ms(previous_100ns),
-                            format_resolution_ms(current_100ns)
+                            "Released timer resolution request {}: {reason}.",
+                            format_resolution_ms(previous_100ns)
                         ),
                     );
                 }
@@ -269,7 +269,7 @@ impl TimerResolutionManager {
                 .take()
                 .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
             match release_timer_resolution(previous_100ns) {
-                Ok(current_100ns) => {
+                Ok(()) => {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
@@ -277,9 +277,8 @@ impl TimerResolutionManager {
                         ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         format!(
-                            "Released timer resolution request {}: {reason}. Current is {}.",
-                            format_resolution_ms(previous_100ns),
-                            format_resolution_ms(current_100ns)
+                            "Released timer resolution request {}: {reason}.",
+                            format_resolution_ms(previous_100ns)
                         ),
                     );
                 }
@@ -346,10 +345,10 @@ pub fn normalize_desired_resolution(
     minimum_100ns: u32,
     maximum_100ns: u32,
 ) -> u32 {
-    desired_100ns.clamp(
-        minimum_100ns.min(maximum_100ns),
-        minimum_100ns.max(maximum_100ns),
-    )
+    let min_100ns = minimum_100ns.min(maximum_100ns).max(1);
+    let max_100ns = minimum_100ns.max(maximum_100ns).max(min_100ns);
+    let clamped_100ns = desired_100ns.clamp(min_100ns, max_100ns);
+    period_ms_to_100ns(resolution_100ns_to_period_ms(clamped_100ns)).clamp(min_100ns, max_100ns)
 }
 
 pub fn format_resolution_ms(value_100ns: u32) -> String {
@@ -378,7 +377,7 @@ fn snapshot_from_query(
         active_rule_process,
         maximum_100ns: info.map(|info| info.maximum_100ns),
         minimum_100ns: info.map(|info| info.minimum_100ns),
-        current_100ns: info.map(|info| info.current_100ns),
+        current_100ns: info.and_then(|info| info.current_100ns),
         failed_actions,
         message: message.to_owned(),
         last_error,
@@ -386,53 +385,46 @@ fn snapshot_from_query(
 }
 
 fn query_timer_resolution() -> Result<TimerResolutionInfo, TimerResolutionError> {
-    let mut maximum_100ns = 0_u32;
-    let mut minimum_100ns = 0_u32;
-    let mut current_100ns = 0_u32;
-    let status = unsafe {
-        NtQueryTimerResolution(
-            &mut maximum_100ns as *mut _,
-            &mut minimum_100ns as *mut _,
-            &mut current_100ns as *mut _,
-        )
-    };
-    ntstatus_result(status).map(|()| TimerResolutionInfo {
-        maximum_100ns,
-        minimum_100ns,
-        current_100ns,
+    let mut caps = TimeCaps::default();
+    let result =
+        unsafe { time_get_dev_caps(&mut caps as *mut _, std::mem::size_of::<TimeCaps>() as u32) };
+    mm_result("timeGetDevCaps", result)?;
+
+    let min_period_ms = caps.period_min.max(1);
+    let max_period_ms = caps.period_max.max(min_period_ms);
+    Ok(TimerResolutionInfo {
+        maximum_100ns: period_ms_to_100ns(max_period_ms),
+        minimum_100ns: period_ms_to_100ns(min_period_ms),
+        current_100ns: None,
     })
 }
 
 fn request_timer_resolution(desired_100ns: u32) -> Result<u32, TimerResolutionError> {
-    set_timer_resolution(desired_100ns, true)
+    let period_ms = resolution_100ns_to_period_ms(desired_100ns);
+    let result = unsafe { time_begin_period(period_ms) };
+    mm_result("timeBeginPeriod", result).map(|()| period_ms_to_100ns(period_ms))
 }
 
-fn release_timer_resolution(desired_100ns: u32) -> Result<u32, TimerResolutionError> {
-    set_timer_resolution(desired_100ns, false)
+fn release_timer_resolution(desired_100ns: u32) -> Result<(), TimerResolutionError> {
+    let period_ms = resolution_100ns_to_period_ms(desired_100ns);
+    let result = unsafe { time_end_period(period_ms) };
+    mm_result("timeEndPeriod", result)
 }
 
-fn set_timer_resolution(
-    desired_100ns: u32,
-    set_resolution: bool,
-) -> Result<u32, TimerResolutionError> {
-    let mut current_100ns = 0_u32;
-    let status = unsafe {
-        NtSetTimerResolution(
-            desired_100ns,
-            u8::from(set_resolution),
-            &mut current_100ns as *mut _,
-        )
-    };
-    ntstatus_result(status).map(|()| current_100ns)
+fn resolution_100ns_to_period_ms(value_100ns: u32) -> u32 {
+    value_100ns.div_ceil(10_000).max(1)
 }
 
-fn ntstatus_result(status: i32) -> Result<(), TimerResolutionError> {
-    if status >= 0 {
+fn period_ms_to_100ns(period_ms: u32) -> u32 {
+    period_ms.saturating_mul(10_000)
+}
+
+fn mm_result(operation: &str, result: u32) -> Result<(), TimerResolutionError> {
+    if result == MMSYSERR_NOERROR {
         Ok(())
     } else {
         Err(TimerResolutionError::Failed(format!(
-            "NTSTATUS 0x{:08X}.",
-            status as u32
+            "{operation} failed with MMRESULT {result}."
         )))
     }
 }
@@ -443,19 +435,23 @@ fn timer_resolution_error_message(error: TimerResolutionError) -> String {
     }
 }
 
-#[link(name = "ntdll")]
-unsafe extern "system" {
-    fn NtQueryTimerResolution(
-        MaximumTime: *mut u32,
-        MinimumTime: *mut u32,
-        CurrentTime: *mut u32,
-    ) -> i32;
+const MMSYSERR_NOERROR: u32 = 0;
 
-    fn NtSetTimerResolution(
-        DesiredResolution: u32,
-        SetResolution: u8,
-        CurrentResolution: *mut u32,
-    ) -> i32;
+#[repr(C)]
+#[derive(Default)]
+struct TimeCaps {
+    period_min: u32,
+    period_max: u32,
+}
+
+#[link(name = "winmm")]
+unsafe extern "system" {
+    #[link_name = "timeGetDevCaps"]
+    fn time_get_dev_caps(ptc: *mut TimeCaps, cbtc: u32) -> u32;
+    #[link_name = "timeBeginPeriod"]
+    fn time_begin_period(u_period: u32) -> u32;
+    #[link_name = "timeEndPeriod"]
+    fn time_end_period(u_period: u32) -> u32;
 }
 
 #[cfg(test)]
@@ -464,18 +460,29 @@ mod tests {
 
     #[test]
     fn desired_resolution_is_clamped_between_minimum_and_maximum() {
-        assert_eq!(normalize_desired_resolution(1_000, 5_000, 156_250), 5_000);
+        assert_eq!(normalize_desired_resolution(1_000, 10_000, 160_000), 10_000);
         assert_eq!(
-            normalize_desired_resolution(200_000, 5_000, 156_250),
-            156_250
+            normalize_desired_resolution(200_000, 10_000, 160_000),
+            160_000
         );
-        assert_eq!(normalize_desired_resolution(10_000, 5_000, 156_250), 10_000);
+        assert_eq!(
+            normalize_desired_resolution(10_000, 10_000, 160_000),
+            10_000
+        );
+    }
+
+    #[test]
+    fn desired_resolution_rounds_up_to_whole_milliseconds() {
+        assert_eq!(
+            normalize_desired_resolution(15_500, 10_000, 160_000),
+            20_000
+        );
     }
 
     #[test]
     fn resolution_format_uses_milliseconds() {
-        assert_eq!(format_resolution_ms(156_250), "15.625 ms");
+        assert_eq!(format_resolution_ms(160_000), "16.000 ms");
+        assert_eq!(format_resolution_ms(20_000), "2.00 ms");
         assert_eq!(format_resolution_ms(10_000), "1.00 ms");
-        assert_eq!(format_resolution_ms(5_000), "0.500 ms");
     }
 }

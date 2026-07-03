@@ -276,18 +276,6 @@ pub struct EcoQosSettings {
     #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
-    pub cpu_restriction_mode: EcoQosCpuRestrictionMode,
-    #[serde(default)]
-    pub cpu_restriction_strategy: EcoQosCpuRestrictionStrategy,
-    #[serde(default)]
-    pub cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle,
-    #[serde(default = "default_eco_qos_cpu_restriction_percent")]
-    pub cpu_restriction_percent: u8,
-    #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
-    pub cpu_restriction_max_logical_processors: u8,
-    #[serde(default)]
-    pub cpu_restriction_core_mask: u64,
-    #[serde(default)]
     pub aggressiveness: EcoQosAggressiveness,
     #[serde(default)]
     pub efficiency_whitelist: Vec<EcoQosExclusionRule>,
@@ -1526,13 +1514,6 @@ impl Default for EcoQosSettings {
         Self {
             enabled: false,
             exclude_foreground_app: default_true(),
-            cpu_restriction_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            cpu_restriction_strategy: EcoQosCpuRestrictionStrategy::Off,
-            cpu_restriction_control_style: EcoQosCpuRestrictionControlStyle::Percentage,
-            cpu_restriction_percent: default_eco_qos_cpu_restriction_percent(),
-            cpu_restriction_max_logical_processors:
-                default_eco_qos_cpu_restriction_max_logical_processors(),
-            cpu_restriction_core_mask: 0,
             aggressiveness: EcoQosAggressiveness::Safe,
             efficiency_whitelist: Vec::new(),
         }
@@ -2541,14 +2522,6 @@ mod tests {
     }
 
     #[test]
-    fn background_efficiency_defaults_without_cpu_restriction() {
-        assert_eq!(
-            EcoQosSettings::default().cpu_restriction_strategy,
-            EcoQosCpuRestrictionStrategy::Off
-        );
-    }
-
-    #[test]
     fn workload_engine_exclusions_support_wildcards() {
         let settings = WorkloadEngineSettings {
             workload_engine_exclusions: vec![
@@ -2642,7 +2615,7 @@ mod tests {
                 TimerResolutionRule {
                     enabled: true,
                     process_name: "game*.exe".to_owned(),
-                    desired_100ns: 5_000,
+                    desired_100ns: 20_000,
                 },
                 TimerResolutionRule {
                     enabled: false,
@@ -2654,7 +2627,7 @@ mod tests {
 
         assert_eq!(
             settings.desired_resolution_for_foreground("GameClient.exe"),
-            Some(("game*.exe".to_owned(), 5_000))
+            Some(("game*.exe".to_owned(), 20_000))
         );
         assert_eq!(
             settings.desired_resolution_for_foreground("disabled.exe"),

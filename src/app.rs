@@ -23485,10 +23485,9 @@ fn process_list_timer_resolution_options(app: &WinderustApp) -> Vec<Option<u32>>
     for option in [
         None,
         Some(app.settings.timer_resolution.desired_100ns),
-        Some(5_000),
         Some(10_000),
         Some(20_000),
-        Some(156_250),
+        Some(160_000),
     ] {
         if !options.contains(&option) {
             options.push(option);
@@ -25511,11 +25510,11 @@ mod tests {
     fn process_list_rule_edit_helpers_update_timer_overrides() {
         let mut settings = Settings::default();
 
-        set_timer_resolution_override(&mut settings.timer_resolution, "editor.exe", Some(5_000));
+        set_timer_resolution_override(&mut settings.timer_resolution, "editor.exe", Some(20_000));
         let summary = process_policy_summary(&settings, &[], "editor.exe");
         assert_eq!(
             summary.timer_resolution,
-            timer_resolution::format_resolution_ms(5_000)
+            timer_resolution::format_resolution_ms(20_000)
         );
         assert!(summary.uses_custom_rule(ProcessListColumn::TimerResolution));
 
@@ -25684,28 +25683,28 @@ mod tests {
     #[test]
     fn timer_resolution_input_accepts_decimal_milliseconds() {
         assert_eq!(
-            parse_timer_resolution_input_100ns("1", 5_000, 156_250),
+            parse_timer_resolution_input_100ns("1", 10_000, 160_000),
             Some(10_000)
         );
         assert_eq!(
-            parse_timer_resolution_input_100ns("0.5 ms", 5_000, 156_250),
-            Some(5_000)
+            parse_timer_resolution_input_100ns("0.5 ms", 10_000, 160_000),
+            Some(10_000)
         );
         assert_eq!(
-            parse_timer_resolution_input_100ns("15.625 MS", 5_000, 156_250),
-            Some(156_250)
+            parse_timer_resolution_input_100ns("15.625 MS", 10_000, 160_000),
+            Some(160_000)
         );
     }
 
     #[test]
     fn timer_resolution_input_clamps_to_supported_range() {
         assert_eq!(
-            parse_timer_resolution_input_100ns("0.1", 5_000, 156_250),
-            Some(5_000)
+            parse_timer_resolution_input_100ns("0.1", 10_000, 160_000),
+            Some(10_000)
         );
         assert_eq!(
-            parse_timer_resolution_input_100ns("1000", 5_000, 156_250),
-            Some(156_250)
+            parse_timer_resolution_input_100ns("1000", 10_000, 160_000),
+            Some(160_000)
         );
     }
 
