@@ -3,7 +3,7 @@ name = "winderust"
 version = "0.1.0"
 edition = "2021"
 description = "Rust-based Windows tuning controller"
-license = "MIT"
+publish = false
 build = "build.rs"
 
 [dependencies]

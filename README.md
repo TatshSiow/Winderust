@@ -98,6 +98,11 @@ The compiled executable is:
 target\release\winderust.exe
 ```
 
+## License
+
+Winderust is proprietary software. No open-source license is granted. See
+`EULA.md`.
+
 ## Notes
 - EcoQoS works best on Windows 11 and supported CPU platforms.
 - Agent docs, development guide, scope, and references: `.agents/memory/README.md`.
