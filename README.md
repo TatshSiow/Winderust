@@ -46,9 +46,10 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 
 `Off` is the comparison baseline under generated background load; the script
 also emits a no-background `baseline_no_background_load` case for reference.
-Balance and Responsive now apply the extra priority assists the app preset uses
-where Windows exposes them to the benchmark: priority boost, thread priority,
-memory priority, I/O priority, and GPU priority.
+Foreground First and Max Foreground apply the full priority-assist set where
+Windows exposes it to the benchmark: priority boost, thread priority, memory
+priority, I/O priority, and GPU priority. Low Impact keeps the extra I/O,
+memory, and GPU assists off.
 
 Metrics:
 
@@ -68,10 +69,9 @@ Latest CPU-loop validation on Intel Core 5 210H, 12 logical processors:
 | Case | Avg latency vs Off | Median latency vs Off | P95 latency vs Off | Background throughput vs Off | Repeat passes won |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Off | 679.10 ms | 616.47 ms | 682.97 ms | 100.0% | baseline |
-| Gentle | 348.20 ms (+48.7%) | 326.29 ms (+47.1%) | 364.75 ms (+46.6%) | 124.4% | 2/3 |
-| Balance | 350.27 ms (+48.4%) | 316.96 ms (+48.6%) | 333.52 ms (+51.2%) | 180.8% | 2/3 |
-| Responsive | 202.27 ms (+70.2%) | 200.82 ms (+67.4%) | 201.14 ms (+70.5%) | 33.6% | 3/3 |
-| Danger | 209.11 ms (+69.2%) | 207.01 ms (+66.4%) | 210.01 ms (+69.3%) | 16.5% | 3/3 |
+| Low Impact | 348.20 ms (+48.7%) | 326.29 ms (+47.1%) | 364.75 ms (+46.6%) | 124.4% | 2/3 |
+| Foreground First | 202.27 ms (+70.2%) | 200.82 ms (+67.4%) | 201.14 ms (+70.5%) | 33.6% | 3/3 |
+| Max Foreground | 209.11 ms (+69.2%) | 207.01 ms (+66.4%) | 210.01 ms (+69.3%) | 16.5% | 3/3 |
 
 Run the benchmark from the repository root:
 

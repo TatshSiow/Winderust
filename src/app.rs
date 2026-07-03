@@ -15358,10 +15358,9 @@ enum SettingGroupTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AutoBalancePreset {
-    Gentle,
-    Balanced,
-    Responsive,
-    Danger,
+    LowImpact,
+    ForegroundFirst,
+    MaxForeground,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15370,11 +15369,10 @@ enum AutoBalanceBehavior {
 }
 
 impl AutoBalanceBehavior {
-    const ALL: [Self; 4] = [
-        Self::Preset(AutoBalancePreset::Balanced),
-        Self::Preset(AutoBalancePreset::Gentle),
-        Self::Preset(AutoBalancePreset::Responsive),
-        Self::Preset(AutoBalancePreset::Danger),
+    const ALL: [Self; 3] = [
+        Self::Preset(AutoBalancePreset::LowImpact),
+        Self::Preset(AutoBalancePreset::ForegroundFirst),
+        Self::Preset(AutoBalancePreset::MaxForeground),
     ];
 }
 
@@ -24344,10 +24342,11 @@ fn cpu_affinity_mode_label(mode: CpuAffinityMode) -> String {
 
 fn auto_balance_preset_label(preset: AutoBalancePreset) -> String {
     match preset {
-        AutoBalancePreset::Gentle => t!("responsiveness.preset_gentle").to_string(),
-        AutoBalancePreset::Balanced => t!("responsiveness.preset_balanced").to_string(),
-        AutoBalancePreset::Responsive => t!("responsiveness.preset_responsive").to_string(),
-        AutoBalancePreset::Danger => t!("responsiveness.preset_danger").to_string(),
+        AutoBalancePreset::LowImpact => t!("responsiveness.preset_low_impact").to_string(),
+        AutoBalancePreset::ForegroundFirst => {
+            t!("responsiveness.preset_foreground_first").to_string()
+        }
+        AutoBalancePreset::MaxForeground => t!("responsiveness.preset_max_foreground").to_string(),
     }
 }
 
@@ -24406,19 +24405,19 @@ fn begin_auto_balance_preset_control_motions(
             begin_control_motion_if_changed(
                 "switch-responsiveness-auto-thread-enabled-switch",
                 settings.auto_balance_thread_priority.enabled,
-                preset != AutoBalancePreset::Gentle,
+                true,
                 cx,
             );
             begin_control_motion_if_changed(
                 "switch-responsiveness-auto-boost-enabled-switch",
                 settings.auto_balance_priority_boost.enabled,
-                preset != AutoBalancePreset::Gentle,
+                true,
                 cx,
             );
             begin_control_motion_if_changed(
                 "switch-responsiveness-auto-gpu-enabled-switch",
                 settings.auto_balance_gpu_priority.enabled,
-                preset != AutoBalancePreset::Gentle,
+                preset != AutoBalancePreset::LowImpact,
                 cx,
             );
             begin_control_motion_if_changed(
@@ -24564,7 +24563,7 @@ struct AutoBalancePresetValues {
 
 fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetValues {
     match preset {
-        AutoBalancePreset::Gentle => AutoBalancePresetValues {
+        AutoBalancePreset::LowImpact => AutoBalancePresetValues {
             lower_background_apps: true,
             auto_balance_efficiency_mode_enabled: true,
             background_priority: ProcessPriority::Idle,
@@ -24577,40 +24576,17 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             auto_balance_affinity_escalation_enabled: true,
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
-            lower_background_auto_cpu_percent: false,
+            lower_background_auto_cpu_percent: true,
             manual_cpu_percent: 60,
             total_threshold: 70,
-            process_threshold: 20,
-            restore_threshold: 8,
+            process_threshold: 8,
+            restore_threshold: 4,
             sustain_seconds: 2,
             minimum_restraint_seconds: 2,
             cooldown_seconds: 5,
             max_targeted_processes: 12,
         },
-        AutoBalancePreset::Balanced => AutoBalancePresetValues {
-            lower_background_apps: true,
-            auto_balance_efficiency_mode_enabled: true,
-            background_priority: ProcessPriority::Idle,
-            foreground_io_priority: ProcessIoPrioritySetting::Normal,
-            lower_background_io_priority_enabled: true,
-            lower_background_io_priority: ProcessIoPriority::Low,
-            auto_balance_memory_priority_enabled: true,
-            auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
-            auto_balance_memory_priority: ProcessMemoryPriority::Low,
-            auto_balance_affinity_escalation_enabled: true,
-            boost_foreground_app: true,
-            foreground_boost: ForegroundBoostPriority::Auto,
-            lower_background_auto_cpu_percent: false,
-            manual_cpu_percent: 55,
-            total_threshold: 60,
-            process_threshold: 12,
-            restore_threshold: 6,
-            sustain_seconds: 1,
-            minimum_restraint_seconds: 3,
-            cooldown_seconds: 6,
-            max_targeted_processes: 12,
-        },
-        AutoBalancePreset::Responsive => AutoBalancePresetValues {
+        AutoBalancePreset::ForegroundFirst => AutoBalancePresetValues {
             lower_background_apps: true,
             auto_balance_efficiency_mode_enabled: true,
             background_priority: ProcessPriority::Idle,
@@ -24622,8 +24598,8 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             auto_balance_memory_priority: ProcessMemoryPriority::VeryLow,
             auto_balance_affinity_escalation_enabled: true,
             boost_foreground_app: true,
-            foreground_boost: ForegroundBoostPriority::AboveNormal,
-            lower_background_auto_cpu_percent: false,
+            foreground_boost: ForegroundBoostPriority::Auto,
+            lower_background_auto_cpu_percent: true,
             manual_cpu_percent: 16,
             total_threshold: 45,
             process_threshold: 6,
@@ -24633,7 +24609,7 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             cooldown_seconds: 6,
             max_targeted_processes: 12,
         },
-        AutoBalancePreset::Danger => AutoBalancePresetValues {
+        AutoBalancePreset::MaxForeground => AutoBalancePresetValues {
             lower_background_apps: true,
             auto_balance_efficiency_mode_enabled: true,
             background_priority: ProcessPriority::Idle,
@@ -24673,14 +24649,14 @@ fn auto_balance_io_priority_preset_values(values: AutoBalancePresetValues) -> Io
 
 fn auto_balance_thread_priority_preset_values(preset: AutoBalancePreset) -> ThreadPrioritySettings {
     ThreadPrioritySettings {
-        enabled: preset != AutoBalancePreset::Gentle,
+        enabled: true,
         foreground_detection_enabled: true,
-        foreground_priority: if preset == AutoBalancePreset::Danger {
+        foreground_priority: if preset == AutoBalancePreset::MaxForeground {
             ProcessThreadPrioritySetting::Highest
         } else {
             ProcessThreadPrioritySetting::Default
         },
-        background_priority: if preset == AutoBalancePreset::Danger {
+        background_priority: if preset == AutoBalancePreset::MaxForeground {
             ProcessThreadPrioritySetting::Idle
         } else {
             ProcessThreadPrioritySetting::BelowNormal
@@ -24691,9 +24667,9 @@ fn auto_balance_thread_priority_preset_values(preset: AutoBalancePreset) -> Thre
     }
 }
 
-fn auto_balance_priority_boost_preset_values(preset: AutoBalancePreset) -> PriorityBoostSettings {
+fn auto_balance_priority_boost_preset_values(_preset: AutoBalancePreset) -> PriorityBoostSettings {
     PriorityBoostSettings {
-        enabled: preset != AutoBalancePreset::Gentle,
+        enabled: true,
         foreground_detection_enabled: true,
         foreground_boost: ProcessPriorityBoostSetting::Enabled,
         background_boost: ProcessPriorityBoostSetting::Disabled,
@@ -24703,14 +24679,14 @@ fn auto_balance_priority_boost_preset_values(preset: AutoBalancePreset) -> Prior
 
 fn auto_balance_gpu_priority_preset_values(preset: AutoBalancePreset) -> GpuPrioritySettings {
     GpuPrioritySettings {
-        enabled: preset != AutoBalancePreset::Gentle,
+        enabled: preset != AutoBalancePreset::LowImpact,
         foreground_detection_enabled: true,
-        foreground_priority: if preset == AutoBalancePreset::Danger {
+        foreground_priority: if preset == AutoBalancePreset::MaxForeground {
             ProcessGpuPrioritySetting::High
         } else {
             ProcessGpuPrioritySetting::Default
         },
-        background_priority: if preset == AutoBalancePreset::Danger {
+        background_priority: if preset == AutoBalancePreset::MaxForeground {
             ProcessGpuPrioritySetting::Idle
         } else {
             ProcessGpuPrioritySetting::BelowNormal
@@ -25119,61 +25095,70 @@ mod tests {
 
     #[test]
     fn auto_balance_presets_set_background_process_priority() {
-        let gentle = auto_balance_preset_values(AutoBalancePreset::Gentle);
-        let balanced = auto_balance_preset_values(AutoBalancePreset::Balanced);
-        let responsive = auto_balance_preset_values(AutoBalancePreset::Responsive);
-        let danger = auto_balance_preset_values(AutoBalancePreset::Danger);
+        let low_impact = auto_balance_preset_values(AutoBalancePreset::LowImpact);
+        let foreground_first = auto_balance_preset_values(AutoBalancePreset::ForegroundFirst);
+        let max_foreground = auto_balance_preset_values(AutoBalancePreset::MaxForeground);
 
-        assert_eq!(gentle.background_priority, ProcessPriority::Idle);
-        assert_eq!(balanced.background_priority, ProcessPriority::Idle);
-        assert_eq!(responsive.background_priority, ProcessPriority::Idle);
-        assert_eq!(danger.background_priority, ProcessPriority::Idle);
-        assert!(gentle.auto_balance_efficiency_mode_enabled);
-        assert!(balanced.auto_balance_efficiency_mode_enabled);
-        assert!(responsive.auto_balance_efficiency_mode_enabled);
-        assert!(danger.auto_balance_efficiency_mode_enabled);
+        assert_eq!(low_impact.background_priority, ProcessPriority::Idle);
+        assert_eq!(foreground_first.background_priority, ProcessPriority::Idle);
+        assert_eq!(max_foreground.background_priority, ProcessPriority::Idle);
+        assert!(low_impact.auto_balance_efficiency_mode_enabled);
+        assert!(foreground_first.auto_balance_efficiency_mode_enabled);
+        assert!(max_foreground.auto_balance_efficiency_mode_enabled);
         assert_eq!(
-            balanced.auto_balance_foreground_memory_priority,
+            foreground_first.auto_balance_foreground_memory_priority,
             ProcessMemoryPrioritySetting::Normal
         );
-        assert_eq!(gentle.max_targeted_processes, 12);
-        assert_eq!(balanced.max_targeted_processes, 12);
-        assert_eq!(responsive.max_targeted_processes, 12);
-        assert_eq!(danger.max_targeted_processes, 12);
-        assert!(gentle.auto_balance_affinity_escalation_enabled);
-        assert!(balanced.auto_balance_affinity_escalation_enabled);
-        assert!(responsive.auto_balance_affinity_escalation_enabled);
-        assert!(danger.auto_balance_affinity_escalation_enabled);
-        assert!(gentle.total_threshold > balanced.total_threshold);
-        assert!(balanced.total_threshold > responsive.total_threshold);
-        assert!(responsive.total_threshold > danger.total_threshold);
-        assert!(gentle.process_threshold > balanced.process_threshold);
-        assert!(balanced.process_threshold > responsive.process_threshold);
-        assert!(responsive.process_threshold > danger.process_threshold);
-        assert_eq!(gentle.manual_cpu_percent, 60);
-        assert_eq!(balanced.manual_cpu_percent, 55);
-        assert_eq!(responsive.manual_cpu_percent, 16);
-        assert_eq!(danger.manual_cpu_percent, 10);
+        assert_eq!(low_impact.max_targeted_processes, 12);
+        assert_eq!(foreground_first.max_targeted_processes, 12);
+        assert_eq!(max_foreground.max_targeted_processes, 12);
+        assert!(low_impact.auto_balance_affinity_escalation_enabled);
+        assert!(foreground_first.auto_balance_affinity_escalation_enabled);
+        assert!(max_foreground.auto_balance_affinity_escalation_enabled);
+        assert!(low_impact.lower_background_auto_cpu_percent);
+        assert!(foreground_first.lower_background_auto_cpu_percent);
+        assert!(!max_foreground.lower_background_auto_cpu_percent);
+        assert_eq!(low_impact.foreground_boost, ForegroundBoostPriority::Auto);
         assert_eq!(
-            danger.foreground_io_priority,
+            foreground_first.foreground_boost,
+            ForegroundBoostPriority::Auto
+        );
+        assert_eq!(
+            max_foreground.foreground_boost,
+            ForegroundBoostPriority::AboveNormal
+        );
+        assert!(low_impact.total_threshold > foreground_first.total_threshold);
+        assert!(foreground_first.total_threshold > max_foreground.total_threshold);
+        assert!(low_impact.process_threshold > foreground_first.process_threshold);
+        assert!(foreground_first.process_threshold > max_foreground.process_threshold);
+        assert_eq!(low_impact.manual_cpu_percent, 60);
+        assert_eq!(foreground_first.manual_cpu_percent, 16);
+        assert_eq!(max_foreground.manual_cpu_percent, 10);
+        assert!(auto_balance_thread_priority_preset_values(AutoBalancePreset::LowImpact).enabled);
+        assert!(auto_balance_priority_boost_preset_values(AutoBalancePreset::LowImpact).enabled);
+        assert!(!auto_balance_gpu_priority_preset_values(AutoBalancePreset::LowImpact).enabled);
+        assert_eq!(
+            max_foreground.foreground_io_priority,
             ProcessIoPrioritySetting::High
         );
         assert_eq!(
-            auto_balance_thread_priority_preset_values(AutoBalancePreset::Danger)
+            auto_balance_thread_priority_preset_values(AutoBalancePreset::MaxForeground)
                 .foreground_priority,
             ProcessThreadPrioritySetting::Highest
         );
         assert_eq!(
-            auto_balance_thread_priority_preset_values(AutoBalancePreset::Danger)
+            auto_balance_thread_priority_preset_values(AutoBalancePreset::MaxForeground)
                 .background_priority,
             ProcessThreadPrioritySetting::Idle
         );
         assert_eq!(
-            auto_balance_gpu_priority_preset_values(AutoBalancePreset::Danger).foreground_priority,
+            auto_balance_gpu_priority_preset_values(AutoBalancePreset::MaxForeground)
+                .foreground_priority,
             ProcessGpuPrioritySetting::High
         );
         assert_eq!(
-            auto_balance_gpu_priority_preset_values(AutoBalancePreset::Danger).background_priority,
+            auto_balance_gpu_priority_preset_values(AutoBalancePreset::MaxForeground)
+                .background_priority,
             ProcessGpuPrioritySetting::Idle
         );
     }
@@ -25181,7 +25166,7 @@ mod tests {
     #[test]
     fn auto_balance_preset_match_ignores_hidden_preserve_flags() {
         let mut settings = ForegroundResponsivenessSettings::default();
-        apply_auto_balance_preset(&mut settings, AutoBalancePreset::Balanced);
+        apply_auto_balance_preset(&mut settings, AutoBalancePreset::ForegroundFirst);
         settings
             .auto_balance_io_priority
             .preserve_foreground_priority = false;
@@ -25194,7 +25179,7 @@ mod tests {
 
         assert!(auto_balance_matches_preset(
             &settings,
-            AutoBalancePreset::Balanced
+            AutoBalancePreset::ForegroundFirst
         ));
     }
 

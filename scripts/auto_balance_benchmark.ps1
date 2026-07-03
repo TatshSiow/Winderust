@@ -16,15 +16,11 @@ $ErrorActionPreference = 'Stop'
 $powerShellPath = Join-Path $PSHOME 'powershell.exe'
 $logicalProcessors = [Environment]::ProcessorCount
 $workerCount = [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
-$gentleTargetCount = $workerCount
-$gentleCorePercent = 0.60
-$balanceCorePercent = 0.55
-$responsiveCorePercent = 0.16
-$dangerCorePercent = 0.10
-$gentleCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $gentleCorePercent))
-$balanceCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $balanceCorePercent))
-$responsiveCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $responsiveCorePercent))
-$dangerCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $dangerCorePercent))
+$lowImpactTargetCount = $workerCount
+$maxForegroundCorePercent = 0.10
+$lowImpactCoreCount = 0
+$foregroundFirstCoreCount = 0
+$maxForegroundCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $maxForegroundCorePercent))
 
 function New-Mask([int]$Count) {
     $mask = 0L
@@ -34,10 +30,7 @@ function New-Mask([int]$Count) {
     return $mask
 }
 
-$gentleMask = New-Mask $gentleCoreCount
-$balanceMask = New-Mask $balanceCoreCount
-$responsiveMask = New-Mask $responsiveCoreCount
-$dangerMask = New-Mask $dangerCoreCount
+$maxForegroundMask = New-Mask $maxForegroundCoreCount
 
 if (-not ('AutoBalanceBenchmarkNative' -as [type])) {
     Add-Type -TypeDefinition @"
@@ -825,56 +818,43 @@ function Run-NamedCase {
                 -AffinityMask 0 `
                 -AssistControls (New-AssistControls)
         }
-        'gentle' {
+        'low_impact' {
             if (Test-ForegroundLaunchScenario) {
-                return Run-LaunchGraceCase -Name 'gentle'
+                return Run-LaunchGraceCase -Name 'low_impact'
             }
             return Run-Case `
-                -Name 'gentle' `
-                -Model 'All background workers Idle; 60% affinity approximation; foreground AboveNormal.' `
+                -Name 'low_impact' `
+                -Model 'Low Impact: all background workers Idle; adaptive CPU share; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case; background threads BelowNormal; priority boost disabled.' `
                 -ForegroundPriority 'AboveNormal' `
-                -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $gentleTargetCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                -AffinityMask $gentleMask `
-                -AssistControls (New-AssistControls)
+                -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'Idle') `
+                -AffinitySelectedCount 0 `
+                -AffinityMask 0 `
+                -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal')
         }
-        'balance' {
+        'foreground_first' {
             if (Test-ForegroundLaunchScenario) {
-                return Run-LaunchGraceCase -Name 'balance'
+                return Run-LaunchGraceCase -Name 'foreground_first'
             }
             return Run-Case `
-                -Name 'balance' `
-                -Model 'All background workers Idle; 55% affinity approximation; foreground AboveNormal; background I/O Low; memory Low; threads BelowNormal; priority boost disabled; GPU BelowNormal when available.' `
+                -Name 'foreground_first' `
+                -Model 'Foreground First: all background workers Idle; adaptive CPU share; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case; background I/O VeryLow; memory VeryLow; threads BelowNormal; priority boost disabled; GPU BelowNormal when available.' `
                 -ForegroundPriority 'AboveNormal' `
                 -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                -AffinityMask $balanceMask `
-                -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'Low' -IoPriority 'Low' -GpuPriority 'BelowNormal')
-        }
-        'responsive' {
-            if (Test-ForegroundLaunchScenario) {
-                return Run-LaunchGraceCase -Name 'responsive'
-            }
-            return Run-Case `
-                -Name 'responsive' `
-                -Model 'All background workers Idle; 16% affinity approximation; foreground AboveNormal; background I/O VeryLow; memory VeryLow; threads BelowNormal; priority boost disabled; GPU BelowNormal when available.' `
-                -ForegroundPriority 'AboveNormal' `
-                -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                -AffinityMask $responsiveMask `
+                -AffinitySelectedCount 0 `
+                -AffinityMask 0 `
                 -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'BelowNormal')
         }
-        'danger' {
+        'max_foreground' {
             if (Test-ForegroundLaunchScenario) {
-                return Run-LaunchGraceCase -Name 'danger'
+                return Run-LaunchGraceCase -Name 'max_foreground'
             }
             return Run-Case `
-                -Name 'danger' `
-                -Model 'All background workers Idle; 10% affinity approximation; foreground AboveNormal; foreground I/O High; foreground thread Highest; foreground GPU High when available; background I/O VeryLow; memory VeryLow; threads Idle; priority boost disabled; GPU Idle when available.' `
+                -Name 'max_foreground' `
+                -Model 'Max Foreground: all background workers Idle; 10% affinity approximation; foreground AboveNormal boost; foreground I/O High; foreground thread Highest; foreground GPU High when available; background I/O VeryLow; memory VeryLow; threads Idle; priority boost disabled; GPU Idle when available.' `
                 -ForegroundPriority 'AboveNormal' `
                 -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
                 -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                -AffinityMask $dangerMask `
+                -AffinityMask $maxForegroundMask `
                 -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -ForegroundThreadPriority 'Highest' -ForegroundIoPriority 'High' -ForegroundGpuPriority 'High' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'Idle' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'Idle')
         }
     }
@@ -929,10 +909,9 @@ function New-Comparison {
 function Run-Pass {
     param([int]$Pass)
     $presetOrders = @(
-        @('gentle', 'balance', 'responsive', 'danger'),
-        @('danger', 'responsive', 'balance', 'gentle'),
-        @('balance', 'danger', 'gentle', 'responsive'),
-        @('responsive', 'gentle', 'danger', 'balance')
+        @('low_impact', 'foreground_first', 'max_foreground'),
+        @('max_foreground', 'foreground_first', 'low_impact'),
+        @('foreground_first', 'max_foreground', 'low_impact')
     )
     $presetOrder = $presetOrders[($Pass - 1) % $presetOrders.Count]
     $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
@@ -998,7 +977,7 @@ function Summarize-Method {
     $offP95 = Get-AverageProperty -Items $offRows -Name 'p95_ms'
     [pscustomobject]@{
         name = 'off'
-        passes = $offRows.Count
+        off_sample_count = $offRows.Count
         foreground_latency_avg_ms = $offAvg
         foreground_latency_median_avg_ms = $offMedian
         foreground_latency_p95_avg_ms = $offP95
@@ -1017,7 +996,7 @@ function Summarize-Method {
         repeat_pass_count = $null
         repeat_pass_win_rate_percent = $null
     }
-    foreach ($name in @('gentle', 'balance', 'responsive', 'danger')) {
+    foreach ($name in @('low_impact', 'foreground_first', 'max_foreground')) {
         $comparisons = @()
         $caseRows = @()
         foreach ($run in $Runs) {
@@ -1087,7 +1066,7 @@ function Summarize-Method {
 $assistCoverage = [pscustomobject][ordered]@{
     process_priority = 'applied to generated background workers'
     foreground_process_priority = 'applied to the benchmark process'
-    affinity = 'applied as hard affinity; stricter than Winderust Soft CPU Sets'
+    affinity = 'applied as hard affinity for Max Foreground; adaptive presets omit affinity in low foreground CPU synthetic cases'
     foreground_priority_boost = 'applied to the benchmark process when preset enables it'
     foreground_thread_priority = 'applied to the benchmark thread when preset enables it'
     foreground_io_priority = 'applied to the benchmark process when preset enables it; CPU loop has minimal I/O'
@@ -1113,14 +1092,13 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     passes = $Passes
     rounds = $Rounds
     foreground_scenario = $ForegroundScenario
-    gentle_affinity_limited_processors = $gentleCoreCount
-    balance_affinity_limited_processors = $balanceCoreCount
+    low_impact_affinity_limited_processors = $lowImpactCoreCount
     foreground_iterations_per_round = $Iterations
     foreground_io_operations_per_round = $IoOperations * 2
     foreground_message_loop_ticks_per_round = $MessageLoopTicks
     foreground_message_loop_interval_ms = $MessageLoopIntervalMilliseconds
-    responsive_affinity_limited_processors = $responsiveCoreCount
-    danger_affinity_limited_processors = $dangerCoreCount
+    foreground_first_affinity_limited_processors = $foregroundFirstCoreCount
+    max_foreground_affinity_limited_processors = $maxForegroundCoreCount
     assist_coverage = $assistCoverage
     methodology_gate = 'Trust a local tuning direction only when median and p95 both improve by at least 3% in at least two of three passes.'
     runs = $runs
