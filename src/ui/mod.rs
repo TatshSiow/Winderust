@@ -67,8 +67,8 @@ const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::MemoryPriority,
 ];
 const WINDERUST_FEATURE_PAGES: [Page; 3] = [
-    Page::EfficiencyMode,
     Page::ForegroundResponsiveness,
+    Page::EfficiencyMode,
     Page::SmartTrim,
 ];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];

@@ -3,8 +3,11 @@ param(
     [int]$Rounds = 5,
     [int]$Iterations = 1000000,
     [int]$WorkerSeconds = 45,
-    [ValidateSet('CpuLoop', 'TaskManagerLaunch', 'WinderustLaunch')]
+    [ValidateSet('CpuLoop', 'IoLoop', 'MessageLoop', 'WinderustLaunch')]
     [string]$ForegroundScenario = 'CpuLoop',
+    [int]$IoOperations = 2000,
+    [int]$MessageLoopTicks = 200,
+    [int]$MessageLoopIntervalMilliseconds = 16,
     [string]$WinderustExePath = ''
 )
 
@@ -15,11 +18,13 @@ $logicalProcessors = [Environment]::ProcessorCount
 $workerCount = [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
 $gentleTargetCount = $workerCount
 $gentleCorePercent = 0.60
-$balanceCorePercent = 0.50
+$balanceCorePercent = 0.55
 $responsiveCorePercent = 0.16
+$dangerCorePercent = 0.10
 $gentleCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $gentleCorePercent))
 $balanceCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $balanceCorePercent))
 $responsiveCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $responsiveCorePercent))
+$dangerCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $dangerCorePercent))
 
 function New-Mask([int]$Count) {
     $mask = 0L
@@ -32,6 +37,7 @@ function New-Mask([int]$Count) {
 $gentleMask = New-Mask $gentleCoreCount
 $balanceMask = New-Mask $balanceCoreCount
 $responsiveMask = New-Mask $responsiveCoreCount
+$dangerMask = New-Mask $dangerCoreCount
 
 if (-not ('AutoBalanceBenchmarkNative' -as [type])) {
     Add-Type -TypeDefinition @"
@@ -95,6 +101,9 @@ function Get-CpuName {
 function New-AssistControls {
     param(
         [string]$ForegroundPriorityBoost = 'Default',
+        [string]$ForegroundThreadPriority = 'Default',
+        [string]$ForegroundIoPriority = 'Default',
+        [string]$ForegroundGpuPriority = 'Default',
         [string]$BackgroundPriorityBoost = 'Default',
         [string]$ThreadPriority = 'Default',
         [string]$MemoryPriority = 'Default',
@@ -104,6 +113,9 @@ function New-AssistControls {
 
     [pscustomobject][ordered]@{
         foreground_priority_boost = $ForegroundPriorityBoost
+        foreground_thread_priority = $ForegroundThreadPriority
+        foreground_io_priority = $ForegroundIoPriority
+        foreground_gpu_priority = $ForegroundGpuPriority
         background_priority_boost = $BackgroundPriorityBoost
         thread_priority = $ThreadPriority
         memory_priority = $MemoryPriority
@@ -116,6 +128,10 @@ function New-AssistStatus {
     [pscustomobject][ordered]@{
         worker_processes = 0
         foreground_priority_boost_applied = 0
+        foreground_thread_priority_applied = 0
+        foreground_io_priority_applied = 0
+        foreground_gpu_priority_applied = 0
+        foreground_gpu_priority_unavailable = 0
         background_priority_boost_applied = 0
         thread_priority_threads_applied = 0
         memory_priority_processes_applied = 0
@@ -133,6 +149,105 @@ function Set-ProcessPriorityBoostSetting {
     }
     $Process.PriorityBoostEnabled = ($Setting -eq 'Enabled')
     return $true
+}
+
+function Set-CurrentThreadPrioritySetting {
+    param([string]$Setting)
+    if ([string]::IsNullOrWhiteSpace($Setting) -or $Setting -eq 'Default') {
+        return $false
+    }
+
+    [Threading.Thread]::CurrentThread.Priority = $Setting
+    return $true
+}
+
+function Set-ProcessIoPrioritySetting {
+    param([Diagnostics.Process]$Process, [string]$Setting)
+    if (-not $ioPriorityRaw.ContainsKey($Setting)) {
+        return $false
+    }
+
+    $raw = [uint32]$ioPriorityRaw[$Setting]
+    $status = [AutoBalanceBenchmarkNative]::NtSetInformationProcess($Process.Handle, [uint32]$processIoPriorityClass, [ref]$raw, [uint32]4)
+    if ($status -lt 0) {
+        throw "NtSetInformationProcess failed with status $status"
+    }
+    return $true
+}
+
+function Set-ProcessGpuPrioritySetting {
+    param([Diagnostics.Process]$Process, [string]$Setting)
+    if (-not $gpuPriorityRaw.ContainsKey($Setting)) {
+        return 'Skipped'
+    }
+
+    $raw = [int]$gpuPriorityRaw[$Setting]
+    $status = [AutoBalanceBenchmarkNative]::D3DKMTSetProcessSchedulingPriorityClass($Process.Handle, $raw)
+    if ($status -ge 0) {
+        return 'Applied'
+    }
+    if ($status -eq $statusInvalidParameter) {
+        return 'Unavailable'
+    }
+    throw "D3DKMTSetProcessSchedulingPriorityClass failed with status $status"
+}
+
+function Apply-ForegroundAssistControls {
+    param(
+        [Diagnostics.Process]$Process,
+        [pscustomobject]$AssistControls,
+        [pscustomobject]$AssistStatus
+    )
+
+    try {
+        if (Set-CurrentThreadPrioritySetting -Setting $AssistControls.foreground_thread_priority) {
+            $AssistStatus.foreground_thread_priority_applied += 1
+        }
+    } catch {
+        $AssistStatus.failed_actions += 1
+    }
+    try {
+        if (Set-ProcessIoPrioritySetting -Process $Process -Setting $AssistControls.foreground_io_priority) {
+            $AssistStatus.foreground_io_priority_applied += 1
+        }
+    } catch {
+        $AssistStatus.failed_actions += 1
+    }
+    try {
+        $gpuStatus = Set-ProcessGpuPrioritySetting -Process $Process -Setting $AssistControls.foreground_gpu_priority
+        if ($gpuStatus -eq 'Applied') {
+            $AssistStatus.foreground_gpu_priority_applied += 1
+        } elseif ($gpuStatus -eq 'Unavailable') {
+            $AssistStatus.foreground_gpu_priority_unavailable += 1
+        }
+    } catch {
+        $AssistStatus.failed_actions += 1
+    }
+}
+
+function Restore-ForegroundAssistControls {
+    param(
+        [Diagnostics.Process]$Process,
+        [Threading.ThreadPriority]$OriginalThreadPriority,
+        [pscustomobject]$AssistControls
+    )
+
+    try {
+        [Threading.Thread]::CurrentThread.Priority = $OriginalThreadPriority
+    } catch {
+    }
+    if ($ioPriorityRaw.ContainsKey($AssistControls.foreground_io_priority)) {
+        try {
+            [void](Set-ProcessIoPrioritySetting -Process $Process -Setting 'Normal')
+        } catch {
+        }
+    }
+    if ($gpuPriorityRaw.ContainsKey($AssistControls.foreground_gpu_priority)) {
+        try {
+            [void](Set-ProcessGpuPrioritySetting -Process $Process -Setting 'Normal')
+        } catch {
+        }
+    }
 }
 
 function Apply-WorkerAssistControls {
@@ -182,12 +297,8 @@ function Apply-WorkerAssistControls {
     }
     if ($ioPriorityRaw.ContainsKey($AssistControls.io_priority)) {
         try {
-            $raw = [uint32]$ioPriorityRaw[$AssistControls.io_priority]
-            $status = [AutoBalanceBenchmarkNative]::NtSetInformationProcess($Process.Handle, [uint32]$processIoPriorityClass, [ref]$raw, [uint32]4)
-            if ($status -ge 0) {
+            if (Set-ProcessIoPrioritySetting -Process $Process -Setting $AssistControls.io_priority) {
                 $AssistStatus.io_priority_processes_applied += 1
-            } else {
-                $AssistStatus.failed_actions += 1
             }
         } catch {
             $AssistStatus.failed_actions += 1
@@ -195,76 +306,16 @@ function Apply-WorkerAssistControls {
     }
     if ($gpuPriorityRaw.ContainsKey($AssistControls.gpu_priority)) {
         try {
-            $raw = [int]$gpuPriorityRaw[$AssistControls.gpu_priority]
-            $status = [AutoBalanceBenchmarkNative]::D3DKMTSetProcessSchedulingPriorityClass($Process.Handle, $raw)
-            if ($status -ge 0) {
+            $gpuStatus = Set-ProcessGpuPrioritySetting -Process $Process -Setting $AssistControls.gpu_priority
+            if ($gpuStatus -eq 'Applied') {
                 $AssistStatus.gpu_priority_processes_applied += 1
-            } elseif ($status -eq $statusInvalidParameter) {
+            } elseif ($gpuStatus -eq 'Unavailable') {
                 $AssistStatus.gpu_priority_unavailable += 1
-            } else {
-                $AssistStatus.failed_actions += 1
             }
         } catch {
             $AssistStatus.failed_actions += 1
         }
     }
-}
-
-function Close-TaskManagerWindows {
-    param([int[]]$ExistingProcessIds)
-    foreach ($process in @(Get-Process -Name Taskmgr -ErrorAction SilentlyContinue)) {
-        try {
-            $process.Refresh()
-            if ($process.MainWindowHandle -eq 0) {
-                continue
-            }
-            [void]$process.CloseMainWindow()
-            if ($ExistingProcessIds -notcontains $process.Id -and -not $process.WaitForExit(1500)) {
-                $process.Kill()
-                [void]$process.WaitForExit(2000)
-            }
-        } catch {
-        }
-    }
-    $deadline = [DateTime]::UtcNow.AddSeconds(3)
-    while ([DateTime]::UtcNow -lt $deadline) {
-        $visible = @(Get-Process -Name Taskmgr -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
-        if ($visible.Count -eq 0) {
-            break
-        }
-        Start-Sleep -Milliseconds 100
-    }
-}
-
-function Measure-TaskManagerLaunch {
-    param([int]$Rounds)
-    $samples = New-Object 'System.Collections.Generic.List[double]'
-    $taskManagerPath = Join-Path $env:WINDIR 'System32\taskmgr.exe'
-    for ($round = 0; $round -lt $Rounds; $round++) {
-        $existing = @(Get-Process -Name Taskmgr -ErrorAction SilentlyContinue)
-        if (@($existing | Where-Object { $_.MainWindowHandle -ne 0 }).Count -gt 0) {
-            throw 'Close the visible Task Manager window before running -ForegroundScenario TaskManagerLaunch.'
-        }
-        $existingIds = @($existing | ForEach-Object { [int]$_.Id })
-        [GC]::Collect()
-        $sw = [Diagnostics.Stopwatch]::StartNew()
-        try {
-            [void](Start-Process -FilePath $taskManagerPath -PassThru)
-            while ($sw.Elapsed.TotalMilliseconds -lt 10000) {
-                Start-Sleep -Milliseconds 50
-                $visible = @(Get-Process -Name Taskmgr -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 })
-                if ($visible.Count -gt 0) {
-                    break
-                }
-            }
-            $sw.Stop()
-            $samples.Add($sw.Elapsed.TotalMilliseconds)
-        } finally {
-            Close-TaskManagerWindows -ExistingProcessIds $existingIds
-            Start-Sleep -Milliseconds 250
-        }
-    }
-    return $samples.ToArray()
 }
 
 function Resolve-WinderustExePath {
@@ -350,11 +401,14 @@ function Measure-WinderustLaunch {
 
 function Measure-ForegroundWork {
     param([int]$Iterations, [int]$Rounds, [string]$LaunchPriority)
-    if ($ForegroundScenario -eq 'TaskManagerLaunch') {
-        return Measure-TaskManagerLaunch -Rounds $Rounds
-    }
     if ($ForegroundScenario -eq 'WinderustLaunch') {
         return Measure-WinderustLaunch -Rounds $Rounds -LaunchPriority $LaunchPriority
+    }
+    if ($ForegroundScenario -eq 'IoLoop') {
+        return Measure-ForegroundIoWork -Operations $IoOperations -Rounds $Rounds
+    }
+    if ($ForegroundScenario -eq 'MessageLoop') {
+        return Measure-ForegroundMessageLoop -Ticks $MessageLoopTicks -IntervalMilliseconds $MessageLoopIntervalMilliseconds -Rounds $Rounds
     }
     $samples = New-Object 'System.Collections.Generic.List[double]'
     for ($round = 0; $round -lt $Rounds; $round++) {
@@ -366,6 +420,99 @@ function Measure-ForegroundWork {
         }
         $sw.Stop()
         $samples.Add($sw.Elapsed.TotalMilliseconds)
+        Start-Sleep -Milliseconds 150
+    }
+    return $samples.ToArray()
+}
+
+function Measure-ForegroundMessageLoop {
+    param([int]$Ticks, [int]$IntervalMilliseconds, [int]$Rounds)
+    if ($Ticks -lt 1) {
+        throw '-MessageLoopTicks must be at least 1.'
+    }
+    if ($IntervalMilliseconds -lt 1) {
+        throw '-MessageLoopIntervalMilliseconds must be at least 1.'
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    $samples = New-Object 'System.Collections.Generic.List[double]'
+    for ($round = 0; $round -lt $Rounds; $round++) {
+        [GC]::Collect()
+        $state = [pscustomobject]@{
+            Count = 0
+            LastMs = 0.0
+            TotalDelayMs = 0.0
+        }
+        $form = New-Object System.Windows.Forms.Form
+        $timer = New-Object System.Windows.Forms.Timer
+        try {
+            $form.ShowInTaskbar = $false
+            $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized
+            $form.Opacity = 0
+            $form.Size = New-Object System.Drawing.Size(1, 1)
+            $form.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+            $form.Location = New-Object System.Drawing.Point(-32000, -32000)
+            $timer.Interval = $IntervalMilliseconds
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $form.Add_Shown({
+                $state.LastMs = $sw.Elapsed.TotalMilliseconds
+                $timer.Start()
+            })
+            $timer.Add_Tick({
+                $elapsed = $sw.Elapsed.TotalMilliseconds
+                $delay = [Math]::Max(0.0, ($elapsed - $state.LastMs) - $IntervalMilliseconds)
+                $state.Count += 1
+                $state.TotalDelayMs += $delay
+                $state.LastMs = $elapsed
+                if ($state.Count -ge $Ticks) {
+                    $timer.Stop()
+                    $form.Close()
+                }
+            })
+            [System.Windows.Forms.Application]::Run($form)
+            $samples.Add($state.TotalDelayMs / [Math]::Max(1, $state.Count))
+        } finally {
+            $timer.Dispose()
+            $form.Dispose()
+        }
+        Start-Sleep -Milliseconds 150
+    }
+    return $samples.ToArray()
+}
+
+function Measure-ForegroundIoWork {
+    param([int]$Operations, [int]$Rounds)
+    $samples = New-Object 'System.Collections.Generic.List[double]'
+    $buffer = New-Object byte[] 4096
+    for ($index = 0; $index -lt $buffer.Length; $index++) {
+        $buffer[$index] = [byte]($index % 251)
+    }
+    for ($round = 0; $round -lt $Rounds; $round++) {
+        $path = Join-Path ([IO.Path]::GetTempPath()) ("winderust-auto-balance-bench-$PID-$round.bin")
+        [GC]::Collect()
+        $stream = $null
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $stream = [IO.File]::Open($path, [IO.FileMode]::Create, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            for ($operation = 0; $operation -lt $Operations; $operation++) {
+                $stream.Write($buffer, 0, $buffer.Length)
+            }
+            $stream.Flush()
+            $stream.Position = 0
+            for ($operation = 0; $operation -lt $Operations; $operation++) {
+                if ($stream.Read($buffer, 0, $buffer.Length) -le 0) {
+                    break
+                }
+            }
+            $sw.Stop()
+            $samples.Add($sw.Elapsed.TotalMilliseconds)
+        } finally {
+            if ($null -ne $stream) {
+                $stream.Dispose()
+            }
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        }
         Start-Sleep -Milliseconds 150
     }
     return $samples.ToArray()
@@ -464,7 +611,7 @@ function New-Priorities {
 }
 
 function Test-ForegroundLaunchScenario {
-    return $ForegroundScenario -ne 'CpuLoop'
+    return $ForegroundScenario -eq 'WinderustLaunch'
 }
 
 function Run-LaunchGraceCase {
@@ -518,6 +665,13 @@ function Summarize-Samples {
     }
     if ($ForegroundScenario -eq 'CpuLoop') {
         $summary.iterations_per_sec = [Math]::Round(($Iterations / ($avg / 1000.0)), 0)
+    } elseif ($ForegroundScenario -eq 'IoLoop') {
+        $summary.foreground_iops = [Math]::Round((($IoOperations * 2) / ($avg / 1000.0)), 0)
+    } elseif ($ForegroundScenario -eq 'MessageLoop') {
+        $summary.message_loop_avg_delay_ms = [Math]::Round($avg, 2)
+        $summary.message_loop_p95_delay_ms = [Math]::Round($p95, 2)
+        $summary.message_loop_ticks = $MessageLoopTicks
+        $summary.message_loop_interval_ms = $MessageLoopIntervalMilliseconds
     } else {
         $summary.launches_per_sec = [Math]::Round((1000.0 / $avg), 2)
     }
@@ -530,6 +684,49 @@ function Get-ImprovementPercent {
         return 0.0
     }
     return [Math]::Round((($OffValue - $CaseValue) / $OffValue) * 100.0, 1)
+}
+
+function Get-DeltaMilliseconds {
+    param([double]$OffValue, [double]$CaseValue)
+    return [Math]::Round($CaseValue - $OffValue, 2)
+}
+
+function Format-DeltaWithPercent {
+    param([double]$DeltaMs, [double]$Percent)
+    $deltaSign = if ($DeltaMs -gt 0.0) { '+' } else { '' }
+    $percentSign = if ($Percent -gt 0.0) { '+' } else { '' }
+    return ('{0}{1:N2} ms ({2}{3:N1}%)' -f $deltaSign, $DeltaMs, $percentSign, $Percent)
+}
+
+function Format-CaseWithBaseline {
+    param([double]$CaseMs, [double]$OffMs, [double]$DeltaMs, [double]$Percent)
+    $deltaSign = if ($DeltaMs -gt 0.0) { '+' } else { '' }
+    $percentSign = if ($Percent -gt 0.0) { '+' } else { '' }
+    return ('{0:N2} ms vs {1:N2} ms paired Off ({2}{3:N2} ms, {4}{5:N1}%)' -f $CaseMs, $OffMs, $deltaSign, $DeltaMs, $percentSign, $Percent)
+}
+
+function Get-ResponsivenessPercent {
+    param([double]$BaselineMs, [double]$CaseMs)
+    if ($BaselineMs -le 0.0 -or $CaseMs -le 0.0) {
+        return 0.0
+    }
+    return [Math]::Round(($BaselineMs / $CaseMs) * 100.0, 1)
+}
+
+function Get-AverageProperty {
+    param($Items, [string]$Name)
+    $values = @(
+        $Items | ForEach-Object {
+            $property = $_.PSObject.Properties[$Name]
+            if ($null -ne $property) {
+                [double]$property.Value
+            }
+        }
+    )
+    if ($values.Count -eq 0) {
+        return $null
+    }
+    return [Math]::Round((Get-Average $values), 2)
 }
 
 function Run-Case {
@@ -549,6 +746,7 @@ function Run-Case {
     $assistStatus = New-AssistStatus
     $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
     $originalPriority = $currentProcess.PriorityClass
+    $originalThreadPriority = [Threading.Thread]::CurrentThread.Priority
     $originalPriorityBoost = $null
     try {
         $originalPriorityBoost = $currentProcess.PriorityBoostEnabled
@@ -564,6 +762,10 @@ function Run-Case {
         } catch {
             $assistStatus.failed_actions += 1
         }
+        Apply-ForegroundAssistControls `
+            -Process $currentProcess `
+            -AssistControls $AssistControls `
+            -AssistStatus $assistStatus
         $processes = Start-CpuWorkers `
             -Priorities $Priorities `
             -AffinitySelectedCount $AffinitySelectedCount `
@@ -586,7 +788,7 @@ function Run-Case {
         }
         $summary | Add-Member -NotePropertyName measurement_window_ms -NotePropertyValue ([Math]::Round($measurementWindow.Elapsed.TotalMilliseconds, 2))
         $summary | Add-Member -NotePropertyName background_cpu_ms -NotePropertyValue ([Math]::Round($workerCpuDeltaMs, 2))
-        $summary | Add-Member -NotePropertyName background_capacity_percent -NotePropertyValue ([Math]::Round($capacity, 1))
+        $summary | Add-Member -NotePropertyName background_throughput_percent -NotePropertyValue ([Math]::Round($capacity, 1))
         $summary | Add-Member -NotePropertyName assist_controls -NotePropertyValue $AssistControls
         $summary | Add-Member -NotePropertyName assist_status -NotePropertyValue $assistStatus
         return $summary
@@ -602,6 +804,10 @@ function Run-Case {
             } catch {
             }
         }
+        Restore-ForegroundAssistControls `
+            -Process $currentProcess `
+            -OriginalThreadPriority $originalThreadPriority `
+            -AssistControls $AssistControls
         Start-Sleep -Seconds 1
     }
 }
@@ -638,7 +844,7 @@ function Run-NamedCase {
             }
             return Run-Case `
                 -Name 'balance' `
-                -Model 'All background workers Idle; 50% affinity approximation; foreground AboveNormal; background I/O Low; memory Low; threads BelowNormal; priority boost disabled; GPU BelowNormal when available.' `
+                -Model 'All background workers Idle; 55% affinity approximation; foreground AboveNormal; background I/O Low; memory Low; threads BelowNormal; priority boost disabled; GPU BelowNormal when available.' `
                 -ForegroundPriority 'AboveNormal' `
                 -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
                 -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
@@ -658,33 +864,75 @@ function Run-NamedCase {
                 -AffinityMask $responsiveMask `
                 -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'BelowNormal')
         }
+        'danger' {
+            if (Test-ForegroundLaunchScenario) {
+                return Run-LaunchGraceCase -Name 'danger'
+            }
+            return Run-Case `
+                -Name 'danger' `
+                -Model 'All background workers Idle; 10% affinity approximation; foreground AboveNormal; foreground I/O High; foreground thread Highest; foreground GPU High when available; background I/O VeryLow; memory VeryLow; threads Idle; priority boost disabled; GPU Idle when available.' `
+                -ForegroundPriority 'AboveNormal' `
+                -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
+                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                -AffinityMask $dangerMask `
+                -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -ForegroundThreadPriority 'Highest' -ForegroundIoPriority 'High' -ForegroundGpuPriority 'High' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'Idle' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'Idle')
+        }
     }
 }
 
 function New-Comparison {
     param($Off, $Case)
-    $backgroundRetained = if ($Off.background_capacity_percent -gt 0.0) {
-        ($Case.background_capacity_percent / $Off.background_capacity_percent) * 100.0
+    $backgroundRetained = if ($Off.background_throughput_percent -gt 0.0) {
+        ($Case.background_throughput_percent / $Off.background_throughput_percent) * 100.0
     } else {
         0.0
     }
+    $avgDelta = Get-DeltaMilliseconds -OffValue $Off.avg_ms -CaseValue $Case.avg_ms
+    $medianDelta = Get-DeltaMilliseconds -OffValue $Off.median_ms -CaseValue $Case.median_ms
+    $p95Delta = Get-DeltaMilliseconds -OffValue $Off.p95_ms -CaseValue $Case.p95_ms
+    $jitterDelta = Get-DeltaMilliseconds -OffValue $Off.stddev_ms -CaseValue $Case.stddev_ms
+    $avgPercent = Get-ImprovementPercent -OffValue $Off.avg_ms -CaseValue $Case.avg_ms
+    $medianPercent = Get-ImprovementPercent -OffValue $Off.median_ms -CaseValue $Case.median_ms
+    $p95Percent = Get-ImprovementPercent -OffValue $Off.p95_ms -CaseValue $Case.p95_ms
+    $jitterPercent = Get-ImprovementPercent -OffValue $Off.stddev_ms -CaseValue $Case.stddev_ms
     [pscustomobject]@{
         name = $Case.name
-        avg_improvement_percent_vs_off = Get-ImprovementPercent -OffValue $Off.avg_ms -CaseValue $Case.avg_ms
-        median_improvement_percent_vs_off = Get-ImprovementPercent -OffValue $Off.median_ms -CaseValue $Case.median_ms
-        p95_improvement_percent_vs_off = Get-ImprovementPercent -OffValue $Off.p95_ms -CaseValue $Case.p95_ms
-        jitter_improvement_percent_vs_off = Get-ImprovementPercent -OffValue $Off.stddev_ms -CaseValue $Case.stddev_ms
-        background_capacity_percent = $Case.background_capacity_percent
-        background_retained_percent_vs_off = [Math]::Round($backgroundRetained, 1)
+        avg_vs_off = Format-CaseWithBaseline -CaseMs $Case.avg_ms -OffMs $Off.avg_ms -DeltaMs $avgDelta -Percent $avgPercent
+        avg_off_ms = $Off.avg_ms
+        avg_case_ms = $Case.avg_ms
+        avg_delta_vs_off = Format-DeltaWithPercent -DeltaMs $avgDelta -Percent $avgPercent
+        avg_delta_ms_vs_off = $avgDelta
+        avg_improvement_percent_vs_off = $avgPercent
+        median_vs_off = Format-CaseWithBaseline -CaseMs $Case.median_ms -OffMs $Off.median_ms -DeltaMs $medianDelta -Percent $medianPercent
+        median_off_ms = $Off.median_ms
+        median_case_ms = $Case.median_ms
+        median_delta_vs_off = Format-DeltaWithPercent -DeltaMs $medianDelta -Percent $medianPercent
+        median_delta_ms_vs_off = $medianDelta
+        median_improvement_percent_vs_off = $medianPercent
+        p95_vs_off = Format-CaseWithBaseline -CaseMs $Case.p95_ms -OffMs $Off.p95_ms -DeltaMs $p95Delta -Percent $p95Percent
+        p95_off_ms = $Off.p95_ms
+        p95_case_ms = $Case.p95_ms
+        p95_delta_vs_off = Format-DeltaWithPercent -DeltaMs $p95Delta -Percent $p95Percent
+        p95_delta_ms_vs_off = $p95Delta
+        p95_improvement_percent_vs_off = $p95Percent
+        jitter_vs_off = Format-CaseWithBaseline -CaseMs $Case.stddev_ms -OffMs $Off.stddev_ms -DeltaMs $jitterDelta -Percent $jitterPercent
+        jitter_off_ms = $Off.stddev_ms
+        jitter_case_ms = $Case.stddev_ms
+        jitter_delta_vs_off = Format-DeltaWithPercent -DeltaMs $jitterDelta -Percent $jitterPercent
+        jitter_delta_ms_vs_off = $jitterDelta
+        jitter_improvement_percent_vs_off = $jitterPercent
+        background_throughput_percent = $Case.background_throughput_percent
+        background_throughput_retained_percent_vs_off = [Math]::Round($backgroundRetained, 1)
     }
 }
 
 function Run-Pass {
     param([int]$Pass)
     $presetOrders = @(
-        @('gentle', 'balance', 'responsive'),
-        @('responsive', 'balance', 'gentle'),
-        @('balance', 'gentle', 'responsive')
+        @('gentle', 'balance', 'responsive', 'danger'),
+        @('danger', 'responsive', 'balance', 'gentle'),
+        @('balance', 'danger', 'gentle', 'responsive'),
+        @('responsive', 'gentle', 'danger', 'balance')
     )
     $presetOrder = $presetOrders[($Pass - 1) % $presetOrders.Count]
     $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
@@ -740,46 +988,98 @@ function Run-Pass {
 
 function Summarize-Method {
     param($Runs)
-    foreach ($name in @('gentle', 'balance', 'responsive')) {
+    $baselineRows = @($Runs | ForEach-Object { $_.baseline })
+    $baselineAvg = Get-AverageProperty -Items $baselineRows -Name 'avg_ms'
+    $baselineMedian = Get-AverageProperty -Items $baselineRows -Name 'median_ms'
+    $baselineP95 = Get-AverageProperty -Items $baselineRows -Name 'p95_ms'
+    $offRows = @($Runs | ForEach-Object { $_.pairs } | ForEach-Object { $_.off })
+    $offAvg = Get-AverageProperty -Items $offRows -Name 'avg_ms'
+    $offMedian = Get-AverageProperty -Items $offRows -Name 'median_ms'
+    $offP95 = Get-AverageProperty -Items $offRows -Name 'p95_ms'
+    [pscustomobject]@{
+        name = 'off'
+        passes = $offRows.Count
+        foreground_latency_avg_ms = $offAvg
+        foreground_latency_median_avg_ms = $offMedian
+        foreground_latency_p95_avg_ms = $offP95
+        system_average_responsiveness_percent = Get-ResponsivenessPercent -BaselineMs $baselineAvg -CaseMs $offAvg
+        no_background_avg_ms = $baselineAvg
+        no_background_median_ms = $baselineMedian
+        no_background_p95_ms = $baselineP95
+        foreground_iterations_per_sec_avg = Get-AverageProperty -Items $offRows -Name 'iterations_per_sec'
+        foreground_iops_avg = Get-AverageProperty -Items $offRows -Name 'foreground_iops'
+        message_loop_avg_delay_ms_avg = Get-AverageProperty -Items $offRows -Name 'message_loop_avg_delay_ms'
+        message_loop_p95_delay_ms_avg = Get-AverageProperty -Items $offRows -Name 'message_loop_p95_delay_ms'
+        background_throughput_retained_avg_percent = 100.0
+        background_throughput_retained_min_percent = 100.0
+        repeat_passes_won = 'baseline'
+        repeat_pass_win_count = $null
+        repeat_pass_count = $null
+        repeat_pass_win_rate_percent = $null
+    }
+    foreach ($name in @('gentle', 'balance', 'responsive', 'danger')) {
         $comparisons = @()
+        $caseRows = @()
         foreach ($run in $Runs) {
             $comparisons += @($run.comparisons_vs_off | Where-Object { $_.name -eq $name })
+            $caseRows += @($run.presets | Where-Object { $_.name -eq $name })
         }
         $medianValues = @($comparisons | ForEach-Object { [double]$_.median_improvement_percent_vs_off })
         $p95Values = @($comparisons | ForEach-Object { [double]$_.p95_improvement_percent_vs_off })
-        $backgroundRetainedValues = @($comparisons | ForEach-Object { [double]$_.background_retained_percent_vs_off })
+        $medianOffValues = @($comparisons | ForEach-Object { [double]$_.median_off_ms })
+        $medianCaseValues = @($comparisons | ForEach-Object { [double]$_.median_case_ms })
+        $p95OffValues = @($comparisons | ForEach-Object { [double]$_.p95_off_ms })
+        $p95CaseValues = @($comparisons | ForEach-Object { [double]$_.p95_case_ms })
+        $medianDeltaValues = @($comparisons | ForEach-Object { [double]$_.median_delta_ms_vs_off })
+        $p95DeltaValues = @($comparisons | ForEach-Object { [double]$_.p95_delta_ms_vs_off })
+        $backgroundRetainedValues = @($comparisons | ForEach-Object { [double]$_.background_throughput_retained_percent_vs_off })
         $medianAvg = Get-Average $medianValues
         $p95Avg = Get-Average $p95Values
+        $medianOffAvg = Get-Average $medianOffValues
+        $medianCaseAvg = Get-Average $medianCaseValues
+        $p95OffAvg = Get-Average $p95OffValues
+        $p95CaseAvg = Get-Average $p95CaseValues
+        $medianDeltaAvg = Get-Average $medianDeltaValues
+        $p95DeltaAvg = Get-Average $p95DeltaValues
         $backgroundRetainedAvg = Get-Average $backgroundRetainedValues
-        $medianWins = @($medianValues | Where-Object { $_ -ge 3.0 }).Count
-        $p95Wins = @($p95Values | Where-Object { $_ -ge 3.0 }).Count
-        $agreement = [Math]::Round(([Math]::Min($medianWins, $p95Wins) / $comparisons.Count) * 100.0, 1)
-        $tradeoff = if ($backgroundRetainedAvg -ge 90.0) {
-            'low'
-        } elseif ($backgroundRetainedAvg -ge 60.0) {
-            'moderate'
-        } else {
-            'high'
-        }
-        $signal = if ($agreement -eq 100.0 -and $medianAvg -ge 5.0 -and $p95Avg -ge 5.0) {
-            'strong'
-        } elseif ($agreement -ge 66.0 -and $medianAvg -gt 0.0 -and $p95Avg -gt 0.0) {
-            'usable'
-        } else {
-            'noisy'
-        }
+        $repeatWins = @(
+            $comparisons | Where-Object {
+                $_.median_improvement_percent_vs_off -ge 3.0 -and
+                $_.p95_improvement_percent_vs_off -ge 3.0
+            }
+        ).Count
+        $repeatWinRate = [Math]::Round(($repeatWins / $comparisons.Count) * 100.0, 1)
         [pscustomobject]@{
             name = $name
             passes = $comparisons.Count
+            foreground_latency_avg_ms = Get-AverageProperty -Items $caseRows -Name 'avg_ms'
+            foreground_latency_median_avg_ms = [Math]::Round($medianCaseAvg, 2)
+            foreground_latency_p95_avg_ms = [Math]::Round($p95CaseAvg, 2)
+            system_average_responsiveness_percent = Get-ResponsivenessPercent -BaselineMs $baselineAvg -CaseMs (Get-AverageProperty -Items $caseRows -Name 'avg_ms')
+            foreground_iterations_per_sec_avg = Get-AverageProperty -Items $caseRows -Name 'iterations_per_sec'
+            foreground_iops_avg = Get-AverageProperty -Items $caseRows -Name 'foreground_iops'
+            message_loop_avg_delay_ms_avg = Get-AverageProperty -Items $caseRows -Name 'message_loop_avg_delay_ms'
+            message_loop_p95_delay_ms_avg = Get-AverageProperty -Items $caseRows -Name 'message_loop_p95_delay_ms'
+            median_vs_off_avg = Format-CaseWithBaseline -CaseMs $medianCaseAvg -OffMs $medianOffAvg -DeltaMs $medianDeltaAvg -Percent $medianAvg
+            median_off_avg_ms = [Math]::Round($medianOffAvg, 2)
+            median_case_avg_ms = [Math]::Round($medianCaseAvg, 2)
+            median_improvement_avg = Format-DeltaWithPercent -DeltaMs $medianDeltaAvg -Percent $medianAvg
+            median_delta_avg_ms_vs_off = [Math]::Round($medianDeltaAvg, 2)
             median_improvement_avg_percent = [Math]::Round($medianAvg, 1)
             median_improvement_min_percent = [Math]::Round(($medianValues | Measure-Object -Minimum).Minimum, 1)
+            p95_vs_off_avg = Format-CaseWithBaseline -CaseMs $p95CaseAvg -OffMs $p95OffAvg -DeltaMs $p95DeltaAvg -Percent $p95Avg
+            p95_off_avg_ms = [Math]::Round($p95OffAvg, 2)
+            p95_case_avg_ms = [Math]::Round($p95CaseAvg, 2)
+            p95_improvement_avg = Format-DeltaWithPercent -DeltaMs $p95DeltaAvg -Percent $p95Avg
+            p95_delta_avg_ms_vs_off = [Math]::Round($p95DeltaAvg, 2)
             p95_improvement_avg_percent = [Math]::Round($p95Avg, 1)
             p95_improvement_min_percent = [Math]::Round(($p95Values | Measure-Object -Minimum).Minimum, 1)
-            background_retained_avg_percent = [Math]::Round($backgroundRetainedAvg, 1)
-            background_retained_min_percent = [Math]::Round(($backgroundRetainedValues | Measure-Object -Minimum).Minimum, 1)
-            background_tradeoff = $tradeoff
-            agreement_percent = $agreement
-            signal = $signal
+            background_throughput_retained_avg_percent = [Math]::Round($backgroundRetainedAvg, 1)
+            background_throughput_retained_min_percent = [Math]::Round(($backgroundRetainedValues | Measure-Object -Minimum).Minimum, 1)
+            repeat_passes_won = "$repeatWins/$($comparisons.Count)"
+            repeat_pass_win_count = $repeatWins
+            repeat_pass_count = $comparisons.Count
+            repeat_pass_win_rate_percent = $repeatWinRate
         }
     }
 }
@@ -789,6 +1089,9 @@ $assistCoverage = [pscustomobject][ordered]@{
     foreground_process_priority = 'applied to the benchmark process'
     affinity = 'applied as hard affinity; stricter than Winderust Soft CPU Sets'
     foreground_priority_boost = 'applied to the benchmark process when preset enables it'
+    foreground_thread_priority = 'applied to the benchmark thread when preset enables it'
+    foreground_io_priority = 'applied to the benchmark process when preset enables it; CPU loop has minimal I/O'
+    foreground_gpu_priority = 'attempted on the benchmark process when preset enables it; CPU loop may report no GPU context'
     background_priority_boost = 'applied to generated background workers when preset enables it'
     thread_priority = 'applied to existing generated worker threads when preset enables it'
     memory_priority = 'applied to generated background workers when preset enables it'
@@ -813,7 +1116,11 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     gentle_affinity_limited_processors = $gentleCoreCount
     balance_affinity_limited_processors = $balanceCoreCount
     foreground_iterations_per_round = $Iterations
+    foreground_io_operations_per_round = $IoOperations * 2
+    foreground_message_loop_ticks_per_round = $MessageLoopTicks
+    foreground_message_loop_interval_ms = $MessageLoopIntervalMilliseconds
     responsive_affinity_limited_processors = $responsiveCoreCount
+    danger_affinity_limited_processors = $dangerCoreCount
     assist_coverage = $assistCoverage
     methodology_gate = 'Trust a local tuning direction only when median and p95 both improve by at least 3% in at least two of three passes.'
     runs = $runs

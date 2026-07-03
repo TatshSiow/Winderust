@@ -655,6 +655,8 @@ pub struct ForegroundResponsivenessSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub lower_background_apps: bool,
+    #[serde(default = "default_true")]
+    pub auto_balance_efficiency_mode_enabled: bool,
     #[serde(default = "default_auto_balance_background_priority")]
     pub auto_balance_background_priority: ProcessPriority,
     #[serde(default)]
@@ -1872,6 +1874,7 @@ impl Default for ForegroundResponsivenessSettings {
         Self {
             enabled: false,
             lower_background_apps: default_true(),
+            auto_balance_efficiency_mode_enabled: default_true(),
             auto_balance_background_priority: default_auto_balance_background_priority(),
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,

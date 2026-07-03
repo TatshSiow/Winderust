@@ -8058,43 +8058,47 @@ impl WinderustApp {
                 }),
             )
         };
+        let auto_efficiency_available = !self.settings.eco_qos.enabled;
+        let auto_efficiency_controls_enabled =
+            enabled && auto_efficiency_available && settings.auto_balance_efficiency_mode_enabled;
         let efficiency_action = if self.settings.eco_qos.enabled {
             value_pill(t!("responsiveness.background_efficiency_handled").to_string())
                 .into_any_element()
         } else {
-            div().into_any_element()
-        };
-        let affinity_mode_control = if settings.lower_background_auto_cpu_percent {
-            value_pill(format!(
-                "{} ({})",
-                efficiency_cpu_restriction_mode_label(EcoQosCpuRestrictionMode::SoftCpuSets),
-                t!("responsiveness.priority_auto")
-            ))
-            .into_any_element()
-        } else {
-            self.render_auto_balance_affinity_mode_selector(window, cx)
+            setting_group_switch_action(
+                "responsiveness-auto-efficiency-switch",
+                settings.auto_balance_efficiency_mode_enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings
+                        .foreground_responsiveness
+                        .auto_balance_efficiency_mode_enabled = *checked;
+                    cx.notify();
+                }),
+            )
         };
         let mut affinity_rows = vec![
             setting_group_action_row(
-                "responsiveness-auto-affinity-mode",
-                t!("responsiveness.auto_balance_affinity_mode").to_string(),
-                affinity_mode_control,
+                "responsiveness-auto-escalation-tuning",
+                t!("responsiveness.auto_balance_escalation_tuning").to_string(),
+                self.render_auto_balance_escalation_tuning_selector(window, cx),
                 true,
             )
             .into_any_element(),
             setting_group_action_row(
-                "responsiveness-auto-cpu-share-mode",
-                t!("responsiveness.dynamic_cpu_share").to_string(),
-                setting_group_switch_action(
-                    "responsiveness-auto-cpu-share-mode-switch",
-                    settings.lower_background_auto_cpu_percent,
-                    cx.listener(|app, checked, _, cx| {
-                        app.settings
-                            .foreground_responsiveness
-                            .lower_background_auto_cpu_percent = *checked;
-                        cx.notify();
-                    }),
-                ),
+                "responsiveness-auto-affinity-mode",
+                t!("responsiveness.auto_balance_affinity_mode").to_string(),
+                if settings.lower_background_auto_cpu_percent {
+                    value_pill(format!(
+                        "{} ({})",
+                        efficiency_cpu_restriction_mode_label(
+                            EcoQosCpuRestrictionMode::SoftCpuSets
+                        ),
+                        t!("responsiveness.priority_auto")
+                    ))
+                    .into_any_element()
+                } else {
+                    self.render_auto_balance_affinity_mode_selector(window, cx)
+                },
                 true,
             )
             .into_any_element(),
@@ -8202,17 +8206,21 @@ impl WinderustApp {
                 ),
                 efficiency_action,
                 self.is_setting_group_collapsed(SettingGroupTarget::AutoBalanceEfficiency),
-                vec![setting_group_action_row(
+                vec![setting_group_action_row_with_help(
                     "responsiveness-auto-efficiency-level",
                     t!("responsiveness.auto_efficiency_level").to_string(),
+                    t!("responsiveness.auto_efficiency_level_help").to_string(),
                     self.render_efficiency_aggressiveness_picker(
                         self.settings.eco_qos.aggressiveness,
-                        enabled,
+                        auto_efficiency_controls_enabled,
                         window,
                         cx,
                     ),
                     true,
                 )
+                .when(!auto_efficiency_controls_enabled, |row| {
+                    row.opacity(0.42).cursor_default()
+                })
                 .into_any_element()],
                 window,
                 cx,
@@ -9100,6 +9108,49 @@ impl WinderustApp {
                             app.settings
                                 .foreground_responsiveness
                                 .auto_balance_background_priority = priority;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_auto_balance_escalation_tuning_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected_auto = self
+            .settings
+            .foreground_responsiveness
+            .lower_background_auto_cpu_percent;
+        self.render_dropdown_select(
+            "responsiveness-auto-escalation-tuning",
+            auto_balance_escalation_tuning_label(selected_auto),
+            true,
+            DropdownSelectWidth::Standard,
+            2,
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for auto in [true, false] {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "responsiveness-auto-escalation-tuning-option-{auto}"
+                            )),
+                            auto_balance_escalation_tuning_label(auto),
+                            selected_auto == auto,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings
+                                .foreground_responsiveness
+                                .lower_background_auto_cpu_percent = auto;
                             app.active_power_plan_picker = None;
                             cx.notify();
                         })),
@@ -15310,6 +15361,7 @@ enum AutoBalancePreset {
     Gentle,
     Balanced,
     Responsive,
+    Danger,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15318,10 +15370,11 @@ enum AutoBalanceBehavior {
 }
 
 impl AutoBalanceBehavior {
-    const ALL: [Self; 3] = [
+    const ALL: [Self; 4] = [
         Self::Preset(AutoBalancePreset::Balanced),
         Self::Preset(AutoBalancePreset::Gentle),
         Self::Preset(AutoBalancePreset::Responsive),
+        Self::Preset(AutoBalancePreset::Danger),
     ];
 }
 
@@ -24294,12 +24347,21 @@ fn auto_balance_preset_label(preset: AutoBalancePreset) -> String {
         AutoBalancePreset::Gentle => t!("responsiveness.preset_gentle").to_string(),
         AutoBalancePreset::Balanced => t!("responsiveness.preset_balanced").to_string(),
         AutoBalancePreset::Responsive => t!("responsiveness.preset_responsive").to_string(),
+        AutoBalancePreset::Danger => t!("responsiveness.preset_danger").to_string(),
     }
 }
 
 fn auto_balance_behavior_label(behavior: AutoBalanceBehavior) -> String {
     match behavior {
         AutoBalanceBehavior::Preset(preset) => auto_balance_preset_label(preset),
+    }
+}
+
+fn auto_balance_escalation_tuning_label(auto: bool) -> String {
+    if auto {
+        t!("responsiveness.priority_auto").to_string()
+    } else {
+        t!("responsiveness.priority_manual").to_string()
     }
 }
 
@@ -24330,6 +24392,12 @@ fn begin_auto_balance_preset_control_motions(
                 cx,
             );
             begin_control_motion_if_changed(
+                "switch-responsiveness-auto-efficiency-switch",
+                settings.auto_balance_efficiency_mode_enabled,
+                values.auto_balance_efficiency_mode_enabled,
+                cx,
+            );
+            begin_control_motion_if_changed(
                 "switch-responsiveness-auto-io-enabled-switch",
                 settings.auto_balance_io_priority.enabled,
                 values.lower_background_io_priority_enabled,
@@ -24357,12 +24425,6 @@ fn begin_auto_balance_preset_control_motions(
                 "switch-responsiveness-auto-affinity-escalation-switch",
                 settings.auto_balance_affinity_escalation_enabled,
                 values.auto_balance_affinity_escalation_enabled,
-                cx,
-            );
-            begin_control_motion_if_changed(
-                "switch-responsiveness-auto-cpu-share-mode-switch",
-                settings.lower_background_auto_cpu_percent,
-                values.lower_background_auto_cpu_percent,
                 cx,
             );
             begin_control_motion_if_changed(
@@ -24398,6 +24460,7 @@ fn apply_auto_balance_preset(
 ) {
     let values = auto_balance_preset_values(preset);
     settings.lower_background_apps = values.lower_background_apps;
+    settings.auto_balance_efficiency_mode_enabled = values.auto_balance_efficiency_mode_enabled;
     settings.auto_balance_background_priority = values.background_priority;
     settings.lower_background_io_priority_enabled = values.lower_background_io_priority_enabled;
     settings.lower_background_io_priority = values.lower_background_io_priority;
@@ -24444,6 +24507,8 @@ fn auto_balance_matches_preset(
     gpu_priority.preserve_foreground_priority = true;
     gpu_priority.preserve_background_priority = true;
     settings.lower_background_apps == values.lower_background_apps
+        && settings.auto_balance_efficiency_mode_enabled
+            == values.auto_balance_efficiency_mode_enabled
         && settings.auto_balance_background_priority == values.background_priority
         && settings.lower_background_io_priority_enabled
             == values.lower_background_io_priority_enabled
@@ -24475,7 +24540,9 @@ fn auto_balance_matches_preset(
 #[derive(Clone, Copy)]
 struct AutoBalancePresetValues {
     lower_background_apps: bool,
+    auto_balance_efficiency_mode_enabled: bool,
     background_priority: ProcessPriority,
+    foreground_io_priority: ProcessIoPrioritySetting,
     lower_background_io_priority_enabled: bool,
     lower_background_io_priority: ProcessIoPriority,
     auto_balance_memory_priority_enabled: bool,
@@ -24499,7 +24566,9 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
     match preset {
         AutoBalancePreset::Gentle => AutoBalancePresetValues {
             lower_background_apps: true,
+            auto_balance_efficiency_mode_enabled: true,
             background_priority: ProcessPriority::Idle,
+            foreground_io_priority: ProcessIoPrioritySetting::Normal,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::Low,
             auto_balance_memory_priority_enabled: false,
@@ -24520,7 +24589,9 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
         },
         AutoBalancePreset::Balanced => AutoBalancePresetValues {
             lower_background_apps: true,
+            auto_balance_efficiency_mode_enabled: true,
             background_priority: ProcessPriority::Idle,
+            foreground_io_priority: ProcessIoPrioritySetting::Normal,
             lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::Low,
             auto_balance_memory_priority_enabled: true,
@@ -24530,7 +24601,7 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
             lower_background_auto_cpu_percent: false,
-            manual_cpu_percent: 50,
+            manual_cpu_percent: 55,
             total_threshold: 60,
             process_threshold: 12,
             restore_threshold: 6,
@@ -24541,7 +24612,9 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
         },
         AutoBalancePreset::Responsive => AutoBalancePresetValues {
             lower_background_apps: true,
+            auto_balance_efficiency_mode_enabled: true,
             background_priority: ProcessPriority::Idle,
+            foreground_io_priority: ProcessIoPrioritySetting::Normal,
             lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             auto_balance_memory_priority_enabled: true,
@@ -24560,6 +24633,29 @@ fn auto_balance_preset_values(preset: AutoBalancePreset) -> AutoBalancePresetVal
             cooldown_seconds: 6,
             max_targeted_processes: 12,
         },
+        AutoBalancePreset::Danger => AutoBalancePresetValues {
+            lower_background_apps: true,
+            auto_balance_efficiency_mode_enabled: true,
+            background_priority: ProcessPriority::Idle,
+            foreground_io_priority: ProcessIoPrioritySetting::High,
+            lower_background_io_priority_enabled: true,
+            lower_background_io_priority: ProcessIoPriority::VeryLow,
+            auto_balance_memory_priority_enabled: true,
+            auto_balance_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
+            auto_balance_memory_priority: ProcessMemoryPriority::VeryLow,
+            auto_balance_affinity_escalation_enabled: true,
+            boost_foreground_app: true,
+            foreground_boost: ForegroundBoostPriority::AboveNormal,
+            lower_background_auto_cpu_percent: false,
+            manual_cpu_percent: 10,
+            total_threshold: 35,
+            process_threshold: 4,
+            restore_threshold: 2,
+            sustain_seconds: 1,
+            minimum_restraint_seconds: 5,
+            cooldown_seconds: 8,
+            max_targeted_processes: 12,
+        },
     }
 }
 
@@ -24567,7 +24663,7 @@ fn auto_balance_io_priority_preset_values(values: AutoBalancePresetValues) -> Io
     IoPrioritySettings {
         enabled: values.lower_background_io_priority_enabled,
         foreground_detection_enabled: true,
-        foreground_priority: ProcessIoPrioritySetting::Normal,
+        foreground_priority: values.foreground_io_priority,
         background_priority: values.lower_background_io_priority.into(),
         preserve_foreground_priority: true,
         preserve_background_priority: true,
@@ -24579,8 +24675,16 @@ fn auto_balance_thread_priority_preset_values(preset: AutoBalancePreset) -> Thre
     ThreadPrioritySettings {
         enabled: preset != AutoBalancePreset::Gentle,
         foreground_detection_enabled: true,
-        foreground_priority: ProcessThreadPrioritySetting::Default,
-        background_priority: ProcessThreadPrioritySetting::BelowNormal,
+        foreground_priority: if preset == AutoBalancePreset::Danger {
+            ProcessThreadPrioritySetting::Highest
+        } else {
+            ProcessThreadPrioritySetting::Default
+        },
+        background_priority: if preset == AutoBalancePreset::Danger {
+            ProcessThreadPrioritySetting::Idle
+        } else {
+            ProcessThreadPrioritySetting::BelowNormal
+        },
         preserve_foreground_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
@@ -24601,8 +24705,16 @@ fn auto_balance_gpu_priority_preset_values(preset: AutoBalancePreset) -> GpuPrio
     GpuPrioritySettings {
         enabled: preset != AutoBalancePreset::Gentle,
         foreground_detection_enabled: true,
-        foreground_priority: ProcessGpuPrioritySetting::Default,
-        background_priority: ProcessGpuPrioritySetting::BelowNormal,
+        foreground_priority: if preset == AutoBalancePreset::Danger {
+            ProcessGpuPrioritySetting::High
+        } else {
+            ProcessGpuPrioritySetting::Default
+        },
+        background_priority: if preset == AutoBalancePreset::Danger {
+            ProcessGpuPrioritySetting::Idle
+        } else {
+            ProcessGpuPrioritySetting::BelowNormal
+        },
         preserve_foreground_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
@@ -25010,10 +25122,16 @@ mod tests {
         let gentle = auto_balance_preset_values(AutoBalancePreset::Gentle);
         let balanced = auto_balance_preset_values(AutoBalancePreset::Balanced);
         let responsive = auto_balance_preset_values(AutoBalancePreset::Responsive);
+        let danger = auto_balance_preset_values(AutoBalancePreset::Danger);
 
         assert_eq!(gentle.background_priority, ProcessPriority::Idle);
         assert_eq!(balanced.background_priority, ProcessPriority::Idle);
         assert_eq!(responsive.background_priority, ProcessPriority::Idle);
+        assert_eq!(danger.background_priority, ProcessPriority::Idle);
+        assert!(gentle.auto_balance_efficiency_mode_enabled);
+        assert!(balanced.auto_balance_efficiency_mode_enabled);
+        assert!(responsive.auto_balance_efficiency_mode_enabled);
+        assert!(danger.auto_balance_efficiency_mode_enabled);
         assert_eq!(
             balanced.auto_balance_foreground_memory_priority,
             ProcessMemoryPrioritySetting::Normal
@@ -25021,16 +25139,43 @@ mod tests {
         assert_eq!(gentle.max_targeted_processes, 12);
         assert_eq!(balanced.max_targeted_processes, 12);
         assert_eq!(responsive.max_targeted_processes, 12);
+        assert_eq!(danger.max_targeted_processes, 12);
         assert!(gentle.auto_balance_affinity_escalation_enabled);
         assert!(balanced.auto_balance_affinity_escalation_enabled);
         assert!(responsive.auto_balance_affinity_escalation_enabled);
+        assert!(danger.auto_balance_affinity_escalation_enabled);
         assert!(gentle.total_threshold > balanced.total_threshold);
         assert!(balanced.total_threshold > responsive.total_threshold);
+        assert!(responsive.total_threshold > danger.total_threshold);
         assert!(gentle.process_threshold > balanced.process_threshold);
         assert!(balanced.process_threshold > responsive.process_threshold);
+        assert!(responsive.process_threshold > danger.process_threshold);
         assert_eq!(gentle.manual_cpu_percent, 60);
-        assert_eq!(balanced.manual_cpu_percent, 50);
+        assert_eq!(balanced.manual_cpu_percent, 55);
         assert_eq!(responsive.manual_cpu_percent, 16);
+        assert_eq!(danger.manual_cpu_percent, 10);
+        assert_eq!(
+            danger.foreground_io_priority,
+            ProcessIoPrioritySetting::High
+        );
+        assert_eq!(
+            auto_balance_thread_priority_preset_values(AutoBalancePreset::Danger)
+                .foreground_priority,
+            ProcessThreadPrioritySetting::Highest
+        );
+        assert_eq!(
+            auto_balance_thread_priority_preset_values(AutoBalancePreset::Danger)
+                .background_priority,
+            ProcessThreadPrioritySetting::Idle
+        );
+        assert_eq!(
+            auto_balance_gpu_priority_preset_values(AutoBalancePreset::Danger).foreground_priority,
+            ProcessGpuPrioritySetting::High
+        );
+        assert_eq!(
+            auto_balance_gpu_priority_preset_values(AutoBalancePreset::Danger).background_priority,
+            ProcessGpuPrioritySetting::Idle
+        );
     }
 
     #[test]

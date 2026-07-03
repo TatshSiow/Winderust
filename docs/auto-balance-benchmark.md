@@ -9,15 +9,19 @@ The default benchmark measures foreground CPU work completion time while
 temporary background CPU workers compete for scheduler time. Lower milliseconds
 are better.
 
-The optional `TaskManagerLaunch` foreground scenario measures Task Manager
-launch-to-window time under the same generated background load. Close any
-visible Task Manager window before running it. If Windows keeps a hidden
-resident `Taskmgr` process alive, the script measures reopen-to-window time.
+The optional `IoLoop` foreground scenario measures foreground temp-file
+read/write completion time and reports foreground IOPS under the same generated
+background CPU load. It is useful for checking I/O priority direction, not for
+rating storage hardware.
+
+The optional `MessageLoop` foreground scenario measures hidden WinForms timer
+delay under the same generated background load. It is useful for checking
+foreground UI/message-pump responsiveness, not raw CPU throughput.
 
 The optional `WinderustLaunch` foreground scenario measures launching this app
 under the same generated background load. It refuses to run while Winderust is
 already open, then closes only the instance it started for each sample. This is
-a better normal-user proxy than Task Manager when checking app startup behavior.
+the normal-user launch proxy when checking app startup behavior.
 
 It is not a full Winderust automation benchmark. It does not launch the app or
 exercise the real automation loop. It models the preset scheduler effects with:
@@ -25,6 +29,9 @@ exercise the real automation loop. It models the preset scheduler effects with:
 - process priority,
 - foreground process priority,
 - foreground and background dynamic priority boost,
+- foreground thread priority,
+- foreground I/O priority,
+- foreground GPU priority attempts,
 - background thread priority,
 - background memory priority,
 - background I/O priority,
@@ -35,9 +42,9 @@ exercise the real automation loop. It models the preset scheduler effects with:
 PowerShell hard affinity is stricter than Winderust Soft CPU Sets, so affinity
 results should be treated as directional, not exact.
 
-The foreground loop is still CPU-bound. I/O, memory, and GPU controls are applied
-to the generated background workers where Windows accepts them, but the workload
-does not include a dedicated disk, memory-pressure, or GPU-rendering phase.
+The default foreground loop is CPU-bound. I/O and GPU controls are applied where
+Windows accepts them, but the default workload does not include a dedicated
+disk, memory-pressure, message-pump, or GPU-rendering phase.
 
 ## Hardware Scope
 
@@ -76,8 +83,9 @@ Keep this in sync with `auto_balance_preset_values` in `src/app.rs`.
 | --- | --- |
 | Off | 12 background workers at `Normal`; foreground benchmark process at `Normal`. |
 | Gentle | All background workers at `Idle`; first 12 targets affinity-limited to 60% logical processors; foreground at `AboveNormal`; extra I/O, memory, thread, priority-boost, and GPU assists disabled. |
-| Balance | All background workers at `Idle`; first 12 targets affinity-limited to 50% logical processors; foreground at `AboveNormal`; foreground priority boost enabled; background priority boost disabled; background threads `BelowNormal`; background memory `Low`; background I/O `Low`; background GPU `BelowNormal` when available. |
+| Balance | All background workers at `Idle`; first 12 targets affinity-limited to 55% logical processors; foreground at `AboveNormal`; foreground priority boost enabled; background priority boost disabled; background threads `BelowNormal`; background memory `Low`; background I/O `Low`; background GPU `BelowNormal` when available. |
 | Responsive | All background workers at `Idle`; first 12 targets affinity-limited to 16% logical processors; foreground at `AboveNormal`; foreground priority boost enabled; background priority boost disabled; background threads `BelowNormal`; background memory `VeryLow`; background I/O `VeryLow`; background GPU `BelowNormal` when available. |
+| Danger | All background workers at `Idle`; first 12 targets affinity-limited to 10% logical processors; foreground at `AboveNormal`; foreground I/O `High`; foreground threads `Highest`; foreground GPU `High`; background priority boost disabled; background threads `Idle`; background memory `VeryLow`; background I/O `VeryLow`; background GPU `Idle` when available. |
 
 For launch foreground scenarios, preset cases intentionally use launch grace:
 foreground launch priority is raised to `AboveNormal`, while background
@@ -97,8 +105,6 @@ For cleaner benchmark results:
 - Plug in AC power.
 - Close browsers, game launchers, update tools, and other background work.
 - Avoid moving windows or using the machine during the run.
-- Close any visible Task Manager window before using
-  `-ForegroundScenario TaskManagerLaunch`.
 - Close Winderust before using `-ForegroundScenario WinderustLaunch`.
 - Run the benchmark at least twice if results are surprising.
 
@@ -114,10 +120,16 @@ Preferred repeat-loop command:
 .\scripts\auto_balance_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
-Task Manager launch scenario:
+Foreground file-I/O scenario:
 
 ```powershell
-.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario TaskManagerLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario IoLoop -Passes 3 -Rounds 5 -IoOperations 2000
+```
+
+Foreground message-loop scenario:
+
+```powershell
+.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 3 -Rounds 5 -MessageLoopTicks 200
 ```
 
 Winderust launch scenario:
@@ -135,10 +147,12 @@ worse, the change is not validated; it probably only moved the average.
 
 The script rotates case order between passes to reduce order and thermal bias.
 Each preset is compared with its own adjacent Off run, and the pair order flips
-between passes. The JSON includes `assist_controls`, `assist_status`, and
-`assist_coverage` so a report can show which OS controls were applied and where
-the synthetic workload is only directional. It still remains a local synthetic
-benchmark, not proof of universal defaults.
+between passes. The summary `Off` row is the average of all Off runs, so it will
+not always match the paired Off value shown beside a specific preset. The JSON
+includes `assist_controls`, `assist_status`, and `assist_coverage` so a report
+can show which OS controls were applied and where the synthetic workload is only
+directional. It still remains a local synthetic benchmark, not proof of
+universal defaults.
 
 Legacy inline command, kept only for agents that cannot execute repository
 scripts. It is CPU-only and should not be used for the final insight report when
@@ -402,6 +416,12 @@ Use `avg_ms`, `median_ms`, and `p95_ms`. Lower is better.
 - `P95 foreground time (p95_ms)`: near-worst round time. With 7 rounds this is
   effectively the second-slowest round, because the benchmark keeps the single
   worst round visible separately as `max_ms`.
+- `avg_vs_off`, `median_vs_off`, and `p95_vs_off`: case milliseconds, paired
+  `Off` baseline milliseconds, absolute delta, and percent change, for example
+  `224.50 ms vs 345.00 ms paired Off (-120.50 ms, +35.0%)`.
+- `avg_delta_vs_off`, `median_delta_vs_off`, and `p95_delta_vs_off`: shorter
+  absolute change plus percent change. Negative milliseconds means faster than
+  Off.
 - `Average vs Off`: percent change compared with the `Off` case. Positive means
   faster than Off; negative means slower than Off.
 - `Foreground jitter (foreground_stddev_ms)`: standard deviation of foreground
@@ -412,14 +432,27 @@ Use `avg_ms`, `median_ms`, and `p95_ms`. Lower is better.
   near-worst round is closer to normal behavior.
 - `Foreground iterations/sec`: foreground work throughput derived from average
   time. Higher is better.
-- `Background capacity percent`: approximate share of total logical CPU capacity
+- `Foreground IOPS`: foreground file operations per second in the optional
+  `IoLoop` scenario. It is a synthetic temp-file read/write loop, not a storage
+  certification benchmark.
+- `Message-loop delay`: average and P95 timer delay in the optional
+  `MessageLoop` scenario. Lower is better; this is closer to UI pump
+  responsiveness than CPU-loop throughput.
+- `System average responsiveness percent`: foreground average latency compared
+  with the no-background baseline from the same pass. `100%` means equal to the
+  no-background baseline; lower means the foreground loop slowed down under
+  generated load. Values above `100%` can happen when priority changes make the
+  synthetic foreground loop faster than the no-background sample.
+- `Background throughput percent`: approximate share of total logical CPU capacity
   consumed by the generated background workers during the foreground measurement.
   Lower usually means the preset is sacrificing more background throughput.
-- `Background retained vs Off`: background capacity percent divided by the Off
-  case. This helps show the foreground/background tradeoff.
-- `Background tradeoff`: summary label from retained background capacity. `low`
-  means at least 90% retained, `moderate` means 60% to 90%, and `high` means
-  under 60%.
+- `Background throughput retained vs Off`: background throughput percent divided
+  by the paired Off case. `100%` means the background workers kept the same CPU
+  share as Off; lower means more foreground protection by reducing background
+  work. Values above `100%` mean the background workers got more CPU time than
+  in the paired Off case.
+- `Repeat passes won`: passes where both median and P95 beat paired Off by at
+  least 3%.
 
 Prefer changes that improve median and p95 together. Ignore one-off wins where
 average improves only because of a single outlier. If a preset is slower by less
@@ -436,7 +469,7 @@ Previous reference run after the one-parameter optimization pass:
 
 Richer reference run with stability and background-throughput metrics:
 
-| Case | Average foreground time | P95 foreground time | Foreground jitter | P95 minus median | Foreground iterations/sec | Background retained vs Off |
+| Case | Average foreground time | P95 foreground time | Foreground jitter | P95 minus median | Foreground iterations/sec | Background throughput retained vs Off |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Off | 844.28 ms | 892.48 ms | 59.31 ms | 71.09 ms | 1,480,548 | baseline |
 | Gentle | 826.93 ms | 853.80 ms | 19.35 ms | 36.50 ms | 1,511,608 | 96.1% |
@@ -449,36 +482,47 @@ large tail-latency outlier despite being good in the simpler run.
 
 Previous paired methodology validation on Intel Core 5 210H, 12 logical processors:
 
-| Case | Median improvement avg | P95 improvement avg | Agreement | Signal |
-| --- | ---: | ---: | ---: | --- |
-| Gentle | -0.7% | -2.2% | 0% | noisy |
-| Balance | -14.1% | -16.2% | 0% | noisy |
-| Responsive | 60.1% | 54.9% | 100% | strong |
+| Case | Median improvement avg | P95 improvement avg | Repeat passes won |
+| --- | ---: | ---: | ---: |
+| Gentle | -0.7% | -2.2% | 0/3 |
+| Balance | -14.1% | -16.2% | 0/3 |
+| Responsive | 60.1% | 54.9% | 3/3 |
 
 Use this result to avoid over-tuning Gentle and Balance from this synthetic
 loop. It validates the method for large scheduling changes, but priority-only
 changes need longer runs, more hardware, or real app traces before changing
 global defaults.
 
-Previous paired validation after adding background-capacity measurement on the same CPU:
+Previous paired validation after adding background-throughput measurement on the same CPU:
 
-| Case | Median improvement avg | P95 improvement avg | Background retained avg | Signal | Tradeoff |
-| --- | ---: | ---: | ---: | --- | --- |
-| Gentle | 10.8% | 41.5% | 100.0% | usable | low |
-| Balance | 10.2% | -62.7% | 117.2% | noisy | low |
-| Responsive | 72.9% | 84.7% | 29.5% | strong | high |
+| Case | Median improvement avg | P95 improvement avg | Background throughput retained avg |
+| --- | ---: | ---: | ---: |
+| Gentle | 10.8% | 41.5% | 100.0% |
+| Balance | 10.2% | -62.7% | 117.2% |
+| Responsive | 72.9% | 84.7% | 29.5% |
 
-This makes the tradeoff clearer: Responsive is the only strong foreground win,
-but it deliberately gives up background throughput. Gentle may be useful for a
-light touch, while Balance still needs real workload traces before more tuning.
+This shows the foreground/background cost directly: Responsive is the only
+large foreground win, but it deliberately gives up background throughput. Gentle
+may be useful for a light touch, while Balance still needs real workload traces
+before more tuning.
+
+Latest foreground I/O-loop validation on Intel Core 5 210H, 12 logical processors:
+
+| Case | Avg latency vs Off | Foreground IOPS vs Off | Median latency vs Off | P95 latency vs Off | Responsiveness vs no-load | Background throughput vs Off | Repeat passes won |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Off | 74.61 ms | 55,604 | 75.45 ms | 80.11 ms | 36.7% | 100.0% | baseline |
+| Gentle | 52.38 ms (+29.8%) | 76,377 (+37.4%) | 54.79 ms (+27.4%) | 55.68 ms (+30.5%) | 52.3% | 75.2% | 3/3 |
+| Balance | 51.47 ms (+31.0%) | 77,781 (+39.9%) | 51.79 ms (+31.4%) | 54.10 ms (+32.5%) | 53.2% | 63.3% | 3/3 |
+| Responsive | 27.43 ms (+63.2%) | 145,830 (+162.3%) | 27.43 ms (+63.6%) | 27.85 ms (+65.2%) | 99.8% | 19.8% | 3/3 |
+| Danger | 27.15 ms (+63.6%) | 147,368 (+165.0%) | 27.09 ms (+64.1%) | 27.56 ms (+65.6%) | 100.8% | 19.6% | 3/3 |
 
 Latest Winderust launch scenario on AMD Ryzen 7 7735HS after launch-grace tuning:
 
-| Case | Median improvement avg | Median improvement min | P95 improvement avg | P95 improvement min | Background retained avg | Signal | Tradeoff |
-| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| Gentle | 3.8% | 0.0% | 3.8% | 0.0% | 99.8% | noisy | low |
-| Balance | -4.1% | -11.3% | -4.1% | -11.3% | 99.7% | noisy | low |
-| Responsive | -4.8% | -12.5% | -4.8% | -12.5% | 99.9% | noisy | low |
+| Case | Median improvement avg | Median improvement min | P95 improvement avg | P95 improvement min | Background throughput retained avg | Repeat passes won |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Gentle | 3.8% | 0.0% | 3.8% | 0.0% | 99.8% | 1/3 |
+| Balance | -4.1% | -11.3% | -4.1% | -11.3% | 99.7% | 0/3 |
+| Responsive | -4.8% | -12.5% | -4.8% | -12.5% | 99.9% | 1/3 |
 
 Launch grace keeps background throughput intact while the foreground app starts,
 but this app-launch scenario still does not validate stronger Balance or
@@ -487,11 +531,11 @@ guaranteed app-startup improvement.
 
 ## Known Limitations
 
-- The benchmark applies I/O and memory priority to workers, but the foreground
-  loop is CPU-bound and does not include dedicated disk or memory-pressure
-  phases.
-- GPU priority is attempted against generated workers; CPU-only workers may not
-  have a GPU context, so `gpu_priority_unavailable` is expected on many systems.
+- The foreground loop is CPU-bound, so foreground/background I/O, memory, and
+  GPU priority controls are coverage checks, not direct workload measurements.
+- GPU priority is attempted against the benchmark process and generated workers;
+  CPU-only work may not have a GPU context, so `gpu_priority_unavailable` is
+  expected on many systems.
 - It does not test real foreground-app detection, Winderust exclusions, restore,
   cooldown, launch boost,
   or failure handling.

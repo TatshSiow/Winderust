@@ -8,84 +8,42 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 
 ## Features
 
-### Power Plan Control
-- Switches Windows power plans by foreground app, running app, CPU load, activity, and time.
-- Supports per-rule target plans and processor power tuning for core parking, CPU limits, and boost mode.
-- Prioritizes foreground rules, then running-app rules, CPU load, activity, and time.
+### Winderust Features
+- `Auto Balance`: protects the active app by temporarily lowering hot background work. It can tune process priority, efficiency mode, I/O priority, thread priority, dynamic boost, GPU priority, memory priority, and CPU affinity escalation.
+- `Background Efficiency`: applies Windows Efficiency Mode / EcoQoS to eligible background apps with protection lists and per-app rules.
+- `Smart Trim`: trims idle high-memory background processes during memory pressure while protecting foreground and excluded apps.
 
-### Auto Balance
-- Protects the foreground app by restraining hot background processes.
-- Can lower background process priority, I/O priority, memory priority, and CPU access.
-- Supports foreground boost, launch boost, cooldowns, and app exclusions.
+### Power Automation
+- Switches power plans by foreground app, running app, CPU load, user activity, and schedule.
+- Supports per-rule plans plus processor power tuning such as core parking, CPU limits, and boost mode.
+- Applies rules in foreground > running app > CPU load > activity > schedule order.
 
-### Process List
-- Shows running processes and their configured Winderust policies in one place.
-- Surfaces per-process power-plan, efficiency, limiter, priority, suspension, timer, and steering state.
+### Priority Control
+- Manages process priority, thread priority, dynamic priority boost, I/O priority, GPU scheduler priority, and memory priority.
+- Keeps risky High/Realtime-style controls behind explicit advanced/experimental flows.
+- Provides foreground/background defaults plus app exclusions where supported.
 
-### Process Control
-- Applies Background Efficiency / Windows EcoQoS to eligible background apps.
-- Manages I/O priority and GPU scheduler priority.
-- Keeps dangerous automatic High/Realtime priority controls out of normal workflows.
+### Processor Controls
+- Limits selected background apps after sustained CPU load.
+- Restricts broad background CPU access when foreground/system pressure warrants it.
+- Steers selected apps with soft CPU Sets or hard affinity.
 
-### CPU Control
-- Limits selected background apps when sustained CPU load crosses a threshold.
-- Restricts background CPU access globally or by rule.
-- Steers selected apps to preferred logical CPUs with soft CPU Sets or hard affinity.
+### Process View, Advanced, And App
+- Process List shows live processes and their active Winderust policies in one place.
+- App Suspension freezes explicit opt-in background apps and resumes them when needed.
+- Timer Resolution and Win32PrioritySeparation controls cover advanced scheduler tuning.
+- GPUI desktop interface includes tray support, startup options, import/export settings, themes, accent colors, animation preference, English / Traditional Chinese localization, and CSV Action Log export.
 
-### RAM Control
-- Applies process memory-priority defaults for foreground and background apps.
-- Uses Smart Trim to trim idle high-memory background processes under memory pressure.
+## Recommended Starting Points
 
-### Advanced Controls
-- Suspends explicit opt-in background apps and resumes them when needed.
-- Requests timer resolution only while matching foreground apps are active.
-- Exposes Win32PrioritySeparation tuning with backup and restore controls.
-
-### App Experience
-- GPUI desktop interface with tray support, startup options, import/export settings, themes, accent colors, animation preference, and English / Traditional Chinese localization.
-- Action Log records recent automation and process-control decisions with CSV export.
-
-## Recommended Usage Scenario
-
-### Power plan controls
-- `By Foreground`
-    - For apps that should immediately choose a specific power plan.
-
-- `By Running App`
-    - For workloads that should hold a performance plan while the app is open.
-
-- `By Time`
-    - For working and sleep hours.
-
-- `By CPU Load`
-    - For detecting heavy or light workloads.
-
-- `By Activity`
-    - For keyboard, mouse, and controller idle/active switching.
- 
-### Process Controls
-
-- `Auto Balance`
-    - You want foreground apps to stay responsive while background work is restrained.
-
-- `Background Efficiency`
-    - You want to save a little battery but don't want to hurt daily use case.
-
-- `Core Limiter`
-    - You want selected background apps capped only after sustained high CPU use.
-
-- `Core Steering`
-    - You want selected background apps kept on preferred logical CPUs.
-
-- `Smart Trim`
-    - You want memory pressure cleanup without trimming the foreground app.
-    
-- `App Suspension`
-    - Freeze explicit opt-in background apps to squeeze performance and battery.
+- Use `Auto Balance` first when foreground responsiveness is the goal.
+- Use `Background Efficiency` for low-risk battery and heat reduction.
+- Use `Smart Trim` for memory-pressure cleanup without trimming the foreground app.
+- Use `Power Automation` when a workload should choose or hold a specific power plan.
+- Use `Priority Control` or `Processor Controls` only when you need per-subsystem or per-app tuning beyond Auto Balance.
 
 ## Auto Balance Benchmark
 
-Latest paired synthetic benchmark on AMD Ryzen 7 7735HS, 16 logical processors.
 `Off` is the comparison baseline under generated background load; the script
 also emits a no-background `baseline_no_background_load` case for reference.
 Balance and Responsive now apply the extra priority assists the app preset uses
@@ -94,19 +52,26 @@ memory priority, I/O priority, and GPU priority.
 
 Metrics:
 
-- Foreground latency improvement: lower foreground work time vs `Off`; higher is better.
+- Foreground latency change: foreground work time delta vs `Off`; negative
+  milliseconds and positive percent mean faster.
 - P95 foreground latency improvement: near-worst latency vs `Off`; higher is better.
-- Background retained: background CPU capacity kept vs `Off`; higher means less background sacrifice.
-- Agreement: share of passes where median and P95 both beat `Off` by at least 3%.
-- Signal: confidence label from repeated passes; `strong` is trustworthy, `noisy` is not.
-- Tradeoff: background throughput cost; `high` means the preset buys latency by giving up background work.
+- Background throughput vs Off: generated background-worker CPU time vs `Off`.
+  Lower means the preset protected foreground work by taking CPU away from
+  background workers; above `100%` means background workers got more CPU time.
 
-| Case | Median foreground latency avg | Median foreground latency worst pass | P95 foreground latency avg | P95 foreground latency worst pass | Background CPU work kept avg | Background CPU work kept worst pass | Agreement | Signal | Tradeoff |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| Off baseline | 0.0% | 0.0% | 0.0% | 0.0% | 100.0% | 100.0% | 100.0% | baseline | baseline |
-| Gentle | 48.3% | 45.0% | 49.2% | 46.9% | 83.7% | 83.2% | 100.0% | strong | moderate |
-| Balance | 46.8% | 45.3% | 45.2% | 44.5% | 66.0% | 65.6% | 100.0% | strong | moderate |
-| Responsive | 47.2% | 40.9% | 48.7% | 45.3% | 24.7% | 24.5% | 100.0% | strong | high |
+The README tables compare each preset directly to the displayed `Off` row. The
+benchmark script still records adjacent paired-Off comparisons in
+`docs/auto-balance-benchmark.md` for deeper validation.
+
+Latest CPU-loop validation on Intel Core 5 210H, 12 logical processors:
+
+| Case | Avg latency vs Off | Median latency vs Off | P95 latency vs Off | Background throughput vs Off | Repeat passes won |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Off | 679.10 ms | 616.47 ms | 682.97 ms | 100.0% | baseline |
+| Gentle | 348.20 ms (+48.7%) | 326.29 ms (+47.1%) | 364.75 ms (+46.6%) | 124.4% | 2/3 |
+| Balance | 350.27 ms (+48.4%) | 316.96 ms (+48.6%) | 333.52 ms (+51.2%) | 180.8% | 2/3 |
+| Responsive | 202.27 ms (+70.2%) | 200.82 ms (+67.4%) | 201.14 ms (+70.5%) | 33.6% | 3/3 |
+| Danger | 209.11 ms (+69.2%) | 207.01 ms (+66.4%) | 210.01 ms (+69.3%) | 16.5% | 3/3 |
 
 Run the benchmark from the repository root:
 
@@ -114,33 +79,10 @@ Run the benchmark from the repository root:
 .\scripts\auto_balance_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
-Optional Task Manager launch scenario:
-
-```powershell
-.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario TaskManagerLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
-```
-
-Optional Winderust launch scenario:
-
-```powershell
-.\scripts\auto_balance_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
-```
-
-Latest Winderust launch result on the same device after launch-grace tuning:
-
-| Case | Median launch latency avg | Median launch latency worst pass | P95 launch latency avg | P95 launch latency worst pass | Background CPU work kept avg | Agreement | Signal | Tradeoff |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| Gentle | 3.8% | 0.0% | 3.8% | 0.0% | 99.8% | 33.3% | noisy | low |
-| Balance | -4.1% | -11.3% | -4.1% | -11.3% | 99.7% | 0.0% | noisy | low |
-| Responsive | -4.8% | -12.5% | -4.8% | -12.5% | 99.9% | 33.3% | noisy | low |
-
-Launch-grace tuning keeps background restraints deferred while the app starts;
-the launch result remains noisy and does not validate stronger launch behavior.
-
 The script spawns temporary CPU workers and changes their priority, affinity,
 thread, memory, I/O, priority-boost, and GPU scheduling controls where possible.
-Treat results as local direction only; validate on more hardware before changing
-global preset defaults. Full guide: `docs/auto-balance-benchmark.md`.
+Treat results as local direction only. I/O-loop and Winderust-launch scenarios
+and the message-loop scenario are documented in `docs/auto-balance-benchmark.md`.
 
 ## Build
 
@@ -157,7 +99,5 @@ target\release\winderust.exe
 ```
 
 ## Notes
-
 - EcoQoS works best on Windows 11 and supported CPU platforms.
-- Foreground rules have the highest scheduler priority and override other power plan rules.
 - Agent docs, development guide, scope, and references: `.agents/memory/README.md`.

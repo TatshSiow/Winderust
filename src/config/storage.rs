@@ -346,6 +346,7 @@ mod tests {
             foreground_responsiveness: ForegroundResponsivenessSettings {
                 enabled: true,
                 lower_background_apps: true,
+                auto_balance_efficiency_mode_enabled: true,
                 auto_balance_background_priority: ProcessPriority::BelowNormal,
                 lower_background_affinity_enabled: true,
                 lower_background_io_priority_enabled: true,

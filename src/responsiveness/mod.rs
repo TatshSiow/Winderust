@@ -223,6 +223,7 @@ struct ApplyPriorityRequest<'a> {
     priority_class: u32,
     existing: Option<&'a AdjustedProcess>,
     source: PriorityTargetSource,
+    apply_priority_class: bool,
     apply_efficiency_mode: bool,
     disable_priority_boost: bool,
     log_success: bool,
@@ -345,28 +346,40 @@ impl ForegroundResponsivenessManager {
             });
         let launch_boost_running =
             auto_balance_launch_boost_enabled(settings, foreground_launch_boost_target);
-        let lower_background_policy_enabled = settings.lower_background_apps
-            && !background_efficiency_managed
+        let background_policy_can_run = !background_efficiency_managed
             && !launch_boost_running
             && smart_efficiency_should_run(
                 settings,
                 foreground_cpu_usage_percent,
                 total_cpu_usage_percent,
             );
-        if settings.lower_background_apps && !background_efficiency_managed {
+        let lower_background_policy_enabled =
+            settings.lower_background_apps && background_policy_can_run;
+        let auto_efficiency_policy_enabled =
+            settings.auto_balance_efficiency_mode_enabled && background_policy_can_run;
+        if (settings.lower_background_apps || settings.auto_balance_efficiency_mode_enabled)
+            && !background_efficiency_managed
+        {
             for (process_id, process_name) in &lowerable_background_processes {
-                let matched_rule = matching_rule(settings, process_name);
-                let (priority, source) = if let Some(rule) = matched_rule {
-                    (rule.priority, PriorityTargetSource::Rule)
-                } else if lower_background_policy_enabled {
+                let matched_rule = settings
+                    .lower_background_apps
+                    .then(|| matching_rule(settings, process_name))
+                    .flatten();
+                let (priority, source, apply_priority_class) = if let Some(rule) = matched_rule {
+                    (rule.priority, PriorityTargetSource::Rule, true)
+                } else if lower_background_policy_enabled || auto_efficiency_policy_enabled {
                     (
                         settings.auto_balance_background_priority,
                         PriorityTargetSource::BackgroundPolicy,
+                        settings.lower_background_apps,
                     )
                 } else {
                     continue;
                 };
-                target_processes.insert(*process_id, (process_name.clone(), priority, source));
+                target_processes.insert(
+                    *process_id,
+                    (process_name.clone(), priority, source, apply_priority_class),
+                );
             }
         }
 
@@ -477,6 +490,7 @@ impl ForegroundResponsivenessManager {
                             candidate.process_name.clone(),
                             settings.auto_balance_background_priority,
                             PriorityTargetSource::AutoBalance,
+                            true,
                         )
                     });
                 if settings.auto_balance_memory_priority_enabled {
@@ -557,7 +571,7 @@ impl ForegroundResponsivenessManager {
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut active_target_names = target_processes
             .values()
-            .map(|(name, _priority, _source)| process_failure_key(name))
+            .map(|(name, _priority, _source, _apply_priority_class)| process_failure_key(name))
             .collect::<BTreeSet<_>>();
         if let Some(name) = foreground_process_name.as_deref() {
             active_target_names.insert(process_failure_key(name));
@@ -573,7 +587,8 @@ impl ForegroundResponsivenessManager {
         skipped_processes += auto_balance_memory_snapshot.skipped_processes;
         let mut summarized_background_applies = 0;
 
-        for (process_id, (process_name, priority, source)) in target_processes {
+        for (process_id, (process_name, priority, source, apply_priority_class)) in target_processes
+        {
             let failure_process_name = process_name.clone();
             if self.is_process_suppressed(
                 process_id,
@@ -591,7 +606,9 @@ impl ForegroundResponsivenessManager {
                     priority_class: process_priority_class(priority),
                     existing: self.adjusted.get(&process_id),
                     source,
-                    apply_efficiency_mode: source != PriorityTargetSource::AutoBalance,
+                    apply_priority_class,
+                    apply_efficiency_mode: settings.auto_balance_efficiency_mode_enabled
+                        && source != PriorityTargetSource::AutoBalance,
                     disable_priority_boost: false,
                     log_success: source == PriorityTargetSource::Rule,
                 },
@@ -2004,6 +2021,7 @@ fn apply_priority(
         priority_class,
         existing,
         source,
+        apply_priority_class,
         apply_efficiency_mode,
         disable_priority_boost,
         log_success,
@@ -2085,11 +2103,34 @@ fn apply_priority(
             .and_then(|adjusted| adjusted.previous_efficiency_state)
             .or(current_state)
     } else {
+        if let Some(adjusted) =
+            reusable_existing.filter(|adjusted| adjusted.applied_efficiency_mode)
+        {
+            let state = adjusted
+                .previous_efficiency_state
+                .unwrap_or_else(power_throttling_disabled_state);
+            process.set_power_throttling_state(state)?;
+            changed = true;
+        }
         reusable_existing.and_then(|adjusted| adjusted.previous_efficiency_state)
     };
+    let mut applied_priority = current_priority;
+    let mut priority_already_applied = true;
+    if apply_priority_class {
+        applied_priority = priority_class;
+        priority_already_applied = current_priority == priority_class;
+    } else if let Some(adjusted) = reusable_existing {
+        if current_priority == adjusted.applied_priority
+            && current_priority != adjusted.previous_priority
+        {
+            process.set_priority_class(adjusted.previous_priority)?;
+            changed = true;
+        }
+        applied_priority = adjusted.previous_priority;
+    }
     if reusable_existing.is_some_and(|adjusted| {
-        adjusted.applied_priority == priority_class
-            && current_priority == priority_class
+        adjusted.applied_priority == applied_priority
+            && priority_already_applied
             && adjusted.applied_efficiency_mode == apply_efficiency_mode
             && adjusted.applied_priority_boost_disabled == disable_priority_boost
     }) {
@@ -2100,7 +2141,7 @@ fn apply_priority(
         });
     }
 
-    if current_priority != priority_class {
+    if apply_priority_class && current_priority != priority_class {
         process.set_priority_class(priority_class)?;
         changed = true;
         if log_success {
@@ -2127,7 +2168,7 @@ fn apply_priority(
         adjusted: Some(AdjustedProcess {
             process_name,
             previous_priority,
-            applied_priority: priority_class,
+            applied_priority,
             previous_priority_boost_disabled,
             applied_priority_boost_disabled: disable_priority_boost,
             previous_efficiency_state,
@@ -2707,6 +2748,7 @@ mod tests {
         let settings = ForegroundResponsivenessSettings {
             enabled: true,
             lower_background_apps: true,
+            auto_balance_efficiency_mode_enabled: true,
             auto_balance_background_priority: ProcessPriority::BelowNormal,
             lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
