@@ -2,6 +2,7 @@ use chrono::{NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 
 use crate::foreground::same_process_name;
+use crate::power::plan::{ProcessorBoostMode, ProcessorPowerValues};
 use crate::rules::{
     normalize_execution_failure_suppression_threshold,
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
@@ -12,6 +13,8 @@ pub struct Settings {
     pub general: GeneralSettings,
     #[serde(default)]
     pub advanced: AdvancedSettings,
+    #[serde(default)]
+    pub smart_saver: SmartSaverSettings,
     pub power_plans: PowerPlanSettings,
     pub activity_mode: ActivityModeSettings,
     pub foreground_rules: ForegroundRules,
@@ -279,6 +282,31 @@ pub struct EcoQosSettings {
     pub aggressiveness: EcoQosAggressiveness,
     #[serde(default)]
     pub efficiency_whitelist: Vec<EcoQosExclusionRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SmartSaverSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub processor_policy_enabled: bool,
+    #[serde(default = "default_smart_saver_processor_policy_values")]
+    pub processor_policy_values: ProcessorPowerValues,
+}
+
+impl Default for SmartSaverSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            processor_policy_enabled: true,
+            processor_policy_values: default_smart_saver_processor_policy_values(),
+        }
+    }
+}
+
+fn default_smart_saver_processor_policy_values() -> ProcessorPowerValues {
+    ProcessorPowerValues::new_with_boost_mode(0, 5, 45, 0, ProcessorBoostMode::Disabled)
+        .normalized()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1395,6 +1423,7 @@ impl Default for Settings {
                 check_interval_ms: 1000,
             },
             advanced: AdvancedSettings::default(),
+            smart_saver: SmartSaverSettings::default(),
             power_plans: PowerPlanSettings::default(),
             activity_mode: ActivityModeSettings {
                 enabled: true,

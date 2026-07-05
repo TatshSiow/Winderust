@@ -593,9 +593,9 @@ mod tests {
         let saver = ProcessorPowerValues::for_preset(ProcessorPowerPreset::Saver);
         assert_eq!(saver.core_parking_min, 0);
         assert_eq!(saver.performance_min, 5);
-        assert_eq!(saver.performance_max, 80);
-        assert_eq!(saver.boost_policy, 40);
-        assert_eq!(saver.boost_mode, ProcessorBoostMode::EfficientEnabled);
+        assert_eq!(saver.performance_max, 60);
+        assert_eq!(saver.boost_policy, 0);
+        assert_eq!(saver.boost_mode, ProcessorBoostMode::Disabled);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use windows_sys::Win32::System::Threading::{
     GetCurrentProcess, GetPriorityClass, GetProcessInformation, ProcessPowerThrottling,
     SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
     PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-    PROCESS_POWER_THROTTLING_STATE,
+    PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
 };
 
 use crate::win_util::last_error;
@@ -15,73 +15,86 @@ static SELF_POWER_STATE: Mutex<Option<SelfPowerState>> = Mutex::new(None);
 struct SelfPowerState {
     previous_power_throttling: Option<PROCESS_POWER_THROTTLING_STATE>,
     previous_priority: Option<u32>,
+    hidden_mode: bool,
+    smart_saver_mode: bool,
 }
 
 pub fn enable_hidden_mode() -> Result<(), String> {
-    let mut state = SELF_POWER_STATE
-        .lock()
-        .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
-    if state.is_some() {
-        return Ok(());
-    }
-
-    let process = unsafe { GetCurrentProcess() };
-    let previous_power_throttling = power_throttling_state(process).ok();
-    let previous_priority = priority_class(process).ok();
-
-    let mut next_state = previous_power_throttling.unwrap_or_default();
-    next_state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    next_state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    next_state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    set_power_throttling_state(process, next_state)?;
-
-    if let Err(err) = set_priority_class(process, IDLE_PRIORITY_CLASS) {
-        let _ = set_power_throttling_state(
-            process,
-            previous_power_throttling.unwrap_or_else(power_throttling_disabled_state),
-        );
-        return Err(err);
-    }
-
-    *state = Some(SelfPowerState {
-        previous_power_throttling,
-        previous_priority,
-    });
-    Ok(())
+    set_hidden_mode(true)
 }
 
 pub fn disable_hidden_mode() -> Result<(), String> {
-    let Some(state) = SELF_POWER_STATE
+    set_hidden_mode(false)
+}
+
+pub fn enable_smart_saver_mode() -> Result<(), String> {
+    set_smart_saver_mode(true)
+}
+
+pub fn disable_smart_saver_mode() -> Result<(), String> {
+    set_smart_saver_mode(false)
+}
+
+fn set_hidden_mode(enabled: bool) -> Result<(), String> {
+    let mut state = SELF_POWER_STATE
         .lock()
-        .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?
-        .take()
-    else {
+        .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
+    ensure_state(&mut state)?.hidden_mode = enabled;
+    apply_self_power_state(&mut state)
+}
+
+fn set_smart_saver_mode(enabled: bool) -> Result<(), String> {
+    let mut state = SELF_POWER_STATE
+        .lock()
+        .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
+    ensure_state(&mut state)?.smart_saver_mode = enabled;
+    apply_self_power_state(&mut state)
+}
+
+fn ensure_state(state: &mut Option<SelfPowerState>) -> Result<&mut SelfPowerState, String> {
+    if state.is_none() {
+        let process = unsafe { GetCurrentProcess() };
+        *state = Some(SelfPowerState {
+            previous_power_throttling: power_throttling_state(process).ok(),
+            previous_priority: priority_class(process).ok(),
+            hidden_mode: false,
+            smart_saver_mode: false,
+        });
+    }
+
+    state
+        .as_mut()
+        .ok_or_else(|| "Winderust self power state is unavailable.".to_owned())
+}
+
+fn apply_self_power_state(state: &mut Option<SelfPowerState>) -> Result<(), String> {
+    let Some(current) = *state else {
         return Ok(());
     };
 
     let process = unsafe { GetCurrentProcess() };
-    let mut last_error = None;
-
-    if let Err(err) = set_power_throttling_state(
-        process,
-        state
+    let enabled = current.hidden_mode || current.smart_saver_mode;
+    let next_power_state = if enabled {
+        power_throttling_enabled_state(current.previous_power_throttling, current.smart_saver_mode)
+    } else {
+        current
             .previous_power_throttling
-            .unwrap_or_else(power_throttling_disabled_state),
-    ) {
-        last_error = Some(err);
+            .unwrap_or_else(power_throttling_disabled_state)
+    };
+    let next_priority = if current.hidden_mode {
+        IDLE_PRIORITY_CLASS
+    } else {
+        current.previous_priority.unwrap_or(NORMAL_PRIORITY_CLASS)
+    };
+
+    set_power_throttling_state(process, next_power_state)?;
+    set_priority_class(process, next_priority)?;
+
+    if !enabled {
+        *state = None;
     }
 
-    if let Err(err) = set_priority_class(
-        process,
-        state.previous_priority.unwrap_or(NORMAL_PRIORITY_CLASS),
-    ) {
-        last_error = Some(err);
-    }
-
-    match last_error {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 fn power_throttling_state(
@@ -158,9 +171,30 @@ fn set_priority_class(
 fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
     PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
         StateMask: 0,
     }
+}
+
+fn power_throttling_enabled_state(
+    previous: Option<PROCESS_POWER_THROTTLING_STATE>,
+    ignore_timer_resolution: bool,
+) -> PROCESS_POWER_THROTTLING_STATE {
+    let previous_ignored_timer = previous.is_some_and(|state| {
+        state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION != 0
+    });
+    let mut state = previous.unwrap_or_else(power_throttling_disabled_state);
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask |=
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    if ignore_timer_resolution || previous_ignored_timer {
+        state.StateMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    } else {
+        state.StateMask &= !PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    }
+    state
 }
 
 #[cfg(test)]
@@ -172,7 +206,25 @@ mod tests {
         let state = power_throttling_disabled_state();
 
         assert_eq!(state.Version, PROCESS_POWER_THROTTLING_CURRENT_VERSION);
-        assert_eq!(state.ControlMask, PROCESS_POWER_THROTTLING_EXECUTION_SPEED);
+        assert_eq!(
+            state.ControlMask,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+                | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION
+        );
         assert_eq!(state.StateMask, 0);
+    }
+
+    #[test]
+    fn smart_saver_state_ignores_self_timer_resolution() {
+        let state = power_throttling_enabled_state(None, true);
+
+        assert_ne!(
+            state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            0
+        );
+        assert_ne!(
+            state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            0
+        );
     }
 }

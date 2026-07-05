@@ -23,6 +23,28 @@ under the same generated background load. It refuses to run while Winderust is
 already open, then closes only the instance it started for each sample. This is
 the normal-user launch proxy when checking app startup behavior.
 
+The power-drain companion benchmark measures CPU package power directly from
+Windows performance counters. Lower median watts are better. It prefers the
+RAPL package counter, for example:
+
+```text
+\Energy Meter(RAPL_Package0_PKG)\Power
+```
+
+On common Windows Energy Meter providers the raw counter is milliwatts, so the
+script scales it to watts before summarizing.
+
+The default benchmark also runs a compact foreground score suite while the same
+generated background workers are active. The score suite covers managed integer
+and double arithmetic, an unrolled float-batch instruction proxy, GZip and
+Deflate round trips, SHA-256 hashing, AES-CBC encrypt/decrypt, a 256 KiB
+L2-cache-size scan proxy, and a larger memory-copy probe.
+
+ZIP archive structure, BZIP2, 7z, and native AVX/SSE/SSE2/SSE4/AVX2/FMA feature
+microbenchmarks are not included because Windows PowerShell/.NET Framework does
+not expose those as dependency-free benchmark APIs. Use an external native
+runner if those exact formats or instruction sets need certification.
+
 It is not a full Winderust automation benchmark. It does not launch the app or
 exercise the real automation loop. It models the preset scheduler effects with:
 
@@ -46,9 +68,10 @@ already push Idle background workers toward E-cores, but applies a hard-affinity
 approximation for standard/all-P CPUs so shared-core machines are tested against
 the same foreground-lane intent as the runtime preset.
 
-The default foreground loop is CPU-bound. I/O and GPU controls are applied where
-Windows accepts them, but the default workload does not include a dedicated
-disk, memory-pressure, message-pump, or GPU-rendering phase.
+The default foreground latency loop is CPU-bound. The separate score suite adds
+compression, crypto, arithmetic, and cache/memory probes, but I/O and GPU
+controls are still coverage checks unless you run the optional I/O, message
+loop, launch, or external GPU benchmarks.
 
 ## Hardware Scope
 
@@ -78,16 +101,17 @@ If only one hardware class is available, document that limitation and avoid
 changing global preset constants unless the result is clearly supported by code
 reasoning and topology-specific unit tests.
 
-## Current Preset Model
+## Current Adaptive Engine Preset Model
 
-Keep this in sync with the Workload Engine preset values in `src/app.rs`.
+Keep this in sync with the Adaptive Engine preset values in `src/app.rs`.
 
 | Preset | Benchmark model |
 | --- | --- |
 | Off | 12 background workers at `Normal`; foreground benchmark process at `Normal`. |
-| Low Impact | All background workers at `Idle`; adaptive background CPU share with a lower per-process trigger for single-thread hogs; foreground boost `Auto`; foreground priority boost enabled; background priority boost disabled; background threads `BelowNormal`; extra I/O, memory, and GPU assists disabled. |
-| Foreground First | All background workers at `Idle`; adaptive background CPU share; foreground boost `Auto`; foreground priority boost enabled; background priority boost disabled; background threads `BelowNormal`; background memory `VeryLow`; background I/O `VeryLow`; background GPU `BelowNormal` when available. |
-| Max Foreground | All background workers at `Idle`; first 12 targets affinity-limited to 10% logical processors; foreground boost `AboveNormal`; foreground I/O `High`; foreground threads `Highest`; foreground GPU `High`; background priority boost disabled; background threads `Idle`; background memory `VeryLow`; background I/O `VeryLow`; background GPU `Idle` when available. |
+| Powersave | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, background efficiency, Idle process priority, Low IO/memory priority, and BelowNormal GPU/thread priority. |
+| Balanced | Moderate processor policy (`max 95`, efficient boost) plus the same Low Impact scheduling/priority assists with a higher processor ceiling than Powersave. |
+| Performance | High processor policy (`min 25`, `max 100`, efficient aggressive boost) plus active Foreground First CPU-pressure scheduling, background efficiency, Idle process priority, VeryLow background IO, Low memory priority, and BelowNormal GPU/thread priority. |
+| Speed | Aggressive processor policy (`parking 100`, `min 25`, `max 100`, aggressive boost) plus active Max Foreground CPU-pressure scheduling, a stricter 6% background CPU target, foreground AboveNormal/High assists, and VeryLow/Idle background IO/memory/GPU/thread priority. |
 
 For launch foreground scenarios, preset cases intentionally use launch grace:
 foreground launch priority is raised to `AboveNormal`, while background
@@ -122,6 +146,10 @@ Preferred repeat-loop command:
 .\scripts\workload_engine_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
 
+The score suite runs by default. Use `-ScoreIterations`, `-ScoreDataKb`, and
+`-ScoreRounds` to scale it, or `-SkipScoreBenchmark` when validating only the
+older foreground-latency path.
+
 Foreground file-I/O scenario:
 
 ```powershell
@@ -138,6 +166,18 @@ Winderust launch scenario:
 
 ```powershell
 .\scripts\workload_engine_benchmark.ps1 -ForegroundScenario WinderustLaunch -Passes 3 -Rounds 3 -WorkerSeconds 20
+```
+
+Power-drain benchmark:
+
+```powershell
+.\scripts\power_drain_benchmark.ps1 -Phases Baseline,SmartSaver -MinPasses 3 -MaxPasses 8 -SampleSeconds 30 -StableCvPercent 5
+```
+
+Quick sensor check:
+
+```powershell
+.\scripts\power_drain_benchmark.ps1 -Phases Current -MinPasses 3 -MaxPasses 8 -SampleSeconds 10 -StableCvPercent 20 -NoPrompt
 ```
 
 If the release binary is not built, either run `cargo build --release` first or
@@ -183,6 +223,9 @@ Use `avg_ms`, `median_ms`, and `p95_ms`. Lower is better.
   near-worst round is closer to normal behavior.
 - `Foreground iterations/sec`: foreground work throughput derived from average
   time. Higher is better.
+- `Score benchmark`: compact foreground real-work throughput suite. The JSON
+  stores component values under `score_benchmark` and component ratios under
+  `score_benchmark_vs_off`.
 - `Foreground IOPS`: foreground file operations per second in the optional
   `IoLoop` scenario. It is a synthetic temp-file read/write loop, not a storage
   certification benchmark.
@@ -202,8 +245,20 @@ Use `avg_ms`, `median_ms`, and `p95_ms`. Lower is better.
   share as Off; lower means more foreground protection by reducing background
   work. Values above `100%` mean the background workers got more CPU time than
   in the paired Off case.
+- `Background latency slowdown vs Off`: fixed-background-work latency estimate
+  derived from the inverse of retained background throughput. For example,
+  `+50%` means the same background CPU work would take about 1.5x as long as
+  paired `Off`; `+500%` means about 6x as long. This is the foreground/background
+  cost that helps explain why keeping more background work active can
+  raise CPU package watts even when foreground latency looks good.
 - `Repeat passes won`: passes where both median and P95 beat paired Off by at
   least 3%.
+- `median_w_avg`: average of repeated pass medians from
+  `power_drain_benchmark.ps1`. Lower is better.
+- `median_w_cv_percent`: repeat stability for package watts. Treat a result as
+  usable only when `stable` is true.
+- `saving_percent_vs_baseline`: package-watt reduction against the first phase.
+  Positive means lower package power than baseline.
 
 Prefer changes that improve median and p95 together. Ignore one-off wins where
 average improves only because of a single outlier. If a preset is slower by less
@@ -261,7 +316,29 @@ Latest CPU-loop validation after standard/all-P topology tuning on AMD Ryzen 7 7
 
 This run used the standard/all-P benchmark approximation: Low Impact limited
 background workers to 11 logical processors, Foreground First to 8, and Max
-Foreground to 2.
+Foreground to 1.
+
+Latest Adaptive Engine preset CPU-loop check on AMD Ryzen 7 7735HS, 16 logical
+processors, 3 passes, 5 rounds, 1,000,000 foreground iterations per round, with
+the score suite and RAPL package-power sampling:
+
+| Case | Median latency vs Off | P95 latency vs Off | Foreground throughput vs Off | Background retained vs Off | Background latency vs Off | Package power vs Off | Repeat passes won |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Off | 228.67 ms | 239.84 ms | 4,540,008 iter/s | 100.0% | 1.00x | 63.90 W | baseline |
+| Powersave | 377.30 ms (-70.6%) | 378.55 ms (-65.1%) | 2,643,422 iter/s (-41.8%) | 82.7% | 1.21x (+20.9%) | 10.97 W (-82.8%) | 0/3 |
+| Balanced | 181.46 ms (+24.2%) | 187.33 ms (+24.7%) | 5,423,882 iter/s (+19.5%) | 83.2% | 1.20x (+20.3%) | 21.16 W (-66.9%) | 3/3 |
+| Performance | 123.99 ms (+47.1%) | 125.15 ms (+50.4%) | 8,033,565 iter/s (+76.9%) | 66.6% | 1.50x (+50.2%) | 57.91 W (-9.4%) | 3/3 |
+| Speed | 119.07 ms (+44.7%) | 119.35 ms (+47.6%) | 8,410,122 iter/s (+85.2%) | 8.3% | 12.05x (+1,105.4%) | 22.65 W (-64.5%) | 3/3 |
+
+This run validates the current split with broader coverage: Balanced clears the
+repeat-pass gate and saves package power but gives up score throughput,
+Performance keeps a larger background lane while improving several score components,
+and Speed now wins every score component in this run while making the
+background lane much slower by design.
+
+Native WinSAT D3D was checked on the same machine, but this Windows build no
+longer runs the D3D assessment. The XML reports `NoD3DTestRun` and hardcoded
+sentinel values, so it is not a valid gaming/GPU benchmark.
 
 Latest foreground I/O-loop validation on Intel Core 5 210H, 12 logical processors:
 
@@ -286,8 +363,13 @@ app-startup improvement.
 
 ## Known Limitations
 
-- The foreground loop is CPU-bound, so foreground/background I/O, memory, and
-  GPU priority controls are coverage checks, not direct workload measurements.
+- The foreground latency loop is CPU-bound. The score suite covers managed CPU,
+  compression, crypto, and cache/memory probes, but it is not a native
+  AVX/SSE/FMA feature benchmark and does not run BZIP2, 7z, or real ZIP archive
+  workloads.
+- Foreground/background I/O and GPU priority controls are coverage checks unless
+  the optional I/O/message/launch scenarios or an external GPU benchmark are
+  run.
 - GPU priority is attempted against the benchmark process and generated workers;
   CPU-only work may not have a GPU context, so `gpu_priority_unavailable` is
   expected on many systems.
@@ -298,6 +380,9 @@ app-startup improvement.
   Sets.
 - Thermal throttling and Windows background services can move results by several
   percent.
+- The power-drain benchmark needs a Windows `Energy Meter` or `Power Meter`
+  counter. CPU package watts are not whole-system battery drain, and idle results
+  can stay unstable until background activity settles.
 
 ## After Changes
 

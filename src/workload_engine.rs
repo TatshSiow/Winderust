@@ -14,7 +14,8 @@ use windows_sys::Win32::{
             SetProcessInformation, SetProcessPriorityBoost, ABOVE_NORMAL_PRIORITY_CLASS,
             BELOW_NORMAL_PRIORITY_CLASS, HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS,
             NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION, REALTIME_PRIORITY_CLASS,
         },
     },
@@ -23,6 +24,7 @@ use windows_sys::Win32::{
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     affinity::{self, CpuAffinityManager, LogicalProcessorInfo, LogicalProcessorKind},
+    audio_activity::active_audio_process_ids,
     config::{
         CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, EcoQosCpuRestrictionMode,
         ForegroundBoostPriority, PriorityRule, ProcessPriority, WorkloadEngineSettings,
@@ -51,6 +53,7 @@ pub struct WorkloadEngineSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub background_adjusted_processes: usize,
+    pub timer_resolution_ignored_processes: usize,
     pub foreground_boosted_process: Option<String>,
     pub launch_boost_active: bool,
     pub workload_engine_active: bool,
@@ -134,6 +137,7 @@ struct AdjustedProcess {
     applied_priority_boost_disabled: bool,
     previous_efficiency_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     applied_efficiency_mode: bool,
+    applied_ignore_timer_resolution: bool,
 }
 
 #[derive(Clone)]
@@ -225,6 +229,7 @@ struct ApplyPriorityRequest<'a> {
     source: PriorityTargetSource,
     apply_priority_class: bool,
     apply_efficiency_mode: bool,
+    ignore_timer_resolution: bool,
     disable_priority_boost: bool,
     log_success: bool,
 }
@@ -309,6 +314,7 @@ impl WorkloadEngineManager {
         let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
 
         let mut failures = PriorityFailures::default();
+        let active_audio_process_ids = active_audio_process_ids().ok();
 
         let mut lowerable_background_processes = BTreeMap::new();
         for process in &processes {
@@ -614,6 +620,10 @@ impl WorkloadEngineManager {
                     apply_priority_class,
                     apply_efficiency_mode: settings.workload_engine_efficiency_mode_enabled
                         && source != PriorityTargetSource::WorkloadEngine,
+                    ignore_timer_resolution: ignore_timer_resolution_allowed(
+                        process_id,
+                        active_audio_process_ids.as_ref(),
+                    ),
                     disable_priority_boost: false,
                     log_success: source == PriorityTargetSource::Rule,
                 },
@@ -753,6 +763,11 @@ impl WorkloadEngineManager {
             enabled: true,
             scanned_processes,
             background_adjusted_processes: self.adjusted.len(),
+            timer_resolution_ignored_processes: self
+                .adjusted
+                .values()
+                .filter(|process| process.applied_ignore_timer_resolution)
+                .count(),
             foreground_boosted_process: self.boosted.values().next().map(|process| {
                 if self.boosted.len() == 1 {
                     format!("{} ({})", process.process_name, process.process_id)
@@ -1464,6 +1479,7 @@ impl Default for WorkloadEngineSnapshot {
             enabled: false,
             scanned_processes: 0,
             background_adjusted_processes: 0,
+            timer_resolution_ignored_processes: 0,
             foreground_boosted_process: None,
             launch_boost_active: false,
             workload_engine_active: false,
@@ -2031,6 +2047,7 @@ fn apply_priority(
         source,
         apply_priority_class,
         apply_efficiency_mode,
+        ignore_timer_resolution,
         disable_priority_boost,
         log_success,
     } = request;
@@ -2093,8 +2110,22 @@ fn apply_priority(
     };
     let previous_efficiency_state = if apply_efficiency_mode {
         let current_state = process.power_throttling_state().ok();
-        if !current_state.is_some_and(power_throttling_execution_enabled) {
-            process.set_power_throttling_state(power_throttling_enabled_state(current_state))?;
+        let previous_state = reusable_existing
+            .and_then(|adjusted| adjusted.previous_efficiency_state)
+            .or(current_state);
+        let ignore_timer_resolution_changed = reusable_existing.is_none_or(|adjusted| {
+            adjusted.applied_ignore_timer_resolution != ignore_timer_resolution
+        });
+        let ignore_timer_resolution_missing = ignore_timer_resolution
+            && !current_state.is_some_and(power_throttling_ignore_timer_resolution_enabled);
+        if !current_state.is_some_and(power_throttling_execution_enabled)
+            || ignore_timer_resolution_changed
+            || ignore_timer_resolution_missing
+        {
+            process.set_power_throttling_state(power_throttling_enabled_state(
+                previous_state,
+                ignore_timer_resolution,
+            ))?;
             changed = true;
             if log_success {
                 action_log.record(
@@ -2107,9 +2138,7 @@ fn apply_priority(
                 );
             }
         }
-        reusable_existing
-            .and_then(|adjusted| adjusted.previous_efficiency_state)
-            .or(current_state)
+        previous_state
     } else {
         if let Some(adjusted) =
             reusable_existing.filter(|adjusted| adjusted.applied_efficiency_mode)
@@ -2140,6 +2169,7 @@ fn apply_priority(
         adjusted.applied_priority == applied_priority
             && priority_already_applied
             && adjusted.applied_efficiency_mode == apply_efficiency_mode
+            && adjusted.applied_ignore_timer_resolution == ignore_timer_resolution
             && adjusted.applied_priority_boost_disabled == disable_priority_boost
     }) {
         return Ok(ApplyPriorityOutcome {
@@ -2181,6 +2211,7 @@ fn apply_priority(
             applied_priority_boost_disabled: disable_priority_boost,
             previous_efficiency_state,
             applied_efficiency_mode: apply_efficiency_mode,
+            applied_ignore_timer_resolution: apply_efficiency_mode && ignore_timer_resolution,
         }),
         skipped: false,
         changed,
@@ -2277,16 +2308,37 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
 
 fn power_throttling_enabled_state(
     previous: Option<PROCESS_POWER_THROTTLING_STATE>,
+    ignore_timer_resolution: bool,
 ) -> PROCESS_POWER_THROTTLING_STATE {
+    let previous_ignore_timer_resolution = previous.is_some_and(|state| {
+        (state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION) != 0
+    });
     let mut state = previous.unwrap_or_else(power_throttling_disabled_state);
     state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    state.ControlMask |=
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
     state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    if ignore_timer_resolution || previous_ignore_timer_resolution {
+        state.StateMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    } else {
+        state.StateMask &= !PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    }
     state
 }
 
 fn power_throttling_execution_enabled(state: PROCESS_POWER_THROTTLING_STATE) -> bool {
     (state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) != 0
+}
+
+fn power_throttling_ignore_timer_resolution_enabled(state: PROCESS_POWER_THROTTLING_STATE) -> bool {
+    (state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION) != 0
+}
+
+fn ignore_timer_resolution_allowed(
+    process_id: u32,
+    active_audio_process_ids: Option<&BTreeSet<u32>>,
+) -> bool {
+    active_audio_process_ids.is_some_and(|ids| !ids.contains(&process_id))
 }
 
 enum PriorityError {
@@ -3260,6 +3312,7 @@ mod tests {
                 applied_priority_boost_disabled: false,
                 previous_efficiency_state: None,
                 applied_efficiency_mode: false,
+                applied_ignore_timer_resolution: false,
             },
         );
         let mut log = ActionLog::new(8);
@@ -3287,5 +3340,28 @@ mod tests {
 
         assert!(usage > 0.0);
         assert!(usage <= 100.0);
+    }
+
+    #[test]
+    fn power_throttling_state_sets_timer_ignore_only_when_allowed() {
+        let allowed = power_throttling_enabled_state(None, true);
+        assert_ne!(
+            allowed.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            0
+        );
+        assert_ne!(
+            allowed.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            0
+        );
+
+        let blocked = power_throttling_enabled_state(None, false);
+        assert_ne!(
+            blocked.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            0
+        );
+        assert_eq!(
+            blocked.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            0
+        );
     }
 }

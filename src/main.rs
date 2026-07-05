@@ -8,6 +8,7 @@ mod activity;
 mod affinity;
 mod app;
 mod assets;
+mod audio_activity;
 mod automation;
 mod background_cpu;
 mod config;

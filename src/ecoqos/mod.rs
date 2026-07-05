@@ -9,8 +9,8 @@ use windows_sys::Win32::{
         GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess,
         ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS,
         NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
         PROCESS_SET_LIMITED_INFORMATION,
     },
 };
@@ -19,6 +19,7 @@ use crate::win_util::{last_error, WinHandle};
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    audio_activity::active_audio_process_ids,
     config::{EcoQosAggressiveness, EcoQosSettings},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
@@ -97,6 +98,7 @@ pub struct EcoQosSnapshot {
     pub unsupported: bool,
     pub scanned_processes: usize,
     pub throttled_processes: usize,
+    pub timer_resolution_ignored_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
     pub auto_excluded_processes: Vec<String>,
@@ -114,6 +116,7 @@ struct ThrottledProcess {
     process_name: String,
     previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     previous_priority: Option<u32>,
+    applied_ignore_timer_resolution: bool,
 }
 
 impl EcoQosManager {
@@ -235,6 +238,7 @@ impl EcoQosManager {
             self.release_non_targets(&target_ids, action_log, "process no longer matches EcoQoS");
         let mut unsupported = false;
         let mut auto_excluded_processes = BTreeSet::new();
+        let active_audio_process_ids = active_audio_process_ids().ok();
 
         for (process_id, name) in target_processes {
             let suppression = self.check_process_suppression(process_id, &name, action_log);
@@ -249,6 +253,7 @@ impl EcoQosManager {
             match apply_efficiency_mode_to_process(
                 process_id,
                 name.clone(),
+                ignore_timer_resolution_allowed(process_id, active_audio_process_ids.as_ref()),
                 &mut self.throttled,
                 action_log,
             ) {
@@ -300,6 +305,11 @@ impl EcoQosManager {
             unsupported,
             scanned_processes,
             throttled_processes: self.throttled.len(),
+            timer_resolution_ignored_processes: self
+                .throttled
+                .values()
+                .filter(|process| process.applied_ignore_timer_resolution)
+                .count(),
             skipped_processes,
             failed_processes: failures.count,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
@@ -425,6 +435,7 @@ impl Default for EcoQosSnapshot {
             unsupported: false,
             scanned_processes: 0,
             throttled_processes: 0,
+            timer_resolution_ignored_processes: 0,
             skipped_processes: 0,
             failed_processes: 0,
             auto_excluded_processes: Vec::new(),
@@ -520,14 +531,17 @@ impl EcoQosFailures {
 fn apply_efficiency_mode_to_process(
     process_id: u32,
     process_name: String,
+    ignore_timer_resolution: bool,
     throttled: &mut BTreeMap<u32, ThrottledProcess>,
     action_log: &mut ActionLog,
 ) -> Result<bool, EcoQosError> {
-    if throttled.contains_key(&process_id) {
+    if let Some(process) = throttled.get_mut(&process_id) {
+        update_efficiency_mode(process_id, process, ignore_timer_resolution)?;
         return Ok(false);
     }
 
-    let process = enable_efficiency_mode(process_id, process_name.clone())?;
+    let process =
+        enable_efficiency_mode(process_id, process_name.clone(), ignore_timer_resolution)?;
     throttled.insert(process_id, process);
     action_log.record(
         ActionLogFeature::EcoQos,
@@ -538,6 +552,24 @@ fn apply_efficiency_mode_to_process(
         "Applied Background Efficiency: enabled EcoQoS and lowered priority.".to_owned(),
     );
     Ok(true)
+}
+
+fn update_efficiency_mode(
+    process_id: u32,
+    process_state: &mut ThrottledProcess,
+    ignore_timer_resolution: bool,
+) -> Result<(), EcoQosError> {
+    if process_state.applied_ignore_timer_resolution == ignore_timer_resolution {
+        return Ok(());
+    }
+
+    let process = ProcessHandle::open(process_id)?;
+    process.set_power_throttling_state(power_throttling_enabled_state(
+        process_state.previous_state,
+        ignore_timer_resolution,
+    ))?;
+    process_state.applied_ignore_timer_resolution = ignore_timer_resolution;
+    Ok(())
 }
 
 fn eco_qos_error_message(error: &EcoQosError) -> String {
@@ -561,15 +593,13 @@ fn process_failure_message(
 fn enable_efficiency_mode(
     process_id: u32,
     process_name: String,
+    ignore_timer_resolution: bool,
 ) -> Result<ThrottledProcess, EcoQosError> {
     let process = ProcessHandle::open(process_id)?;
     let previous_state = process.power_throttling_state().ok();
     let previous_priority = process.priority_class().ok();
 
-    let mut next_state = previous_state.unwrap_or_default();
-    next_state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    next_state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    next_state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    let next_state = power_throttling_enabled_state(previous_state, ignore_timer_resolution);
     process.set_power_throttling_state(next_state)?;
     if let Err(err) = process.set_priority_class(IDLE_PRIORITY_CLASS) {
         let _ = process.set_power_throttling_state(
@@ -582,6 +612,7 @@ fn enable_efficiency_mode(
         process_name,
         previous_state,
         previous_priority,
+        applied_ignore_timer_resolution: ignore_timer_resolution,
     })
 }
 
@@ -620,6 +651,33 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
         ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         StateMask: 0,
     }
+}
+
+fn power_throttling_enabled_state(
+    previous: Option<PROCESS_POWER_THROTTLING_STATE>,
+    ignore_timer_resolution: bool,
+) -> PROCESS_POWER_THROTTLING_STATE {
+    let previous_ignore_timer_resolution = previous.is_some_and(|state| {
+        (state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION) != 0
+    });
+    let mut state = previous.unwrap_or_else(power_throttling_disabled_state);
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask |=
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    if ignore_timer_resolution || previous_ignore_timer_resolution {
+        state.StateMask |= PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    } else {
+        state.StateMask &= !PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    }
+    state
+}
+
+fn ignore_timer_resolution_allowed(
+    process_id: u32,
+    active_audio_process_ids: Option<&BTreeSet<u32>>,
+) -> bool {
+    active_audio_process_ids.is_some_and(|ids| !ids.contains(&process_id))
 }
 
 struct ProcessHandle(WinHandle);
@@ -865,6 +923,39 @@ mod tests {
     }
 
     #[test]
+    fn enabled_state_sets_timer_ignore_only_when_allowed() {
+        let allowed = power_throttling_enabled_state(None, true);
+        assert_ne!(
+            allowed.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            0
+        );
+        assert_ne!(
+            allowed.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            0
+        );
+
+        let blocked = power_throttling_enabled_state(None, false);
+        assert_ne!(
+            blocked.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            0
+        );
+        assert_eq!(
+            blocked.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+            0
+        );
+    }
+
+    #[test]
+    fn timer_ignore_guard_fails_closed_for_audio_detection() {
+        let mut audio_processes = BTreeSet::new();
+        audio_processes.insert(42);
+
+        assert!(!ignore_timer_resolution_allowed(42, Some(&audio_processes)));
+        assert!(ignore_timer_resolution_allowed(7, Some(&audio_processes)));
+        assert!(!ignore_timer_resolution_allowed(7, None));
+    }
+
+    #[test]
     fn foreground_ignore_matches_pid_or_process_name() {
         let mut settings = EcoQosSettings {
             exclude_foreground_app: true,
@@ -912,6 +1003,7 @@ mod tests {
                 process_name: "exited.exe".to_owned(),
                 previous_state: None,
                 previous_priority: None,
+                applied_ignore_timer_resolution: false,
             },
         );
         let mut log = ActionLog::new(8);

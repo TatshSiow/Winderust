@@ -94,7 +94,7 @@ use crate::{
         MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
     scheduler::{CpuUsageScheduler, Scheduler},
-    startup,
+    self_power, startup,
     suspension::{self, AppSuspensionSnapshot},
     thread_priority::{self, ThreadPrioritySnapshot},
     timer_resolution::{self, TimerResolutionSnapshot},
@@ -114,6 +114,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
+const SMART_SAVER_APP_TICK_INTERVAL: Duration = Duration::from_secs(60);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DASHBOARD_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TIMER_RESOLUTION_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -464,6 +465,7 @@ pub struct WinderustApp {
     next_process_refresh: Instant,
     last_switch_attempt: Option<(String, Instant)>,
     power: PowerPlanManager,
+    smart_saver_processor_restore: Option<(String, ProcessorPowerAcDcValues)>,
     effective_power_mode_monitor: Option<EffectivePowerModeMonitor>,
     effective_power_mode: EffectivePowerMode,
     background_automation: BackgroundAutomation,
@@ -1110,6 +1112,7 @@ impl WinderustApp {
             next_process_refresh: Instant::now(),
             last_switch_attempt: None,
             power,
+            smart_saver_processor_restore: None,
             effective_power_mode_monitor,
             effective_power_mode,
             background_automation,
@@ -1196,6 +1199,8 @@ impl WinderustApp {
         app.subscribe_to_activity_sliders(window, cx);
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
+        let startup_settings = app.saved_settings.clone();
+        app.sync_power_mode_processor_policy(&startup_settings);
         app.run_check(false, Instant::now());
         app.sync_processor_power_slider_states(window, cx);
         app.sync_input_hook();
@@ -1515,8 +1520,9 @@ impl WinderustApp {
     }
 
     fn schedule_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let tick_interval = app_tick_interval(&self.saved_settings, self.start_minimized_applied);
         self._tick_task = cx.spawn_in(window, async move |this, cx| {
-            Timer::after(APP_TICK_INTERVAL).await;
+            Timer::after(tick_interval).await;
             let _ = cx.update(move |window, app_cx| {
                 if let Some(this) = this.upgrade() {
                     this.update(app_cx, |app, cx| match app.tick(window, cx) {
@@ -1583,6 +1589,50 @@ impl WinderustApp {
 
         self.effective_power_mode = mode;
         true
+    }
+
+    fn sync_power_mode_processor_policy(&mut self, settings: &Settings) {
+        if settings.smart_saver.enabled {
+            let _ = self_power::enable_smart_saver_mode();
+        } else {
+            let _ = self_power::disable_smart_saver_mode();
+        }
+
+        if let Some(values) = power_mode_processor_values(settings) {
+            self.apply_power_mode_processor_policy(values);
+        } else {
+            self.restore_smart_saver_processor_policy();
+        }
+    }
+
+    fn apply_power_mode_processor_policy(&mut self, values: ProcessorPowerValues) {
+        if self.smart_saver_processor_restore.is_some() {
+            self.restore_smart_saver_processor_policy();
+        }
+
+        let Ok(Some(plan)) = self.power.active_plan() else {
+            return;
+        };
+        let Ok(previous_values) = self.power.read_processor_power_values(&plan.guid) else {
+            return;
+        };
+        let values = ProcessorPowerAcDcValues::same(values);
+        if self
+            .power
+            .apply_processor_power_values(&plan.guid, values)
+            .is_ok()
+        {
+            self.smart_saver_processor_restore = Some((plan.guid, previous_values));
+            self.refresh_active_plan();
+        }
+    }
+
+    fn restore_smart_saver_processor_policy(&mut self) {
+        let Some((guid, values)) = self.smart_saver_processor_restore.take() else {
+            return;
+        };
+        let _ = self.power.apply_processor_power_values(&guid, values);
+        self.refresh_active_plan();
     }
 
     fn refresh_processor_power_target_plan_personality(&mut self) -> bool {
@@ -1765,6 +1815,40 @@ impl WinderustApp {
                 self.processor_power_dc_boost_policy = value;
             }
         }
+    }
+
+    fn smart_saver_processor_policy_percent(&self, field: SmartSaverProcessorPolicyField) -> u32 {
+        let values = self
+            .settings
+            .smart_saver
+            .processor_policy_values
+            .normalized();
+        match field {
+            SmartSaverProcessorPolicyField::CoreParkingMin => values.core_parking_min,
+            SmartSaverProcessorPolicyField::PerformanceMin => values.performance_min,
+            SmartSaverProcessorPolicyField::PerformanceMax => values.performance_max,
+            SmartSaverProcessorPolicyField::BoostPolicy => values.boost_policy,
+        }
+    }
+
+    fn set_smart_saver_processor_policy_percent(
+        &mut self,
+        field: SmartSaverProcessorPolicyField,
+        value: u64,
+    ) {
+        let mut values = self
+            .settings
+            .smart_saver
+            .processor_policy_values
+            .normalized();
+        let value = value.min(100) as u32;
+        match field {
+            SmartSaverProcessorPolicyField::CoreParkingMin => values.core_parking_min = value,
+            SmartSaverProcessorPolicyField::PerformanceMin => values.performance_min = value,
+            SmartSaverProcessorPolicyField::PerformanceMax => values.performance_max = value,
+            SmartSaverProcessorPolicyField::BoostPolicy => values.boost_policy = value,
+        }
+        self.settings.smart_saver.processor_policy_values = values.normalized();
     }
 
     fn sync_processor_power_slider_states(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2881,7 +2965,6 @@ impl WinderustApp {
                 | Page::DynamicPriorityBoost
                 | Page::CpuLimiter
                 | Page::BackgroundCpuRestriction
-                | Page::WorkloadEngine
                 | Page::IoPriority
                 | Page::GpuPriority
                 | Page::MemoryPriority
@@ -3487,6 +3570,11 @@ impl WinderustApp {
                     );
                 }
             }
+            NumericField::SmartSaverProcessorPolicy(field) => {
+                if let Some(value) = parse_u64_input(&value, 0, 100) {
+                    self.set_smart_saver_processor_policy_percent(field, value);
+                }
+            }
             NumericField::CpuThreshold(index) => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
                     self.set_cpu_threshold_slider_value(
@@ -3931,9 +4019,17 @@ impl WinderustApp {
         }
 
         let settings = Arc::new(self.background_settings());
+        self.sync_power_mode_processor_policy(settings.as_ref());
         self.background_automation
             .update_settings(settings.as_ref());
         self.last_background_settings = settings;
+    }
+}
+
+impl Drop for WinderustApp {
+    fn drop(&mut self) {
+        self.restore_smart_saver_processor_policy();
+        let _ = self_power::disable_smart_saver_mode();
     }
 }
 
@@ -3958,6 +4054,7 @@ fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Set
             == current.general.pause_power_plan_switching_while_plugged_in
         && settings.general.check_interval_ms == current.general.check_interval_ms
         && settings.advanced == current.advanced
+        && settings.smart_saver == saved.smart_saver
         && settings.power_plans == saved.power_plans
         && settings.activity_mode == saved.activity_mode
         && settings.foreground_rules == saved.foreground_rules
@@ -4416,11 +4513,11 @@ impl WinderustApp {
             Page::BackgroundCpuRestriction => {
                 self.render_background_cpu_restriction_page(window, cx)
             }
+            Page::SmartSaverMode => self.render_smart_saver_page(window, cx),
             Page::EfficiencyMode => self.render_efficiency_page(window, cx),
             Page::AppSuspension => self.render_suspension_page(window, cx),
             Page::PerformanceMode => self.render_performance_mode_page(window, cx),
             Page::ProcessList => self.render_process_list_page(window, cx),
-            Page::WorkloadEngine => self.render_workload_engine_page(window, cx),
             Page::IoPriority => self.render_io_priority_page(window, cx),
             Page::GpuPriority => self.render_gpu_priority_page(window, cx),
             Page::MemoryPriority => self.render_memory_priority_page(window, cx),
@@ -6156,6 +6253,254 @@ impl WinderustApp {
         card.into_any_element()
     }
 
+    fn render_smart_saver_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = adaptive_engine_enabled(&self.settings);
+        let timer_guard_available = self.settings.eco_qos.enabled
+            || (self.settings.workload_engine.enabled
+                && self
+                    .settings
+                    .workload_engine
+                    .workload_engine_efficiency_mode_enabled);
+        let timer_guard_label = if timer_guard_available {
+            t!("smart_saver.audio_guarded").to_string()
+        } else if self.settings.smart_saver.enabled
+            && self.settings.smart_saver.processor_policy_enabled
+        {
+            t!("smart_saver.cpu_saver_active").to_string()
+        } else if self.settings.smart_saver.enabled {
+            t!("smart_saver.winderust_guarded").to_string()
+        } else {
+            t!("smart_saver.timer_guard_unavailable").to_string()
+        };
+        let advanced_enabled = self
+            .settings
+            .workload_engine
+            .workload_engine_advanced_settings_enabled;
+        let advanced_cards_motion_id = "expanded-child-power-mode-advanced-cards";
+        let advanced_cards_progress = expandable_motion_progress(advanced_cards_motion_id);
+        if advanced_cards_progress.is_some() {
+            window.request_animation_frame();
+        }
+        let workload_engine_input = self
+            .inputs
+            .workload_engine_process
+            .read(cx)
+            .value()
+            .to_string();
+        let workload_engine_tunables =
+            self.render_workload_engine_tunables(window, cx, self.settings.workload_engine.enabled);
+        let workload_engine_efficiency = feature_body(self.settings.workload_engine.enabled)
+            .child(self.render_workload_engine_efficiency_group(window, cx));
+        let workload_engine_exclusions = feature_body(self.settings.workload_engine.enabled).child(
+            self.render_workload_engine_exclusions_section(
+                window,
+                cx,
+                &workload_engine_input,
+                self.settings.workload_engine.enabled,
+            ),
+        );
+        let manual_tuning = feature_body(enabled)
+            .child(section_title_text(
+                t!("smart_saver.cpu_behaviour").to_string(),
+            ))
+            .child(self.render_smart_saver_processor_policy_group(window, cx))
+            .child(self.render_smart_saver_cpu_scheduling_group(window, cx))
+            .child(setting_action_card_with_help(
+                "smart-saver-cpu-pressure",
+                t!("smart_saver.cpu_pressure").to_string(),
+                t!("smart_saver.cpu_pressure_help").to_string(),
+                switch_toggle_action(
+                    "smart-saver-cpu-pressure-toggle",
+                    self.settings.workload_engine.workload_engine_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.workload_engine.workload_engine_enabled = *checked;
+                        if *checked {
+                            app.settings.workload_engine.enabled = true;
+                            app.settings
+                                .workload_engine
+                                .workload_engine_affinity_escalation_enabled = true;
+                            app.settings
+                                .workload_engine
+                                .lower_background_auto_cpu_percent = true;
+                        }
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .child(disabled_feature_body(
+                "smart-saver-workload-engine-tunables",
+                workload_engine_tunables,
+                self.settings.workload_engine.enabled,
+                cx,
+            ))
+            .child(section_title_text(t!("smart_saver.misc").to_string()))
+            .child(disabled_feature_body(
+                "smart-saver-workload-engine-efficiency",
+                workload_engine_efficiency,
+                self.settings.workload_engine.enabled,
+                cx,
+            ))
+            .child(setting_action_card_with_help(
+                "smart-saver-timer-requests",
+                t!("smart_saver.timer_requests").to_string(),
+                t!("smart_saver.timer_requests_help").to_string(),
+                value_pill(timer_guard_label).into_any_element(),
+            ))
+            .child(disabled_feature_body(
+                "smart-saver-workload-engine-exclusions",
+                workload_engine_exclusions,
+                self.settings.workload_engine.enabled,
+                cx,
+            ));
+        let mut body =
+            feature_body(enabled).child(self.render_power_mode_advanced_settings_toggle(cx));
+        if advanced_enabled || advanced_cards_progress.is_some() {
+            let cards = manual_tuning.into_any_element();
+            body = body.child(if let Some(progress) = advanced_cards_progress {
+                expanded_child_at_progress(cards, None, progress)
+            } else {
+                expanded_child(cards)
+            });
+        } else {
+            remember_expanded_child_hidden("power-mode-advanced-cards");
+        }
+
+        let help = tooltip_lines(vec![
+            t!("smart_saver.intro_1").to_string(),
+            t!("smart_saver.intro_2").to_string(),
+            t!("smart_saver.intro_3").to_string(),
+        ]);
+
+        self.page_shell(Page::SmartSaverMode, cx)
+            .child(feature_toggle_switch_with_help(
+                "smart-saver-enabled",
+                t!("smart_saver.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    apply_smart_saver_mode(&mut app.settings, *checked);
+                    cx.notify();
+                }),
+            ))
+            .child(self.render_power_mode_preset_selector(window, cx))
+            .child(disabled_feature_body("smart-saver-body", body, enabled, cx))
+            .child(self.render_smart_saver_status_card())
+            .into_any_element()
+    }
+
+    fn render_power_mode_preset_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected_preset = PowerModePreset::ALL
+            .iter()
+            .copied()
+            .find(|preset| power_mode_matches_preset(&self.settings, *preset));
+        let dropdown = self.render_dropdown_select(
+            "smart-saver-power-mode",
+            selected_preset
+                .map(power_mode_preset_label)
+                .unwrap_or_else(|| t!("common.custom").to_string()),
+            true,
+            DropdownSelectWidth::Standard,
+            PowerModePreset::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for preset in PowerModePreset::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("smart-saver-power-mode-option-{preset:?}")),
+                            power_mode_preset_label(preset),
+                            selected_preset == Some(preset),
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            apply_power_mode_preset(&mut app.settings, preset);
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        );
+
+        setting_action_card_with_help(
+            "smart-saver-power-mode",
+            t!("smart_saver.power_mode").to_string(),
+            t!("smart_saver.power_mode_help").to_string(),
+            dropdown,
+        )
+        .into_any_element()
+    }
+
+    fn render_smart_saver_status_card(&self) -> gpui::Div {
+        let power_mode = PowerModePreset::ALL
+            .iter()
+            .copied()
+            .find(|preset| power_mode_matches_preset(&self.settings, *preset))
+            .map(power_mode_preset_label)
+            .unwrap_or_else(|| t!("common.custom").to_string());
+        titled_status_list(
+            &t!("smart_saver.status"),
+            vec![
+                (t!("smart_saver.power_mode").to_string(), power_mode),
+                (
+                    t!("smart_saver.processor_policy").to_string(),
+                    if self.settings.smart_saver.enabled
+                        && self.settings.smart_saver.processor_policy_enabled
+                    {
+                        t!("common.enabled").to_string()
+                    } else {
+                        t!("common.disabled").to_string()
+                    },
+                ),
+                (
+                    t!("smart_saver.background_efficiency").to_string(),
+                    if self.settings.eco_qos.enabled {
+                        format!(
+                            "{} {}",
+                            self.eco_qos_status.throttled_processes,
+                            t!("efficiency.throttled_processes")
+                        )
+                    } else {
+                        t!("common.disabled").to_string()
+                    },
+                ),
+                (
+                    t!("smart_saver.timer_ignored").to_string(),
+                    format!(
+                        "{} {}",
+                        self.eco_qos_status.timer_resolution_ignored_processes
+                            + self
+                                .workload_engine_status
+                                .timer_resolution_ignored_processes,
+                        t!("smart_saver.audio_guarded")
+                    ),
+                ),
+                (
+                    t!("smart_saver.workload_engine").to_string(),
+                    if self.settings.workload_engine.enabled {
+                        format!(
+                            "{} {}",
+                            self.workload_engine_status.background_adjusted_processes,
+                            t!("workload_engine.background_adjusted")
+                        )
+                    } else {
+                        t!("common.disabled").to_string()
+                    },
+                ),
+                (
+                    t!("smart_saver.restrained").to_string(),
+                    self.workload_engine_status.workload_engine_message.clone(),
+                ),
+            ],
+        )
+    }
+
     fn render_efficiency_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let input_value = self.inputs.eco_qos_exclusion.read(cx).value().to_string();
         let enabled = self.settings.eco_qos.enabled;
@@ -7576,173 +7921,27 @@ impl WinderustApp {
         list.into_any_element()
     }
 
-    fn render_workload_engine_page(
+    fn render_workload_engine_tunables(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .workload_engine_process
-            .read(cx)
-            .value()
-            .to_string();
-        let enabled = self.settings.workload_engine.enabled;
-        let advanced_enabled = self
-            .settings
-            .workload_engine
-            .workload_engine_advanced_settings_enabled;
-        let advanced_section_motion_id = "expanded-child-workload-engine-advanced-section";
-        let advanced_cards_motion_id = "expanded-child-workload-engine-advanced-cards";
-        let advanced_section_progress = expandable_motion_progress(advanced_section_motion_id);
-        let advanced_cards_progress = expandable_motion_progress(advanced_cards_motion_id);
-        if advanced_section_progress.is_some() || advanced_cards_progress.is_some() {
-            window.request_animation_frame();
-        }
-        let mut body = feature_body(enabled)
-            .child(self.render_workload_engine_preset_selector(window, cx))
-            .child(self.render_workload_engine_advanced_settings_toggle(cx));
-
-        if advanced_enabled || advanced_section_progress.is_some() {
-            let section = section_header(
-                &t!("workload_engine.workload_engine_advanced"),
-                t!("workload_engine.workload_engine_advanced_help").to_string(),
-            )
-            .into_any_element();
-            body = body.child(if let Some(progress) = advanced_section_progress {
-                expanded_child_at_progress(section, None, progress)
-            } else {
-                expanded_child(section)
-            });
-        } else {
-            remember_expanded_child_hidden("workload-engine-advanced-section");
-        }
-
-        if advanced_enabled || advanced_cards_progress.is_some() {
-            let cards = self.render_workload_engine_advanced_cards(window, cx);
-            body = body.child(if let Some(progress) = advanced_cards_progress {
-                expanded_child_at_progress(cards, None, progress)
-            } else {
-                expanded_child(cards)
-            });
-        } else {
-            remember_expanded_child_hidden("workload-engine-advanced-cards");
-        }
-        body = body.child(self.render_workload_engine_exclusions_section(
-            window,
-            cx,
-            &input_value,
-            enabled,
-        ));
-
-        let help = tooltip_lines(vec![
-            t!("workload_engine.intro_1").to_string(),
-            t!("workload_engine.intro_2").to_string(),
-            t!("workload_engine.intro_3").to_string(),
-        ]);
-
-        self.page_shell(self.page, cx)
-            .child(feature_toggle_switch_with_help(
-                "workload-engine-enabled",
-                t!("workload_engine.enable").to_string(),
-                help,
-                enabled,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.workload_engine.enabled = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(disabled_feature_body(
-                "workload-engine-body",
-                body,
-                enabled,
-                cx,
-            ))
-            .into_any_element()
+        enabled: bool,
+    ) -> gpui::Div {
+        feature_body(enabled).child(self.render_workload_engine_advanced_cards(window, cx))
     }
 
-    fn render_workload_engine_preset_selector(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let settings = &self.settings.workload_engine;
-        let selected_behavior = WorkloadEngineBehavior::ALL
-            .iter()
-            .copied()
-            .find(|behavior| workload_engine_matches_behavior(settings, *behavior));
-        let dropdown = self.render_dropdown_select(
-            "workload-engine-behavior",
-            selected_behavior
-                .map(workload_engine_behavior_label)
-                .unwrap_or_else(|| "Custom".to_owned()),
-            true,
-            DropdownSelectWidth::Standard,
-            WorkloadEngineBehavior::ALL.len(),
-            window,
-            cx,
-            |max_height, cx| {
-                let mut options = dropdown_surface(cx, max_height);
-                for behavior in WorkloadEngineBehavior::ALL {
-                    options = options.child(
-                        dropdown_option_row(
-                            SharedString::from(format!(
-                                "workload-engine-behavior-option-{behavior:?}"
-                            )),
-                            workload_engine_behavior_label(behavior),
-                            selected_behavior == Some(behavior),
-                            cx,
-                        )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            begin_workload_engine_preset_control_motions(
-                                &app.settings.workload_engine,
-                                behavior,
-                                cx,
-                            );
-                            apply_workload_engine_behavior(
-                                &mut app.settings.workload_engine,
-                                behavior,
-                            );
-                            app.active_power_plan_picker = None;
-                            cx.notify();
-                        })),
-                    );
-                }
-                options
-            },
-        );
-
+    fn render_power_mode_advanced_settings_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
         setting_action_card_with_help(
-            "workload-engine-preset",
-            t!("workload_engine.workload_engine_preset").to_string(),
-            t!("workload_engine.workload_engine_preset_help").to_string(),
-            dropdown,
-        )
-        .into_any_element()
-    }
-
-    fn render_workload_engine_advanced_settings_toggle(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        setting_action_card_with_help(
-            "workload-engine-advanced-settings-enabled",
-            t!("workload_engine.workload_engine_advanced_settings").to_string(),
-            t!("workload_engine.workload_engine_advanced_settings_help").to_string(),
+            "power-mode-advanced-settings-enabled",
+            t!("smart_saver.advanced_settings").to_string(),
+            t!("smart_saver.advanced_settings_help").to_string(),
             switch_toggle_action(
-                "workload-engine-advanced-settings-toggle",
+                "power-mode-advanced-settings-toggle",
                 self.settings
                     .workload_engine
                     .workload_engine_advanced_settings_enabled,
                 cx.listener(|app, checked, _, cx| {
-                    begin_expandable_motion(
-                        "expanded-child-workload-engine-advanced-section",
-                        *checked,
-                    );
-                    begin_expandable_motion(
-                        "expanded-child-workload-engine-advanced-cards",
-                        *checked,
-                    );
+                    begin_expandable_motion("expanded-child-power-mode-advanced-cards", *checked);
                     app.settings
                         .workload_engine
                         .workload_engine_advanced_settings_enabled = *checked;
@@ -7753,29 +7952,254 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    fn render_workload_engine_advanced_cards(
+    fn render_smart_saver_processor_policy_group(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        setting_group_with_help(
+            SettingGroupTarget::SmartSaverProcessorPolicy,
+            (
+                t!("smart_saver.processor_policy").to_string(),
+                t!("smart_saver.processor_policy_help").to_string(),
+            ),
+            setting_group_switch_action(
+                "smart-saver-processor-policy-toggle",
+                self.settings.smart_saver.processor_policy_enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.smart_saver.processor_policy_enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::SmartSaverProcessorPolicy),
+            vec![
+                self.render_smart_saver_processor_policy_row(
+                    SmartSaverProcessorPolicyField::CoreParkingMin,
+                    "smart-saver-processor-policy-core-parking-min",
+                    t!("processor_power.core_parking_min").to_string(),
+                    cx,
+                ),
+                self.render_smart_saver_processor_policy_row(
+                    SmartSaverProcessorPolicyField::PerformanceMin,
+                    "smart-saver-processor-policy-performance-min",
+                    t!("processor_power.processor_min").to_string(),
+                    cx,
+                ),
+                self.render_smart_saver_processor_policy_row(
+                    SmartSaverProcessorPolicyField::PerformanceMax,
+                    "smart-saver-processor-policy-performance-max",
+                    t!("processor_power.processor_max").to_string(),
+                    cx,
+                ),
+                self.render_smart_saver_processor_policy_row(
+                    SmartSaverProcessorPolicyField::BoostPolicy,
+                    "smart-saver-processor-policy-boost-policy",
+                    t!("processor_power.boost_policy").to_string(),
+                    cx,
+                ),
+                setting_group_action_row(
+                    "smart-saver-processor-policy-boost-mode",
+                    t!("processor_power.boost_mode").to_string(),
+                    self.render_smart_saver_processor_boost_mode_picker(window, cx),
+                    true,
+                )
+                .into_any_element(),
+            ],
+            window,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    fn render_smart_saver_processor_policy_row(
+        &self,
+        field: SmartSaverProcessorPolicyField,
+        id: &'static str,
+        title: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let value = u64::from(self.smart_saver_processor_policy_percent(field));
+        setting_group_stepper_row_u64(
+            id,
+            title,
+            value,
+            self.render_numeric_value(
+                NumericField::SmartSaverProcessorPolicy(field),
+                format!("{value}%"),
+                value.to_string(),
+                cx,
+            ),
+            true,
+            cx.listener(move |app, change: &StepChange<u64>, _, cx| {
+                let current = u64::from(app.smart_saver_processor_policy_percent(field));
+                let value = apply_u64_step(current, change, 0, 100);
+                app.set_smart_saver_processor_policy_percent(field, value);
+                cx.notify();
+            }),
+        )
+    }
+
+    fn render_smart_saver_processor_boost_mode_picker(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let picker_id = "smart-saver-processor-policy-boost-mode-picker";
+        let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id);
+        let placement = self.dropdown_placement(
+            picker_id,
+            dropdown_list_height(ProcessorBoostMode::ALL.len()),
+            window,
+        );
+        let selected = self
+            .settings
+            .smart_saver
+            .processor_policy_values
+            .normalized()
+            .boost_mode;
+        let mut options = dropdown_surface(cx, placement.max_height);
+        for boost_mode in ProcessorBoostMode::ALL {
+            options = options.child(
+                dropdown_option_row(
+                    SharedString::from(format!(
+                        "smart-saver-processor-policy-boost-mode-option-{boost_mode:?}"
+                    )),
+                    processor_boost_mode_label(boost_mode),
+                    selected == boost_mode,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    let mut values = app
+                        .settings
+                        .smart_saver
+                        .processor_policy_values
+                        .normalized();
+                    values.boost_mode = boost_mode;
+                    app.settings.smart_saver.processor_policy_values = values;
+                    app.active_power_plan_picker = None;
+                    cx.notify();
+                })),
+            );
+        }
+
+        let phase = dropdown_popup_phase(picker_id, is_open, cx);
+        dropdown_select_container(DropdownSelectWidth::Wide)
+            .child(
+                dropdown_select_control(
+                    SharedString::from(format!("{picker_id}-control")),
+                    processor_boost_mode_label(selected),
+                    true,
+                    is_open,
+                    phase,
+                    cx,
+                )
+                .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                    app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
+                        != Some(picker_id))
+                    .then_some(picker_id.to_owned());
+                    cx.notify();
+                })),
+            )
+            .child(dropdown_anchor_sensor(
+                picker_id,
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
+            .child(dropdown_popup_or_empty(
+                SharedString::from(picker_id),
+                phase,
+                placement,
+                options,
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    fn render_smart_saver_cpu_scheduling_group(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        setting_group_with_help(
+            SettingGroupTarget::SmartSaverCpuScheduling,
+            (
+                t!("smart_saver.cpu_scheduling").to_string(),
+                t!("smart_saver.cpu_scheduling_help").to_string(),
+            ),
+            setting_group_switch_action(
+                "smart-saver-workload-engine-toggle",
+                self.settings.workload_engine.enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.workload_engine.enabled = *checked;
+                    cx.notify();
+                }),
+            ),
+            self.is_setting_group_collapsed(SettingGroupTarget::SmartSaverCpuScheduling),
+            vec![setting_group_action_row_with_help(
+                "smart-saver-cpu-scheduling-target",
+                t!("smart_saver.cpu_scheduling_target").to_string(),
+                t!("smart_saver.cpu_scheduling_target_help").to_string(),
+                self.render_workload_engine_target_preset_selector(window, cx),
+                true,
+            )
+            .into_any_element()],
+            window,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    fn render_workload_engine_target_preset_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected_preset = WorkloadEnginePreset::ALL
+            .iter()
+            .copied()
+            .find(|preset| workload_engine_matches_preset(&self.settings.workload_engine, *preset));
+        self.render_dropdown_select(
+            "smart-saver-cpu-scheduling-target-preset",
+            selected_preset
+                .map(workload_engine_preset_label)
+                .unwrap_or_else(|| t!("common.custom").to_string()),
+            true,
+            DropdownSelectWidth::Standard,
+            WorkloadEnginePreset::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for preset in WorkloadEnginePreset::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "smart-saver-cpu-scheduling-target-option-{preset:?}"
+                            )),
+                            workload_engine_preset_label(preset),
+                            selected_preset == Some(preset),
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            apply_workload_engine_preset(&mut app.settings.workload_engine, preset);
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    fn render_workload_engine_efficiency_group(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let settings = &self.settings.workload_engine;
         let enabled = settings.enabled;
-        let process_priority_action = if self.settings.eco_qos.enabled {
-            value_pill(t!("workload_engine.background_efficiency_handled").to_string())
-                .into_any_element()
-        } else {
-            setting_group_switch_action(
-                "workload-engine-lower-background-toggle",
-                settings.lower_background_apps,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings.workload_engine.lower_background_apps = *checked;
-                    cx.notify();
-                }),
-            )
-        };
-        let auto_efficiency_available = !self.settings.eco_qos.enabled;
         let auto_efficiency_controls_enabled = enabled
-            && auto_efficiency_available
+            && !self.settings.eco_qos.enabled
             && settings.workload_engine_efficiency_mode_enabled;
         let efficiency_action = if self.settings.eco_qos.enabled {
             value_pill(t!("workload_engine.background_efficiency_handled").to_string())
@@ -7788,6 +8212,56 @@ impl WinderustApp {
                     app.settings
                         .workload_engine
                         .workload_engine_efficiency_mode_enabled = *checked;
+                    cx.notify();
+                }),
+            )
+        };
+
+        setting_group_with_help(
+            SettingGroupTarget::WorkloadEngineEfficiency,
+            (
+                t!("workload_engine.auto_efficiency_mode").to_string(),
+                t!("workload_engine.auto_efficiency_mode_help").to_string(),
+            ),
+            efficiency_action,
+            self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineEfficiency),
+            vec![setting_group_action_row_with_help(
+                "workload-engine-auto-efficiency-level",
+                t!("workload_engine.auto_efficiency_level").to_string(),
+                t!("workload_engine.auto_efficiency_level_help").to_string(),
+                self.render_efficiency_aggressiveness_picker(
+                    self.settings.eco_qos.aggressiveness,
+                    auto_efficiency_controls_enabled,
+                    window,
+                    cx,
+                ),
+                true,
+            )
+            .when(!auto_efficiency_controls_enabled, |row| {
+                row.opacity(0.42).cursor_default()
+            })
+            .into_any_element()],
+            window,
+            cx,
+        )
+        .into_any_element()
+    }
+
+    fn render_workload_engine_advanced_cards(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let settings = &self.settings.workload_engine;
+        let process_priority_action = if self.settings.eco_qos.enabled {
+            value_pill(t!("workload_engine.background_efficiency_handled").to_string())
+                .into_any_element()
+        } else {
+            setting_group_switch_action(
+                "workload-engine-lower-background-toggle",
+                settings.lower_background_apps,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.workload_engine.lower_background_apps = *checked;
                     cx.notify();
                 }),
             )
@@ -7849,95 +8323,6 @@ impl WinderustApp {
             );
         }
         let rows = vec![
-            setting_group_with_help(
-                SettingGroupTarget::WorkloadEngineProcessPriority,
-                (
-                    t!("workload_engine.auto_process_priority").to_string(),
-                    t!("workload_engine.auto_process_priority_help").to_string(),
-                ),
-                process_priority_action,
-                self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineProcessPriority),
-                vec![
-                    setting_group_action_row(
-                        "workload-engine-auto-background-process-priority",
-                        t!("workload_engine.background_priority").to_string(),
-                        self.render_workload_engine_background_priority_selector(window, cx),
-                        true,
-                    )
-                    .into_any_element(),
-                    self.render_foreground_boost_selector(window, cx),
-                ],
-                window,
-                cx,
-            )
-            .into_any_element(),
-            self.render_workload_engine_priority_assist_group(window, cx),
-            setting_group_with_help(
-                SettingGroupTarget::WorkloadEngineMemoryPriority,
-                (
-                    t!("workload_engine.auto_memory_priority").to_string(),
-                    t!("workload_engine.auto_memory_priority_help").to_string(),
-                ),
-                setting_group_switch_action(
-                    "workload-engine-auto-memory-priority-switch",
-                    settings.workload_engine_memory_priority_enabled,
-                    cx.listener(|app, checked, _, cx| {
-                        app.settings
-                            .workload_engine
-                            .workload_engine_memory_priority_enabled = *checked;
-                        cx.notify();
-                    }),
-                ),
-                self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineMemoryPriority),
-                vec![
-                    setting_group_action_row(
-                        "workload-engine-auto-foreground-memory-priority-level",
-                        t!("workload_engine.workload_engine_foreground_memory_priority_level")
-                            .to_string(),
-                        self.render_workload_engine_foreground_memory_priority_selector(window, cx),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_action_row(
-                        "workload-engine-auto-memory-priority-level",
-                        t!("workload_engine.workload_engine_memory_priority_level").to_string(),
-                        self.render_workload_engine_memory_priority_selector(window, cx),
-                        true,
-                    )
-                    .into_any_element(),
-                ],
-                window,
-                cx,
-            )
-            .into_any_element(),
-            setting_group_with_help(
-                SettingGroupTarget::WorkloadEngineEfficiency,
-                (
-                    t!("workload_engine.auto_efficiency_mode").to_string(),
-                    t!("workload_engine.auto_efficiency_mode_help").to_string(),
-                ),
-                efficiency_action,
-                self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineEfficiency),
-                vec![setting_group_action_row_with_help(
-                    "workload-engine-auto-efficiency-level",
-                    t!("workload_engine.auto_efficiency_level").to_string(),
-                    t!("workload_engine.auto_efficiency_level_help").to_string(),
-                    self.render_efficiency_aggressiveness_picker(
-                        self.settings.eco_qos.aggressiveness,
-                        auto_efficiency_controls_enabled,
-                        window,
-                        cx,
-                    ),
-                    true,
-                )
-                .when(!auto_efficiency_controls_enabled, |row| {
-                    row.opacity(0.42).cursor_default()
-                })
-                .into_any_element()],
-                window,
-                cx,
-            )
-            .into_any_element(),
             setting_group_with_help(
                 SettingGroupTarget::WorkloadEngineAffinity,
                 (
@@ -8169,6 +8554,68 @@ impl WinderustApp {
                             cx.notify();
                         }),
                     ),
+                ],
+                window,
+                cx,
+            )
+            .into_any_element(),
+            section_title_text(t!("smart_saver.priority_control").to_string()).into_any_element(),
+            setting_group_with_help(
+                SettingGroupTarget::WorkloadEngineProcessPriority,
+                (
+                    t!("workload_engine.auto_process_priority").to_string(),
+                    t!("workload_engine.auto_process_priority_help").to_string(),
+                ),
+                process_priority_action,
+                self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineProcessPriority),
+                vec![
+                    setting_group_action_row(
+                        "workload-engine-auto-background-process-priority",
+                        t!("workload_engine.background_priority").to_string(),
+                        self.render_workload_engine_background_priority_selector(window, cx),
+                        true,
+                    )
+                    .into_any_element(),
+                    self.render_foreground_boost_selector(window, cx),
+                ],
+                window,
+                cx,
+            )
+            .into_any_element(),
+            self.render_workload_engine_priority_assist_group(window, cx),
+            setting_group_with_help(
+                SettingGroupTarget::WorkloadEngineMemoryPriority,
+                (
+                    t!("workload_engine.auto_memory_priority").to_string(),
+                    t!("workload_engine.auto_memory_priority_help").to_string(),
+                ),
+                setting_group_switch_action(
+                    "workload-engine-auto-memory-priority-switch",
+                    settings.workload_engine_memory_priority_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings
+                            .workload_engine
+                            .workload_engine_memory_priority_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineMemoryPriority),
+                vec![
+                    setting_group_action_row(
+                        "workload-engine-auto-foreground-memory-priority-level",
+                        t!("workload_engine.workload_engine_foreground_memory_priority_level")
+                            .to_string(),
+                        self.render_workload_engine_foreground_memory_priority_selector(window, cx),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "workload-engine-auto-memory-priority-level",
+                        t!("workload_engine.workload_engine_memory_priority_level").to_string(),
+                        self.render_workload_engine_memory_priority_selector(window, cx),
+                        true,
+                    )
+                    .into_any_element(),
                 ],
                 window,
                 cx,
@@ -15035,6 +15482,8 @@ enum RuleCardTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingGroupTarget {
     AccentColor,
+    SmartSaverCpuScheduling,
+    SmartSaverProcessorPolicy,
     WorkloadEngineAffinity,
     WorkloadEngineBehaviourTuning,
     WorkloadEngineEfficiency,
@@ -15075,16 +15524,24 @@ enum WorkloadEnginePreset {
     MaxForeground,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkloadEngineBehavior {
-    Preset(WorkloadEnginePreset),
+impl WorkloadEnginePreset {
+    const ALL: [Self; 3] = [Self::LowImpact, Self::ForegroundFirst, Self::MaxForeground];
 }
 
-impl WorkloadEngineBehavior {
-    const ALL: [Self; 3] = [
-        Self::Preset(WorkloadEnginePreset::LowImpact),
-        Self::Preset(WorkloadEnginePreset::ForegroundFirst),
-        Self::Preset(WorkloadEnginePreset::MaxForeground),
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PowerModePreset {
+    PowerSave,
+    Balanced,
+    Performance,
+    Speed,
+}
+
+impl PowerModePreset {
+    const ALL: [Self; 4] = [
+        Self::PowerSave,
+        Self::Balanced,
+        Self::Performance,
+        Self::Speed,
     ];
 }
 
@@ -15137,6 +15594,15 @@ enum NumericField {
     CpuLimiterMaxProcessors(usize),
     TimerResolutionRule(usize),
     NetworkThreshold(ThresholdField),
+    SmartSaverProcessorPolicy(SmartSaverProcessorPolicyField),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum SmartSaverProcessorPolicyField {
+    CoreParkingMin,
+    PerformanceMin,
+    PerformanceMax,
+    BoostPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -16252,6 +16718,13 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("process_list.title").to_string(),
             "running processes pid process rules priority gpu cpu affinity efficiency policy overview".to_string(),
         ],
+        Page::SmartSaverMode => vec![
+            t!("smart_saver.intro_1").to_string(),
+            t!("smart_saver.intro_2").to_string(),
+            t!("smart_saver.intro_3").to_string(),
+            t!("smart_saver.timer_requests_help").to_string(),
+            "smart saver power saving ecoqos timer resolution audio guard workload engine cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background".to_string(),
+        ],
         Page::EfficiencyMode => vec![
             t!("efficiency.intro_1").to_string(),
             t!("efficiency.intro_2").to_string(),
@@ -16273,16 +16746,6 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("performance_mode.intro_3").to_string(),
             t!("performance_mode.rules_help").to_string(),
             "running app performance mode power plan process game gaming active restore".to_string(),
-        ],
-        Page::WorkloadEngine => vec![
-            t!("workload_engine.intro_1").to_string(),
-            t!("workload_engine.intro_2").to_string(),
-            t!("workload_engine.intro_3").to_string(),
-            t!("workload_engine.auto_efficiency_mode_help").to_string(),
-            t!("workload_engine.auto_efficiency_level_help").to_string(),
-            t!("workload_engine.workload_engine_preset_help").to_string(),
-            t!("workload_engine.foreground_boost_help").to_string(),
-            "interactivity workload engine responsive balancing foreground boost background priority cpu spike stutter".to_string(),
         ],
         Page::IoPriority => vec![
             t!("io_priority.intro_1").to_string(),
@@ -21630,10 +22093,10 @@ fn nav_icon_name(page: Page) -> NavIcon {
         Page::CpuLimiter => NavIcon::OctagonMinus,
         Page::BackgroundCpuRestriction => NavIcon::MonitorX,
         Page::ProcessList => NavIcon::List,
+        Page::SmartSaverMode => NavIcon::Leaf,
         Page::EfficiencyMode => NavIcon::Leaf,
         Page::AppSuspension => NavIcon::MonitorPause,
         Page::PerformanceMode => NavIcon::Footprints,
-        Page::WorkloadEngine => NavIcon::BrainCog,
         Page::IoPriority => NavIcon::Rotate3d,
         Page::GpuPriority => NavIcon::Gpu,
         Page::MemoryPriority => NavIcon::MemoryStick,
@@ -21654,7 +22117,6 @@ fn nav_icon_name(page: Page) -> NavIcon {
 #[derive(Clone, Copy)]
 enum NavIcon {
     AppWindow,
-    BrainCog,
     BringToFront,
     CalendarDays,
     ChartColumn,
@@ -21697,7 +22159,6 @@ impl IconNamed for NavIcon {
     fn path(self) -> SharedString {
         match self {
             Self::AppWindow => "icons/app-window.svg",
-            Self::BrainCog => "icons/brain-cog.svg",
             Self::BringToFront => "icons/bring-to-front.svg",
             Self::CalendarDays => "icons/calendar-days.svg",
             Self::ChartColumn => "icons/chart-column.svg",
@@ -22015,6 +22476,7 @@ fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorDcPerformanceMin
         | NumericField::ProcessorDcPerformanceMax
         | NumericField::ProcessorDcBoostPolicy
+        | NumericField::SmartSaverProcessorPolicy(_)
         | NumericField::BackgroundCpuRestrictionPercent
         | NumericField::MemoryTrimMemoryLoadThreshold
         | NumericField::MemoryTrimCpuIdleThreshold
@@ -22998,15 +23460,19 @@ fn format_bytes_per_second(bytes_per_second: f64) -> String {
 
 fn input_hook_required(settings: &Settings) -> bool {
     settings.general.enabled
-        && (activity_input_hook_required(settings) || settings.app_suspension.enabled)
+        && (activity_input_hook_required(settings) || app_suspension_input_hook_required(settings))
 }
 
 fn input_hook_config(settings: &Settings) -> InputHookConfig {
+    let app_suspension = app_suspension_input_hook_required(settings);
     InputHookConfig {
-        keyboard: settings.activity_mode.input_detection.keyboard
-            || settings.app_suspension.enabled,
-        mouse: settings.activity_mode.input_detection.mouse || settings.app_suspension.enabled,
+        keyboard: settings.activity_mode.input_detection.keyboard || app_suspension,
+        mouse: settings.activity_mode.input_detection.mouse || app_suspension,
     }
+}
+
+fn app_suspension_input_hook_required(settings: &Settings) -> bool {
+    settings.app_suspension.enabled && !settings.smart_saver.enabled
 }
 
 fn activity_input_hook_required(settings: &Settings) -> bool {
@@ -24039,6 +24505,211 @@ fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
     }
 }
 
+fn adaptive_engine_enabled(settings: &Settings) -> bool {
+    settings.smart_saver.enabled || settings.eco_qos.enabled || settings.workload_engine.enabled
+}
+
+fn app_tick_interval(settings: &Settings, start_minimized_applied: bool) -> Duration {
+    if start_minimized_applied && settings.smart_saver.enabled {
+        SMART_SAVER_APP_TICK_INTERVAL
+    } else {
+        APP_TICK_INTERVAL
+    }
+}
+
+fn apply_smart_saver_mode(settings: &mut Settings, enabled: bool) {
+    settings.smart_saver.enabled = enabled;
+    if !enabled {
+        settings.eco_qos.enabled = false;
+        settings.workload_engine.enabled = false;
+    }
+}
+
+fn power_mode_preset_label(preset: PowerModePreset) -> String {
+    match preset {
+        PowerModePreset::PowerSave => t!("smart_saver.power_mode_powersave").to_string(),
+        PowerModePreset::Balanced => t!("smart_saver.power_mode_balanced").to_string(),
+        PowerModePreset::Performance => t!("smart_saver.power_mode_performance").to_string(),
+        PowerModePreset::Speed => t!("smart_saver.power_mode_speed").to_string(),
+    }
+}
+
+fn workload_engine_preset_label(preset: WorkloadEnginePreset) -> String {
+    match preset {
+        WorkloadEnginePreset::LowImpact => t!("workload_engine.preset_low_impact").to_string(),
+        WorkloadEnginePreset::ForegroundFirst => {
+            t!("workload_engine.preset_foreground_first").to_string()
+        }
+        WorkloadEnginePreset::MaxForeground => {
+            t!("workload_engine.preset_max_foreground").to_string()
+        }
+    }
+}
+
+fn apply_power_mode_preset(settings: &mut Settings, preset: PowerModePreset) {
+    match preset {
+        PowerModePreset::PowerSave => {
+            apply_smart_saver_mode(settings, true);
+            settings.smart_saver.processor_policy_enabled = true;
+            settings.smart_saver.processor_policy_values = power_mode_powersave_processor_values();
+            settings.eco_qos.enabled = true;
+            settings.eco_qos.exclude_foreground_app = true;
+            settings.workload_engine.enabled = true;
+            settings.workload_engine.workload_engine_enabled = true;
+            apply_workload_engine_preset(
+                &mut settings.workload_engine,
+                WorkloadEnginePreset::LowImpact,
+            );
+        }
+        PowerModePreset::Balanced => {
+            apply_smart_saver_mode(settings, true);
+            settings.smart_saver.processor_policy_enabled = true;
+            settings.smart_saver.processor_policy_values = power_mode_balanced_processor_values();
+            settings.eco_qos.enabled = false;
+            settings.workload_engine.enabled = true;
+            settings.workload_engine.workload_engine_enabled = true;
+            apply_workload_engine_preset(
+                &mut settings.workload_engine,
+                WorkloadEnginePreset::LowImpact,
+            );
+        }
+        PowerModePreset::Performance => {
+            apply_smart_saver_mode(settings, false);
+            settings.smart_saver.processor_policy_enabled = true;
+            settings.smart_saver.processor_policy_values =
+                power_mode_performance_processor_values();
+            settings.workload_engine.enabled = true;
+            settings.workload_engine.workload_engine_enabled = true;
+            apply_workload_engine_preset(
+                &mut settings.workload_engine,
+                WorkloadEnginePreset::ForegroundFirst,
+            );
+        }
+        PowerModePreset::Speed => {
+            apply_smart_saver_mode(settings, false);
+            settings.smart_saver.processor_policy_enabled = true;
+            settings.smart_saver.processor_policy_values = power_mode_speed_processor_values();
+            settings.workload_engine.enabled = true;
+            settings.workload_engine.workload_engine_enabled = true;
+            apply_workload_engine_preset(
+                &mut settings.workload_engine,
+                WorkloadEnginePreset::MaxForeground,
+            );
+        }
+    }
+}
+
+fn power_mode_matches_preset(settings: &Settings, preset: PowerModePreset) -> bool {
+    match preset {
+        PowerModePreset::PowerSave => {
+            settings.smart_saver.enabled
+                && settings.smart_saver.processor_policy_enabled
+                && settings.smart_saver.processor_policy_values.normalized()
+                    == power_mode_powersave_processor_values()
+                && settings.eco_qos.enabled
+                && settings.workload_engine.enabled
+                && settings.workload_engine.workload_engine_enabled
+                && workload_engine_matches_preset(
+                    &settings.workload_engine,
+                    WorkloadEnginePreset::LowImpact,
+                )
+        }
+        PowerModePreset::Balanced => {
+            settings.smart_saver.enabled
+                && settings.smart_saver.processor_policy_enabled
+                && settings.smart_saver.processor_policy_values.normalized()
+                    == power_mode_balanced_processor_values()
+                && !settings.eco_qos.enabled
+                && settings.workload_engine.enabled
+                && settings.workload_engine.workload_engine_enabled
+                && workload_engine_matches_preset(
+                    &settings.workload_engine,
+                    WorkloadEnginePreset::LowImpact,
+                )
+        }
+        PowerModePreset::Performance => {
+            !settings.smart_saver.enabled
+                && !settings.eco_qos.enabled
+                && settings.smart_saver.processor_policy_enabled
+                && settings.smart_saver.processor_policy_values.normalized()
+                    == power_mode_performance_processor_values()
+                && settings.workload_engine.enabled
+                && settings.workload_engine.workload_engine_enabled
+                && workload_engine_matches_preset(
+                    &settings.workload_engine,
+                    WorkloadEnginePreset::ForegroundFirst,
+                )
+        }
+        PowerModePreset::Speed => {
+            !settings.smart_saver.enabled
+                && !settings.eco_qos.enabled
+                && settings.smart_saver.processor_policy_enabled
+                && settings.smart_saver.processor_policy_values.normalized()
+                    == power_mode_speed_processor_values()
+                && settings.workload_engine.enabled
+                && settings.workload_engine.workload_engine_enabled
+                && workload_engine_matches_preset(
+                    &settings.workload_engine,
+                    WorkloadEnginePreset::MaxForeground,
+                )
+        }
+    }
+}
+
+fn power_mode_powersave_processor_values() -> ProcessorPowerValues {
+    ProcessorPowerValues::new_with_boost_mode(0, 5, 45, 0, ProcessorBoostMode::Disabled)
+}
+
+fn power_mode_balanced_processor_values() -> ProcessorPowerValues {
+    ProcessorPowerValues::new_with_boost_mode(25, 5, 95, 60, ProcessorBoostMode::EfficientEnabled)
+}
+
+fn power_mode_performance_processor_values() -> ProcessorPowerValues {
+    ProcessorPowerValues::new_with_boost_mode(
+        100,
+        25,
+        100,
+        85,
+        ProcessorBoostMode::EfficientAggressive,
+    )
+}
+
+fn power_mode_speed_processor_values() -> ProcessorPowerValues {
+    ProcessorPowerValues::new_with_boost_mode(100, 25, 100, 100, ProcessorBoostMode::Aggressive)
+}
+
+fn power_mode_processor_values(settings: &Settings) -> Option<ProcessorPowerValues> {
+    if !settings.smart_saver.processor_policy_enabled {
+        return None;
+    }
+
+    let values = settings.smart_saver.processor_policy_values.normalized();
+    if settings.smart_saver.enabled
+        || power_mode_high_performance_processor_policy_enabled(settings, values)
+    {
+        return Some(values);
+    }
+
+    None
+}
+
+fn power_mode_high_performance_processor_policy_enabled(
+    settings: &Settings,
+    values: ProcessorPowerValues,
+) -> bool {
+    !settings.smart_saver.enabled
+        && !settings.eco_qos.enabled
+        && settings.workload_engine.enabled
+        && values != power_mode_powersave_processor_values()
+        && (workload_engine_matches_preset(
+            &settings.workload_engine,
+            WorkloadEnginePreset::ForegroundFirst,
+        ) || workload_engine_matches_preset(
+            &settings.workload_engine,
+            WorkloadEnginePreset::MaxForeground,
+        ))
+}
+
 fn process_memory_priority_setting_label(priority: ProcessMemoryPrioritySetting) -> String {
     match priority {
         ProcessMemoryPrioritySetting::Default => t!("memory_priority.priority_default").to_string(),
@@ -24063,118 +24734,11 @@ fn cpu_affinity_mode_label(mode: CpuAffinityMode) -> String {
     }
 }
 
-fn workload_engine_preset_label(preset: WorkloadEnginePreset) -> String {
-    match preset {
-        WorkloadEnginePreset::LowImpact => t!("workload_engine.preset_low_impact").to_string(),
-        WorkloadEnginePreset::ForegroundFirst => {
-            t!("workload_engine.preset_foreground_first").to_string()
-        }
-        WorkloadEnginePreset::MaxForeground => {
-            t!("workload_engine.preset_max_foreground").to_string()
-        }
-    }
-}
-
-fn workload_engine_behavior_label(behavior: WorkloadEngineBehavior) -> String {
-    match behavior {
-        WorkloadEngineBehavior::Preset(preset) => workload_engine_preset_label(preset),
-    }
-}
-
 fn workload_engine_escalation_tuning_label(auto: bool) -> String {
     if auto {
         t!("workload_engine.priority_auto").to_string()
     } else {
         t!("workload_engine.priority_manual").to_string()
-    }
-}
-
-fn apply_workload_engine_behavior(
-    settings: &mut WorkloadEngineSettings,
-    behavior: WorkloadEngineBehavior,
-) {
-    match behavior {
-        WorkloadEngineBehavior::Preset(preset) => {
-            settings.workload_engine_enabled = true;
-            apply_workload_engine_preset(settings, preset);
-        }
-    }
-}
-
-fn begin_workload_engine_preset_control_motions(
-    settings: &WorkloadEngineSettings,
-    behavior: WorkloadEngineBehavior,
-    cx: &mut App,
-) {
-    match behavior {
-        WorkloadEngineBehavior::Preset(preset) => {
-            let values = workload_engine_preset_values(preset);
-            begin_control_motion_if_changed(
-                "switch-workload-engine-lower-background-toggle",
-                settings.lower_background_apps,
-                values.lower_background_apps,
-                cx,
-            );
-            begin_control_motion_if_changed(
-                "switch-workload-engine-auto-efficiency-switch",
-                settings.workload_engine_efficiency_mode_enabled,
-                values.workload_engine_efficiency_mode_enabled,
-                cx,
-            );
-            begin_control_motion_if_changed(
-                "switch-workload-engine-auto-io-enabled-switch",
-                settings.workload_engine_io_priority.enabled,
-                values.lower_background_io_priority_enabled,
-                cx,
-            );
-            begin_control_motion_if_changed(
-                "switch-workload-engine-auto-thread-enabled-switch",
-                settings.workload_engine_thread_priority.enabled,
-                true,
-                cx,
-            );
-            begin_control_motion_if_changed(
-                "switch-workload-engine-auto-boost-enabled-switch",
-                settings.workload_engine_priority_boost.enabled,
-                true,
-                cx,
-            );
-            begin_control_motion_if_changed(
-                "switch-workload-engine-auto-gpu-enabled-switch",
-                settings.workload_engine_gpu_priority.enabled,
-                preset != WorkloadEnginePreset::LowImpact,
-                cx,
-            );
-            begin_control_motion_if_changed(
-                "switch-workload-engine-auto-affinity-escalation-switch",
-                settings.workload_engine_affinity_escalation_enabled,
-                values.workload_engine_affinity_escalation_enabled,
-                cx,
-            );
-            begin_control_motion_if_changed(
-                "switch-workload-engine-auto-memory-priority-switch",
-                settings.workload_engine_memory_priority_enabled,
-                values.workload_engine_memory_priority_enabled,
-                cx,
-            );
-        }
-    }
-}
-
-fn begin_control_motion_if_changed(id: &'static str, current: bool, next: bool, cx: &mut App) {
-    if current != next {
-        begin_control_motion(id, next, cx);
-    }
-}
-
-fn workload_engine_matches_behavior(
-    settings: &WorkloadEngineSettings,
-    behavior: WorkloadEngineBehavior,
-) -> bool {
-    match behavior {
-        WorkloadEngineBehavior::Preset(preset) => {
-            settings.workload_engine_enabled && workload_engine_matches_preset(settings, preset)
-        }
     }
 }
 
@@ -24297,9 +24861,9 @@ fn workload_engine_preset_values(preset: WorkloadEnginePreset) -> WorkloadEngine
             workload_engine_efficiency_mode_enabled: true,
             background_priority: ProcessPriority::Idle,
             foreground_io_priority: ProcessIoPrioritySetting::Normal,
-            lower_background_io_priority_enabled: false,
+            lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::Low,
-            workload_engine_memory_priority_enabled: false,
+            workload_engine_memory_priority_enabled: true,
             workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
             workload_engine_memory_priority: ProcessMemoryPriority::Low,
             workload_engine_affinity_escalation_enabled: true,
@@ -24324,7 +24888,7 @@ fn workload_engine_preset_values(preset: WorkloadEnginePreset) -> WorkloadEngine
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             workload_engine_memory_priority_enabled: true,
             workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
-            workload_engine_memory_priority: ProcessMemoryPriority::VeryLow,
+            workload_engine_memory_priority: ProcessMemoryPriority::Low,
             workload_engine_affinity_escalation_enabled: true,
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
@@ -24352,7 +24916,7 @@ fn workload_engine_preset_values(preset: WorkloadEnginePreset) -> WorkloadEngine
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
             lower_background_auto_cpu_percent: false,
-            manual_cpu_percent: 10,
+            manual_cpu_percent: 6,
             total_threshold: 35,
             process_threshold: 4,
             restore_threshold: 2,
@@ -24414,7 +24978,7 @@ fn workload_engine_priority_boost_preset_values(
 
 fn workload_engine_gpu_priority_preset_values(preset: WorkloadEnginePreset) -> GpuPrioritySettings {
     GpuPrioritySettings {
-        enabled: preset != WorkloadEnginePreset::LowImpact,
+        enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessGpuPrioritySetting::High
@@ -24924,6 +25488,24 @@ mod tests {
         assert!(low_impact.workload_engine_efficiency_mode_enabled);
         assert!(foreground_first.workload_engine_efficiency_mode_enabled);
         assert!(max_foreground.workload_engine_efficiency_mode_enabled);
+        assert!(low_impact.lower_background_io_priority_enabled);
+        assert!(foreground_first.lower_background_io_priority_enabled);
+        assert!(max_foreground.lower_background_io_priority_enabled);
+        assert!(low_impact.workload_engine_memory_priority_enabled);
+        assert!(foreground_first.workload_engine_memory_priority_enabled);
+        assert!(max_foreground.workload_engine_memory_priority_enabled);
+        assert_eq!(
+            low_impact.lower_background_io_priority,
+            ProcessIoPriority::Low
+        );
+        assert_eq!(
+            foreground_first.lower_background_io_priority,
+            ProcessIoPriority::VeryLow
+        );
+        assert_eq!(
+            max_foreground.lower_background_io_priority,
+            ProcessIoPriority::VeryLow
+        );
         assert_eq!(
             foreground_first.workload_engine_foreground_memory_priority,
             ProcessMemoryPrioritySetting::Normal
@@ -24934,6 +25516,12 @@ mod tests {
         assert!(low_impact.workload_engine_affinity_escalation_enabled);
         assert!(foreground_first.workload_engine_affinity_escalation_enabled);
         assert!(max_foreground.workload_engine_affinity_escalation_enabled);
+        assert!(low_impact.lower_background_apps);
+        assert!(foreground_first.lower_background_apps);
+        assert!(max_foreground.lower_background_apps);
+        assert!(low_impact.boost_foreground_app);
+        assert!(foreground_first.boost_foreground_app);
+        assert!(max_foreground.boost_foreground_app);
         assert!(low_impact.lower_background_auto_cpu_percent);
         assert!(foreground_first.lower_background_auto_cpu_percent);
         assert!(!max_foreground.lower_background_auto_cpu_percent);
@@ -24952,7 +25540,7 @@ mod tests {
         assert!(foreground_first.process_threshold > max_foreground.process_threshold);
         assert_eq!(low_impact.manual_cpu_percent, 60);
         assert_eq!(foreground_first.manual_cpu_percent, 16);
-        assert_eq!(max_foreground.manual_cpu_percent, 10);
+        assert_eq!(max_foreground.manual_cpu_percent, 6);
         assert!(
             workload_engine_thread_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
         );
@@ -24960,7 +25548,12 @@ mod tests {
             workload_engine_priority_boost_preset_values(WorkloadEnginePreset::LowImpact).enabled
         );
         assert!(
-            !workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
+            workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
+        );
+        assert_eq!(
+            workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact)
+                .background_priority,
+            ProcessGpuPrioritySetting::BelowNormal
         );
         assert_eq!(
             max_foreground.foreground_io_priority,
@@ -24985,6 +25578,142 @@ mod tests {
             workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::MaxForeground)
                 .background_priority,
             ProcessGpuPrioritySetting::Idle
+        );
+    }
+
+    #[test]
+    fn smart_saver_default_keeps_workload_engine_opt_in() {
+        let mut settings = Settings::default();
+
+        apply_smart_saver_mode(&mut settings, true);
+
+        assert!(settings.smart_saver.enabled);
+        assert!(settings.smart_saver.processor_policy_enabled);
+        assert!(!settings.eco_qos.enabled);
+        assert!(!settings.workload_engine.enabled);
+        assert!(!settings.workload_engine.workload_engine_enabled);
+    }
+
+    #[test]
+    fn power_mode_presets_combine_smart_saver_and_workload_engine() {
+        let mut settings = Settings::default();
+
+        apply_power_mode_preset(&mut settings, PowerModePreset::PowerSave);
+        assert!(power_mode_matches_preset(
+            &settings,
+            PowerModePreset::PowerSave
+        ));
+        assert!(settings.smart_saver.enabled);
+        assert!(settings.smart_saver.processor_policy_enabled);
+        assert!(settings.eco_qos.enabled);
+        assert!(settings.workload_engine.enabled);
+        assert_eq!(
+            power_mode_processor_values(&settings),
+            Some(power_mode_powersave_processor_values())
+        );
+
+        apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
+        assert!(power_mode_matches_preset(
+            &settings,
+            PowerModePreset::Balanced
+        ));
+        assert!(settings.smart_saver.enabled);
+        assert!(!settings.eco_qos.enabled);
+        assert!(settings.workload_engine.enabled);
+        assert_eq!(
+            power_mode_processor_values(&settings),
+            Some(power_mode_balanced_processor_values())
+        );
+        assert!(workload_engine_matches_preset(
+            &settings.workload_engine,
+            WorkloadEnginePreset::LowImpact
+        ));
+
+        apply_power_mode_preset(&mut settings, PowerModePreset::Performance);
+        assert!(power_mode_matches_preset(
+            &settings,
+            PowerModePreset::Performance
+        ));
+        assert!(!settings.smart_saver.enabled);
+        assert!(!settings.eco_qos.enabled);
+        assert!(settings.workload_engine.enabled);
+        assert!(settings.workload_engine.workload_engine_enabled);
+        assert!(settings.smart_saver.processor_policy_enabled);
+        assert_eq!(
+            power_mode_processor_values(&settings),
+            Some(power_mode_performance_processor_values())
+        );
+        assert!(workload_engine_matches_preset(
+            &settings.workload_engine,
+            WorkloadEnginePreset::ForegroundFirst
+        ));
+
+        apply_power_mode_preset(&mut settings, PowerModePreset::Speed);
+        assert!(power_mode_matches_preset(&settings, PowerModePreset::Speed));
+        assert!(!settings.smart_saver.enabled);
+        assert!(settings.workload_engine.enabled);
+        assert!(settings.workload_engine.workload_engine_enabled);
+        assert!(settings.smart_saver.processor_policy_enabled);
+        assert_eq!(
+            power_mode_processor_values(&settings),
+            Some(power_mode_speed_processor_values())
+        );
+        assert!(workload_engine_matches_preset(
+            &settings.workload_engine,
+            WorkloadEnginePreset::MaxForeground
+        ));
+    }
+
+    #[test]
+    fn workload_engine_alone_does_not_apply_default_processor_policy() {
+        let mut settings = Settings::default();
+        settings.workload_engine.enabled = true;
+
+        assert_eq!(power_mode_processor_values(&settings), None);
+    }
+
+    #[test]
+    fn adaptive_engine_custom_targets_make_preset_custom() {
+        let mut settings = Settings::default();
+
+        apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
+        settings.smart_saver.processor_policy_values.performance_max = 55;
+
+        assert!(!power_mode_matches_preset(
+            &settings,
+            PowerModePreset::Balanced
+        ));
+        assert_eq!(
+            power_mode_processor_values(&settings).map(|values| values.performance_max),
+            Some(55)
+        );
+
+        apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
+        apply_workload_engine_preset(
+            &mut settings.workload_engine,
+            WorkloadEnginePreset::ForegroundFirst,
+        );
+
+        assert!(!power_mode_matches_preset(
+            &settings,
+            PowerModePreset::Balanced
+        ));
+        assert!(workload_engine_matches_preset(
+            &settings.workload_engine,
+            WorkloadEnginePreset::ForegroundFirst
+        ));
+    }
+
+    #[test]
+    fn smart_saver_uses_low_power_app_tick() {
+        let mut settings = Settings::default();
+
+        assert_eq!(app_tick_interval(&settings, true), APP_TICK_INTERVAL);
+        settings.smart_saver.enabled = true;
+        assert_eq!(app_tick_interval(&settings, false), APP_TICK_INTERVAL);
+        assert_eq!(
+            app_tick_interval(&settings, true),
+            SMART_SAVER_APP_TICK_INTERVAL
         );
     }
 
@@ -25939,6 +26668,10 @@ mod tests {
         settings.app_suspension.enabled = true;
         assert!(input_hook_required(&settings));
 
+        settings.smart_saver.enabled = true;
+        assert!(!input_hook_required(&settings));
+
+        settings.smart_saver.enabled = false;
         settings.general.enabled = false;
         assert!(!input_hook_required(&settings));
     }
@@ -25984,6 +26717,15 @@ mod tests {
             InputHookConfig {
                 keyboard: true,
                 mouse: true,
+            }
+        );
+
+        settings.smart_saver.enabled = true;
+        assert_eq!(
+            input_hook_config(&settings),
+            InputHookConfig {
+                keyboard: false,
+                mouse: false,
             }
         );
     }

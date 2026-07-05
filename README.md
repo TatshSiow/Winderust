@@ -46,32 +46,46 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 
 `Off` is the comparison baseline under generated background load; the script
 also emits a no-background `baseline_no_background_load` case for reference.
-Foreground First and Max Foreground apply the full priority-assist set where
-Windows exposes it to the benchmark: priority boost, thread priority, memory
-priority, I/O priority, and GPU priority. Low Impact keeps the extra I/O,
-memory, and GPU assists off.
+Adaptive Engine preset cases combine processor power policy with Workload
+Engine scheduling plus process, IO, memory, GPU/thread, priority-boost, and
+background-efficiency controls. Performance uses Foreground First scheduling,
+while Speed uses Max Foreground scheduling.
 
 Metrics:
 
 - Foreground latency change: foreground work time delta vs `Off`; negative
   milliseconds and positive percent mean faster.
 - P95 foreground latency improvement: near-worst latency vs `Off`; higher is better.
-- Background throughput vs Off: generated background-worker CPU time vs `Off`.
-  Lower means the preset protected foreground work by taking CPU away from
-  background workers; above `100%` means background workers got more CPU time.
+- Foreground throughput vs Off: foreground iterations per second vs `Off`;
+  higher is better.
+- Background latency vs Off: estimated fixed-background-work slowdown from
+  measured retained background CPU throughput; lower is better.
+- Package power vs Off: RAPL package-power delta vs `Off`; lower is better.
 
-The README tables compare each preset directly to the displayed `Off` row. The
-benchmark script still records adjacent paired-Off comparisons in
+The README table compares each preset directly to the displayed `Off` row. The
+benchmark script still records background retention and adjacent paired-Off comparisons in
 `docs/workload-engine-benchmark.md` for deeper validation.
 
-Latest CPU-loop validation on AMD Ryzen 7 7735HS, 16 logical processors, after standard/all-P topology tuning:
+Latest Adaptive Engine preset CPU-loop validation on AMD Ryzen 7 7735HS, 16
+logical processors, with RAPL package-power sampling:
 
-| Case | Avg latency vs Off | Median latency vs Off | P95 latency vs Off | Background throughput vs Off | Repeat passes won |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Off | 247.64 ms | 245.18 ms | 273.99 ms | 100.0% | baseline |
-| Low Impact | 150.30 ms (+39.3%) | 148.59 ms (+39.4%) | 149.70 ms (+45.4%) | 91.0% | 3/3 |
-| Foreground First | 134.02 ms (+45.9%) | 133.80 ms (+45.4%) | 134.78 ms (+50.8%) | 66.2% | 3/3 |
-| Max Foreground | 115.15 ms (+53.5%) | 114.77 ms (+53.2%) | 115.37 ms (+57.9%) | 16.6% | 3/3 |
+| Case | Median latency vs Off | P95 latency vs Off | Foreground throughput vs Off | Background latency vs Off | Package power vs Off | Repeat passes won |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Off | 228.67 ms (baseline) | 239.84 ms (baseline) | 4,540,008 iter/s (baseline) | 1.00x (baseline) | 63.90 W (baseline) | baseline |
+| Powersave | 377.30 ms (-70.6%) | 378.55 ms (-65.1%) | 2,643,422 iter/s (-41.8%) | 1.21x (+20.9%) | 10.97 W (-82.8%) | 0/3 |
+| Balanced | 181.46 ms (+24.2%) | 187.33 ms (+24.7%) | 5,423,882 iter/s (+19.5%) | 1.20x (+20.3%) | 21.16 W (-66.9%) | 3/3 |
+| Performance | 123.99 ms (+47.1%) | 125.15 ms (+50.4%) | 8,033,565 iter/s (+76.9%) | 1.50x (+50.2%) | 57.91 W (-9.4%) | 3/3 |
+| Speed | 119.07 ms (+44.7%) | 119.35 ms (+47.6%) | 8,410,122 iter/s (+85.2%) | 12.05x (+1,105.4%) | 22.65 W (-64.5%) | 3/3 |
+
+Score component ratios from the same run, all vs paired `Off`:
+
+| Case | Int arithmetic | Double arithmetic | Float batch | GZip | Deflate | SHA-256 | AES-CBC | L2 scan | Memory copy |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Off | 3,026.5 Mops (100.0%) | 863.5 Mops (100.0%) | 5,515.4 Mops (100.0%) | 59.2 MB/s (100.0%) | 48.9 MB/s (100.0%) | 1,749.3 MB/s (100.0%) | 836.8 MB/s (100.0%) | 2,245.0 MB/s (100.0%) | 8,517.6 MB/s (100.0%) |
+| Powersave | 1,097.8 Mops (36.4%) | 287.8 Mops (33.2%) | 1,889.7 Mops (34.3%) | 25.2 MB/s (41.5%) | 22.5 MB/s (45.7%) | 637.4 MB/s (38.8%) | 532.8 MB/s (130.4%) | 1,337.8 MB/s (49.3%) | 766.4 MB/s (50.6%) |
+| Balanced | 2,333.6 Mops (84.0%) | 606.5 Mops (70.8%) | 3,982.0 Mops (72.1%) | 50.9 MB/s (94.1%) | 44.3 MB/s (94.3%) | 1,335.2 MB/s (75.5%) | 751.8 MB/s (102.2%) | 2,646.3 MB/s (144.5%) | 12,455.8 MB/s (96.0%) |
+| Performance | 2,956.3 Mops (94.4%) | 867.6 Mops (100.0%) | 5,363.7 Mops (97.5%) | 77.7 MB/s (132.9%) | 60.9 MB/s (119.2%) | 1,759.0 MB/s (98.5%) | 877.9 MB/s (115.9%) | 4,172.6 MB/s (198.6%) | 15,197.6 MB/s (117.0%) |
+| Speed | 3,505.4 Mops (111.7%) | 962.7 Mops (111.6%) | 5,975.3 Mops (108.1%) | 81.4 MB/s (143.0%) | 66.0 MB/s (142.0%) | 2,015.6 MB/s (113.9%) | 1,106.4 MB/s (138.3%) | 4,346.6 MB/s (220.5%) | 16,687.0 MB/s (122.8%) |
 
 Run the benchmark from the repository root:
 

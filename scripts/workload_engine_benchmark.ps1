@@ -2,13 +2,19 @@ param(
     [int]$Passes = 3,
     [int]$Rounds = 5,
     [int]$Iterations = 1000000,
+    [int]$ScoreIterations = 3000000,
+    [int]$ScoreDataKb = 512,
+    [int]$ScoreRounds = 2,
     [int]$WorkerSeconds = 45,
     [ValidateSet('CpuLoop', 'IoLoop', 'MessageLoop', 'WinderustLaunch')]
     [string]$ForegroundScenario = 'CpuLoop',
     [int]$IoOperations = 2000,
     [int]$MessageLoopTicks = 200,
     [int]$MessageLoopIntervalMilliseconds = 16,
-    [string]$WinderustExePath = ''
+    [string]$WinderustExePath = '',
+    [string]$PowerCounterPath = '',
+    [switch]$SkipScoreBenchmark,
+    [switch]$SkipPower
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,7 +25,7 @@ $workerCount = [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
 $lowImpactTargetCount = $workerCount
 $lowImpactAllPCorePercent = 0.65
 $foregroundFirstAllPCorePercent = 0.50
-$maxForegroundCorePercent = 0.10
+$maxForegroundCorePercent = 0.06
 $lowImpactCoreCount = 0
 $foregroundFirstCoreCount = 0
 $maxForegroundCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $maxForegroundCorePercent))
@@ -53,14 +59,188 @@ if (-not $hasHybridTopology) {
 $lowImpactMask = New-Mask $lowImpactCoreCount
 $foregroundFirstMask = New-Mask $foregroundFirstCoreCount
 $maxForegroundMask = New-Mask $maxForegroundCoreCount
+$script:resolvedPowerCounterPath = ''
+$script:powerWattsScale = 1.0
+$processorSubgroupGuid = '54533251-82be-4824-96c1-47b60b740d00'
+$processorPolicySettings = @(
+    [pscustomobject]@{ Name = 'core_parking_min'; Guid = '0cc5b647-c1df-4637-891a-dec35c318583'; Saver = 0; Balanced = 25; Performance = 100; Speed = 100 },
+    [pscustomobject]@{ Name = 'performance_min'; Guid = '893dee8e-2bef-41e0-89c6-b55d0929964c'; Saver = 5; Balanced = 5; Performance = 25; Speed = 25 },
+    [pscustomobject]@{ Name = 'performance_max'; Guid = 'bc5038f7-23e0-4960-96da-33abaf5935ec'; Saver = 45; Balanced = 95; Performance = 100; Speed = 100 },
+    [pscustomobject]@{ Name = 'boost_policy'; Guid = '45bcc044-d885-43e2-8605-ee0ec6e96b59'; Saver = 0; Balanced = 60; Performance = 85; Speed = 100 },
+    [pscustomobject]@{ Name = 'boost_mode'; Guid = 'be337238-0d82-4146-a960-4f3749d470c7'; Saver = 0; Balanced = 3; Performance = 4; Speed = 2 }
+)
+
+function Get-CounterPaths {
+    param([string]$CounterSetName)
+    try {
+        return @(Get-Counter -ListSet $CounterSetName | Select-Object -ExpandProperty PathsWithInstances)
+    } catch {
+        return @()
+    }
+}
+
+function Resolve-PowerCounterPath {
+    if (-not [string]::IsNullOrWhiteSpace($PowerCounterPath)) {
+        [void](Get-Counter -Counter $PowerCounterPath -MaxSamples 1)
+        return $PowerCounterPath
+    }
+
+    $paths = @()
+    $paths += Get-CounterPaths 'Energy Meter'
+    $paths += Get-CounterPaths 'Power Meter'
+    $powerPaths = @($paths | Where-Object { $_ -match '\\Power$' })
+    foreach ($pattern in @(
+        '\\Energy Meter\(RAPL_Package\d+_PKG\)\\Power$',
+        '\\Energy Meter\(.*Package.*\)\\Power$',
+        '\\Energy Meter\(Current Socket Power\)\\Power$',
+        '\\Energy Meter\(Apu Power\)\\Power$',
+        '\\Energy Meter\(_Total\)\\Power$',
+        '\\Power Meter\(_Total\)\\Power$'
+    )) {
+        $match = @($powerPaths | Where-Object { $_ -match $pattern } | Select-Object -First 1)
+        if ($match.Length -gt 0) {
+            return $match[0]
+        }
+    }
+    if ($powerPaths.Length -gt 0) {
+        return $powerPaths[0]
+    }
+    return ''
+}
+
+function Initialize-PowerCounter {
+    if ($SkipPower) {
+        return
+    }
+    try {
+        $script:resolvedPowerCounterPath = Resolve-PowerCounterPath
+        if ($script:resolvedPowerCounterPath -match '\\Energy Meter\(') {
+            $script:powerWattsScale = 0.001
+        }
+    } catch {
+        Write-Warning "Package power counter unavailable: $($_.Exception.Message)"
+        $script:resolvedPowerCounterPath = ''
+    }
+}
+
+function Add-PowerSample {
+    param([System.Collections.Generic.List[double]]$Samples)
+    if ([string]::IsNullOrWhiteSpace($script:resolvedPowerCounterPath)) {
+        return
+    }
+    try {
+        $sample = Get-Counter -Counter $script:resolvedPowerCounterPath -MaxSamples 1
+        $value = [double]$sample.CounterSamples[0].CookedValue * $script:powerWattsScale
+        if (-not [double]::IsNaN($value) -and -not [double]::IsInfinity($value) -and $value -ge 0.0) {
+            $Samples.Add($value)
+        }
+    } catch {
+    }
+}
+
+function Add-PowerSummary {
+    param([pscustomobject]$Summary, [double[]]$Samples)
+    if ($Samples.Length -eq 0) {
+        $Summary | Add-Member -NotePropertyName package_power_samples -NotePropertyValue 0
+        $Summary | Add-Member -NotePropertyName package_power_avg_w -NotePropertyValue $null
+        $Summary | Add-Member -NotePropertyName package_power_median_w -NotePropertyValue $null
+        $Summary | Add-Member -NotePropertyName package_power_p95_w -NotePropertyValue $null
+        return
+    }
+    $sorted = [double[]]$Samples.Clone()
+    [Array]::Sort($sorted)
+    $avg = Get-Average $Samples
+    $Summary | Add-Member -NotePropertyName package_power_samples -NotePropertyValue $Samples.Length
+    $Summary | Add-Member -NotePropertyName package_power_avg_w -NotePropertyValue ([Math]::Round($avg, 3))
+    $Summary | Add-Member -NotePropertyName package_power_median_w -NotePropertyValue ([Math]::Round($sorted[[int][Math]::Floor(($sorted.Length - 1) * 0.50)], 3))
+    $Summary | Add-Member -NotePropertyName package_power_p95_w -NotePropertyValue ([Math]::Round($sorted[[int][Math]::Floor(($sorted.Length - 1) * 0.95)], 3))
+}
+
+function Get-ActiveSchemeGuid {
+    $output = powercfg /getactivescheme
+    $text = ($output -join ' ')
+    if ($text -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})') {
+        return $matches[1]
+    }
+    throw 'Could not determine the active power scheme.'
+}
+
+function Get-PowerSettingIndexes {
+    param([string]$SchemeGuid, [string]$SettingGuid)
+    $output = powercfg /qh $SchemeGuid $processorSubgroupGuid $SettingGuid
+    $text = $output -join "`n"
+    if ($text -notmatch 'Current AC Power Setting Index:\s*0x([0-9a-fA-F]+)') {
+        throw "Could not read AC processor setting $SettingGuid."
+    }
+    $ac = [Convert]::ToUInt32($matches[1], 16)
+    if ($text -notmatch 'Current DC Power Setting Index:\s*0x([0-9a-fA-F]+)') {
+        throw "Could not read DC processor setting $SettingGuid."
+    }
+    $dc = [Convert]::ToUInt32($matches[1], 16)
+    [pscustomobject]@{ ac = $ac; dc = $dc }
+}
+
+function Set-PowerSettingIndexes {
+    param([string]$SchemeGuid, [string]$SettingGuid, [uint32]$Ac, [uint32]$Dc)
+    powercfg /setacvalueindex $SchemeGuid $processorSubgroupGuid $SettingGuid $Ac | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to set AC processor setting $SettingGuid."
+    }
+    powercfg /setdcvalueindex $SchemeGuid $processorSubgroupGuid $SettingGuid $Dc | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to set DC processor setting $SettingGuid."
+    }
+}
+
+function Get-ProcessorPolicySnapshot {
+    $scheme = Get-ActiveSchemeGuid
+    $values = @{}
+    foreach ($setting in $processorPolicySettings) {
+        $values[$setting.Name] = Get-PowerSettingIndexes -SchemeGuid $scheme -SettingGuid $setting.Guid
+    }
+    [pscustomobject]@{ scheme = $scheme; values = $values }
+}
+
+function Restore-ProcessorPolicySnapshot {
+    param($Snapshot)
+    if ($null -eq $Snapshot) {
+        return
+    }
+    foreach ($setting in $processorPolicySettings) {
+        $value = $Snapshot.values[$setting.Name]
+        Set-PowerSettingIndexes -SchemeGuid $Snapshot.scheme -SettingGuid $setting.Guid -Ac $value.ac -Dc $value.dc
+    }
+    powercfg /setactive $Snapshot.scheme | Out-Null
+}
+
+function Invoke-WithProcessorPolicy {
+    param([ValidateSet('Saver', 'Balanced', 'Performance', 'Speed')] [string]$Preset, [scriptblock]$ScriptBlock)
+    $snapshot = Get-ProcessorPolicySnapshot
+    try {
+        foreach ($setting in $processorPolicySettings) {
+            $value = [uint32]$setting.$Preset
+            Set-PowerSettingIndexes -SchemeGuid $snapshot.scheme -SettingGuid $setting.Guid -Ac $value -Dc $value
+        }
+        powercfg /setactive $snapshot.scheme | Out-Null
+        & $ScriptBlock
+    } finally {
+        Restore-ProcessorPolicySnapshot -Snapshot $snapshot
+    }
+}
 
 if (-not ('WorkloadEngineBenchmarkNative' -as [type])) {
-    Add-Type -TypeDefinition @"
+    Add-Type -ReferencedAssemblies @('System.dll', 'System.Core.dll') -TypeDefinition @"
 using System;
+using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 public static class WorkloadEngineBenchmarkNative
 {
+    private static long sink;
+
     [StructLayout(LayoutKind.Sequential)]
     public struct MEMORY_PRIORITY_INFORMATION
     {
@@ -75,6 +255,246 @@ public static class WorkloadEngineBenchmarkNative
 
     [DllImport("gdi32.dll")]
     public static extern Int32 D3DKMTSetProcessSchedulingPriorityClass(IntPtr processHandle, Int32 priority);
+
+    public static bool IsVectorHardwareAccelerated()
+    {
+        return false;
+    }
+
+    public static int VectorFloatLanes()
+    {
+        return 1;
+    }
+
+    public static double IntArithmeticMops(int iterations)
+    {
+        iterations = Math.Max(1, iterations);
+        long acc = 17;
+        Stopwatch sw = Stopwatch.StartNew();
+        for (int i = 1; i <= iterations; i++)
+        {
+            acc += (i * 1103515245L + 12345L) ^ (acc >> 7);
+            acc ^= acc << 11;
+        }
+        sw.Stop();
+        sink ^= acc;
+        return Rate(iterations * 4L, sw, 1000000.0);
+    }
+
+    public static double DoubleArithmeticMops(int iterations)
+    {
+        iterations = Math.Max(1, iterations);
+        double acc = 0.25;
+        Stopwatch sw = Stopwatch.StartNew();
+        for (int i = 1; i <= iterations; i++)
+        {
+            double value = (double)i;
+            acc += Math.Sqrt(value) * 1.0000001;
+            acc /= 1.0000003;
+        }
+        sw.Stop();
+        sink ^= (long)acc;
+        return Rate(iterations * 4L, sw, 1000000.0);
+    }
+
+    public static double SimdFloatMops(int iterations)
+    {
+        iterations = Math.Max(1, iterations);
+        float a0 = 1.0f, a1 = 2.0f, a2 = 3.0f, a3 = 4.0f;
+        float b0 = 5.0f, b1 = 6.0f, b2 = 7.0f, b3 = 8.0f;
+        Stopwatch sw = Stopwatch.StartNew();
+        for (int i = 0; i < iterations; i++)
+        {
+            a0 = (a0 + b0) * 1.00001f;
+            a1 = (a1 + b1) * 1.00002f;
+            a2 = (a2 + b2) * 0.99999f;
+            a3 = (a3 + b3) * 0.99998f;
+            b0 = (b0 + a3) * 0.99997f;
+            b1 = (b1 + a2) * 1.00003f;
+            b2 = (b2 + a1) * 1.00004f;
+            b3 = (b3 + a0) * 0.99996f;
+        }
+        sw.Stop();
+        sink ^= (long)(a0 + a1 + a2 + a3 + b0 + b1 + b2 + b3);
+        return Rate((long)iterations * 16L, sw, 1000000.0);
+    }
+
+    public static double GZipRoundTripMbps(int kiloBytes, int rounds)
+    {
+        byte[] data = MakeData(kiloBytes);
+        rounds = Math.Max(1, rounds);
+        long bytes = 0;
+        Stopwatch sw = Stopwatch.StartNew();
+        for (int round = 0; round < rounds; round++)
+        {
+            byte[] compressed = Compress(data, true);
+            byte[] decompressed = Decompress(compressed, true);
+            bytes += data.Length * 2L;
+            sink ^= decompressed[decompressed.Length - 1];
+        }
+        sw.Stop();
+        return Rate(bytes, sw, 1024.0 * 1024.0);
+    }
+
+    public static double DeflateRoundTripMbps(int kiloBytes, int rounds)
+    {
+        byte[] data = MakeData(kiloBytes);
+        rounds = Math.Max(1, rounds);
+        long bytes = 0;
+        Stopwatch sw = Stopwatch.StartNew();
+        for (int round = 0; round < rounds; round++)
+        {
+            byte[] compressed = Compress(data, false);
+            byte[] decompressed = Decompress(compressed, false);
+            bytes += data.Length * 2L;
+            sink ^= decompressed[decompressed.Length - 1];
+        }
+        sw.Stop();
+        return Rate(bytes, sw, 1024.0 * 1024.0);
+    }
+
+    public static double Sha256Mbps(int kiloBytes, int rounds)
+    {
+        byte[] data = MakeData(kiloBytes);
+        rounds = Math.Max(1, rounds);
+        long bytes = 0;
+        Stopwatch sw = Stopwatch.StartNew();
+        using (SHA256 sha = SHA256.Create())
+        {
+            for (int round = 0; round < rounds; round++)
+            {
+                byte[] hash = sha.ComputeHash(data);
+                bytes += data.Length;
+                sink ^= hash[0];
+            }
+        }
+        sw.Stop();
+        return Rate(bytes, sw, 1024.0 * 1024.0);
+    }
+
+    public static double AesCbcRoundTripMbps(int kiloBytes, int rounds)
+    {
+        byte[] data = MakeData(kiloBytes);
+        rounds = Math.Max(1, rounds);
+        long bytes = 0;
+        Stopwatch sw = Stopwatch.StartNew();
+        using (Aes aes = Aes.Create())
+        {
+            aes.Mode = CipherMode.CBC;
+            aes.Padding = PaddingMode.PKCS7;
+            aes.KeySize = 128;
+            aes.GenerateKey();
+            aes.GenerateIV();
+            for (int round = 0; round < rounds; round++)
+            {
+                byte[] encrypted;
+                using (ICryptoTransform encryptor = aes.CreateEncryptor())
+                {
+                    encrypted = encryptor.TransformFinalBlock(data, 0, data.Length);
+                }
+                byte[] decrypted;
+                using (ICryptoTransform decryptor = aes.CreateDecryptor())
+                {
+                    decrypted = decryptor.TransformFinalBlock(encrypted, 0, encrypted.Length);
+                }
+                bytes += data.Length * 2L;
+                sink ^= decrypted[decrypted.Length - 1];
+            }
+        }
+        sw.Stop();
+        return Rate(bytes, sw, 1024.0 * 1024.0);
+    }
+
+    public static double MemoryScanMbps(int kiloBytes, int rounds)
+    {
+        byte[] data = MakeData(kiloBytes);
+        rounds = Math.Max(1, rounds);
+        long sum = 0;
+        Stopwatch sw = Stopwatch.StartNew();
+        for (int round = 0; round < rounds; round++)
+        {
+            for (int index = 0; index < data.Length; index++)
+            {
+                sum += data[index];
+            }
+        }
+        sw.Stop();
+        sink ^= sum;
+        return Rate((long)data.Length * rounds, sw, 1024.0 * 1024.0);
+    }
+
+    public static double MemoryCopyMbps(int kiloBytes, int rounds)
+    {
+        byte[] source = MakeData(kiloBytes);
+        byte[] target = new byte[source.Length];
+        rounds = Math.Max(1, rounds);
+        Stopwatch sw = Stopwatch.StartNew();
+        for (int round = 0; round < rounds; round++)
+        {
+            Buffer.BlockCopy(source, 0, target, 0, source.Length);
+            sink ^= target[round % target.Length];
+        }
+        sw.Stop();
+        return Rate((long)source.Length * rounds, sw, 1024.0 * 1024.0);
+    }
+
+    private static double Rate(long work, Stopwatch sw, double divisor)
+    {
+        if (sw.Elapsed.TotalSeconds <= 0.0)
+        {
+            return 0.0;
+        }
+        return (work / sw.Elapsed.TotalSeconds) / divisor;
+    }
+
+    private static byte[] MakeData(int kiloBytes)
+    {
+        int size = Math.Max(1, kiloBytes) * 1024;
+        byte[] data = new byte[size];
+        uint state = 2166136261u;
+        for (int index = 0; index < data.Length; index++)
+        {
+            state = (state ^ (uint)index) * 16777619u;
+            data[index] = (byte)(state >> 24);
+        }
+        return data;
+    }
+
+    private static byte[] Compress(byte[] data, bool gzip)
+    {
+        using (MemoryStream output = new MemoryStream())
+        {
+            Stream stream = gzip
+                ? (Stream)new GZipStream(output, CompressionLevel.Fastest, true)
+                : (Stream)new DeflateStream(output, CompressionLevel.Fastest, true);
+            using (stream)
+            {
+                stream.Write(data, 0, data.Length);
+            }
+            return output.ToArray();
+        }
+    }
+
+    private static byte[] Decompress(byte[] data, bool gzip)
+    {
+        using (MemoryStream input = new MemoryStream(data))
+        using (MemoryStream output = new MemoryStream())
+        {
+            Stream stream = gzip
+                ? (Stream)new GZipStream(input, CompressionMode.Decompress)
+                : (Stream)new DeflateStream(input, CompressionMode.Decompress);
+            using (stream)
+            {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    output.Write(buffer, 0, read);
+                }
+            }
+            return output.ToArray();
+        }
+    }
 }
 "@
 }
@@ -111,6 +531,120 @@ function Get-CpuName {
     } catch {
         return 'unknown'
     }
+}
+
+$scoreBenchmarkFields = @(
+    'int_arithmetic_mops',
+    'double_arithmetic_mops',
+    'float_batch_mops',
+    'gzip_roundtrip_mbps',
+    'deflate_roundtrip_mbps',
+    'sha256_mbps',
+    'aes_cbc_roundtrip_mbps',
+    'l2_cache_scan_mbps',
+    'memory_copy_mbps'
+)
+
+function Invoke-ScoreMetric {
+    param(
+        [scriptblock]$ScriptBlock,
+        [System.Collections.Generic.List[double]]$PowerSamples
+    )
+
+    try {
+        $value = & $ScriptBlock
+        Add-PowerSample -Samples $PowerSamples
+        if ($null -eq $value) {
+            return $null
+        }
+        return [Math]::Round([double]$value, 2)
+    } catch {
+        return $null
+    }
+}
+
+function Measure-ScoreBenchmarks {
+    param([System.Collections.Generic.List[double]]$PowerSamples)
+
+    if ($SkipScoreBenchmark) {
+        return $null
+    }
+
+    $scoreIterations = [Math]::Max(1, $ScoreIterations)
+    $scoreDataKbValue = [Math]::Max(64, $ScoreDataKb)
+    $scoreRoundsValue = [Math]::Max(1, $ScoreRounds)
+    $l2CacheKb = 256
+    $memoryCopyKb = [Math]::Max(8192, $scoreDataKbValue * 16)
+
+    $score = [ordered]@{
+        score_iterations = $scoreIterations
+        score_data_kb = $scoreDataKbValue
+        score_rounds = $scoreRoundsValue
+        l2_cache_proxy_kb = $l2CacheKb
+        memory_copy_kb = $memoryCopyKb
+        instruction_set_probe = 'managed_float_batch_no_intrinsics'
+        simd_vector_available = [WorkloadEngineBenchmarkNative]::IsVectorHardwareAccelerated()
+        simd_float_lanes = [WorkloadEngineBenchmarkNative]::VectorFloatLanes()
+    }
+
+    $score.int_arithmetic_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::IntArithmeticMops($scoreIterations)
+    }
+    $score.double_arithmetic_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::DoubleArithmeticMops($scoreIterations)
+    }
+    $score.float_batch_mops = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::SimdFloatMops([Math]::Max(1, [int]($scoreIterations / 2)))
+    }
+    $score.gzip_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::GZipRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+    }
+    $score.deflate_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::DeflateRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+    }
+    $score.sha256_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::Sha256Mbps($scoreDataKbValue, $scoreRoundsValue * 4)
+    }
+    $score.aes_cbc_roundtrip_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::AesCbcRoundTripMbps($scoreDataKbValue, $scoreRoundsValue)
+    }
+    $score.l2_cache_scan_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::MemoryScanMbps($l2CacheKb, $scoreRoundsValue * 128)
+    }
+    $score.memory_copy_mbps = Invoke-ScoreMetric -PowerSamples $PowerSamples -ScriptBlock {
+        [WorkloadEngineBenchmarkNative]::MemoryCopyMbps($memoryCopyKb, $scoreRoundsValue * 16)
+    }
+
+    return [pscustomobject]$score
+}
+
+function Get-ScoreBenchmarkComparison {
+    param($Off, $Case)
+
+    if ($null -eq $Off.score_benchmark -or $null -eq $Case.score_benchmark) {
+        return $null
+    }
+
+    $properties = [ordered]@{}
+    foreach ($field in $scoreBenchmarkFields) {
+        $offValue = $Off.score_benchmark.$field
+        $caseValue = $Case.score_benchmark.$field
+        if ($null -eq $offValue -or $null -eq $caseValue) {
+            continue
+        }
+        $offDouble = [double]$offValue
+        $caseDouble = [double]$caseValue
+        if ($offDouble -le 0.0 -or $caseDouble -le 0.0) {
+            continue
+        }
+        $ratio = $caseDouble / $offDouble
+        $properties["${field}_vs_off_percent"] = [Math]::Round($ratio * 100.0, 1)
+    }
+    if ($properties.Count -eq 0) {
+        return $null
+    }
+
+    return [pscustomobject]$properties
 }
 
 function New-AssistControls {
@@ -368,7 +902,7 @@ function Stop-WinderustLaunchProcess {
 }
 
 function Measure-WinderustLaunch {
-    param([int]$Rounds, [string]$LaunchPriority)
+    param([int]$Rounds, [string]$LaunchPriority, [System.Collections.Generic.List[double]]$PowerSamples)
     $samples = New-Object 'System.Collections.Generic.List[double]'
     $exePath = Resolve-WinderustExePath
     for ($round = 0; $round -lt $Rounds; $round++) {
@@ -406,6 +940,7 @@ function Measure-WinderustLaunch {
             }
             $sw.Stop()
             $samples.Add($sw.Elapsed.TotalMilliseconds)
+            Add-PowerSample -Samples $PowerSamples
         } finally {
             Stop-WinderustLaunchProcess -Process $process
             Start-Sleep -Milliseconds 500
@@ -415,15 +950,15 @@ function Measure-WinderustLaunch {
 }
 
 function Measure-ForegroundWork {
-    param([int]$Iterations, [int]$Rounds, [string]$LaunchPriority)
+    param([int]$Iterations, [int]$Rounds, [string]$LaunchPriority, [System.Collections.Generic.List[double]]$PowerSamples)
     if ($ForegroundScenario -eq 'WinderustLaunch') {
-        return Measure-WinderustLaunch -Rounds $Rounds -LaunchPriority $LaunchPriority
+        return Measure-WinderustLaunch -Rounds $Rounds -LaunchPriority $LaunchPriority -PowerSamples $PowerSamples
     }
     if ($ForegroundScenario -eq 'IoLoop') {
-        return Measure-ForegroundIoWork -Operations $IoOperations -Rounds $Rounds
+        return Measure-ForegroundIoWork -Operations $IoOperations -Rounds $Rounds -PowerSamples $PowerSamples
     }
     if ($ForegroundScenario -eq 'MessageLoop') {
-        return Measure-ForegroundMessageLoop -Ticks $MessageLoopTicks -IntervalMilliseconds $MessageLoopIntervalMilliseconds -Rounds $Rounds
+        return Measure-ForegroundMessageLoop -Ticks $MessageLoopTicks -IntervalMilliseconds $MessageLoopIntervalMilliseconds -Rounds $Rounds -PowerSamples $PowerSamples
     }
     $samples = New-Object 'System.Collections.Generic.List[double]'
     for ($round = 0; $round -lt $Rounds; $round++) {
@@ -435,13 +970,14 @@ function Measure-ForegroundWork {
         }
         $sw.Stop()
         $samples.Add($sw.Elapsed.TotalMilliseconds)
+        Add-PowerSample -Samples $PowerSamples
         Start-Sleep -Milliseconds 150
     }
     return $samples.ToArray()
 }
 
 function Measure-ForegroundMessageLoop {
-    param([int]$Ticks, [int]$IntervalMilliseconds, [int]$Rounds)
+    param([int]$Ticks, [int]$IntervalMilliseconds, [int]$Rounds, [System.Collections.Generic.List[double]]$PowerSamples)
     if ($Ticks -lt 1) {
         throw '-MessageLoopTicks must be at least 1.'
     }
@@ -487,6 +1023,7 @@ function Measure-ForegroundMessageLoop {
             })
             [System.Windows.Forms.Application]::Run($form)
             $samples.Add($state.TotalDelayMs / [Math]::Max(1, $state.Count))
+            Add-PowerSample -Samples $PowerSamples
         } finally {
             $timer.Dispose()
             $form.Dispose()
@@ -497,7 +1034,7 @@ function Measure-ForegroundMessageLoop {
 }
 
 function Measure-ForegroundIoWork {
-    param([int]$Operations, [int]$Rounds)
+    param([int]$Operations, [int]$Rounds, [System.Collections.Generic.List[double]]$PowerSamples)
     $samples = New-Object 'System.Collections.Generic.List[double]'
     $buffer = New-Object byte[] 4096
     for ($index = 0; $index -lt $buffer.Length; $index++) {
@@ -522,6 +1059,7 @@ function Measure-ForegroundIoWork {
             }
             $sw.Stop()
             $samples.Add($sw.Elapsed.TotalMilliseconds)
+            Add-PowerSample -Samples $PowerSamples
         } finally {
             if ($null -ne $stream) {
                 $stream.Dispose()
@@ -768,6 +1306,7 @@ function Run-Case {
     } catch {
     }
     $processes = @()
+    $powerSamples = New-Object 'System.Collections.Generic.List[double]'
     try {
         $currentProcess.PriorityClass = $ForegroundPriority
         try {
@@ -791,10 +1330,12 @@ function Run-Case {
         Start-Sleep -Seconds 2
         $workerCpuBeforeMs = Get-WorkerCpuMilliseconds $processes
         $measurementWindow = [Diagnostics.Stopwatch]::StartNew()
-        $samples = Measure-ForegroundWork -Iterations $Iterations -Rounds $Rounds -LaunchPriority $ForegroundPriority
+        $samples = Measure-ForegroundWork -Iterations $Iterations -Rounds $Rounds -LaunchPriority $ForegroundPriority -PowerSamples $powerSamples
+        $scoreBenchmark = Measure-ScoreBenchmarks -PowerSamples $powerSamples
         $measurementWindow.Stop()
         $workerCpuAfterMs = Get-WorkerCpuMilliseconds $processes
         $summary = Summarize-Samples -Name $Name -Samples $samples -Model $Model
+        Add-PowerSummary -Summary $summary -Samples ([double[]]$powerSamples.ToArray())
         $workerCpuDeltaMs = [Math]::Max(0.0, $workerCpuAfterMs - $workerCpuBeforeMs)
         $capacity = if ($measurementWindow.Elapsed.TotalMilliseconds -gt 0.0) {
             ($workerCpuDeltaMs / ($measurementWindow.Elapsed.TotalMilliseconds * $logicalProcessors)) * 100.0
@@ -804,6 +1345,7 @@ function Run-Case {
         $summary | Add-Member -NotePropertyName measurement_window_ms -NotePropertyValue ([Math]::Round($measurementWindow.Elapsed.TotalMilliseconds, 2))
         $summary | Add-Member -NotePropertyName background_cpu_ms -NotePropertyValue ([Math]::Round($workerCpuDeltaMs, 2))
         $summary | Add-Member -NotePropertyName background_throughput_percent -NotePropertyValue ([Math]::Round($capacity, 1))
+        $summary | Add-Member -NotePropertyName score_benchmark -NotePropertyValue $scoreBenchmark
         $summary | Add-Member -NotePropertyName assist_controls -NotePropertyValue $AssistControls
         $summary | Add-Member -NotePropertyName assist_status -NotePropertyValue $assistStatus
         return $summary
@@ -840,44 +1382,56 @@ function Run-NamedCase {
                 -AffinityMask 0 `
                 -AssistControls (New-AssistControls)
         }
-        'low_impact' {
-            if (Test-ForegroundLaunchScenario) {
-                return Run-LaunchGraceCase -Name 'low_impact'
+        'powersave' {
+            return Invoke-WithProcessorPolicy -Preset Saver -ScriptBlock {
+                Run-Case `
+                    -Name 'powersave' `
+                    -Model 'Powersave: strict processor Saver policy plus Low Impact scheduling for maximum battery life.' `
+                    -ForegroundPriority 'Normal' `
+                    -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'Idle') `
+                    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                    -AffinityMask $lowImpactMask `
+                    -AssistControls (New-AssistControls -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'Low' -IoPriority 'Low' -GpuPriority 'BelowNormal')
             }
-            return Run-Case `
-                -Name 'low_impact' `
-                -Model 'Low Impact: all background workers Idle; adaptive CPU share; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case; background threads BelowNormal; priority boost disabled.' `
-                -ForegroundPriority 'AboveNormal' `
-                -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                -AffinityMask $lowImpactMask `
-                -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal')
         }
-        'foreground_first' {
+        'balanced' {
             if (Test-ForegroundLaunchScenario) {
-                return Run-LaunchGraceCase -Name 'foreground_first'
+                return Invoke-WithProcessorPolicy -Preset Balanced -ScriptBlock { Run-LaunchGraceCase -Name 'balanced' }
             }
-            return Run-Case `
-                -Name 'foreground_first' `
-                -Model 'Foreground First: all background workers Idle; adaptive CPU share; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case; background I/O VeryLow; memory VeryLow; threads BelowNormal; priority boost disabled; GPU BelowNormal when available.' `
-                -ForegroundPriority 'AboveNormal' `
-                -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                -AffinityMask $foregroundFirstMask `
-                -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'BelowNormal')
+            return Invoke-WithProcessorPolicy -Preset Balanced -ScriptBlock {
+                Run-Case `
+                    -Name 'balanced' `
+                    -Model 'Balanced: processor Balanced policy plus Low Impact scheduling; all background workers Idle; adaptive CPU share; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case; background threads BelowNormal; priority boost disabled.' `
+                    -ForegroundPriority 'AboveNormal' `
+                    -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'Idle') `
+                    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                    -AffinityMask $lowImpactMask `
+                    -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'Low' -IoPriority 'Low' -GpuPriority 'BelowNormal')
+            }
         }
-        'max_foreground' {
-            if (Test-ForegroundLaunchScenario) {
-                return Run-LaunchGraceCase -Name 'max_foreground'
+        'performance' {
+            return Invoke-WithProcessorPolicy -Preset Performance -ScriptBlock {
+                Run-Case `
+                    -Name 'performance' `
+                    -Model 'Performance: high processor policy (min 25, max 100, efficient aggressive boost) plus Foreground First CPU-pressure scheduling.' `
+                    -ForegroundPriority 'Normal' `
+                    -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
+                    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                    -AffinityMask $foregroundFirstMask `
+                    -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'Low' -IoPriority 'VeryLow' -GpuPriority 'BelowNormal')
             }
-            return Run-Case `
-                -Name 'max_foreground' `
-                -Model 'Max Foreground: all background workers Idle; 10% affinity approximation; foreground AboveNormal boost; foreground I/O High; foreground thread Highest; foreground GPU High when available; background I/O VeryLow; memory VeryLow; threads Idle; priority boost disabled; GPU Idle when available.' `
-                -ForegroundPriority 'AboveNormal' `
-                -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
-                -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                -AffinityMask $maxForegroundMask `
-                -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -ForegroundThreadPriority 'Highest' -ForegroundIoPriority 'High' -ForegroundGpuPriority 'High' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'Idle' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'Idle')
+        }
+        'speed' {
+            return Invoke-WithProcessorPolicy -Preset Speed -ScriptBlock {
+                Run-Case `
+                    -Name 'speed' `
+                    -Model 'Speed: aggressive processor policy (parking 100, min 25, max 100, aggressive boost) plus Max Foreground CPU-pressure scheduling.' `
+                    -ForegroundPriority 'AboveNormal' `
+                    -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
+                    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                    -AffinityMask $maxForegroundMask `
+                    -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -ForegroundThreadPriority 'Highest' -ForegroundIoPriority 'High' -ForegroundGpuPriority 'High' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'Idle' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'Idle')
+            }
         }
     }
 }
@@ -889,6 +1443,13 @@ function New-Comparison {
     } else {
         0.0
     }
+    $backgroundLatencyMultiplier = $null
+    $backgroundLatencySlowdown = $null
+    if ($Off.background_throughput_percent -gt 0.0 -and $Case.background_throughput_percent -gt 0.0) {
+        $backgroundLatencyMultiplier = [Math]::Round(($Off.background_throughput_percent / $Case.background_throughput_percent), 2)
+        $backgroundLatencySlowdown = [Math]::Round((($Off.background_throughput_percent / $Case.background_throughput_percent) - 1.0) * 100.0, 1)
+    }
+    $scoreComparison = Get-ScoreBenchmarkComparison -Off $Off -Case $Case
     $avgDelta = Get-DeltaMilliseconds -OffValue $Off.avg_ms -CaseValue $Case.avg_ms
     $medianDelta = Get-DeltaMilliseconds -OffValue $Off.median_ms -CaseValue $Case.median_ms
     $p95Delta = Get-DeltaMilliseconds -OffValue $Off.p95_ms -CaseValue $Case.p95_ms
@@ -897,6 +1458,14 @@ function New-Comparison {
     $medianPercent = Get-ImprovementPercent -OffValue $Off.median_ms -CaseValue $Case.median_ms
     $p95Percent = Get-ImprovementPercent -OffValue $Off.p95_ms -CaseValue $Case.p95_ms
     $jitterPercent = Get-ImprovementPercent -OffValue $Off.stddev_ms -CaseValue $Case.stddev_ms
+    $powerOff = $Off.package_power_median_w
+    $powerCase = $Case.package_power_median_w
+    $powerDelta = $null
+    $powerSaving = $null
+    if ($null -ne $powerOff -and [double]$powerOff -gt 0.0 -and $null -ne $powerCase) {
+        $powerDelta = [Math]::Round(([double]$powerCase - [double]$powerOff), 3)
+        $powerSaving = [Math]::Round((([double]$powerOff - [double]$powerCase) / [double]$powerOff) * 100.0, 1)
+    }
     [pscustomobject]@{
         name = $Case.name
         avg_vs_off = Format-CaseWithBaseline -CaseMs $Case.avg_ms -OffMs $Off.avg_ms -DeltaMs $avgDelta -Percent $avgPercent
@@ -925,25 +1494,38 @@ function New-Comparison {
         jitter_improvement_percent_vs_off = $jitterPercent
         background_throughput_percent = $Case.background_throughput_percent
         background_throughput_retained_percent_vs_off = [Math]::Round($backgroundRetained, 1)
+        background_latency_multiplier_vs_off = $backgroundLatencyMultiplier
+        background_latency_slowdown_percent_vs_off = $backgroundLatencySlowdown
+        score_benchmark_vs_off = $scoreComparison
+        package_power_off_median_w = $powerOff
+        package_power_case_median_w = $powerCase
+        package_power_delta_w_vs_off = $powerDelta
+        package_power_saving_percent_vs_off = $powerSaving
     }
 }
 
 function Run-Pass {
     param([int]$Pass)
     $presetOrders = @(
-        @('low_impact', 'foreground_first', 'max_foreground'),
-        @('max_foreground', 'foreground_first', 'low_impact'),
-        @('foreground_first', 'max_foreground', 'low_impact')
+        @('powersave', 'balanced', 'performance', 'speed'),
+        @('speed', 'performance', 'balanced', 'powersave'),
+        @('balanced', 'powersave', 'speed', 'performance'),
+        @('performance', 'speed', 'powersave', 'balanced')
     )
     $presetOrder = $presetOrders[($Pass - 1) % $presetOrders.Count]
     $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
     $originalPriority = $currentProcess.PriorityClass
     try {
         $currentProcess.PriorityClass = 'Normal'
+        $baselinePowerSamples = New-Object 'System.Collections.Generic.List[double]'
+        $baselineSamples = Measure-ForegroundWork -Iterations $Iterations -Rounds $Rounds -LaunchPriority 'Normal' -PowerSamples $baselinePowerSamples
         $baseline = Summarize-Samples `
             -Name 'baseline_no_background_load' `
-            -Samples (Measure-ForegroundWork -Iterations $Iterations -Rounds $Rounds -LaunchPriority 'Normal') `
+            -Samples $baselineSamples `
             -Model 'No generated background load.'
+        $baselineScore = Measure-ScoreBenchmarks -PowerSamples $baselinePowerSamples
+        Add-PowerSummary -Summary $baseline -Samples ([double[]]$baselinePowerSamples.ToArray())
+        $baseline | Add-Member -NotePropertyName score_benchmark -NotePropertyValue $baselineScore
     } finally {
         try {
             $currentProcess.PriorityClass = $originalPriority
@@ -1011,14 +1593,18 @@ function Summarize-Method {
         foreground_iops_avg = Get-AverageProperty -Items $offRows -Name 'foreground_iops'
         message_loop_avg_delay_ms_avg = Get-AverageProperty -Items $offRows -Name 'message_loop_avg_delay_ms'
         message_loop_p95_delay_ms_avg = Get-AverageProperty -Items $offRows -Name 'message_loop_p95_delay_ms'
+        package_power_median_w_avg = Get-AverageProperty -Items $offRows -Name 'package_power_median_w'
+        package_power_saving_avg_percent_vs_off = 0.0
         background_throughput_retained_avg_percent = 100.0
         background_throughput_retained_min_percent = 100.0
+        background_latency_multiplier_avg_vs_off = 1.0
+        background_latency_slowdown_avg_percent_vs_off = 0.0
         repeat_passes_won = 'baseline'
         repeat_pass_win_count = $null
         repeat_pass_count = $null
         repeat_pass_win_rate_percent = $null
     }
-    foreach ($name in @('low_impact', 'foreground_first', 'max_foreground')) {
+    foreach ($name in @('powersave', 'balanced', 'performance', 'speed')) {
         $comparisons = @()
         $caseRows = @()
         foreach ($run in $Runs) {
@@ -1034,6 +1620,21 @@ function Summarize-Method {
         $medianDeltaValues = @($comparisons | ForEach-Object { [double]$_.median_delta_ms_vs_off })
         $p95DeltaValues = @($comparisons | ForEach-Object { [double]$_.p95_delta_ms_vs_off })
         $backgroundRetainedValues = @($comparisons | ForEach-Object { [double]$_.background_throughput_retained_percent_vs_off })
+        $backgroundLatencyMultiplierValues = @($comparisons | ForEach-Object {
+            if ($null -ne $_.background_latency_multiplier_vs_off) {
+                [double]$_.background_latency_multiplier_vs_off
+            }
+        })
+        $backgroundLatencySlowdownValues = @($comparisons | ForEach-Object {
+            if ($null -ne $_.background_latency_slowdown_percent_vs_off) {
+                [double]$_.background_latency_slowdown_percent_vs_off
+            }
+        })
+        $powerSavingValues = @($comparisons | ForEach-Object {
+            if ($null -ne $_.package_power_saving_percent_vs_off) {
+                [double]$_.package_power_saving_percent_vs_off
+            }
+        })
         $medianAvg = Get-Average $medianValues
         $p95Avg = Get-Average $p95Values
         $medianOffAvg = Get-Average $medianOffValues
@@ -1061,6 +1662,8 @@ function Summarize-Method {
             foreground_iops_avg = Get-AverageProperty -Items $caseRows -Name 'foreground_iops'
             message_loop_avg_delay_ms_avg = Get-AverageProperty -Items $caseRows -Name 'message_loop_avg_delay_ms'
             message_loop_p95_delay_ms_avg = Get-AverageProperty -Items $caseRows -Name 'message_loop_p95_delay_ms'
+            package_power_median_w_avg = Get-AverageProperty -Items $caseRows -Name 'package_power_median_w'
+            package_power_saving_avg_percent_vs_off = if ($powerSavingValues.Count -gt 0) { [Math]::Round((Get-Average $powerSavingValues), 1) } else { $null }
             median_vs_off_avg = Format-CaseWithBaseline -CaseMs $medianCaseAvg -OffMs $medianOffAvg -DeltaMs $medianDeltaAvg -Percent $medianAvg
             median_off_avg_ms = [Math]::Round($medianOffAvg, 2)
             median_case_avg_ms = [Math]::Round($medianCaseAvg, 2)
@@ -1077,6 +1680,8 @@ function Summarize-Method {
             p95_improvement_min_percent = [Math]::Round(($p95Values | Measure-Object -Minimum).Minimum, 1)
             background_throughput_retained_avg_percent = [Math]::Round($backgroundRetainedAvg, 1)
             background_throughput_retained_min_percent = [Math]::Round(($backgroundRetainedValues | Measure-Object -Minimum).Minimum, 1)
+            background_latency_multiplier_avg_vs_off = if ($backgroundLatencyMultiplierValues.Count -gt 0) { [Math]::Round((Get-Average $backgroundLatencyMultiplierValues), 2) } else { $null }
+            background_latency_slowdown_avg_percent_vs_off = if ($backgroundLatencySlowdownValues.Count -gt 0) { [Math]::Round((Get-Average $backgroundLatencySlowdownValues), 1) } else { $null }
             repeat_passes_won = "$repeatWins/$($comparisons.Count)"
             repeat_pass_win_count = $repeatWins
             repeat_pass_count = $comparisons.Count
@@ -1101,6 +1706,8 @@ $assistCoverage = [pscustomobject][ordered]@{
     foreground_detection = 'modeled by treating the benchmark process as foreground; the app automation loop is not launched'
 }
 
+Initialize-PowerCounter
+
 $runs = @()
 for ($pass = 1; $pass -le $Passes; $pass++) {
     $runs += Run-Pass $pass
@@ -1114,12 +1721,18 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     passes = $Passes
     rounds = $Rounds
     foreground_scenario = $ForegroundScenario
+    score_benchmark_enabled = -not $SkipScoreBenchmark
+    score_iterations = $ScoreIterations
+    score_data_kb = $ScoreDataKb
+    score_rounds = $ScoreRounds
     topology_class = if ($hasHybridTopology) { 'hybrid_or_asymmetric' } else { 'standard_all_p' }
     low_impact_affinity_limited_processors = $lowImpactCoreCount
     foreground_iterations_per_round = $Iterations
     foreground_io_operations_per_round = $IoOperations * 2
     foreground_message_loop_ticks_per_round = $MessageLoopTicks
     foreground_message_loop_interval_ms = $MessageLoopIntervalMilliseconds
+    power_counter_path = $script:resolvedPowerCounterPath
+    power_counter_watts_scale = $script:powerWattsScale
     foreground_first_affinity_limited_processors = $foregroundFirstCoreCount
     max_foreground_affinity_limited_processors = $maxForegroundCoreCount
     assist_coverage = $assistCoverage

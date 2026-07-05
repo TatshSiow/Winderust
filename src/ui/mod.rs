@@ -18,10 +18,10 @@ pub enum Page {
     CpuLimiter,
     BackgroundCpuRestriction,
     ProcessList,
+    SmartSaverMode,
     EfficiencyMode,
     AppSuspension,
     PerformanceMode,
-    WorkloadEngine,
     IoPriority,
     GpuPriority,
     MemoryPriority,
@@ -67,7 +67,7 @@ const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::MemoryPriority,
 ];
 const WINDERUST_FEATURE_PAGES: [Page; 3] =
-    [Page::WorkloadEngine, Page::EfficiencyMode, Page::MemoryTrim];
+    [Page::SmartSaverMode, Page::EfficiencyMode, Page::MemoryTrim];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
 const APP_PAGES: [Page; 4] = [
     Page::Settings,
@@ -138,10 +138,10 @@ impl Page {
             Self::CpuLimiter => t!("nav.cpu_limiter"),
             Self::BackgroundCpuRestriction => t!("nav.background_cpu_restriction"),
             Self::ProcessList => t!("nav.process_list"),
+            Self::SmartSaverMode => t!("nav.smart_saver_mode"),
             Self::EfficiencyMode => t!("nav.efficiency_mode"),
             Self::AppSuspension => t!("nav.app_suspension"),
             Self::PerformanceMode => t!("nav.performance_mode"),
-            Self::WorkloadEngine => t!("nav.workload_engine"),
             Self::IoPriority => t!("nav.io_priority"),
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
@@ -185,7 +185,7 @@ impl Page {
             | Self::IoPriority
             | Self::GpuPriority
             | Self::MemoryPriority => t!("nav.priority_control"),
-            Self::EfficiencyMode | Self::WorkloadEngine | Self::MemoryTrim => {
+            Self::SmartSaverMode | Self::EfficiencyMode | Self::MemoryTrim => {
                 t!("nav.winderust_features")
             }
             Self::ActionLog => t!("nav.action_log"),
@@ -205,8 +205,8 @@ impl Page {
             Self::Dashboard => Self::Dashboard,
             Self::ProcessList => Self::ProcessList,
             Self::WinderustFeatures
+            | Self::SmartSaverMode
             | Self::EfficiencyMode
-            | Self::WorkloadEngine
             | Self::MemoryTrim => Self::WinderustFeatures,
             Self::PowerPlanAutomation
             | Self::Activity

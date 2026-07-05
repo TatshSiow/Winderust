@@ -26,7 +26,6 @@ impl AssetSource for Assets {
 
 const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/app-window.svg", icondata_lu::LuAppWindow),
-    ("icons/brain-cog.svg", icondata_lu::LuBrainCog),
     ("icons/bring-to-front.svg", icondata_lu::LuBringToFront),
     ("icons/calendar-days.svg", icondata_lu::LuCalendarDays),
     ("icons/chart-column.svg", icondata_lu::LuChartColumn),

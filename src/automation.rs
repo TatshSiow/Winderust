@@ -70,6 +70,7 @@ const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
+const SMART_SAVER_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const VISIBLE_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const SCHEDULE_RULE_MAX_SLEEP: Duration = Duration::from_secs(60 * 60);
 const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
@@ -446,38 +447,92 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let wake_events = snapshot.wake_events;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
         let hidden_to_tray = tray::is_hidden_to_tray();
-        let eco_qos_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, ECO_QOS_REFRESH_INTERVAL);
-        let app_suspension_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, APP_SUSPENSION_REFRESH_INTERVAL);
-        let cpu_affinity_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, CPU_AFFINITY_REFRESH_INTERVAL);
+        let smart_saver_enabled = settings.smart_saver.enabled;
+        let eco_qos_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            ECO_QOS_REFRESH_INTERVAL,
+        );
+        let app_suspension_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            APP_SUSPENSION_REFRESH_INTERVAL,
+        );
+        let cpu_affinity_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            CPU_AFFINITY_REFRESH_INTERVAL,
+        );
         let background_cpu_restriction_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
+            smart_saver_enabled,
             BACKGROUND_CPU_RESTRICTION_REFRESH_INTERVAL,
         );
-        let cpu_limiter_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, CPU_LIMITER_REFRESH_INTERVAL);
-        let performance_mode_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, PERFORMANCE_MODE_REFRESH_INTERVAL);
-        let mut workload_engine_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, WORKLOAD_ENGINE_REFRESH_INTERVAL);
-        let process_priority_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, PROCESS_PRIORITY_REFRESH_INTERVAL);
-        let thread_priority_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, THREAD_PRIORITY_REFRESH_INTERVAL);
-        let priority_boost_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, PRIORITY_BOOST_REFRESH_INTERVAL);
-        let io_priority_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, IO_PRIORITY_REFRESH_INTERVAL);
-        let gpu_priority_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, GPU_PRIORITY_REFRESH_INTERVAL);
-        let memory_priority_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, MEMORY_PRIORITY_REFRESH_INTERVAL);
-        let memory_trim_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, memory_trim_refresh_interval(&settings));
-        let timer_resolution_refresh_interval =
-            automation_refresh_interval(hidden_to_tray, TIMER_RESOLUTION_REFRESH_INTERVAL);
+        let cpu_limiter_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            CPU_LIMITER_REFRESH_INTERVAL,
+        );
+        let performance_mode_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            PERFORMANCE_MODE_REFRESH_INTERVAL,
+        );
+        let mut workload_engine_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            WORKLOAD_ENGINE_REFRESH_INTERVAL,
+        );
+        let process_priority_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            PROCESS_PRIORITY_REFRESH_INTERVAL,
+        );
+        let thread_priority_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            THREAD_PRIORITY_REFRESH_INTERVAL,
+        );
+        let priority_boost_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            PRIORITY_BOOST_REFRESH_INTERVAL,
+        );
+        let io_priority_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            IO_PRIORITY_REFRESH_INTERVAL,
+        );
+        let gpu_priority_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            GPU_PRIORITY_REFRESH_INTERVAL,
+        );
+        let memory_priority_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            MEMORY_PRIORITY_REFRESH_INTERVAL,
+        );
+        let memory_trim_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            memory_trim_refresh_interval(&settings),
+        );
+        let timer_resolution_refresh_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            TIMER_RESOLUTION_REFRESH_INTERVAL,
+        );
+        let process_appearance_scan_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            PROCESS_APPEARANCE_SCAN_INTERVAL,
+        );
+        let app_suspension_foreground_release_interval = automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL,
+        );
         let event_now = Instant::now();
         let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
         if settings_changed {
@@ -578,7 +633,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let performance_mode_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.performance_mode.enabled);
         let workload_engine_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.workload_engine.enabled);
+            || feature_refresh_required(&settings, workload_engine_required(&settings));
         let process_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.process_priority.enabled);
         let thread_priority_refresh_required = settings_changed
@@ -624,10 +679,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_memory_trim_refresh = now;
                 workload_engine_fast_until = workload_engine_fast_refresh_deadline(&settings, now);
             }
-            next_process_appearance_scan = now + PROCESS_APPEARANCE_SCAN_INTERVAL;
+            next_process_appearance_scan = now + process_appearance_scan_interval;
         } else if !scan_process_appearance {
             runner.known_process_ids.clear();
-            next_process_appearance_scan = now + PROCESS_APPEARANCE_SCAN_INTERVAL;
+            next_process_appearance_scan = now + process_appearance_scan_interval;
         }
 
         if runner.app_suspension_manager.has_suspended_processes()
@@ -638,7 +693,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 runner.publish_action_log_if_changed(&shared);
             }
             next_app_suspension_foreground_release =
-                now + APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL;
+                now + app_suspension_foreground_release_interval;
         }
 
         if eco_qos_refresh_required && now >= next_eco_qos_refresh {
@@ -879,7 +934,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 wait_for,
                 next_process_appearance_scan
                     .saturating_duration_since(wait_now)
-                    .min(PROCESS_APPEARANCE_SCAN_INTERVAL),
+                    .min(process_appearance_scan_interval),
             ));
         }
         if controller_poll_required {
@@ -895,7 +950,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 wait_for,
                 next_app_suspension_foreground_release
                     .saturating_duration_since(wait_now)
-                    .min(APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL),
+                    .min(app_suspension_foreground_release_interval),
             ));
         }
 
@@ -1205,8 +1260,15 @@ fn bump_status_generation(shared: &SharedAutomationState, state: &mut Automation
         .store(state.status_generation, Ordering::Release);
 }
 
-fn automation_refresh_interval(hidden_to_tray: bool, hidden_interval: Duration) -> Duration {
-    if hidden_to_tray {
+fn automation_refresh_interval(
+    hidden_to_tray: bool,
+    smart_saver_enabled: bool,
+    hidden_interval: Duration,
+) -> Duration {
+    // ponytail: one global saver cadence; add per-feature intervals only if a real workflow needs it.
+    if smart_saver_enabled {
+        hidden_interval.max(SMART_SAVER_AUTOMATION_REFRESH_INTERVAL)
+    } else if hidden_to_tray {
         hidden_interval.max(HIDDEN_AUTOMATION_REFRESH_INTERVAL)
     } else {
         VISIBLE_AUTOMATION_REFRESH_INTERVAL
@@ -1224,7 +1286,7 @@ fn memory_trim_refresh_interval(settings: &Settings) -> Duration {
 }
 
 fn workload_engine_fast_refresh_deadline(settings: &Settings, now: Instant) -> Option<Instant> {
-    feature_refresh_required(settings, settings.workload_engine.enabled)
+    feature_refresh_required(settings, workload_engine_required(settings))
         .then_some(now + WORKLOAD_ENGINE_FAST_REFRESH_WINDOW)
 }
 
@@ -1233,12 +1295,21 @@ fn workload_engine_fast_refresh_active(
     fast_until: Option<Instant>,
     now: Instant,
 ) -> bool {
-    feature_refresh_required(settings, settings.workload_engine.enabled)
+    feature_refresh_required(settings, workload_engine_required(settings))
         && fast_until.is_some_and(|until| now < until)
 }
 
 fn feature_refresh_required(settings: &Settings, feature_enabled: bool) -> bool {
     settings.general.enabled && feature_enabled
+}
+
+fn workload_engine_required(settings: &Settings) -> bool {
+    let workload = &settings.workload_engine;
+    workload.enabled
+        && (workload.lower_background_apps
+            || workload.workload_engine_efficiency_mode_enabled
+            || workload.workload_engine_enabled
+            || workload.boost_foreground_app)
 }
 
 fn io_priority_required(settings: &Settings) -> bool {
@@ -1454,28 +1525,31 @@ fn automation_worker_required(settings: &Settings) -> bool {
 }
 
 fn windows_event_watcher_required(settings: &Settings) -> bool {
-    appearance_events_required(settings)
-        || (settings.general.enabled
-            && (power_plan_checks_required(settings)
-                || settings.app_suspension.enabled
-                || process_appearance_scan_required(settings)))
+    automation_windows_event_watcher_required(settings)
+        || (!settings.smart_saver.enabled && appearance_events_required(settings))
+}
+
+fn automation_windows_event_watcher_required(settings: &Settings) -> bool {
+    settings.general.enabled
+        && (power_plan_checks_required(settings) || event_driven_process_work_required(settings))
+}
+
+fn event_driven_process_work_required(settings: &Settings) -> bool {
+    !settings.smart_saver.enabled
+        && (settings.app_suspension.enabled || process_appearance_scan_required(settings))
 }
 
 fn windows_event_wake_required(settings: &Settings, event: WindowsAutomationEvent) -> bool {
     if event == WindowsAutomationEvent::AppearanceChanged {
-        return appearance_events_required(settings);
+        return !settings.smart_saver.enabled && appearance_events_required(settings);
     }
 
     if settings.general.enabled {
         match event {
             WindowsAutomationEvent::ForegroundChanged => {
-                power_plan_checks_required(settings)
-                    || settings.app_suspension.enabled
-                    || process_appearance_scan_required(settings)
+                power_plan_checks_required(settings) || event_driven_process_work_required(settings)
             }
-            WindowsAutomationEvent::WindowCreated => {
-                settings.app_suspension.enabled || process_appearance_scan_required(settings)
-            }
+            WindowsAutomationEvent::WindowCreated => event_driven_process_work_required(settings),
             WindowsAutomationEvent::PowerChanged => power_plan_checks_required(settings),
             WindowsAutomationEvent::SessionChanged => windows_event_watcher_required(settings),
             WindowsAutomationEvent::AppearanceChanged => false,
@@ -1657,14 +1731,20 @@ fn input_hook_should_check_activity(settings: &Settings, events: InputHookEvents
 }
 
 fn input_hook_should_check_app_switch(settings: &Settings, events: InputHookEvents) -> bool {
-    settings.general.enabled && settings.app_suspension.enabled && events.app_switch
+    settings.general.enabled
+        && settings.app_suspension.enabled
+        && !settings.smart_saver.enabled
+        && events.app_switch
 }
 
 fn input_hook_should_check_app_switch_mouse_click(
     settings: &Settings,
     events: InputHookEvents,
 ) -> bool {
-    settings.general.enabled && settings.app_suspension.enabled && events.mouse_click
+    settings.general.enabled
+        && settings.app_suspension.enabled
+        && !settings.smart_saver.enabled
+        && events.mouse_click
 }
 
 fn process_ids_have_new_entries(
@@ -2237,6 +2317,26 @@ mod tests {
     }
 
     #[test]
+    fn smart_saver_uses_low_power_refresh_cadence() {
+        assert_eq!(
+            automation_refresh_interval(false, true, Duration::from_secs(1)),
+            SMART_SAVER_AUTOMATION_REFRESH_INTERVAL
+        );
+        assert_eq!(
+            automation_refresh_interval(false, true, PROCESS_APPEARANCE_SCAN_INTERVAL),
+            SMART_SAVER_AUTOMATION_REFRESH_INTERVAL
+        );
+        assert_eq!(
+            automation_refresh_interval(false, true, APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL),
+            SMART_SAVER_AUTOMATION_REFRESH_INTERVAL
+        );
+        assert_eq!(
+            automation_refresh_interval(true, false, Duration::from_secs(1)),
+            HIDDEN_AUTOMATION_REFRESH_INTERVAL
+        );
+    }
+
+    #[test]
     fn status_snapshot_since_skips_unchanged_status() {
         let automation = BackgroundAutomation::start(&Settings::default());
         let snapshot = automation
@@ -2479,6 +2579,24 @@ mod tests {
     }
 
     #[test]
+    fn workload_engine_page_enabled_without_runtime_work_does_not_poll() {
+        let mut settings = Settings::default();
+        settings.workload_engine.enabled = true;
+        settings.workload_engine.lower_background_apps = false;
+        settings
+            .workload_engine
+            .workload_engine_efficiency_mode_enabled = false;
+        settings.workload_engine.workload_engine_enabled = false;
+        settings.workload_engine.boost_foreground_app = false;
+
+        assert!(!workload_engine_required(&settings));
+
+        settings.workload_engine.workload_engine_enabled = true;
+
+        assert!(workload_engine_required(&settings));
+    }
+
+    #[test]
     fn workload_engine_priority_assist_temporarily_overrides_global_priority_defaults() {
         let mut settings = Settings::default();
         settings.workload_engine.enabled = true;
@@ -2584,6 +2702,43 @@ mod tests {
         assert!(!windows_event_wake_required(
             &settings,
             WindowsAutomationEvent::PowerChanged
+        ));
+    }
+
+    #[test]
+    fn smart_saver_skips_appearance_only_windows_events() {
+        let mut settings = Settings::default();
+        settings.smart_saver.enabled = true;
+        settings.general.accent.source = AccentColorSource::Windows;
+
+        assert!(!windows_event_watcher_required(&settings));
+        assert!(!windows_event_wake_required(
+            &settings,
+            WindowsAutomationEvent::AppearanceChanged
+        ));
+
+        settings.app_suspension.enabled = true;
+
+        assert!(automation_worker_required(&settings));
+        assert!(!windows_event_watcher_required(&settings));
+        assert!(!windows_event_wake_required(
+            &settings,
+            WindowsAutomationEvent::WindowCreated
+        ));
+        assert!(!windows_event_wake_required(
+            &settings,
+            WindowsAutomationEvent::AppearanceChanged
+        ));
+
+        let input_events = InputHookEvents {
+            app_switch: true,
+            mouse_click: true,
+            ..InputHookEvents::default()
+        };
+        assert!(!input_hook_should_check_app_switch(&settings, input_events));
+        assert!(!input_hook_should_check_app_switch_mouse_click(
+            &settings,
+            input_events
         ));
     }
 

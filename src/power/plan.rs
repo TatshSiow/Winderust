@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PowerPlan {
     pub guid: String,
@@ -32,7 +34,8 @@ pub enum ProcessorPowerPreset {
     Saver,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProcessorBoostMode {
     Disabled,
     Enabled,
@@ -43,7 +46,7 @@ pub enum ProcessorBoostMode {
     EfficientAggressiveAtGuaranteed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessorPowerValues {
     pub core_parking_min: u32,
     pub performance_min: u32,
@@ -94,9 +97,9 @@ impl ProcessorPowerValues {
             ProcessorPowerPreset::Saver => Self {
                 core_parking_min: 0,
                 performance_min: 5,
-                performance_max: 80,
-                boost_policy: 40,
-                boost_mode: ProcessorBoostMode::EfficientEnabled,
+                performance_max: 60,
+                boost_policy: 0,
+                boost_mode: ProcessorBoostMode::Disabled,
             },
         }
     }

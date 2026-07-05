@@ -151,8 +151,8 @@ mod tests {
         ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
         ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
         ProcessPriorityBoostSetting, ProcessPrioritySetting, ProcessPrioritySettings,
-        ScheduleModeSettings, ScheduleRule, TimerResolutionRule, TimerResolutionSettings,
-        WeekdaySetting, WorkloadEngineSettings,
+        ScheduleModeSettings, ScheduleRule, SmartSaverSettings, TimerResolutionRule,
+        TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
     };
 
     #[test]
@@ -175,6 +175,18 @@ mod tests {
                 execution_failure_suppression_threshold: 5,
                 expose_all_priority_values: true,
                 show_advanced_controls: true,
+            },
+            smart_saver: SmartSaverSettings {
+                enabled: true,
+                processor_policy_enabled: true,
+                processor_policy_values:
+                    crate::power::plan::ProcessorPowerValues::new_with_boost_mode(
+                        0,
+                        5,
+                        45,
+                        0,
+                        crate::power::plan::ProcessorBoostMode::Disabled,
+                    ),
             },
             power_plans: PowerPlanSettings {
                 power_save_guid: Some("idle-guid".to_owned()),

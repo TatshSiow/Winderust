@@ -1,5 +1,7 @@
 /target/
 /target-next/
+/target-bench/
+/benchmark-results/
 
 # Local runtime/config artifacts
 *.log
