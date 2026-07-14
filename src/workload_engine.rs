@@ -32,8 +32,8 @@ use crate::{
     cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_count_label,
-        process_failure_key, process_id_matches_name, process_names_by_id, process_session_id,
-        same_process_name, unique_app_names, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_failure_key, process_names_by_id, process_session_id, same_process_name,
+        unique_app_names, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -131,6 +131,7 @@ impl Default for WorkloadEngineManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    creation_time: u64,
     previous_priority: u32,
     applied_priority: u32,
     previous_priority_boost_disabled: Option<bool>,
@@ -144,6 +145,7 @@ struct AdjustedProcess {
 struct BoostedProcess {
     process_id: u32,
     process_name: String,
+    creation_time: u64,
     previous_priority: u32,
     applied_priority: u32,
 }
@@ -235,6 +237,14 @@ struct ApplyPriorityRequest<'a> {
 }
 
 impl WorkloadEngineManager {
+    pub fn managed_process_ids(&self) -> BTreeSet<u32> {
+        self.adjusted
+            .keys()
+            .chain(self.boosted.keys())
+            .copied()
+            .collect()
+    }
+
     pub fn update(
         &mut self,
         input: WorkloadEngineUpdate<'_>,
@@ -877,15 +887,21 @@ impl WorkloadEngineManager {
             return None;
         }
         let mut failures = PriorityFailures::default();
-        let boosted = std::mem::take(&mut self.boosted);
+        let process_ids = self.boosted.keys().copied().collect::<Vec<_>>();
         let mut restored_processes = 0;
-        for (process_id, process) in boosted {
+        for process_id in process_ids {
+            let Some(process) = self.boosted.get(&process_id).cloned() else {
+                continue;
+            };
             let process_name = process.process_name.clone();
-            if let Err(err) = restore_boosted_priority(process) {
-                if !matches!(err, PriorityError::ProcessExited) {
+            if let Err(err) = restore_boosted_priority(&process) {
+                if matches!(err, PriorityError::ProcessExited) {
+                    self.boosted.remove(&process_id);
+                } else {
                     failures.record_error("Restore", process_id, &process_name, err, action_log);
                 }
             } else {
+                self.boosted.remove(&process_id);
                 restored_processes += 1;
             }
         }
@@ -985,26 +1001,26 @@ impl WorkloadEngineManager {
         let mut failures = PriorityFailures::default();
         let mut restored_processes = 0;
         for process_id in process_ids {
-            if let Some(process) = self.adjusted.remove(process_id) {
-                let process_name = process.process_name.clone();
-                if process_id_matches_name(
-                    current_process_names,
-                    *process_id,
-                    &process.process_name,
-                ) {
-                    if let Err(err) = restore_adjusted_priority(*process_id, process) {
-                        if !matches!(err, PriorityError::ProcessExited) {
-                            failures.record_error(
-                                "Restore",
-                                *process_id,
-                                &process_name,
-                                err,
-                                action_log,
-                            );
-                        }
+            if let Some(process) = self.adjusted.get(process_id).cloned() {
+                let process_name = current_process_names
+                    .and_then(|names| names.get(process_id))
+                    .cloned()
+                    .unwrap_or_else(|| process.process_name.clone());
+                if let Err(err) = restore_adjusted_priority(*process_id, &process) {
+                    if matches!(err, PriorityError::ProcessExited) {
+                        self.adjusted.remove(process_id);
                     } else {
-                        restored_processes += 1;
+                        failures.record_error(
+                            "Restore",
+                            *process_id,
+                            &process_name,
+                            err,
+                            action_log,
+                        );
                     }
+                } else {
+                    self.adjusted.remove(process_id);
+                    restored_processes += 1;
                 }
             }
         }
@@ -1165,11 +1181,12 @@ impl WorkloadEngineManager {
             .filter(|process_id| !target_ids.contains(process_id))
             .collect::<Vec<_>>();
         for process_id in process_ids {
-            let Some(boosted) = self.boosted.remove(&process_id) else {
+            let Some(boosted) = self.boosted.get(&process_id).cloned() else {
                 continue;
             };
             let boosted_process_name = boosted.process_name.clone();
-            restore_boosted_priority(boosted)?;
+            restore_boosted_priority(&boosted)?;
+            self.boosted.remove(&process_id);
             action_log.record(
                 ActionLogFeature::WorkloadEngine,
                 Some(process_id),
@@ -1189,17 +1206,22 @@ impl WorkloadEngineManager {
         priority_class: u32,
         action_log: &mut ActionLog,
     ) -> Result<(), PriorityError> {
+        let process = ProcessHandle::open(process_id)?;
+        let creation_time = process.creation_time_100ns()?;
         if self.boosted.get(&process_id).is_some_and(|boosted| {
-            same_process_name(&boosted.process_name, process_name)
+            boosted.creation_time == creation_time
+                && same_process_name(&boosted.process_name, process_name)
                 && boosted.applied_priority == priority_class
         }) {
             return Ok(());
         }
 
-        if let Some(boosted) = self.boosted.remove(&process_id) {
-            restore_boosted_priority(boosted)?;
+        if let Some(boosted) = self.boosted.get(&process_id).cloned() {
+            if boosted.creation_time == creation_time {
+                restore_boosted_priority(&boosted)?;
+            }
+            self.boosted.remove(&process_id);
         }
-        let process = ProcessHandle::open(process_id)?;
         let current_priority = process.priority_class()?;
         if current_priority == HIGH_PRIORITY_CLASS || current_priority == REALTIME_PRIORITY_CLASS {
             return Ok(());
@@ -1223,6 +1245,7 @@ impl WorkloadEngineManager {
             BoostedProcess {
                 process_id,
                 process_name: process_name.to_owned(),
+                creation_time,
                 previous_priority: current_priority,
                 applied_priority: priority_class,
             },
@@ -2053,11 +2076,15 @@ fn apply_priority(
     } = request;
     let mut changed = false;
     let process = ProcessHandle::open(process_id)?;
-    let reusable_existing =
-        existing.filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
+    let creation_time = process.creation_time_100ns()?;
+    let reusable_existing = existing
+        .filter(|adjusted| adjusted.creation_time == creation_time)
+        .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
 
     if let Some(adjusted) = existing {
-        if !same_process_name(&adjusted.process_name, &process_name) {
+        if adjusted.creation_time == creation_time
+            && !same_process_name(&adjusted.process_name, &process_name)
+        {
             restore_adjusted_process(&process, adjusted)?;
             action_log.record(
                 ActionLogFeature::WorkloadEngine,
@@ -2205,6 +2232,7 @@ fn apply_priority(
     Ok(ApplyPriorityOutcome {
         adjusted: Some(AdjustedProcess {
             process_name,
+            creation_time,
             previous_priority,
             applied_priority,
             previous_priority_boost_disabled,
@@ -2220,10 +2248,13 @@ fn apply_priority(
 
 fn restore_adjusted_priority(
     process_id: u32,
-    process_state: AdjustedProcess,
+    process_state: &AdjustedProcess,
 ) -> Result<(), PriorityError> {
     let process = ProcessHandle::open(process_id)?;
-    restore_adjusted_process(&process, &process_state)
+    if process.creation_time_100ns()? != process_state.creation_time {
+        return Err(PriorityError::ProcessExited);
+    }
+    restore_adjusted_process(&process, process_state)
 }
 
 fn restore_adjusted_process(
@@ -2257,8 +2288,11 @@ fn restore_adjusted_process(
     }
 }
 
-fn restore_boosted_priority(process_state: BoostedProcess) -> Result<(), PriorityError> {
+fn restore_boosted_priority(process_state: &BoostedProcess) -> Result<(), PriorityError> {
     let process = ProcessHandle::open(process_state.process_id)?;
+    if process.creation_time_100ns()? != process_state.creation_time {
+        return Err(PriorityError::ProcessExited);
+    }
     process.set_priority_class(process_state.previous_priority)
 }
 
@@ -2810,7 +2844,6 @@ mod tests {
             lower_background_apps: true,
             workload_engine_efficiency_mode_enabled: true,
             workload_engine_background_priority: ProcessPriority::BelowNormal,
-            lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: crate::config::ProcessIoPriority::VeryLow,
             workload_engine_io_priority: crate::config::IoPrioritySettings::default(),
@@ -2820,9 +2853,6 @@ mod tests {
             workload_engine_memory_priority_enabled: false,
             workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
             workload_engine_memory_priority: crate::config::ProcessMemoryPriority::Low,
-            lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            lower_background_cpu_percent: 50,
-            lower_background_max_logical_processors: 0,
             lower_background_auto_cpu_percent: false,
             workload_engine_enabled: false,
             workload_engine_advanced_settings_enabled: false,
@@ -3306,6 +3336,7 @@ mod tests {
             0,
             AdjustedProcess {
                 process_name: "exited.exe".to_owned(),
+                creation_time: 0,
                 previous_priority: NORMAL_PRIORITY_CLASS,
                 applied_priority: BELOW_NORMAL_PRIORITY_CLASS,
                 previous_priority_boost_disabled: None,

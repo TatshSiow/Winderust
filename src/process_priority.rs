@@ -47,6 +47,7 @@ pub struct ProcessPriorityManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    creation_time: u64,
     previous_priority_class: u32,
     applied_priority_class: u32,
 }
@@ -59,11 +60,12 @@ enum ProcessPriorityError {
 }
 
 impl ProcessPriorityManager {
-    pub fn update(
+    pub(crate) fn update(
         &mut self,
         settings: &ProcessPrioritySettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
+        excluded_process_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
     ) -> ProcessPrioritySnapshot {
         if !automation_enabled {
@@ -146,6 +148,7 @@ impl ProcessPriorityManager {
         for process in processes {
             if process.id == 0
                 || process.id == current_process_id
+                || excluded_process_ids.contains(&process.id)
                 || process_session_id(process.id) != Some(current_session_id)
                 || is_builtin_excluded(&process.name)
             {
@@ -174,7 +177,13 @@ impl ProcessPriorityManager {
             }
         }
 
-        let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        let mut target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
+        target_ids.extend(
+            excluded_process_ids
+                .iter()
+                .filter(|process_id| self.adjusted.contains_key(process_id))
+                .copied(),
+        );
         let active_target_names = target_processes
             .values()
             .map(|(name, _priority, _foreground)| process_failure_key(name))
@@ -280,10 +289,14 @@ impl ProcessPriorityManager {
         preserve_background: bool,
     ) -> Result<ApplyOutcome, ProcessPriorityError> {
         let process = ProcessHandle::open(process_id)?;
-        let reusable_existing = self
-            .adjusted
-            .get(&process_id)
-            .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
+        let creation_time = process
+            .0
+            .process_creation_time()
+            .ok_or(ProcessPriorityError::ProcessExited)?;
+        let reusable_existing = self.adjusted.get(&process_id).filter(|adjusted| {
+            adjusted.creation_time == creation_time
+                && same_process_name(&adjusted.process_name, &process_name)
+        });
         let current_priority_class = process.priority_class()?;
 
         if current_priority_class == REALTIME_PRIORITY_CLASS {
@@ -300,8 +313,9 @@ impl ProcessPriorityManager {
             process_priority_rank(baseline_priority_class),
             process_priority_rank(priority_class),
         ) {
-            if let Some(adjusted) = self.adjusted.remove(&process_id) {
+            if let Some(adjusted) = reusable_existing.cloned() {
                 process.set_priority_class(adjusted.previous_priority_class)?;
+                self.adjusted.remove(&process_id);
             }
             return Ok(ApplyOutcome::Preserved);
         }
@@ -329,6 +343,7 @@ impl ProcessPriorityManager {
             process_id,
             AdjustedProcess {
                 process_name,
+                creation_time,
                 previous_priority_class: baseline_priority_class,
                 applied_priority_class: priority_class,
             },
@@ -374,19 +389,22 @@ impl ProcessPriorityManager {
         let mut failures = ProcessPriorityFailures::default();
         let mut restored_processes = 0;
         for process_id in process_ids {
-            let Some(process_state) = self.adjusted.remove(process_id) else {
+            let Some(process_state) = self.adjusted.get(process_id).cloned() else {
                 continue;
             };
             let log_name = current_process_names
                 .and_then(|names| names.get(process_id))
                 .cloned()
                 .unwrap_or_else(|| process_state.process_name.clone());
-            match restore_process(*process_id, process_state) {
+            match restore_process(*process_id, &process_state) {
                 Ok(()) => {
+                    self.adjusted.remove(process_id);
                     self.clear_process_failure(&log_name);
                     restored_processes += 1;
                 }
-                Err(ProcessPriorityError::ProcessExited) => {}
+                Err(ProcessPriorityError::ProcessExited) => {
+                    self.adjusted.remove(process_id);
+                }
                 Err(err) => {
                     self.record_process_failure(&log_name);
                     failures.record("Restore", *process_id, &log_name, err, action_log);
@@ -445,6 +463,13 @@ impl ProcessPriorityManager {
 
     fn clear_process_failure(&mut self, process_name: &str) {
         self.failure_suppression.clear_process_failure(process_name);
+    }
+}
+
+impl Drop for ProcessPriorityManager {
+    fn drop(&mut self) {
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(&mut action_log, stringify!(ProcessPriorityManager));
     }
 }
 
@@ -532,9 +557,12 @@ impl ProcessHandle {
 
 fn restore_process(
     process_id: u32,
-    process_state: AdjustedProcess,
+    process_state: &AdjustedProcess,
 ) -> Result<(), ProcessPriorityError> {
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(ProcessPriorityError::ProcessExited);
+    }
     if process.priority_class()? == REALTIME_PRIORITY_CLASS {
         return Ok(());
     }

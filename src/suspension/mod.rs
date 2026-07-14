@@ -1925,7 +1925,11 @@ fn query_ip_helper_table(
     }
 
     let mut buffer = vec![0u8; size as usize];
-    let status = query(buffer.as_mut_ptr() as *mut c_void, &mut size);
+    let mut status = query(buffer.as_mut_ptr() as *mut c_void, &mut size);
+    while status == ERROR_INSUFFICIENT_BUFFER && size as usize > buffer.len() {
+        buffer.resize(size as usize, 0);
+        status = query(buffer.as_mut_ptr() as *mut c_void, &mut size);
+    }
     if status != NO_ERROR {
         return Err(format!(
             "Network intent detection failed to read IP Helper table with error {status}."

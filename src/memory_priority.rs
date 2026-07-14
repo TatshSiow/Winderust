@@ -56,6 +56,7 @@ pub struct MemoryPriorityTarget {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    creation_time: u64,
     previous_priority: ProcessMemoryPriority,
     applied_priority: ProcessMemoryPriority,
 }
@@ -350,10 +351,14 @@ impl MemoryPriorityManager {
         preserve_background: bool,
     ) -> Result<ApplyOutcome, MemoryPriorityError> {
         let process = ProcessHandle::open(process_id)?;
-        let reusable_existing = self
-            .adjusted
-            .get(&process_id)
-            .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
+        let creation_time = process
+            .0
+            .process_creation_time()
+            .ok_or(MemoryPriorityError::ProcessExited)?;
+        let reusable_existing = self.adjusted.get(&process_id).filter(|adjusted| {
+            adjusted.creation_time == creation_time
+                && same_process_name(&adjusted.process_name, &process_name)
+        });
         let current_priority = process.memory_priority()?;
 
         let baseline_priority = reusable_existing
@@ -366,8 +371,9 @@ impl MemoryPriorityManager {
             memory_priority_raw(baseline_priority),
             memory_priority_raw(priority),
         ) {
-            if let Some(adjusted) = self.adjusted.remove(&process_id) {
+            if let Some(adjusted) = reusable_existing.cloned() {
                 process.set_memory_priority(adjusted.previous_priority)?;
+                self.adjusted.remove(&process_id);
             }
             return Ok(ApplyOutcome::Preserved);
         }
@@ -394,6 +400,7 @@ impl MemoryPriorityManager {
             process_id,
             AdjustedProcess {
                 process_name,
+                creation_time,
                 previous_priority: baseline_priority,
                 applied_priority: priority,
             },
@@ -447,19 +454,22 @@ impl MemoryPriorityManager {
         let mut failures = MemoryPriorityFailures::default();
         let mut restored_processes = 0;
         for process_id in process_ids {
-            let Some(process_state) = self.adjusted.remove(process_id) else {
+            let Some(process_state) = self.adjusted.get(process_id).cloned() else {
                 continue;
             };
             let log_name = current_process_names
                 .and_then(|names| names.get(process_id))
                 .cloned()
                 .unwrap_or_else(|| process_state.process_name.clone());
-            match restore_process(*process_id, process_state) {
+            match restore_process(*process_id, &process_state) {
                 Ok(()) => {
+                    self.adjusted.remove(process_id);
                     self.clear_process_failure(&log_name);
                     restored_processes += 1;
                 }
-                Err(MemoryPriorityError::ProcessExited) => {}
+                Err(MemoryPriorityError::ProcessExited) => {
+                    self.adjusted.remove(process_id);
+                }
                 Err(MemoryPriorityError::AccessDenied) => {
                     self.record_process_failure(&log_name);
                     action_log.record(
@@ -581,6 +591,17 @@ impl MemoryPriorityFailures {
     }
 }
 
+impl Drop for MemoryPriorityManager {
+    fn drop(&mut self) {
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(
+            ActionLogFeature::MemoryPriority,
+            &mut action_log,
+            stringify!(MemoryPriorityManager),
+        );
+    }
+}
+
 struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
@@ -641,9 +662,12 @@ impl ProcessHandle {
 
 fn restore_process(
     process_id: u32,
-    process_state: AdjustedProcess,
+    process_state: &AdjustedProcess,
 ) -> Result<(), MemoryPriorityError> {
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(MemoryPriorityError::ProcessExited);
+    }
     process.set_memory_priority(process_state.previous_priority)?;
     let refreshed_priority = process.memory_priority()?;
     if refreshed_priority == process_state.previous_priority {

@@ -4,13 +4,16 @@ use std::{
 };
 
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, INVALID_HANDLE_VALUE},
+    Foundation::{
+        ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, FILETIME,
+        INVALID_HANDLE_VALUE,
+    },
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
         },
         Threading::{
-            GetCurrentProcessId, GetThreadPriority, OpenThread, SetThreadPriority,
+            GetCurrentProcessId, GetThreadPriority, GetThreadTimes, OpenThread, SetThreadPriority,
             THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_HIGHEST,
             THREAD_PRIORITY_IDLE, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
             THREAD_PRIORITY_TIME_CRITICAL, THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
@@ -27,7 +30,7 @@ use crate::{
         CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
-    win_util::{last_error, WinHandle},
+    win_util::{filetime_to_u64, last_error, WinHandle},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
@@ -62,6 +65,7 @@ struct ThreadApplyOutcome {
 struct AdjustedThread {
     process_id: u32,
     process_name: String,
+    creation_time: u64,
     previous_priority: i32,
     applied_priority: i32,
 }
@@ -297,9 +301,11 @@ impl ThreadPriorityManager {
         let mut preserved = 0;
         for thread_id in process_thread_ids(process_id)? {
             let thread = ThreadHandle::open(thread_id)?;
+            let creation_time = thread.creation_time()?;
             let current_priority = thread.priority()?;
             let reusable_existing = self.adjusted.get(&thread_id).filter(|adjusted| {
                 adjusted.process_id == process_id
+                    && adjusted.creation_time == creation_time
                     && same_process_name(&adjusted.process_name, &process_name)
             });
             let baseline_priority = reusable_existing
@@ -312,8 +318,9 @@ impl ThreadPriorityManager {
                 baseline_priority,
                 priority,
             ) {
-                if let Some(adjusted) = self.adjusted.remove(&thread_id) {
+                if let Some(adjusted) = reusable_existing.cloned() {
                     thread.set_priority(adjusted.previous_priority)?;
+                    self.adjusted.remove(&thread_id);
                 }
                 preserved += 1;
                 continue;
@@ -339,6 +346,7 @@ impl ThreadPriorityManager {
                 AdjustedThread {
                     process_id,
                     process_name: process_name.clone(),
+                    creation_time,
                     previous_priority: baseline_priority,
                     applied_priority: priority,
                 },
@@ -382,16 +390,21 @@ impl ThreadPriorityManager {
         let mut failures = ThreadPriorityFailures::default();
         let mut restored_threads = 0;
         for thread_id in thread_ids {
-            let Some(thread_state) = self.adjusted.remove(thread_id) else {
+            let Some(thread_state) = self.adjusted.get(thread_id).cloned() else {
                 continue;
             };
             let log_name = current_process_names
                 .and_then(|names| names.get(&thread_state.process_id))
                 .cloned()
                 .unwrap_or_else(|| thread_state.process_name.clone());
-            match restore_thread(*thread_id, thread_state) {
-                Ok(()) => restored_threads += 1,
-                Err(ThreadPriorityError::ProcessExited) => {}
+            match restore_thread(*thread_id, &thread_state) {
+                Ok(()) => {
+                    self.adjusted.remove(thread_id);
+                    restored_threads += 1;
+                }
+                Err(ThreadPriorityError::ProcessExited) => {
+                    self.adjusted.remove(thread_id);
+                }
                 Err(err) => failures.record("Restore", *thread_id, &log_name, err, action_log),
             }
         }
@@ -482,6 +495,13 @@ impl ThreadPriorityFailures {
     }
 }
 
+impl Drop for ThreadPriorityManager {
+    fn drop(&mut self) {
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(&mut action_log, stringify!(ThreadPriorityManager));
+    }
+}
+
 struct ThreadHandle(WinHandle);
 
 impl ThreadHandle {
@@ -512,6 +532,27 @@ impl ThreadHandle {
         }
     }
 
+    fn creation_time(&self) -> Result<u64, ThreadPriorityError> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        if unsafe {
+            GetThreadTimes(
+                self.0.raw(),
+                &mut creation,
+                &mut exit,
+                &mut kernel,
+                &mut user,
+            )
+        } != 0
+        {
+            Ok(filetime_to_u64(creation))
+        } else {
+            Err(open_thread_error(0, last_error()))
+        }
+    }
+
     fn set_priority(&self, priority: i32) -> Result<(), ThreadPriorityError> {
         if unsafe { SetThreadPriority(self.0.raw(), priority) } != 0 {
             Ok(())
@@ -532,7 +573,7 @@ fn process_thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityError> 
             last_error()
         )));
     }
-    let _snapshot = SnapshotHandle(snapshot);
+    let _snapshot = WinHandle::new(snapshot);
     let mut entry = THREADENTRY32 {
         dwSize: size_of::<THREADENTRY32>() as u32,
         ..THREADENTRY32::default()
@@ -546,21 +587,23 @@ fn process_thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityError> 
         entry.dwSize = size_of::<THREADENTRY32>() as u32;
         ok = unsafe { Thread32Next(snapshot, &mut entry) };
     }
+    let error = last_error();
+    if error != ERROR_NO_MORE_FILES {
+        return Err(ThreadPriorityError::Failed(
+            std::io::Error::from_raw_os_error(error as i32).to_string(),
+        ));
+    }
     Ok(ids)
 }
 
-struct SnapshotHandle(windows_sys::Win32::Foundation::HANDLE);
-
-impl Drop for SnapshotHandle {
-    fn drop(&mut self) {
-        unsafe {
-            CloseHandle(self.0);
-        }
-    }
-}
-
-fn restore_thread(thread_id: u32, thread_state: AdjustedThread) -> Result<(), ThreadPriorityError> {
+fn restore_thread(
+    thread_id: u32,
+    thread_state: &AdjustedThread,
+) -> Result<(), ThreadPriorityError> {
     let thread = ThreadHandle::open(thread_id)?;
+    if thread.creation_time()? != thread_state.creation_time {
+        return Err(ThreadPriorityError::ProcessExited);
+    }
     thread.set_priority(thread_state.previous_priority)?;
     Ok(())
 }

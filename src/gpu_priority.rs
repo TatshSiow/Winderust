@@ -67,6 +67,7 @@ pub struct GpuPriorityManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    creation_time: u64,
     previous_priority_raw: u32,
     applied_priority: ProcessGpuPriority,
 }
@@ -318,10 +319,14 @@ impl GpuPriorityManager {
         preserve_background: bool,
     ) -> Result<ApplyOutcome, GpuPriorityError> {
         let process = ProcessHandle::open(process_id)?;
-        let reusable_existing = self
-            .adjusted
-            .get(&process_id)
-            .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
+        let creation_time = process
+            .0
+            .process_creation_time()
+            .ok_or(GpuPriorityError::ProcessExited)?;
+        let reusable_existing = self.adjusted.get(&process_id).filter(|adjusted| {
+            adjusted.creation_time == creation_time
+                && same_process_name(&adjusted.process_name, &process_name)
+        });
         let current_priority_raw = process.gpu_priority_raw()?;
         let desired_priority_raw = gpu_priority_raw(priority);
         let baseline_priority_raw = reusable_existing
@@ -334,8 +339,9 @@ impl GpuPriorityManager {
             baseline_priority_raw,
             desired_priority_raw,
         ) {
-            if let Some(adjusted) = self.adjusted.remove(&process_id) {
+            if let Some(adjusted) = reusable_existing.cloned() {
                 process.set_gpu_priority_raw(adjusted.previous_priority_raw)?;
+                self.adjusted.remove(&process_id);
             }
             return Ok(ApplyOutcome::Preserved);
         }
@@ -369,6 +375,7 @@ impl GpuPriorityManager {
             process_id,
             AdjustedProcess {
                 process_name,
+                creation_time,
                 previous_priority_raw: baseline_priority_raw,
                 applied_priority: priority,
             },
@@ -416,15 +423,16 @@ impl GpuPriorityManager {
     ) -> GpuPriorityFailures {
         let mut failures = GpuPriorityFailures::default();
         for process_id in process_ids {
-            let Some(process_state) = self.adjusted.remove(process_id) else {
+            let Some(process_state) = self.adjusted.get(process_id).cloned() else {
                 continue;
             };
             let log_name = current_process_names
                 .and_then(|names| names.get(process_id))
                 .cloned()
                 .unwrap_or_else(|| process_state.process_name.clone());
-            match restore_process(*process_id, process_state) {
+            match restore_process(*process_id, &process_state) {
                 Ok(()) => {
+                    self.adjusted.remove(process_id);
                     self.clear_process_failure(&log_name);
                     action_log.record(
                         ActionLogFeature::GpuPriority,
@@ -435,7 +443,9 @@ impl GpuPriorityManager {
                         format!("Restored previous GPU priority: {reason}."),
                     );
                 }
-                Err(GpuPriorityError::ProcessExited) => {}
+                Err(GpuPriorityError::ProcessExited) => {
+                    self.adjusted.remove(process_id);
+                }
                 Err(GpuPriorityError::AccessDenied) => {
                     self.record_process_failure(&log_name);
                     action_log.record(
@@ -595,6 +605,13 @@ impl GpuPriorityFailures {
     }
 }
 
+impl Drop for GpuPriorityManager {
+    fn drop(&mut self) {
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(&mut action_log, stringify!(GpuPriorityManager));
+    }
+}
+
 struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
@@ -635,9 +652,12 @@ impl ProcessHandle {
 
 fn restore_process(
     process_id: u32,
-    process_state: AdjustedProcess,
+    process_state: &AdjustedProcess,
 ) -> Result<(), GpuPriorityError> {
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(GpuPriorityError::ProcessExited);
+    }
     process.set_gpu_priority_raw(process_state.previous_priority_raw)?;
     let refreshed_priority_raw = process.gpu_priority_raw()?;
     if refreshed_priority_raw == process_state.previous_priority_raw {

@@ -45,6 +45,7 @@ pub struct PriorityBoostManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    creation_time: u64,
     previous_disabled: bool,
     applied_disabled: bool,
 }
@@ -266,10 +267,14 @@ impl PriorityBoostManager {
         disabled: bool,
     ) -> Result<ApplyOutcome, PriorityBoostError> {
         let process = ProcessHandle::open(process_id)?;
-        let reusable_existing = self
-            .adjusted
-            .get(&process_id)
-            .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
+        let creation_time = process
+            .0
+            .process_creation_time()
+            .ok_or(PriorityBoostError::ProcessExited)?;
+        let reusable_existing = self.adjusted.get(&process_id).filter(|adjusted| {
+            adjusted.creation_time == creation_time
+                && same_process_name(&adjusted.process_name, &process_name)
+        });
         let current_disabled = process.priority_boost_disabled()?;
 
         if reusable_existing.is_some_and(|adjusted| {
@@ -295,6 +300,7 @@ impl PriorityBoostManager {
             process_id,
             AdjustedProcess {
                 process_name,
+                creation_time,
                 previous_disabled,
                 applied_disabled: disabled,
             },
@@ -340,19 +346,22 @@ impl PriorityBoostManager {
         let mut failures = PriorityBoostFailures::default();
         let mut restored_processes = 0;
         for process_id in process_ids {
-            let Some(process_state) = self.adjusted.remove(process_id) else {
+            let Some(process_state) = self.adjusted.get(process_id).cloned() else {
                 continue;
             };
             let log_name = current_process_names
                 .and_then(|names| names.get(process_id))
                 .cloned()
                 .unwrap_or_else(|| process_state.process_name.clone());
-            match restore_process(*process_id, process_state) {
+            match restore_process(*process_id, &process_state) {
                 Ok(()) => {
+                    self.adjusted.remove(process_id);
                     self.clear_process_failure(&log_name);
                     restored_processes += 1;
                 }
-                Err(PriorityBoostError::ProcessExited) => {}
+                Err(PriorityBoostError::ProcessExited) => {
+                    self.adjusted.remove(process_id);
+                }
                 Err(err) => {
                     self.record_process_failure(&log_name);
                     failures.record("Restore", *process_id, &log_name, err, action_log);
@@ -409,6 +418,13 @@ impl PriorityBoostManager {
 
     fn clear_process_failure(&mut self, process_name: &str) {
         self.failure_suppression.clear_process_failure(process_name);
+    }
+}
+
+impl Drop for PriorityBoostManager {
+    fn drop(&mut self) {
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(&mut action_log, stringify!(PriorityBoostManager));
     }
 }
 
@@ -495,9 +511,12 @@ impl ProcessHandle {
 
 fn restore_process(
     process_id: u32,
-    process_state: AdjustedProcess,
+    process_state: &AdjustedProcess,
 ) -> Result<(), PriorityBoostError> {
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(PriorityBoostError::ProcessExited);
+    }
     process.set_priority_boost_disabled(process_state.previous_disabled)?;
     let refreshed_disabled = process.priority_boost_disabled()?;
     if refreshed_disabled == process_state.previous_disabled {

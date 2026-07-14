@@ -676,8 +676,6 @@ pub struct WorkloadEngineSettings {
     #[serde(default = "default_workload_engine_background_priority")]
     pub workload_engine_background_priority: ProcessPriority,
     #[serde(default)]
-    pub lower_background_affinity_enabled: bool,
-    #[serde(default)]
     pub lower_background_io_priority_enabled: bool,
     #[serde(default)]
     pub lower_background_io_priority: ProcessIoPriority,
@@ -695,12 +693,6 @@ pub struct WorkloadEngineSettings {
     pub workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting,
     #[serde(default)]
     pub workload_engine_memory_priority: ProcessMemoryPriority,
-    #[serde(default)]
-    pub lower_background_affinity_mode: EcoQosCpuRestrictionMode,
-    #[serde(default = "default_eco_qos_cpu_restriction_percent")]
-    pub lower_background_cpu_percent: u8,
-    #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
-    pub lower_background_max_logical_processors: u8,
     #[serde(default = "default_true")]
     pub lower_background_auto_cpu_percent: bool,
     #[serde(default)]
@@ -1886,7 +1878,6 @@ impl Default for WorkloadEngineSettings {
             lower_background_apps: default_true(),
             workload_engine_efficiency_mode_enabled: default_true(),
             workload_engine_background_priority: default_workload_engine_background_priority(),
-            lower_background_affinity_enabled: false,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             workload_engine_io_priority: default_workload_engine_io_priority_settings(),
@@ -1897,10 +1888,6 @@ impl Default for WorkloadEngineSettings {
             workload_engine_foreground_memory_priority:
                 default_workload_engine_foreground_memory_priority(),
             workload_engine_memory_priority: ProcessMemoryPriority::Low,
-            lower_background_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
-            lower_background_cpu_percent: default_eco_qos_cpu_restriction_percent(),
-            lower_background_max_logical_processors:
-                default_eco_qos_cpu_restriction_max_logical_processors(),
             lower_background_auto_cpu_percent: default_true(),
             workload_engine_enabled: false,
             workload_engine_advanced_settings_enabled: false,

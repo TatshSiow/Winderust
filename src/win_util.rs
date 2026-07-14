@@ -1,4 +1,5 @@
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, FILETIME, HANDLE};
+use windows_sys::Win32::System::Threading::GetProcessTimes;
 
 pub(crate) struct WinHandle(HANDLE);
 
@@ -10,6 +11,16 @@ impl WinHandle {
 
     pub(crate) fn raw(&self) -> HANDLE {
         self.0
+    }
+
+    pub(crate) fn process_creation_time(&self) -> Option<u64> {
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let ok =
+            unsafe { GetProcessTimes(self.0, &mut creation, &mut exit, &mut kernel, &mut user) };
+        (ok != 0).then(|| filetime_to_u64(creation))
     }
 }
 

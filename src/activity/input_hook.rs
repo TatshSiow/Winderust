@@ -6,7 +6,6 @@ use std::{
         mpsc, Arc,
     },
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use windows_sys::Win32::{
@@ -72,7 +71,7 @@ impl InputHook {
         let (sender, receiver) = mpsc::channel();
         let thread = thread::spawn(move || hook_thread(config, callback, sender));
 
-        match receiver.recv_timeout(Duration::from_secs(2)) {
+        match receiver.recv() {
             Ok(Ok(thread_id)) => Ok(Self {
                 config,
                 thread_id,

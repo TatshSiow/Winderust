@@ -112,8 +112,10 @@ pub struct EcoQosManager {
     failure_suppression: ExecutionFailureTracker,
 }
 
+#[derive(Clone)]
 struct ThrottledProcess {
     process_name: String,
+    creation_time: u64,
     previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     previous_priority: Option<u32>,
     applied_ignore_timer_resolution: bool,
@@ -129,6 +131,7 @@ impl EcoQosManager {
         settings: &EcoQosSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
+        manage_process_priority: bool,
         action_log: &mut ActionLog,
     ) -> EcoQosSnapshot {
         if !automation_enabled {
@@ -254,6 +257,7 @@ impl EcoQosManager {
                 process_id,
                 name.clone(),
                 ignore_timer_resolution_allowed(process_id, active_audio_process_ids.as_ref()),
+                manage_process_priority,
                 &mut self.throttled,
                 action_log,
             ) {
@@ -347,10 +351,14 @@ impl EcoQosManager {
     ) -> EcoQosFailures {
         let mut failures = EcoQosFailures::default();
         for process_id in process_ids {
-            if let Some(process) = self.throttled.remove(process_id) {
+            if let Some(process) = self.throttled.get(process_id).cloned() {
                 let process_name = process.process_name.clone();
-                if let Err(err) = restore_efficiency_mode(*process_id, process) {
-                    if !matches!(err, EcoQosError::ProcessExited) {
+                if let Err(err) = restore_efficiency_mode(*process_id, &process) {
+                    let process_exited = matches!(&err, EcoQosError::ProcessExited);
+                    if process_exited {
+                        self.throttled.remove(process_id);
+                    }
+                    if !process_exited {
                         failures.record_error(
                             "Restore",
                             *process_id,
@@ -360,6 +368,7 @@ impl EcoQosManager {
                         );
                     }
                 } else {
+                    self.throttled.remove(process_id);
                     action_log.record(
                         ActionLogFeature::EcoQos,
                         Some(*process_id),
@@ -532,16 +541,32 @@ fn apply_efficiency_mode_to_process(
     process_id: u32,
     process_name: String,
     ignore_timer_resolution: bool,
+    manage_process_priority: bool,
     throttled: &mut BTreeMap<u32, ThrottledProcess>,
     action_log: &mut ActionLog,
 ) -> Result<bool, EcoQosError> {
     if let Some(process) = throttled.get_mut(&process_id) {
-        update_efficiency_mode(process_id, process, ignore_timer_resolution)?;
-        return Ok(false);
+        let update = update_efficiency_mode(
+            process_id,
+            process,
+            ignore_timer_resolution,
+            manage_process_priority,
+        );
+        match update {
+            Ok(()) => return Ok(false),
+            Err(EcoQosError::ProcessExited) => {
+                throttled.remove(&process_id);
+            }
+            Err(err) => return Err(err),
+        }
     }
 
-    let process =
-        enable_efficiency_mode(process_id, process_name.clone(), ignore_timer_resolution)?;
+    let process = enable_efficiency_mode(
+        process_id,
+        process_name.clone(),
+        ignore_timer_resolution,
+        manage_process_priority,
+    )?;
     throttled.insert(process_id, process);
     action_log.record(
         ActionLogFeature::EcoQos,
@@ -558,16 +583,32 @@ fn update_efficiency_mode(
     process_id: u32,
     process_state: &mut ThrottledProcess,
     ignore_timer_resolution: bool,
+    manage_process_priority: bool,
 ) -> Result<(), EcoQosError> {
-    if process_state.applied_ignore_timer_resolution == ignore_timer_resolution {
+    if process_state.applied_ignore_timer_resolution == ignore_timer_resolution
+        && process_state.previous_priority.is_some() == manage_process_priority
+    {
         return Ok(());
     }
 
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(EcoQosError::ProcessExited);
+    }
     process.set_power_throttling_state(power_throttling_enabled_state(
         process_state.previous_state,
         ignore_timer_resolution,
     ))?;
+    if manage_process_priority && process_state.previous_priority.is_none() {
+        let previous_priority = process.priority_class()?;
+        process.set_priority_class(IDLE_PRIORITY_CLASS)?;
+        process_state.previous_priority = Some(previous_priority);
+    } else if !manage_process_priority {
+        if let Some(previous_priority) = process_state.previous_priority {
+            process.set_priority_class(previous_priority)?;
+            process_state.previous_priority = None;
+        }
+    }
     process_state.applied_ignore_timer_resolution = ignore_timer_resolution;
     Ok(())
 }
@@ -594,22 +635,32 @@ fn enable_efficiency_mode(
     process_id: u32,
     process_name: String,
     ignore_timer_resolution: bool,
+    manage_process_priority: bool,
 ) -> Result<ThrottledProcess, EcoQosError> {
     let process = ProcessHandle::open(process_id)?;
+    let creation_time = process
+        .0
+        .process_creation_time()
+        .ok_or(EcoQosError::ProcessExited)?;
     let previous_state = process.power_throttling_state().ok();
-    let previous_priority = process.priority_class().ok();
+    let previous_priority = manage_process_priority
+        .then(|| process.priority_class())
+        .transpose()?;
 
     let next_state = power_throttling_enabled_state(previous_state, ignore_timer_resolution);
     process.set_power_throttling_state(next_state)?;
-    if let Err(err) = process.set_priority_class(IDLE_PRIORITY_CLASS) {
-        let _ = process.set_power_throttling_state(
-            previous_state.unwrap_or_else(power_throttling_disabled_state),
-        );
-        return Err(err);
+    if manage_process_priority {
+        if let Err(err) = process.set_priority_class(IDLE_PRIORITY_CLASS) {
+            let _ = process.set_power_throttling_state(
+                previous_state.unwrap_or_else(power_throttling_disabled_state),
+            );
+            return Err(err);
+        }
     }
 
     Ok(ThrottledProcess {
         process_name,
+        creation_time,
         previous_state,
         previous_priority,
         applied_ignore_timer_resolution: ignore_timer_resolution,
@@ -618,9 +669,12 @@ fn enable_efficiency_mode(
 
 fn restore_efficiency_mode(
     process_id: u32,
-    process_state: ThrottledProcess,
+    process_state: &ThrottledProcess,
 ) -> Result<(), EcoQosError> {
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(EcoQosError::ProcessExited);
+    }
     let mut last_error = None;
 
     if let Err(err) = process.set_power_throttling_state(
@@ -1001,6 +1055,7 @@ mod tests {
             0,
             ThrottledProcess {
                 process_name: "exited.exe".to_owned(),
+                creation_time: 0,
                 previous_state: None,
                 previous_priority: None,
                 applied_ignore_timer_resolution: false,

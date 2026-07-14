@@ -1867,6 +1867,7 @@ impl HiddenAutomationRunner {
             &settings.eco_qos,
             settings.general.enabled,
             foreground_process_id,
+            !settings.process_priority.enabled,
             &mut self.action_log,
         )
     }
@@ -2035,10 +2036,12 @@ impl HiddenAutomationRunner {
     }
 
     fn run_process_priority_update(&mut self, settings: &Settings) -> ProcessPrioritySnapshot {
+        let excluded_process_ids = self.workload_engine_manager.managed_process_ids();
         self.process_priority_manager.update(
             &settings.process_priority,
             settings.general.enabled,
             self.foreground_detector.process_id(),
+            &excluded_process_ids,
             &mut self.action_log,
         )
     }

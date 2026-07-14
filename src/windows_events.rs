@@ -3,7 +3,6 @@ use std::{
     ptr::null,
     sync::{mpsc, Arc},
     thread::{self, JoinHandle},
-    time::Duration,
 };
 
 use windows_sys::Win32::{
@@ -12,7 +11,7 @@ use windows_sys::Win32::{
         LibraryLoader::GetModuleHandleW,
         Power::{
             RegisterPowerSettingNotification, RegisterSuspendResumeNotification,
-            UnregisterPowerSettingNotification, HPOWERNOTIFY,
+            UnregisterPowerSettingNotification, UnregisterSuspendResumeNotification, HPOWERNOTIFY,
         },
         RemoteDesktop::{
             WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
@@ -59,12 +58,17 @@ pub struct WindowsEventWatcher {
     thread: Option<JoinHandle<()>>,
 }
 
+struct PowerNotifications {
+    settings: Vec<HPOWERNOTIFY>,
+    suspend_resume: HPOWERNOTIFY,
+}
+
 impl WindowsEventWatcher {
     pub fn start(callback: EventCallback) -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
         let thread = thread::spawn(move || event_thread(sender, callback));
 
-        match receiver.recv_timeout(Duration::from_secs(2)) {
+        match receiver.recv() {
             Ok(Ok(thread_id)) => Ok(Self {
                 thread_id,
                 thread: Some(thread),
@@ -135,7 +139,10 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
         return;
     }
 
-    let mut power_notifications = Vec::new();
+    let mut power_notifications = PowerNotifications {
+        settings: Vec::new(),
+        suspend_resume: 0,
+    };
     let mut session_notifications_registered = false;
     if !window.is_null() {
         power_notifications = register_power_notifications(window);
@@ -154,8 +161,11 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
         if session_notifications_registered {
             WTSUnRegisterSessionNotification(window);
         }
-        for notification in power_notifications {
+        for notification in power_notifications.settings {
             UnregisterPowerSettingNotification(notification);
+        }
+        if power_notifications.suspend_resume != 0 {
+            UnregisterSuspendResumeNotification(power_notifications.suspend_resume);
         }
         if !foreground_hook.is_null() {
             UnhookWinEvent(foreground_hook);
@@ -202,30 +212,29 @@ fn create_event_window() -> HWND {
     }
 }
 
-fn register_power_notifications(window: HWND) -> Vec<HPOWERNOTIFY> {
+fn register_power_notifications(window: HWND) -> PowerNotifications {
     let power_settings = [
         GUID_ACDC_POWER_SOURCE,
         GUID_BATTERY_PERCENTAGE_REMAINING,
         GUID_POWERSCHEME_PERSONALITY,
     ];
-    let mut notifications = Vec::new();
+    let mut settings = Vec::new();
 
     for setting in &power_settings {
         let notification = unsafe {
             RegisterPowerSettingNotification(window as _, setting, DEVICE_NOTIFY_WINDOW_HANDLE)
         };
         if notification != 0 {
-            notifications.push(notification);
+            settings.push(notification);
         }
     }
 
     let suspend_resume =
         unsafe { RegisterSuspendResumeNotification(window as _, DEVICE_NOTIFY_WINDOW_HANDLE) };
-    if suspend_resume != 0 {
-        notifications.push(suspend_resume);
+    PowerNotifications {
+        settings,
+        suspend_resume,
     }
-
-    notifications
 }
 
 unsafe extern "system" fn event_window_proc(

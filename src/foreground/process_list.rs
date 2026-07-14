@@ -3,7 +3,9 @@ use std::{collections::BTreeMap, ffi::OsString, os::windows::ffi::OsStringExt, p
 use crate::win_util::WinHandle;
 
 use windows_sys::Win32::{
-    Foundation::{GetLastError, ERROR_INSUFFICIENT_BUFFER, INVALID_HANDLE_VALUE},
+    Foundation::{
+        GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
+    },
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -99,6 +101,7 @@ pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
 
         has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
     }
+    ensure_process_iteration_complete()?;
 
     Ok(candidates
         .into_iter()
@@ -130,6 +133,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
 
         has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
     }
+    ensure_process_iteration_complete()?;
 
     Ok(processes)
 }
@@ -146,8 +150,18 @@ pub fn for_each_process_id(mut visit: impl FnMut(u32)) -> Result<(), String> {
         visit(entry.th32ProcessID);
         has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
     }
+    ensure_process_iteration_complete()?;
 
     Ok(())
+}
+
+fn ensure_process_iteration_complete() -> Result<(), String> {
+    let error = unsafe { GetLastError() };
+    if error == ERROR_NO_MORE_FILES {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(error as i32).to_string())
+    }
 }
 
 pub fn process_names_by_id(processes: &[ProcessInfo]) -> BTreeMap<u32, String> {
@@ -161,18 +175,6 @@ pub fn process_session_id(process_id: u32) -> Option<u32> {
     let mut session_id = 0;
     let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
     (ok != 0).then_some(session_id)
-}
-
-pub fn process_id_matches_name(
-    current_process_names: Option<&BTreeMap<u32, String>>,
-    process_id: u32,
-    process_name: &str,
-) -> bool {
-    current_process_names.is_none_or(|names| {
-        names
-            .get(&process_id)
-            .is_some_and(|name| same_process_name(name, process_name))
-    })
 }
 
 pub fn is_foreground_process(

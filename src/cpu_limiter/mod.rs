@@ -18,7 +18,7 @@ use crate::{
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_id_matches_name, process_names_by_id, process_session_id, same_process_name,
+        process_names_by_id, process_session_id, same_process_name,
         should_ignore_foreground_process, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -58,6 +58,7 @@ struct TrackedProcess {
 #[derive(Clone)]
 struct LimitedProcess {
     process_name: String,
+    creation_time: u64,
     previous_affinity: usize,
     applied_affinity: usize,
 }
@@ -376,33 +377,33 @@ impl CpuLimiterManager {
     ) -> CpuLimiterFailures {
         let mut failures = CpuLimiterFailures::default();
         for process_id in process_ids {
-            if let Some(process) = self.limited.remove(process_id) {
-                let process_name = process.process_name.clone();
-                if process_id_matches_name(
-                    current_process_names,
-                    *process_id,
-                    &process.process_name,
-                ) {
-                    if let Err(err) = restore_affinity(*process_id, process) {
-                        if !matches!(err, CpuLimiterError::ProcessExited) {
-                            failures.record_error(
-                                "Restore",
-                                *process_id,
-                                &process_name,
-                                err,
-                                action_log,
-                            );
-                        }
+            if let Some(process) = self.limited.get(process_id).cloned() {
+                let process_name = current_process_names
+                    .and_then(|names| names.get(process_id))
+                    .cloned()
+                    .unwrap_or_else(|| process.process_name.clone());
+                if let Err(err) = restore_affinity(*process_id, &process) {
+                    if matches!(err, CpuLimiterError::ProcessExited) {
+                        self.limited.remove(process_id);
                     } else {
-                        action_log.record(
-                            ActionLogFeature::CpuLimiter,
-                            Some(*process_id),
-                            process_name,
-                            ActionLogAction::Restore,
-                            ActionLogResult::Restored,
-                            reason.to_owned(),
+                        failures.record_error(
+                            "Restore",
+                            *process_id,
+                            &process_name,
+                            err,
+                            action_log,
                         );
                     }
+                } else {
+                    self.limited.remove(process_id);
+                    action_log.record(
+                        ActionLogFeature::CpuLimiter,
+                        Some(*process_id),
+                        process_name,
+                        ActionLogAction::Restore,
+                        ActionLogResult::Restored,
+                        reason.to_owned(),
+                    );
                 }
             }
         }
@@ -524,6 +525,10 @@ fn apply_cpu_limit_to_process(
     action_log: &mut ActionLog,
 ) -> Result<(), CpuLimiterError> {
     let process = ProcessHandle::open(process_id)?;
+    let creation_time = process
+        .0
+        .process_creation_time()
+        .ok_or(CpuLimiterError::ProcessExited)?;
     let (current_affinity, system_affinity) = process.affinity_mask()?;
     let Some(target_affinity) =
         limited_affinity_mask(current_affinity, system_affinity, max_logical_processors)
@@ -532,7 +537,8 @@ fn apply_cpu_limit_to_process(
     };
 
     if limited.get(&process_id).is_some_and(|limited| {
-        same_process_name(&limited.process_name, &process_name)
+        limited.creation_time == creation_time
+            && same_process_name(&limited.process_name, &process_name)
             && limited.applied_affinity == target_affinity
             && current_affinity == target_affinity
     }) {
@@ -541,6 +547,7 @@ fn apply_cpu_limit_to_process(
 
     let previous_affinity = limited
         .get(&process_id)
+        .filter(|limited| limited.creation_time == creation_time)
         .filter(|limited| same_process_name(&limited.process_name, &process_name))
         .map(|limited| limited.previous_affinity)
         .unwrap_or(current_affinity);
@@ -561,6 +568,7 @@ fn apply_cpu_limit_to_process(
         process_id,
         LimitedProcess {
             process_name,
+            creation_time,
             previous_affinity,
             applied_affinity: target_affinity,
         },
@@ -568,8 +576,14 @@ fn apply_cpu_limit_to_process(
     Ok(())
 }
 
-fn restore_affinity(process_id: u32, process_state: LimitedProcess) -> Result<(), CpuLimiterError> {
+fn restore_affinity(
+    process_id: u32,
+    process_state: &LimitedProcess,
+) -> Result<(), CpuLimiterError> {
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(CpuLimiterError::ProcessExited);
+    }
     process.set_affinity_mask(process_state.previous_affinity)
 }
 
@@ -865,6 +879,7 @@ mod tests {
             0,
             LimitedProcess {
                 process_name: "exited.exe".to_owned(),
+                creation_time: 0,
                 previous_affinity: 0b1111,
                 applied_affinity: 0b0001,
             },

@@ -32,7 +32,7 @@ use crate::{
     config::{CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_id_matches_name, process_names_by_id, process_session_id, same_process_name,
+        process_names_by_id, process_session_id, same_process_name,
         should_ignore_foreground_process, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
@@ -94,6 +94,7 @@ pub struct CpuAffinityManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    creation_time: u64,
     adjustment: AffinityAdjustment,
 }
 
@@ -359,37 +360,36 @@ impl CpuAffinityManager {
     ) -> usize {
         let mut failed = 0;
         for process_id in process_ids {
-            if let Some(process) = self.adjusted.remove(process_id) {
-                let process_name = process.process_name.clone();
+            if let Some(process) = self.adjusted.get(process_id).cloned() {
+                let process_name = current_process_names
+                    .and_then(|names| names.get(process_id))
+                    .cloned()
+                    .unwrap_or_else(|| process.process_name.clone());
                 let adjustment = process.adjustment.clone();
-                if process_id_matches_name(
-                    current_process_names,
-                    *process_id,
-                    &process.process_name,
-                ) {
-                    if let Err(err) = restore_affinity(*process_id, process) {
-                        if matches!(&err, AffinityError::ProcessExited) {
-                            continue;
-                        }
-                        failed += 1;
-                        action_log.record(
-                            self.action_log_feature,
-                            Some(*process_id),
-                            process_name,
-                            ActionLogAction::Fail,
-                            ActionLogResult::Failed,
-                            affinity_error_message(err),
-                        );
-                    } else {
-                        action_log.record(
-                            self.action_log_feature,
-                            Some(*process_id),
-                            process_name,
-                            ActionLogAction::Restore,
-                            ActionLogResult::Restored,
-                            format!("{reason}: restored {}.", adjustment_label(&adjustment)),
-                        );
+                if let Err(err) = restore_affinity(*process_id, &process) {
+                    if matches!(&err, AffinityError::ProcessExited) {
+                        self.adjusted.remove(process_id);
+                        continue;
                     }
+                    failed += 1;
+                    action_log.record(
+                        self.action_log_feature,
+                        Some(*process_id),
+                        process_name,
+                        ActionLogAction::Fail,
+                        ActionLogResult::Failed,
+                        affinity_error_message(err),
+                    );
+                } else {
+                    self.adjusted.remove(process_id);
+                    action_log.record(
+                        self.action_log_feature,
+                        Some(*process_id),
+                        process_name,
+                        ActionLogAction::Restore,
+                        ActionLogResult::Restored,
+                        format!("{reason}: restored {}.", adjustment_label(&adjustment)),
+                    );
                 }
             }
         }
@@ -695,6 +695,12 @@ enum AffinityError {
     Failed(String),
 }
 
+struct AffinityTarget {
+    process_id: u32,
+    process_name: String,
+    creation_time: u64,
+}
+
 fn apply_affinity(
     process_id: u32,
     process_name: String,
@@ -705,13 +711,19 @@ fn apply_affinity(
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let process = ProcessHandle::open(process_id)?;
+    let creation_time = process
+        .0
+        .process_creation_time()
+        .ok_or(AffinityError::ProcessExited)?;
     let reusable_existing = existing
+        .filter(|adjusted| adjusted.creation_time == creation_time)
         .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name))
         .filter(|adjusted| adjusted.adjustment.mode() == mode);
 
     if let Some(adjusted) = existing {
-        if !same_process_name(&adjusted.process_name, &process_name)
-            || adjusted.adjustment.mode() != mode
+        if adjusted.creation_time == creation_time
+            && (!same_process_name(&adjusted.process_name, &process_name)
+                || adjusted.adjustment.mode() != mode)
         {
             restore_adjustment(&process, &adjusted.adjustment)?;
             action_log.record(
@@ -730,27 +742,36 @@ fn apply_affinity(
 
     match mode {
         CpuAffinityMode::Hard => apply_hard_affinity(
-            process_id,
+            AffinityTarget {
+                process_id,
+                process_name,
+                creation_time,
+            },
             &process,
-            process_name,
             rule_mask,
             reusable_existing,
             action_log_feature,
             action_log,
         ),
         CpuAffinityMode::Soft => apply_soft_affinity(
-            process_id,
+            AffinityTarget {
+                process_id,
+                process_name,
+                creation_time,
+            },
             &process,
-            process_name,
             rule_mask,
             reusable_existing,
             action_log_feature,
             action_log,
         ),
         CpuAffinityMode::EfficiencyOff => apply_efficiency_mode_off(
-            process_id,
+            AffinityTarget {
+                process_id,
+                process_name,
+                creation_time,
+            },
             &process,
-            process_name,
             reusable_existing,
             action_log_feature,
             action_log,
@@ -758,20 +779,27 @@ fn apply_affinity(
     }
 }
 
-fn restore_affinity(process_id: u32, process_state: AdjustedProcess) -> Result<(), AffinityError> {
+fn restore_affinity(process_id: u32, process_state: &AdjustedProcess) -> Result<(), AffinityError> {
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(AffinityError::ProcessExited);
+    }
     restore_adjustment(&process, &process_state.adjustment)
 }
 
 fn apply_hard_affinity(
-    process_id: u32,
+    target: AffinityTarget,
     process: &ProcessHandle,
-    process_name: String,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
     action_log_feature: ActionLogFeature,
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
+    let AffinityTarget {
+        process_id,
+        process_name,
+        creation_time,
+    } = target;
     let (current_affinity, system_affinity) = process.affinity_mask()?;
     let Some(target_affinity) = target_affinity_mask(rule_mask, system_affinity) else {
         return Ok(None);
@@ -810,6 +838,7 @@ fn apply_hard_affinity(
 
     Ok(Some(AdjustedProcess {
         process_name,
+        creation_time,
         adjustment: AffinityAdjustment::Hard {
             previous_affinity,
             applied_affinity: target_affinity,
@@ -818,14 +847,18 @@ fn apply_hard_affinity(
 }
 
 fn apply_soft_affinity(
-    process_id: u32,
+    target: AffinityTarget,
     process: &ProcessHandle,
-    process_name: String,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
     action_log_feature: ActionLogFeature,
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
+    let AffinityTarget {
+        process_id,
+        process_name,
+        creation_time,
+    } = target;
     let Some(target_cpu_set_ids) = target_cpu_set_ids(rule_mask)? else {
         return Ok(None);
     };
@@ -865,6 +898,7 @@ fn apply_soft_affinity(
 
     Ok(Some(AdjustedProcess {
         process_name,
+        creation_time,
         adjustment: AffinityAdjustment::Soft {
             previous_cpu_set_ids,
             applied_cpu_set_ids: target_cpu_set_ids,
@@ -873,13 +907,17 @@ fn apply_soft_affinity(
 }
 
 fn apply_efficiency_mode_off(
-    process_id: u32,
+    target: AffinityTarget,
     process: &ProcessHandle,
-    process_name: String,
     existing: Option<&AdjustedProcess>,
     action_log_feature: ActionLogFeature,
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
+    let AffinityTarget {
+        process_id,
+        process_name,
+        creation_time,
+    } = target;
     let current_state = process.power_throttling_state().ok();
 
     if existing.is_some_and(|adjusted| {
@@ -914,6 +952,7 @@ fn apply_efficiency_mode_off(
 
     Ok(Some(AdjustedProcess {
         process_name,
+        creation_time,
         adjustment: AffinityAdjustment::EfficiencyOff { previous_state },
     }))
 }
@@ -1420,6 +1459,7 @@ mod tests {
             0,
             AdjustedProcess {
                 process_name: "exited.exe".to_owned(),
+                creation_time: 0,
                 adjustment: AffinityAdjustment::Hard {
                     previous_affinity: 0b1111,
                     applied_affinity: 0b0001,

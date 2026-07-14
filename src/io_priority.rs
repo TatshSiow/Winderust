@@ -48,6 +48,7 @@ pub struct IoPriorityManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    creation_time: u64,
     previous_priority: ProcessIoPriority,
     applied_priority: ProcessIoPriority,
 }
@@ -283,10 +284,14 @@ impl IoPriorityManager {
         preserve_background: bool,
     ) -> Result<ApplyOutcome, IoPriorityError> {
         let process = ProcessHandle::open(process_id)?;
-        let reusable_existing = self
-            .adjusted
-            .get(&process_id)
-            .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
+        let creation_time = process
+            .0
+            .process_creation_time()
+            .ok_or(IoPriorityError::ProcessExited)?;
+        let reusable_existing = self.adjusted.get(&process_id).filter(|adjusted| {
+            adjusted.creation_time == creation_time
+                && same_process_name(&adjusted.process_name, &process_name)
+        });
         let current_priority = process.io_priority()?;
 
         let baseline_priority = reusable_existing
@@ -299,8 +304,9 @@ impl IoPriorityManager {
             io_priority_raw(baseline_priority),
             io_priority_raw(priority),
         ) {
-            if let Some(adjusted) = self.adjusted.remove(&process_id) {
+            if let Some(adjusted) = reusable_existing.cloned() {
                 process.set_io_priority(adjusted.previous_priority)?;
+                self.adjusted.remove(&process_id);
             }
             return Ok(ApplyOutcome::Preserved);
         }
@@ -327,6 +333,7 @@ impl IoPriorityManager {
             process_id,
             AdjustedProcess {
                 process_name,
+                creation_time,
                 previous_priority: baseline_priority,
                 applied_priority: priority,
             },
@@ -372,19 +379,22 @@ impl IoPriorityManager {
         let mut failures = IoPriorityFailures::default();
         let mut restored_processes = 0;
         for process_id in process_ids {
-            let Some(process_state) = self.adjusted.remove(process_id) else {
+            let Some(process_state) = self.adjusted.get(process_id).cloned() else {
                 continue;
             };
             let log_name = current_process_names
                 .and_then(|names| names.get(process_id))
                 .cloned()
                 .unwrap_or_else(|| process_state.process_name.clone());
-            match restore_process(*process_id, process_state) {
+            match restore_process(*process_id, &process_state) {
                 Ok(()) => {
+                    self.adjusted.remove(process_id);
                     self.clear_process_failure(&log_name);
                     restored_processes += 1;
                 }
-                Err(IoPriorityError::ProcessExited) => {}
+                Err(IoPriorityError::ProcessExited) => {
+                    self.adjusted.remove(process_id);
+                }
                 Err(err) => {
                     self.record_process_failure(&log_name);
                     failures.record("Restore", *process_id, &log_name, err, action_log);
@@ -441,6 +451,13 @@ impl IoPriorityManager {
 
     fn clear_process_failure(&mut self, process_name: &str) {
         self.failure_suppression.clear_process_failure(process_name);
+    }
+}
+
+impl Drop for IoPriorityManager {
+    fn drop(&mut self) {
+        let mut action_log = ActionLog::new(1);
+        self.clear_all(&mut action_log, stringify!(IoPriorityManager));
     }
 }
 
@@ -530,8 +547,14 @@ impl ProcessHandle {
     }
 }
 
-fn restore_process(process_id: u32, process_state: AdjustedProcess) -> Result<(), IoPriorityError> {
+fn restore_process(
+    process_id: u32,
+    process_state: &AdjustedProcess,
+) -> Result<(), IoPriorityError> {
     let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time) {
+        return Err(IoPriorityError::ProcessExited);
+    }
     process.set_io_priority(process_state.previous_priority)?;
     let refreshed_priority = process.io_priority()?;
     if refreshed_priority == process_state.previous_priority {
