@@ -6405,10 +6405,11 @@ impl WinderustApp {
     }
 
     fn render_smart_saver_status_card(&self) -> gpui::Div {
-        let power_mode = PowerModePreset::ALL
+        let selected_preset = PowerModePreset::ALL
             .iter()
             .copied()
-            .find(|preset| power_mode_matches_preset(&self.settings, *preset))
+            .find(|preset| power_mode_matches_preset(&self.settings, *preset));
+        let power_mode = selected_preset
             .map(power_mode_preset_label)
             .unwrap_or_else(|| t!("common.custom").to_string());
         titled_status_list(
@@ -6419,10 +6420,15 @@ impl WinderustApp {
                     t!("smart_saver.processor_policy").to_string(),
                     if let Some(profile) = &self.workload_engine_status.adaptive_power_profile {
                         format!("Adaptive · {profile}")
+                    } else if matches!(
+                        selected_preset,
+                        Some(PowerModePreset::Performance) | Some(PowerModePreset::Speed)
+                    ) {
+                        t!("smart_saver.processor_policy_fixed").to_string()
                     } else if self.settings.smart_saver.enabled
                         && self.settings.smart_saver.processor_policy_enabled
                     {
-                        t!("common.enabled").to_string()
+                        t!("smart_saver.processor_policy_dynamic").to_string()
                     } else {
                         t!("common.disabled").to_string()
                     },
