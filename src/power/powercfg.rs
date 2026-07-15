@@ -12,11 +12,12 @@ use windows_sys::{
     Win32::{
         Foundation::{LocalFree, ERROR_MORE_DATA, ERROR_NO_MORE_ITEMS, ERROR_SUCCESS},
         System::Power::{
-            PowerEnumerate, PowerGetActiveScheme, PowerReadACValueIndex, PowerReadDCValueIndex,
+            PowerDeleteScheme, PowerDuplicateScheme, PowerEnumerate, PowerGetActiveScheme,
+            PowerReadACValueIndex, PowerReadDCValueIndex, PowerReadDescription,
             PowerReadFriendlyName, PowerRegisterForEffectivePowerModeNotifications,
             PowerSetActiveScheme, PowerUnregisterFromEffectivePowerModeNotifications,
-            PowerWriteACValueIndex, PowerWriteDCValueIndex, ACCESS_SCHEME, EFFECTIVE_POWER_MODE,
-            EFFECTIVE_POWER_MODE_V2,
+            PowerWriteACValueIndex, PowerWriteDCValueIndex, PowerWriteDescription,
+            PowerWriteFriendlyName, ACCESS_SCHEME, EFFECTIVE_POWER_MODE, EFFECTIVE_POWER_MODE_V2,
         },
     },
 };
@@ -28,6 +29,9 @@ use super::{
 
 #[derive(Debug, Default)]
 pub struct PowerPlanManager;
+
+const ADAPTIVE_PLAN_NAME: &str = "PowerLeaf Adaptive";
+const ADAPTIVE_PLAN_DESCRIPTION_PREFIX: &str = "PowerLeaf managed adaptive plan; restore=";
 
 #[derive(Debug)]
 pub struct EffectivePowerModeMonitor {
@@ -82,6 +86,82 @@ impl PowerPlanManager {
                 "PowerSetActiveScheme failed with error code {result}."
             ))
         }
+    }
+
+    pub fn create_adaptive_plan(&self, source_guid: &str) -> Result<String, String> {
+        let source =
+            parse_guid(source_guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+        let mut duplicate_ptr: *mut GUID = null_mut();
+        let result = unsafe { PowerDuplicateScheme(null_mut(), &source, &mut duplicate_ptr) };
+        if result != ERROR_SUCCESS {
+            return Err(format!(
+                "PowerDuplicateScheme failed with error code {result}."
+            ));
+        }
+        if duplicate_ptr.is_null() {
+            return Err("PowerDuplicateScheme returned no power plan.".to_owned());
+        }
+
+        let duplicate = unsafe { *duplicate_ptr };
+        unsafe {
+            LocalFree(duplicate_ptr.cast());
+        }
+        let duplicate_guid = format_guid(&duplicate);
+        let description = format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{source_guid}");
+
+        if let Err(error) = write_scheme_name(&duplicate, ADAPTIVE_PLAN_NAME)
+            .and_then(|()| write_scheme_description(&duplicate, &description))
+        {
+            unsafe {
+                PowerDeleteScheme(null_mut(), &duplicate);
+            }
+            return Err(error);
+        }
+
+        Ok(duplicate_guid)
+    }
+
+    pub fn delete_plan(&self, guid: &str) -> Result<(), String> {
+        let guid = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+        let result = unsafe { PowerDeleteScheme(null_mut(), &guid) };
+        if result == ERROR_SUCCESS {
+            Ok(())
+        } else {
+            Err(format!(
+                "PowerDeleteScheme failed with error code {result}."
+            ))
+        }
+    }
+
+    pub fn restore_stale_adaptive_plans(&self) -> Result<(), String> {
+        let plans = self.list_plans()?;
+        let known_guids = plans
+            .iter()
+            .map(|plan| plan.guid.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+
+        for plan in plans.iter().filter(|plan| plan.name == ADAPTIVE_PLAN_NAME) {
+            let guid = parse_guid(&plan.guid)
+                .ok_or_else(|| "Invalid managed power plan GUID.".to_owned())?;
+            let description = read_scheme_description(&guid)?;
+            let Some(restore_guid) = description.strip_prefix(ADAPTIVE_PLAN_DESCRIPTION_PREFIX)
+            else {
+                continue;
+            };
+            let restore_exists = known_guids
+                .iter()
+                .any(|guid| guid.eq_ignore_ascii_case(restore_guid));
+
+            if plan.active {
+                if !restore_exists {
+                    continue;
+                }
+                self.set_active(restore_guid)?;
+            }
+            self.delete_plan(&plan.guid)?;
+        }
+
+        Ok(())
     }
 
     pub fn read_plan_personality(&self, guid: &str) -> Result<PowerPlanPersonality, String> {
@@ -480,6 +560,103 @@ fn read_scheme_name(guid: &GUID) -> Result<String, String> {
     } else {
         Ok(String::from_utf16_lossy(&utf16))
     }
+}
+
+fn read_scheme_description(guid: &GUID) -> Result<String, String> {
+    let mut buffer_size = 0;
+    let size_result = unsafe {
+        PowerReadDescription(
+            null_mut(),
+            guid,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut buffer_size,
+        )
+    };
+    if size_result != ERROR_SUCCESS && size_result != ERROR_MORE_DATA {
+        return Err(format!(
+            "PowerReadDescription failed to read buffer size with error code {size_result}."
+        ));
+    }
+
+    let mut buffer = vec![0_u8; buffer_size as usize];
+    let result = unsafe {
+        PowerReadDescription(
+            null_mut(),
+            guid,
+            null_mut(),
+            null_mut(),
+            buffer.as_mut_ptr(),
+            &mut buffer_size,
+        )
+    };
+    if result != ERROR_SUCCESS {
+        return Err(format!(
+            "PowerReadDescription failed with error code {result}."
+        ));
+    }
+
+    Ok(decode_power_string(&buffer))
+}
+
+fn write_scheme_name(guid: &GUID, name: &str) -> Result<(), String> {
+    let buffer = encode_power_string(name);
+    let result = unsafe {
+        PowerWriteFriendlyName(
+            null_mut(),
+            guid,
+            null_mut(),
+            null_mut(),
+            buffer.as_ptr(),
+            buffer.len() as u32,
+        )
+    };
+    if result == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!(
+            "PowerWriteFriendlyName failed with error code {result}."
+        ))
+    }
+}
+
+fn write_scheme_description(guid: &GUID, description: &str) -> Result<(), String> {
+    let buffer = encode_power_string(description);
+    let result = unsafe {
+        PowerWriteDescription(
+            null_mut(),
+            guid,
+            null_mut(),
+            null_mut(),
+            buffer.as_ptr(),
+            buffer.len() as u32,
+        )
+    };
+    if result == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!(
+            "PowerWriteDescription failed with error code {result}."
+        ))
+    }
+}
+
+fn encode_power_string(value: &str) -> Vec<u8> {
+    value
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+fn decode_power_string(buffer: &[u8]) -> String {
+    let utf16 = buffer
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .take_while(|code| *code != 0)
+        .collect::<Vec<_>>();
+    String::from_utf16_lossy(&utf16)
 }
 
 fn active_scheme_guid() -> Result<String, String> {

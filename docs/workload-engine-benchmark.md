@@ -245,6 +245,9 @@ Use `avg_ms`, `median_ms`, and `p95_ms`. Lower is better.
   share as Off; lower means more foreground protection by reducing background
   work. Values above `100%` mean the background workers got more CPU time than
   in the paired Off case.
+- `Background suppression vs Off`: the primary background-cost metric, calculated
+  as `max(0, 100% - retained throughput)`. `0%` means no measured suppression;
+  `87%` means only 13% of paired-Off background throughput remained.
 - `Background latency slowdown vs Off`: fixed-background-work latency estimate
   derived from the inverse of retained background throughput. For example,
   `+50%` means the same background CPU work would take about 1.5x as long as

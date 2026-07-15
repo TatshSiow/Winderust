@@ -1413,8 +1413,8 @@ function Run-NamedCase {
             return Invoke-WithProcessorPolicy -Preset Performance -ScriptBlock {
                 Run-Case `
                     -Name 'performance' `
-                    -Model 'Performance: high processor policy (min 25, max 100, efficient aggressive boost) plus Foreground First CPU-pressure scheduling.' `
-                    -ForegroundPriority 'Normal' `
+                    -Model 'Performance: high processor policy (min 25, max 100, efficient aggressive boost) plus Foreground First CPU-pressure scheduling; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case.' `
+                    -ForegroundPriority 'AboveNormal' `
                     -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
                     -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
                     -AffinityMask $foregroundFirstMask `
@@ -1494,6 +1494,7 @@ function New-Comparison {
         jitter_improvement_percent_vs_off = $jitterPercent
         background_throughput_percent = $Case.background_throughput_percent
         background_throughput_retained_percent_vs_off = [Math]::Round($backgroundRetained, 1)
+        background_suppression_percent_vs_off = [Math]::Round([Math]::Max(0.0, 100.0 - $backgroundRetained), 1)
         background_latency_multiplier_vs_off = $backgroundLatencyMultiplier
         background_latency_slowdown_percent_vs_off = $backgroundLatencySlowdown
         score_benchmark_vs_off = $scoreComparison
@@ -1597,6 +1598,8 @@ function Summarize-Method {
         package_power_saving_avg_percent_vs_off = 0.0
         background_throughput_retained_avg_percent = 100.0
         background_throughput_retained_min_percent = 100.0
+        background_suppression_avg_percent_vs_off = 0.0
+        background_suppression_max_percent_vs_off = 0.0
         background_latency_multiplier_avg_vs_off = 1.0
         background_latency_slowdown_avg_percent_vs_off = 0.0
         repeat_passes_won = 'baseline'
@@ -1620,6 +1623,7 @@ function Summarize-Method {
         $medianDeltaValues = @($comparisons | ForEach-Object { [double]$_.median_delta_ms_vs_off })
         $p95DeltaValues = @($comparisons | ForEach-Object { [double]$_.p95_delta_ms_vs_off })
         $backgroundRetainedValues = @($comparisons | ForEach-Object { [double]$_.background_throughput_retained_percent_vs_off })
+        $backgroundSuppressionValues = @($comparisons | ForEach-Object { [double]$_.background_suppression_percent_vs_off })
         $backgroundLatencyMultiplierValues = @($comparisons | ForEach-Object {
             if ($null -ne $_.background_latency_multiplier_vs_off) {
                 [double]$_.background_latency_multiplier_vs_off
@@ -1680,6 +1684,8 @@ function Summarize-Method {
             p95_improvement_min_percent = [Math]::Round(($p95Values | Measure-Object -Minimum).Minimum, 1)
             background_throughput_retained_avg_percent = [Math]::Round($backgroundRetainedAvg, 1)
             background_throughput_retained_min_percent = [Math]::Round(($backgroundRetainedValues | Measure-Object -Minimum).Minimum, 1)
+            background_suppression_avg_percent_vs_off = [Math]::Round((Get-Average $backgroundSuppressionValues), 1)
+            background_suppression_max_percent_vs_off = [Math]::Round(($backgroundSuppressionValues | Measure-Object -Maximum).Maximum, 1)
             background_latency_multiplier_avg_vs_off = if ($backgroundLatencyMultiplierValues.Count -gt 0) { [Math]::Round((Get-Average $backgroundLatencyMultiplierValues), 2) } else { $null }
             background_latency_slowdown_avg_percent_vs_off = if ($backgroundLatencySlowdownValues.Count -gt 0) { [Math]::Round((Get-Average $backgroundLatencySlowdownValues), 1) } else { $null }
             repeat_passes_won = "$repeatWins/$($comparisons.Count)"
@@ -1704,6 +1710,10 @@ $assistCoverage = [pscustomobject][ordered]@{
     io_priority = 'applied to generated background workers when preset enables it; CPU loop has minimal I/O'
     gpu_priority = 'attempted on generated workers when preset enables it; CPU workers may report no GPU context'
     foreground_detection = 'modeled by treating the benchmark process as foreground; the app automation loop is not launched'
+}
+
+if ($env:POWERLEAF_BENCHMARK_IMPORT_ONLY -eq '1') {
+    return
 }
 
 Initialize-PowerCounter

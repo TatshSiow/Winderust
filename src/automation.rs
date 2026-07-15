@@ -14,14 +14,17 @@ use crate::{
         input_hook, input_tracker, merge_activity_snapshot, ControllerActivityDetector,
         IdleDetector, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
     },
-    affinity::{CpuAffinityManager, CpuAffinitySnapshot},
+    affinity::{
+        self, CpuAffinityManager, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind,
+    },
     background_cpu::BackgroundCpuRestrictionManager,
     config::{
         AccentColorSource, AnimationMode, AppThemeMode, PowerPlanSettings, ProcessIoPriority,
         Settings,
     },
-    cpu::{CpuUsageMonitor, CpuUsageSnapshot},
+    cpu::{CpuUsageMonitor, CpuUsageSnapshot, PerProcessorUsageMonitor},
     cpu_limiter::{CpuLimiterManager, CpuLimiterSnapshot},
+    dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     ecoqos::{EcoQosManager, EcoQosSnapshot},
     foreground::{
         list_processes, process_name_key, top_level_window_process_ids, ForegroundDetector,
@@ -31,7 +34,10 @@ use crate::{
     memory_priority::{MemoryPriorityManager, MemoryPrioritySnapshot},
     memory_trim::{MemoryTrimManager, MemoryTrimSnapshot},
     performance_mode::{PerformanceModeManager, PerformanceModeSnapshot},
-    power::PowerPlanManager,
+    power::{
+        adaptive_power_profile_transition, AdaptivePowerDemand, AdaptivePowerProfile,
+        PowerPlanManager, ProcessorPowerAcDcValues, ProcessorPowerValues,
+    },
     power_source,
     priority_boost::{PriorityBoostManager, PriorityBoostSnapshot},
     process_priority::{ProcessPriorityManager, ProcessPrioritySnapshot},
@@ -61,6 +67,7 @@ const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const WORKLOAD_ENGINE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const WORKLOAD_ENGINE_FAST_REFRESH_WINDOW: Duration = Duration::from_secs(8);
+const ADAPTIVE_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PROCESS_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const THREAD_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PRIORITY_BOOST_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -478,11 +485,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             smart_saver_enabled,
             PERFORMANCE_MODE_REFRESH_INTERVAL,
         );
-        let mut workload_engine_refresh_interval = automation_refresh_interval(
-            hidden_to_tray,
-            smart_saver_enabled,
-            WORKLOAD_ENGINE_REFRESH_INTERVAL,
-        );
+        let mut workload_engine_refresh_interval =
+            workload_refresh_interval(&settings, hidden_to_tray, smart_saver_enabled);
         let process_priority_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             smart_saver_enabled,
@@ -633,7 +637,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let performance_mode_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.performance_mode.enabled);
         let workload_engine_refresh_required = settings_changed
-            || feature_refresh_required(&settings, workload_engine_required(&settings));
+            || feature_refresh_required(
+                &settings,
+                workload_engine_required(&settings) || adaptive_power_plan_required(&settings),
+            );
         let process_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.process_priority.enabled);
         let thread_priority_refresh_required = settings_changed
@@ -1275,6 +1282,22 @@ fn automation_refresh_interval(
     }
 }
 
+fn workload_refresh_interval(
+    settings: &Settings,
+    hidden_to_tray: bool,
+    smart_saver_enabled: bool,
+) -> Duration {
+    if adaptive_power_plan_required(settings) {
+        WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL
+    } else {
+        automation_refresh_interval(
+            hidden_to_tray,
+            smart_saver_enabled,
+            WORKLOAD_ENGINE_REFRESH_INTERVAL,
+        )
+    }
+}
+
 fn memory_trim_refresh_interval(settings: &Settings) -> Duration {
     Duration::from_secs(
         settings
@@ -1507,6 +1530,7 @@ fn power_plan_checks_required(settings: &Settings) -> bool {
 fn automation_worker_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (power_plan_checks_required(settings)
+            || adaptive_power_plan_required(settings)
             || settings.eco_qos.enabled
             || settings.app_suspension.enabled
             || settings.cpu_affinity.enabled
@@ -1760,6 +1784,86 @@ fn process_ids_have_new_entries(
     has_new_entries
 }
 
+fn adaptive_power_plan_required(settings: &Settings) -> bool {
+    settings.smart_saver.enabled && settings.smart_saver.processor_policy_enabled
+}
+
+fn static_processor_power_values(settings: &Settings) -> Option<ProcessorPowerValues> {
+    let values = settings.smart_saver.processor_policy_values.normalized();
+    let default_saver_values = ProcessorPowerValues::new_with_boost_mode(
+        0,
+        5,
+        45,
+        0,
+        crate::power::ProcessorBoostMode::Disabled,
+    );
+
+    (settings.general.enabled
+        && !settings.smart_saver.enabled
+        && settings.smart_saver.processor_policy_enabled
+        && !settings.eco_qos.enabled
+        && settings.workload_engine.enabled
+        && settings.workload_engine.workload_engine_enabled
+        && values != default_saver_values)
+        .then_some(values)
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct AdaptiveProcessorDemand {
+    peak_cpu_percent: Option<f32>,
+    performance_peak_cpu_percent: Option<f32>,
+    efficiency_peak_cpu_percent: Option<f32>,
+}
+
+fn adaptive_processor_demand(
+    usage: &[f32],
+    processors: &[LogicalProcessorInfo],
+) -> AdaptiveProcessorDemand {
+    fn update_peak(peak: &mut Option<f32>, usage: f32) {
+        *peak = Some(peak.map_or(usage, |current| current.max(usage)));
+    }
+
+    let mut demand = AdaptiveProcessorDemand::default();
+    let hybrid = processors
+        .iter()
+        .any(|processor| processor.kind == LogicalProcessorKind::Performance)
+        && processors
+            .iter()
+            .any(|processor| processor.kind == LogicalProcessorKind::Efficiency);
+    if usage.len() != processors.len() {
+        demand.peak_cpu_percent = usage.iter().copied().reduce(f32::max);
+        return demand;
+    }
+
+    for (usage, processor) in usage.iter().copied().zip(processors) {
+        match (hybrid, processor.kind) {
+            (true, LogicalProcessorKind::Performance) => {
+                update_peak(&mut demand.performance_peak_cpu_percent, usage);
+            }
+            (true, LogicalProcessorKind::Efficiency) => {
+                update_peak(&mut demand.efficiency_peak_cpu_percent, usage);
+            }
+            _ => update_peak(&mut demand.peak_cpu_percent, usage),
+        }
+    }
+    demand
+}
+
+struct ActiveAdaptivePowerPlan {
+    original_guid: String,
+    plan_guid: String,
+    profile: AdaptivePowerProfile,
+    baseline: ProcessorPowerValues,
+    has_efficiency_cores: bool,
+    lower_demand_since: Option<Instant>,
+}
+
+struct AppliedStaticProcessorPolicy {
+    plan_guid: String,
+    restore_values: ProcessorPowerAcDcValues,
+    applied_values: ProcessorPowerValues,
+}
+
 #[derive(Default)]
 struct HiddenAutomationRunner {
     last_settings: Option<Settings>,
@@ -1771,6 +1875,14 @@ struct HiddenAutomationRunner {
     cpu_usage: CpuUsageSnapshot,
     next_cpu_usage_refresh: Option<Instant>,
     cpu_monitor: CpuUsageMonitor,
+    per_processor_cpu_monitor: PerProcessorUsageMonitor,
+    io_monitor: IoUsageMonitor,
+    adaptive_processor_topology: Vec<LogicalProcessorInfo>,
+    adaptive_io_usage: IoUsageSnapshot,
+    next_adaptive_io_refresh: Option<Instant>,
+    adaptive_power_plan: Option<ActiveAdaptivePowerPlan>,
+    adaptive_foreground_process_id: Option<u32>,
+    static_processor_policy: Option<AppliedStaticProcessorPolicy>,
     idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
     foreground_detector: ForegroundDetector,
@@ -2005,7 +2117,7 @@ impl HiddenAutomationRunner {
         let foreground_process_id = self.foreground_detector.process_id();
         let mut excluded_process_ids = self.eco_qos_manager.throttled_process_ids();
         excluded_process_ids.extend(self.performance_mode_manager.active_process_ids());
-        let snapshot = self.workload_engine_manager.update(
+        let mut snapshot = self.workload_engine_manager.update(
             WorkloadEngineUpdate {
                 settings: &settings.workload_engine,
                 automation_enabled: settings.general.enabled,
@@ -2018,7 +2130,202 @@ impl HiddenAutomationRunner {
         );
         self.launch_boost_active = snapshot.launch_boost_active;
         self.workload_engine_active = snapshot.workload_engine_active;
+        if let Err(error) =
+            self.sync_processor_power_policy(settings, &mut snapshot, foreground_process_id)
+        {
+            snapshot.adaptive_power_profile = None;
+            if snapshot.last_error.is_none() {
+                snapshot.last_error = Some(error);
+            }
+        }
         snapshot
+    }
+
+    fn sync_processor_power_policy(
+        &mut self,
+        settings: &Settings,
+        snapshot: &mut WorkloadEngineSnapshot,
+        foreground_process_id: Option<u32>,
+    ) -> Result<(), String> {
+        if adaptive_power_plan_required(settings) && settings.general.enabled {
+            self.restore_static_processor_policy()?;
+            let foreground_changed = foreground_process_id.is_some()
+                && self.adaptive_foreground_process_id != foreground_process_id;
+            self.adaptive_foreground_process_id = foreground_process_id;
+            self.update_adaptive_power_plan(
+                snapshot,
+                settings.smart_saver.processor_policy_values.normalized(),
+                foreground_changed,
+            )
+        } else {
+            self.adaptive_foreground_process_id = None;
+            self.restore_adaptive_power_plan()?;
+            self.sync_static_processor_policy(settings)
+        }
+    }
+
+    fn update_adaptive_power_plan(
+        &mut self,
+        snapshot: &mut WorkloadEngineSnapshot,
+        baseline: ProcessorPowerValues,
+        foreground_changed: bool,
+    ) -> Result<(), String> {
+        let now = Instant::now();
+        if self
+            .next_adaptive_io_refresh
+            .is_none_or(|refresh_at| now >= refresh_at)
+        {
+            self.adaptive_io_usage = self.io_monitor.sample();
+            self.next_adaptive_io_refresh = Some(now + ADAPTIVE_IO_REFRESH_INTERVAL);
+        }
+        let io_usage = self.adaptive_io_usage;
+        if self.adaptive_processor_topology.is_empty() {
+            self.adaptive_processor_topology = affinity::logical_processors();
+        }
+        let processor_demand = self
+            .per_processor_cpu_monitor
+            .sample()
+            .map(|usage| adaptive_processor_demand(&usage, &self.adaptive_processor_topology))
+            .unwrap_or_default();
+        let desired_profile = AdaptivePowerProfile::for_demand(AdaptivePowerDemand {
+            launch_boost: snapshot.launch_boost_active || foreground_changed,
+            workload_active: snapshot.workload_engine_active,
+            total_cpu_percent: self.cpu_usage.percent,
+            peak_cpu_percent: processor_demand.peak_cpu_percent,
+            performance_peak_cpu_percent: processor_demand.performance_peak_cpu_percent,
+            efficiency_peak_cpu_percent: processor_demand.efficiency_peak_cpu_percent,
+            foreground_cpu_percent: snapshot
+                .workload_engine_total_cpu_usage_tenths
+                .map(|usage| f32::from(usage) / 10.0),
+            io_bytes_per_second: io_usage.bytes_per_second,
+        });
+        let has_efficiency_cores = self
+            .adaptive_processor_topology
+            .iter()
+            .any(|processor| processor.kind == LogicalProcessorKind::Efficiency);
+
+        if self.adaptive_power_plan.is_none() {
+            let original_guid = self
+                .power
+                .active_plan()?
+                .ok_or_else(|| "Windows has no active power plan.".to_owned())?
+                .guid;
+            let plan_guid = self.power.create_adaptive_plan(&original_guid)?;
+            if let Err(error) = self
+                .power
+                .apply_processor_power_values(
+                    &plan_guid,
+                    desired_profile.calibrated_power_values(baseline, has_efficiency_cores),
+                )
+                .and_then(|()| self.power.set_active(&plan_guid))
+            {
+                let _ = self.power.delete_plan(&plan_guid);
+                return Err(error);
+            }
+            self.current_guid = Some(plan_guid.clone());
+            self.adaptive_power_plan = Some(ActiveAdaptivePowerPlan {
+                original_guid,
+                plan_guid,
+                profile: desired_profile,
+                baseline,
+                has_efficiency_cores,
+                lower_demand_since: None,
+            });
+        }
+
+        let should_refresh_active_plan = self
+            .next_active_plan_refresh
+            .is_none_or(|refresh_at| now >= refresh_at);
+        if should_refresh_active_plan {
+            self.refresh_active_plan();
+        }
+        let plan = self.adaptive_power_plan.as_mut().unwrap();
+        if self
+            .current_guid
+            .as_deref()
+            .is_none_or(|guid| !guid.eq_ignore_ascii_case(&plan.plan_guid))
+        {
+            self.power.set_active(&plan.plan_guid)?;
+            self.current_guid = Some(plan.plan_guid.clone());
+        }
+
+        let lower_demand_elapsed = if desired_profile < plan.profile {
+            now.duration_since(*plan.lower_demand_since.get_or_insert(now))
+        } else {
+            plan.lower_demand_since = None;
+            Duration::ZERO
+        };
+        let next_profile =
+            adaptive_power_profile_transition(plan.profile, desired_profile, lower_demand_elapsed);
+        if next_profile != plan.profile || baseline != plan.baseline {
+            self.power.apply_processor_power_values(
+                &plan.plan_guid,
+                next_profile.calibrated_power_values(baseline, plan.has_efficiency_cores),
+            )?;
+            plan.profile = next_profile;
+            plan.baseline = baseline;
+            plan.lower_demand_since = None;
+        }
+
+        snapshot.adaptive_power_profile = Some(plan.profile.label().to_owned());
+        Ok(())
+    }
+
+    fn restore_adaptive_power_plan(&mut self) -> Result<(), String> {
+        let Some(plan) = self.adaptive_power_plan.take() else {
+            return Ok(());
+        };
+        if let Err(error) = self.power.set_active(&plan.original_guid) {
+            self.adaptive_power_plan = Some(plan);
+            return Err(error);
+        }
+
+        self.current_guid = Some(plan.original_guid);
+        self.power.delete_plan(&plan.plan_guid)
+    }
+
+    fn sync_static_processor_policy(&mut self, settings: &Settings) -> Result<(), String> {
+        let desired_values = static_processor_power_values(settings);
+        if self
+            .static_processor_policy
+            .as_ref()
+            .is_some_and(|policy| Some(policy.applied_values) == desired_values)
+        {
+            return Ok(());
+        }
+
+        self.restore_static_processor_policy()?;
+        let Some(values) = desired_values else {
+            return Ok(());
+        };
+        let plan_guid = self
+            .power
+            .active_plan()?
+            .ok_or_else(|| "Windows has no active power plan.".to_owned())?
+            .guid;
+        let restore_values = self.power.read_processor_power_values(&plan_guid)?;
+        self.power
+            .apply_processor_power_values(&plan_guid, ProcessorPowerAcDcValues::same(values))?;
+        self.static_processor_policy = Some(AppliedStaticProcessorPolicy {
+            plan_guid,
+            restore_values,
+            applied_values: values,
+        });
+        Ok(())
+    }
+
+    fn restore_static_processor_policy(&mut self) -> Result<(), String> {
+        let Some(policy) = self.static_processor_policy.take() else {
+            return Ok(());
+        };
+        if let Err(error) = self
+            .power
+            .apply_processor_power_values(&policy.plan_guid, policy.restore_values)
+        {
+            self.static_processor_policy = Some(policy);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn run_io_priority_update(&mut self, settings: &Settings) -> IoPrioritySnapshot {
@@ -2120,6 +2427,10 @@ impl HiddenAutomationRunner {
     }
 
     fn run_check(&mut self, settings: &Settings) {
+        if self.adaptive_power_plan.is_some() {
+            return;
+        }
+
         let should_refresh_active_plan = self
             .next_active_plan_refresh
             .is_none_or(|refresh_at| Instant::now() >= refresh_at);
@@ -2225,6 +2536,13 @@ impl HiddenAutomationRunner {
     }
 }
 
+impl Drop for HiddenAutomationRunner {
+    fn drop(&mut self) {
+        let _ = self.restore_adaptive_power_plan();
+        let _ = self.restore_static_processor_policy();
+    }
+}
+
 fn switch_failure_key(target_guid: &str) -> String {
     target_guid.trim().to_ascii_lowercase()
 }
@@ -2317,6 +2635,17 @@ mod tests {
         let settings = Settings::default();
 
         assert!(!automation_worker_required(&settings));
+    }
+
+    #[test]
+    fn automation_worker_runs_for_adaptive_power_plan_alone() {
+        let mut settings = Settings::default();
+        settings.activity_mode.enabled = false;
+        settings.foreground_rules.enabled = false;
+        settings.smart_saver.enabled = true;
+        settings.smart_saver.processor_policy_enabled = true;
+
+        assert!(automation_worker_required(&settings));
     }
 
     #[test]
@@ -2847,6 +3176,80 @@ mod tests {
         ));
         assert!(!process_appearance_scan_required(&settings));
         assert!(!power_plan_checks_required(&settings));
+    }
+
+    #[test]
+    fn adaptive_plan_follows_smart_saver_processor_policy() {
+        let mut settings = Settings::default();
+        settings.smart_saver.enabled = true;
+        settings.smart_saver.processor_policy_enabled = true;
+
+        assert!(adaptive_power_plan_required(&settings));
+        assert_eq!(static_processor_power_values(&settings), None);
+
+        settings.smart_saver.processor_policy_enabled = false;
+        assert!(!adaptive_power_plan_required(&settings));
+    }
+
+    #[test]
+    fn adaptive_processor_demand_separates_hybrid_core_classes() {
+        let processors = [
+            LogicalProcessorInfo {
+                index: 0,
+                core_index: 0,
+                kind: LogicalProcessorKind::Performance,
+                efficiency_class: 1,
+            },
+            LogicalProcessorInfo {
+                index: 1,
+                core_index: 1,
+                kind: LogicalProcessorKind::Efficiency,
+                efficiency_class: 0,
+            },
+        ];
+
+        let demand = adaptive_processor_demand(&[72.0, 91.0], &processors);
+
+        assert_eq!(demand.peak_cpu_percent, None);
+        assert_eq!(demand.performance_peak_cpu_percent, Some(72.0));
+        assert_eq!(demand.efficiency_peak_cpu_percent, Some(91.0));
+    }
+
+    #[test]
+    fn adaptive_plan_uses_fast_cpu_and_slow_aggregate_telemetry() {
+        let mut settings = Settings::default();
+        settings.smart_saver.enabled = true;
+        settings.smart_saver.processor_policy_enabled = true;
+
+        assert_eq!(
+            workload_refresh_interval(&settings, true, true),
+            WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL
+        );
+        assert!(ADAPTIVE_IO_REFRESH_INTERVAL > WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL);
+        assert!(
+            workload_refresh_interval(&Settings::default(), true, true)
+                >= SMART_SAVER_AUTOMATION_REFRESH_INTERVAL
+        );
+    }
+
+    #[test]
+    fn performance_mode_keeps_its_static_processor_target() {
+        let mut settings = Settings::default();
+        settings.general.enabled = true;
+        settings.workload_engine.enabled = true;
+        settings.workload_engine.workload_engine_enabled = true;
+        settings.smart_saver.processor_policy_values = ProcessorPowerValues::new_with_boost_mode(
+            100,
+            25,
+            100,
+            85,
+            crate::power::ProcessorBoostMode::EfficientAggressive,
+        );
+
+        assert_eq!(
+            static_processor_power_values(&settings),
+            Some(settings.smart_saver.processor_policy_values)
+        );
     }
 
     #[test]

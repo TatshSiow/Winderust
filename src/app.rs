@@ -465,7 +465,6 @@ pub struct WinderustApp {
     next_process_refresh: Instant,
     last_switch_attempt: Option<(String, Instant)>,
     power: PowerPlanManager,
-    smart_saver_processor_restore: Option<(String, ProcessorPowerAcDcValues)>,
     effective_power_mode_monitor: Option<EffectivePowerModeMonitor>,
     effective_power_mode: EffectivePowerMode,
     background_automation: BackgroundAutomation,
@@ -1008,10 +1007,11 @@ impl WinderustApp {
                     app.refresh_after_tray_restore(window, cx);
                 }
             });
+        let power = PowerPlanManager;
+        let _ = power.restore_stale_adaptive_plans();
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
-        let power = PowerPlanManager;
         let effective_power_mode_monitor = EffectivePowerModeMonitor::new().ok();
         let effective_power_mode = effective_power_mode_monitor
             .as_ref()
@@ -1112,7 +1112,6 @@ impl WinderustApp {
             next_process_refresh: Instant::now(),
             last_switch_attempt: None,
             power,
-            smart_saver_processor_restore: None,
             effective_power_mode_monitor,
             effective_power_mode,
             background_automation,
@@ -1200,7 +1199,7 @@ impl WinderustApp {
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
         let startup_settings = app.saved_settings.clone();
-        app.sync_power_mode_processor_policy(&startup_settings);
+        app.sync_smart_saver_mode(&startup_settings);
         app.run_check(false, Instant::now());
         app.sync_processor_power_slider_states(window, cx);
         app.sync_input_hook();
@@ -1591,48 +1590,12 @@ impl WinderustApp {
         true
     }
 
-    fn sync_power_mode_processor_policy(&mut self, settings: &Settings) {
+    fn sync_smart_saver_mode(&self, settings: &Settings) {
         if settings.smart_saver.enabled {
             let _ = self_power::enable_smart_saver_mode();
         } else {
             let _ = self_power::disable_smart_saver_mode();
         }
-
-        if let Some(values) = power_mode_processor_values(settings) {
-            self.apply_power_mode_processor_policy(values);
-        } else {
-            self.restore_smart_saver_processor_policy();
-        }
-    }
-
-    fn apply_power_mode_processor_policy(&mut self, values: ProcessorPowerValues) {
-        if self.smart_saver_processor_restore.is_some() {
-            self.restore_smart_saver_processor_policy();
-        }
-
-        let Ok(Some(plan)) = self.power.active_plan() else {
-            return;
-        };
-        let Ok(previous_values) = self.power.read_processor_power_values(&plan.guid) else {
-            return;
-        };
-        let values = ProcessorPowerAcDcValues::same(values);
-        if self
-            .power
-            .apply_processor_power_values(&plan.guid, values)
-            .is_ok()
-        {
-            self.smart_saver_processor_restore = Some((plan.guid, previous_values));
-            self.refresh_active_plan();
-        }
-    }
-
-    fn restore_smart_saver_processor_policy(&mut self) {
-        let Some((guid, values)) = self.smart_saver_processor_restore.take() else {
-            return;
-        };
-        let _ = self.power.apply_processor_power_values(&guid, values);
-        self.refresh_active_plan();
     }
 
     fn refresh_processor_power_target_plan_personality(&mut self) -> bool {
@@ -2082,7 +2045,12 @@ impl WinderustApp {
             },
         );
 
-        self.apply_decision();
+        if !(decision_settings.general.enabled
+            && decision_settings.smart_saver.enabled
+            && decision_settings.smart_saver.processor_policy_enabled)
+        {
+            self.apply_decision();
+        }
     }
 
     fn run_check_changed(&mut self, now: Instant) -> bool {
@@ -4019,7 +3987,7 @@ impl WinderustApp {
         }
 
         let settings = Arc::new(self.background_settings());
-        self.sync_power_mode_processor_policy(settings.as_ref());
+        self.sync_smart_saver_mode(settings.as_ref());
         self.background_automation
             .update_settings(settings.as_ref());
         self.last_background_settings = settings;
@@ -4028,7 +3996,6 @@ impl WinderustApp {
 
 impl Drop for WinderustApp {
     fn drop(&mut self) {
-        self.restore_smart_saver_processor_policy();
         let _ = self_power::disable_smart_saver_mode();
     }
 }
@@ -6450,7 +6417,9 @@ impl WinderustApp {
                 (t!("smart_saver.power_mode").to_string(), power_mode),
                 (
                     t!("smart_saver.processor_policy").to_string(),
-                    if self.settings.smart_saver.enabled
+                    if let Some(profile) = &self.workload_engine_status.adaptive_power_profile {
+                        format!("Adaptive · {profile}")
+                    } else if self.settings.smart_saver.enabled
                         && self.settings.smart_saver.processor_policy_enabled
                     {
                         t!("common.enabled").to_string()
@@ -24678,38 +24647,6 @@ fn power_mode_speed_processor_values() -> ProcessorPowerValues {
     ProcessorPowerValues::new_with_boost_mode(100, 25, 100, 100, ProcessorBoostMode::Aggressive)
 }
 
-fn power_mode_processor_values(settings: &Settings) -> Option<ProcessorPowerValues> {
-    if !settings.smart_saver.processor_policy_enabled {
-        return None;
-    }
-
-    let values = settings.smart_saver.processor_policy_values.normalized();
-    if settings.smart_saver.enabled
-        || power_mode_high_performance_processor_policy_enabled(settings, values)
-    {
-        return Some(values);
-    }
-
-    None
-}
-
-fn power_mode_high_performance_processor_policy_enabled(
-    settings: &Settings,
-    values: ProcessorPowerValues,
-) -> bool {
-    !settings.smart_saver.enabled
-        && !settings.eco_qos.enabled
-        && settings.workload_engine.enabled
-        && values != power_mode_powersave_processor_values()
-        && (workload_engine_matches_preset(
-            &settings.workload_engine,
-            WorkloadEnginePreset::ForegroundFirst,
-        ) || workload_engine_matches_preset(
-            &settings.workload_engine,
-            WorkloadEnginePreset::MaxForeground,
-        ))
-}
-
 fn process_memory_priority_setting_label(priority: ProcessMemoryPrioritySetting) -> String {
     match priority {
         ProcessMemoryPrioritySetting::Default => t!("memory_priority.priority_default").to_string(),
@@ -25607,10 +25544,6 @@ mod tests {
         assert!(settings.smart_saver.processor_policy_enabled);
         assert!(settings.eco_qos.enabled);
         assert!(settings.workload_engine.enabled);
-        assert_eq!(
-            power_mode_processor_values(&settings),
-            Some(power_mode_powersave_processor_values())
-        );
 
         apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
         assert!(power_mode_matches_preset(
@@ -25620,10 +25553,6 @@ mod tests {
         assert!(settings.smart_saver.enabled);
         assert!(!settings.eco_qos.enabled);
         assert!(settings.workload_engine.enabled);
-        assert_eq!(
-            power_mode_processor_values(&settings),
-            Some(power_mode_balanced_processor_values())
-        );
         assert!(workload_engine_matches_preset(
             &settings.workload_engine,
             WorkloadEnginePreset::LowImpact
@@ -25639,10 +25568,6 @@ mod tests {
         assert!(settings.workload_engine.enabled);
         assert!(settings.workload_engine.workload_engine_enabled);
         assert!(settings.smart_saver.processor_policy_enabled);
-        assert_eq!(
-            power_mode_processor_values(&settings),
-            Some(power_mode_performance_processor_values())
-        );
         assert!(workload_engine_matches_preset(
             &settings.workload_engine,
             WorkloadEnginePreset::ForegroundFirst
@@ -25654,22 +25579,10 @@ mod tests {
         assert!(settings.workload_engine.enabled);
         assert!(settings.workload_engine.workload_engine_enabled);
         assert!(settings.smart_saver.processor_policy_enabled);
-        assert_eq!(
-            power_mode_processor_values(&settings),
-            Some(power_mode_speed_processor_values())
-        );
         assert!(workload_engine_matches_preset(
             &settings.workload_engine,
             WorkloadEnginePreset::MaxForeground
         ));
-    }
-
-    #[test]
-    fn workload_engine_alone_does_not_apply_default_processor_policy() {
-        let mut settings = Settings::default();
-        settings.workload_engine.enabled = true;
-
-        assert_eq!(power_mode_processor_values(&settings), None);
     }
 
     #[test]
@@ -25684,8 +25597,8 @@ mod tests {
             PowerModePreset::Balanced
         ));
         assert_eq!(
-            power_mode_processor_values(&settings).map(|values| values.performance_max),
-            Some(55)
+            settings.smart_saver.processor_policy_values.performance_max,
+            55
         );
 
         apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);

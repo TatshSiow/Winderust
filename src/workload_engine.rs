@@ -60,6 +60,7 @@ pub struct WorkloadEngineSnapshot {
     pub workload_managed_processes: usize,
     pub workload_engine_message: String,
     pub workload_engine_total_cpu_usage_tenths: Option<u16>,
+    pub adaptive_power_profile: Option<String>,
     pub workload_engine_details: Vec<WorkloadEngineProcessStatus>,
     pub skipped_processes: usize,
     pub failed_processes: usize,
@@ -795,6 +796,7 @@ impl WorkloadEngineManager {
             workload_managed_processes,
             workload_engine_message,
             workload_engine_total_cpu_usage_tenths: foreground_cpu_usage_tenths,
+            adaptive_power_profile: None,
             workload_engine_details,
             skipped_processes,
             failed_processes: failures.count,
@@ -1509,6 +1511,7 @@ impl Default for WorkloadEngineSnapshot {
             workload_managed_processes: 0,
             workload_engine_message: "Workload Engine disabled.".to_owned(),
             workload_engine_total_cpu_usage_tenths: None,
+            adaptive_power_profile: None,
             workload_engine_details: Vec::new(),
             skipped_processes: 0,
             failed_processes: 0,
@@ -1900,7 +1903,7 @@ fn workload_engine_minimum_cpu_percent_for_topology(
         } else if trigger >= 70 {
             70
         } else {
-            60
+            50
         }
     } else if trigger >= 80 {
         80
@@ -3127,6 +3130,14 @@ mod tests {
         assert_eq!(
             workload_engine_minimum_cpu_percent_for_topology(&settings, true),
             70
+        );
+        let foreground_first = WorkloadEngineSettings {
+            workload_engine_total_threshold_percent: 45,
+            ..settings.clone()
+        };
+        assert_eq!(
+            workload_engine_minimum_cpu_percent_for_topology(&foreground_first, true),
+            50
         );
         assert_eq!(
             workload_engine_effective_cpu_percent_for_topology(&settings, Some(75.0), true),
