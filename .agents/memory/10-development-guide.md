@@ -44,6 +44,11 @@ existing scripts and workflows, and run the same default checks before pushing.
 Use `Chore(deps): ...` for dependency-only commits and a direct imperative
 subject for other maintenance.
 
+Use `main` for releasable code and `dev` as the integration branch. Create
+feature branches from `dev` and merge them back through pull requests; promote
+tested `dev` changes to `main` for release. CI runs on pushes to `main` and
+`dev`, and on every pull request. Release automation remains tag-only.
+
 ## Release Runbook
 
 1. Start from a clean, current `main`. Choose a SemVer-compatible prerelease
