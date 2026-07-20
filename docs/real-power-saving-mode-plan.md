@@ -1,6 +1,6 @@
-# Real Power-Saving Mode Implementation Plan
+# Adaptive Engine Implementation Record
 
-## Decision
+## Current Decision
 
 Do not build a second adaptive engine.
 

@@ -13,8 +13,8 @@ This is the working guide for code changes. Product scope and future goals live 
 Use these checks before handoff:
 
 ```powershell
-cargo fmt
-cargo check
+cargo fmt -- --check
+cargo test
 ```
 
 For release builds:
@@ -62,6 +62,27 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `W
 - Use `#[serde(default)]` only when a current setting is intentionally optional; do not add pre-release migration aliases.
 - If a setting is edited through the UI, update the relevant input sync code in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/ui/app.rs`.
+
+### Power Plan Ownership
+
+- `ByActivitySettings::power_plans` owns the visible Idle and Active plan selections.
+- By Foreground, By Running App, By CPU Load, and By Time store the chosen GUID on each rule.
+- A rule without a selected plan does not inherit a hidden global plan.
+- Do not reintroduce `Settings::power_plans`, per-feature unused mapping fields, or load-time mapping fill/migration helpers.
+
+## Naming
+
+- Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
+- Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CoreLimiter`, `CoreSteering`, and `DynamicPriorityBoost`.
+- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, CPU Affinity feature names, CPU Limiter feature names, or Performance Mode settings names.
+- Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
+
+Run this quick compatibility/naming check before handoff:
+
+```powershell
+rg -n -i --glob '!target/**' --glob '!graphify-out/**' --glob '!.git/**' --glob '!.agents/**' 'PowerLeaf|Smart Saver|Smart Trim|serde.*alias|fill_missing_power_plan_mappings|Settings::power_plans' .
+```
+
 ## Runtime Safety
 
 Process-control features must keep these defaults:

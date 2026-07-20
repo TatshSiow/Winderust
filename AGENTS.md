@@ -2,6 +2,21 @@
 
 Read `.agents/memory/README.md` first.
 
+## Current Product Contract
+
+- Product: **Winderust - Windows Performance & Power Manager**.
+- Treat visible UI names as the canonical names for feature modules, settings, page variants, helpers, tests, locale keys, scripts, and documentation.
+- Keep Windows terms such as EcoQoS, affinity masks, CPU Sets, and Win32 API names only where code directly describes the operating-system mechanism.
+- Winderust is unpublished. Do not add legacy config aliases, schema migrations, old product-name paths, cross-brand recovery, or hidden compatibility fallbacks unless the user explicitly requests them.
+- Power-plan ownership is local: By Activity owns its Idle/Active selections; By Foreground, By Running App, By CPU Load, and By Time rules each own their selected plan. There is no global plan fallback.
+- Only recover temporary managed plans whose name and description identify the current `Winderust Adaptive` plan.
+
+## Change Checklist
+
+- Trace all callers before renaming or removing a setting.
+- Keep `Page`, navigation sections, render dispatch, locale keys, settings fields, backend status, scripts, and docs aligned with the same UI term.
+- Preserve runtime safety behavior: process-state restoration, protected-process filtering, conservative defaults, and failure handling are not legacy compatibility.
+- Before handoff, run `cargo fmt -- --check`, `cargo test`, the legacy scan from the development guide, and `graphify update .` after code changes.
 
 ## graphify
 

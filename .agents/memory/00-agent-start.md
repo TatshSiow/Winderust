@@ -16,6 +16,11 @@
 
 ## Current Decisions
 
+- UI wording is the naming source of truth. Current feature names include Adaptive Engine, Background Efficiency, Memory Trim, By Foreground, By Running App, By CPU Load, By Activity, By Time, Core Limiter, Core Steering, and Dynamic Priority Boost.
+- Use native mechanism names only at Windows boundaries: EcoQoS, affinity masks, CPU Sets, and exact Win32 function names remain technical terms.
+- Winderust is unpublished. Settings use only the current schema; do not add serde aliases, migration code, old brand paths, or compatibility-only fallbacks.
+- Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
+- Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
 - Repeated process failure suppression uses `ExecutionFailureTracker` in `src/rules/execution_failure.rs`; the threshold comes from `settings.advanced.execution_failure_suppression_threshold`.
 - Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
@@ -27,7 +32,7 @@
 
 - Do not cut animation/motion unless explicitly asked.
 - Lucide/icondata note: using specific lucide icons should not be removed just because `icondata_core`/`icondata_lu` look broad; verify icon references before trimming.
-- Legacy cleanup already removed old launch-priority related leftovers; avoid restoring deleted legacy files unless asked.
+- Do not restore removed legacy identifiers or files unless the user explicitly asks for compatibility work.
 
 ## Audit Notes
 

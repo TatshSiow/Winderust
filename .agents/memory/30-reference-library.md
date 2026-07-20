@@ -15,8 +15,10 @@ User-facing behavior:
 - Winderust enumerates available Windows power schemes.
 - It reads each scheme's friendly display name.
 - It reads the currently active scheme GUID.
-- It maps Winderust's logical `Idle plan` and `Active plan` settings to Windows power scheme GUIDs.
+- By Activity maps its visible `Idle plan` and `Active plan` settings to Windows power scheme GUIDs.
+- By Foreground, By Running App, By CPU Load, and By Time store a selected GUID on each rule; missing selections do not fall back to a global plan.
 - When automation decides to switch mode, Winderust calls the Windows API to set the selected scheme as active.
+- Adaptive Engine creates a temporary plan named `Winderust Adaptive`; startup recovery only recognizes that exact current Winderust name/description pair.
 
 ### Power Scheme APIs
 

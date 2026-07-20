@@ -2,46 +2,32 @@
 
 **Windows Performance & Power Manager**
 
-Naming: **Wanderlust** + **Windows Derust**
-
-Definition: Wander and explore, polish your rusty Windows and shine.
+Winderust balances Windows performance, heat, and power use by managing
+background processes and automating power plans.
 
 ## Features
 
-### Winderust Features
-- `Workload Engine`: protects the active app by temporarily lowering hot background work. It can tune process priority, efficiency mode, I/O priority, thread priority, dynamic boost, GPU priority, memory priority, and CPU affinity escalation.
-- `Background Efficiency`: applies Windows Efficiency Mode / EcoQoS to eligible background apps with protection lists and per-app rules.
-- `Memory Trim`: trims idle high-memory background processes during memory pressure while protecting foreground and excluded apps.
-
-### Power Automation
-- `Adaptive Engine` activates a temporary `Winderust Adaptive` plan and scales core parking, processor minimum/maximum state, boost policy, and boost mode from burst, peak-core, total-load, foreground, and I/O demand. The previous plan is restored when Adaptive Engine stops.
-- Switches power plans by foreground app, running app, CPU load, user activity, and schedule.
-- Supports per-rule plans plus processor power tuning such as core parking, CPU limits, and boost mode.
-- Applies rules in foreground > running app > CPU load > activity > schedule order.
-
-### Priority Control
-- Manages process priority, thread priority, dynamic priority boost, I/O priority, GPU scheduler priority, and memory priority.
-- Keeps risky High/Realtime-style controls behind explicit advanced/experimental flows.
-- Provides foreground/background defaults plus app exclusions where supported.
-
-### Processor Controls
-- Limits selected background apps after sustained CPU load.
-- Restricts broad background CPU access when foreground/system pressure warrants it.
-- Steers selected apps with soft CPU Sets or hard affinity.
-
-### Process View, Advanced, And App
-- Process List shows live processes and their active Winderust policies in one place.
-- App Suspension freezes explicit opt-in background apps and resumes them when needed.
-- Timer Resolution and Win32PrioritySeparation controls cover advanced scheduler tuning.
-- GPUI desktop interface includes tray support, startup options, import/export settings, themes, accent colors, animation preference, English / Traditional Chinese localization, and CSV Action Log export.
+- **Workload Engine** protects the active app by reducing hot background work.
+- **Background Efficiency** applies Windows Efficiency Mode / EcoQoS using
+  protection lists and per-app rules.
+- **Memory Trim** trims idle, high-memory background processes during memory
+  pressure while protecting foreground and excluded apps.
+- **Adaptive Engine** adjusts a temporary power plan to current CPU,
+  foreground, and I/O demand, then restores the previous plan when stopped.
+- **Power Automation** switches plans by foreground app, running app, CPU load,
+  user activity, or schedule.
+- **Advanced controls** cover priorities, CPU Sets and affinity, app suspension,
+  timer resolution, and processor power settings.
+- **Desktop integration** includes tray and startup support, settings
+  import/export, themes, English and Traditional Chinese, and CSV action logs.
 
 ## Recommended Starting Points
 
 - Use `Workload Engine` first when foreground interactivity is the goal.
 - Use `Background Efficiency` for low-risk battery and heat reduction.
 - Use `Memory Trim` for memory-pressure cleanup without trimming the foreground app.
-- Use `Power Automation` when a workload should choose or hold a specific power plan.
-- Use `Priority Control` or `Processor Controls` only when you need per-subsystem or per-app tuning beyond Workload Engine.
+- Use `Power Automation` when workloads need different power plans.
+- Use advanced controls only when per-app automation is not enough.
 
 ## Workload Engine Benchmark
 
@@ -56,7 +42,7 @@ Install Rust, then build from this folder:
 cargo build --release
 ```
 
-The compiled executable is:
+The executable is written to:
 
 ```text
 target\release\winderust.exe
@@ -64,9 +50,17 @@ target\release\winderust.exe
 
 ## License
 
-Winderust is proprietary software. No open-source license is granted. See
-`EULA.md`.
+Copyright (C) 2026 Tatsh
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, version 3.
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+Licensed under the [GNU General Public License v3.0](LICENSE).
 
 ## Notes
 - EcoQoS works best on Windows 11 and supported CPU platforms.
-- Agent docs, development guide, scope, and references: `.agents/memory/README.md`.
+- Development guidance: [AGENTS.md](AGENTS.md) and
+  [agent memory](.agents/memory/README.md).
