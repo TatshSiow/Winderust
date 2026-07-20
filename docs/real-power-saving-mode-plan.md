@@ -6,10 +6,10 @@ Do not build a new `Adaptive Saver Engine`.
 
 Implement `Smart Saver Mode` by extending the systems that already exist:
 
-- `src/ecoqos/mod.rs`: background EcoQoS and priority restore.
-- `src/workload_engine.rs`: adaptive background restraint under CPU pressure.
-- `src/affinity/mod.rs`: soft CPU Sets and hard affinity fallback.
-- `src/suspension/mod.rs`: active-audio detection that can be shared.
+- `src/features/ecoqos/mod.rs`: background EcoQoS and priority restore.
+- `src/features/workload_engine.rs`: adaptive background restraint under CPU pressure.
+- `src/features/affinity/mod.rs`: soft CPU Sets and hard affinity fallback.
+- `src/features/suspension/mod.rs`: active-audio detection that can be shared.
 - `src/automation.rs`: existing feature scheduling and status fan-out.
 
 The only new low-risk saver behavior for the first implementation is:
@@ -104,7 +104,7 @@ EcoQoS and priority lowering may still run when audio detection fails; only the 
 
 ### 1. Share Active-Audio Detection
 
-Move the active-audio PID detection from `src/suspension/mod.rs` into a small shared module, for example:
+Move the active-audio PID detection from `src/features/suspension/mod.rs` into a small shared module, for example:
 
 ```text
 src/audio_activity.rs
@@ -122,8 +122,8 @@ Keep the suspension behavior unchanged.
 
 Update the process-throttling state builders in:
 
-- `src/ecoqos/mod.rs`
-- `src/workload_engine.rs`
+- `src/features/ecoqos/mod.rs`
+- `src/features/workload_engine.rs`
 
 Add `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION` beside
 `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` only when the timer guard allows it.

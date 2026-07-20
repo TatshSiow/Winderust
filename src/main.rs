@@ -5,42 +5,57 @@ compile_error!("Winderust is a Windows-only application.");
 
 mod action_log;
 mod activity;
+#[path = "features/affinity/mod.rs"]
 mod affinity;
 mod app;
 mod assets;
 mod audio_activity;
 mod automation;
+#[path = "features/background_cpu.rs"]
 mod background_cpu;
 mod config;
 mod cpu;
+#[path = "features/cpu_limiter/mod.rs"]
 mod cpu_limiter;
 mod dashboard_metrics;
+#[path = "features/ecoqos/mod.rs"]
 mod ecoqos;
 mod file_dialog;
 mod foreground;
+#[path = "features/gpu_priority.rs"]
 mod gpu_priority;
+#[path = "features/io_priority.rs"]
 mod io_priority;
+#[path = "features/memory_priority.rs"]
 mod memory_priority;
+#[path = "features/memory_trim.rs"]
 mod memory_trim;
+#[path = "features/performance_mode/mod.rs"]
 mod performance_mode;
 mod power;
 mod power_source;
+#[path = "features/priority_boost.rs"]
 mod priority_boost;
 mod privilege;
 mod process_icon;
+#[path = "features/process_priority.rs"]
 mod process_priority;
 mod rules;
 mod scheduler;
 mod self_power;
 mod startup;
+#[path = "features/suspension/mod.rs"]
 mod suspension;
+#[path = "features/thread_priority.rs"]
 mod thread_priority;
+#[path = "features/timer_resolution.rs"]
 mod timer_resolution;
 mod tray;
 mod ui;
 mod win_registry;
 mod win_util;
 mod windows_events;
+#[path = "features/workload_engine.rs"]
 mod workload_engine;
 
 rust_i18n::i18n!("locales", fallback = "en");

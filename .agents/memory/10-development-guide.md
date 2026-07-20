@@ -87,7 +87,7 @@ Process-control features must keep these defaults:
 - Foreground and process enumeration: `src/foreground/`.
 - Idle and input hooks: `src/activity/`.
 - Tray behavior: `src/tray.rs`.
-- Timer resolution: `src/timer_resolution.rs`.
+- Timer resolution: `src/features/timer_resolution.rs`.
 - Win32 priority separation: registry code in `src/app.rs`.
 
 Prefer native API calls already used in the repo. Do not add command spawning around `powercfg` unless the Win32 path cannot support the needed behavior.
