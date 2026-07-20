@@ -30,6 +30,47 @@ If `target\release\winderust.exe` is locked because the app is running:
 .\scripts\build_release.cmd -TargetDir target-next
 ```
 
+## Routine Chores
+
+For dependency PRs, review each update independently. Check the changed files,
+release notes, and whether the version is already required by the GPUI revisions
+pinned in `Cargo.toml`; do not merge a major-version bump merely because
+Dependabot opened it. Run the default checks above, confirm CI passes, then merge
+or close the PR. Keep unrelated dependency updates in separate commits so a bad
+bump is easy to identify and revert.
+
+For other chores, keep the diff limited to the requested maintenance, reuse the
+existing scripts and workflows, and run the same default checks before pushing.
+Use `Chore(deps): ...` for dependency-only commits and a direct imperative
+subject for other maintenance.
+
+## Release Runbook
+
+1. Start from a clean, current `main`. Choose a SemVer-compatible prerelease
+   version such as `0.1.1-alpha` and tag it as `v0.1.1-alpha`.
+2. Update the package version in `Cargo.toml`, refresh the root package entry in
+   `Cargo.lock`, and add the dated release section to `CHANGELOG.md`. Verify that
+   the lockfile contains no unrelated dependency changes.
+3. Run the default checks, the naming scan below, and
+   `.\scripts\build_release.cmd`. Complete a Windows smoke test of the resulting
+   executable for changes that affect runtime behavior or packaging.
+4. Commit and push the release preparation to `main`. Wait for CI to pass.
+5. Create and push an annotated tag on that exact commit:
+
+   ```powershell
+   git tag -a v0.1.1-alpha -m "Winderust v0.1.1-alpha"
+   git push origin v0.1.1-alpha
+   ```
+
+6. The `Draft Release` workflow validates the tag against Cargo metadata,
+   repeats verification, builds the executable, and creates a draft prerelease
+   with a ZIP and SHA-256 file. Confirm the workflow succeeded and inspect both
+   assets before manually publishing the draft on GitHub.
+
+Never move or recreate a published tag. If a draft workflow fails, fix the
+cause on `main`; only replace an unpublished tag when no release was published
+and the corrected commit must be the tagged source.
+
 ## Source Map
 
 - `src/main.rs`: app entry, single-instance guard, GPUI startup.
