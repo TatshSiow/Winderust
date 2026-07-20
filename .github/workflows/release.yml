@@ -25,8 +25,7 @@ jobs:
       - name: Validate tag and package version
         shell: pwsh
         run: |
-          $manifest = Get-Content -Raw Cargo.toml
-          $version = [regex]::Match($manifest, '(?m)^version = "([^"]+)"$').Groups[1].Value
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           if ("v$version" -ne "${{ github.ref_name }}") {
               throw "Tag ${{ github.ref_name }} does not match Cargo version $version"
           }
