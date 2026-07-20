@@ -5,41 +5,41 @@ use chrono::{
     TimeZone,
 };
 
-use crate::config::{ScheduleModeSettings, ScheduleRule, WeekdaySetting};
+use crate::config::{ByTimeRule, ByTimeSettings, WeekdaySetting};
 
-const SCHEDULE_LOOKAHEAD_DAYS: i64 = 8;
-const MIN_SCHEDULE_DELAY: Duration = Duration::from_secs(1);
+const BY_TIME_LOOKAHEAD_DAYS: i64 = 8;
+const MIN_BY_TIME_DELAY: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
-pub struct ScheduleDecision {
+pub struct ByTimeDecision {
     pub rule_name: String,
     pub power_plan_guid: Option<String>,
 }
 
 #[derive(Debug, Default)]
-pub struct Scheduler;
+pub struct ByTimeScheduler;
 
-impl Scheduler {
-    pub fn current_decision(&self, settings: &ScheduleModeSettings) -> Option<ScheduleDecision> {
+impl ByTimeScheduler {
+    pub fn current_decision(&self, settings: &ByTimeSettings) -> Option<ByTimeDecision> {
         if !settings.enabled {
             return None;
         }
 
         let now = Local::now();
-        active_rule(settings, now).map(|rule| ScheduleDecision {
+        active_rule(settings, now).map(|rule| ByTimeDecision {
             rule_name: rule.name.clone(),
             power_plan_guid: rule.power_plan_guid.clone(),
         })
     }
 
-    pub fn next_change_delay(&self, settings: &ScheduleModeSettings) -> Option<Duration> {
+    pub fn next_change_delay(&self, settings: &ByTimeSettings) -> Option<Duration> {
         let now = Local::now();
         next_change_at(settings, now)
             .and_then(|next| next.signed_duration_since(now).to_std().ok())
-            .map(|delay| delay.max(MIN_SCHEDULE_DELAY))
+            .map(|delay| delay.max(MIN_BY_TIME_DELAY))
     }
 
-    pub fn next_switch_label(&self, settings: &ScheduleModeSettings) -> String {
+    pub fn next_switch_label(&self, settings: &ByTimeSettings) -> String {
         if !settings.enabled || settings.rules.is_empty() {
             return "No active By Time rules".to_owned();
         }
@@ -69,11 +69,11 @@ impl Scheduler {
     }
 }
 
-fn active_rule(settings: &ScheduleModeSettings, now: DateTime<Local>) -> Option<&ScheduleRule> {
+fn active_rule(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<&ByTimeRule> {
     settings.rules.iter().find(|rule| rule_applies(rule, now))
 }
 
-fn rule_applies(rule: &ScheduleRule, now: DateTime<Local>) -> bool {
+fn rule_applies(rule: &ByTimeRule, now: DateTime<Local>) -> bool {
     if !rule.enabled {
         return false;
     }
@@ -98,10 +98,7 @@ fn time_in_range(now: NaiveTime, start: NaiveTime, end: NaiveTime) -> bool {
     now >= start && now < end
 }
 
-fn next_change_at(
-    settings: &ScheduleModeSettings,
-    now: DateTime<Local>,
-) -> Option<DateTime<Local>> {
+fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<DateTime<Local>> {
     if !settings.enabled {
         return None;
     }
@@ -112,7 +109,7 @@ fn next_change_at(
             continue;
         };
 
-        for day_offset in -1..=SCHEDULE_LOOKAHEAD_DAYS {
+        for day_offset in -1..=BY_TIME_LOOKAHEAD_DAYS {
             let Some(start_date) = now
                 .date_naive()
                 .checked_add_signed(ChronoDuration::days(day_offset))
@@ -141,7 +138,7 @@ fn next_change_at(
 }
 
 fn next_rule_start_after(
-    settings: &ScheduleModeSettings,
+    settings: &ByTimeSettings,
     now: DateTime<Local>,
 ) -> Option<(String, DateTime<Local>)> {
     let mut next = None;
@@ -150,7 +147,7 @@ fn next_rule_start_after(
             continue;
         };
 
-        for day_offset in 0..=SCHEDULE_LOOKAHEAD_DAYS {
+        for day_offset in 0..=BY_TIME_LOOKAHEAD_DAYS {
             let Some(start_date) = now
                 .date_naive()
                 .checked_add_signed(ChronoDuration::days(day_offset))
@@ -181,7 +178,7 @@ fn next_rule_start_after(
     next
 }
 
-fn next_rule_end_after(rule: &ScheduleRule, now: DateTime<Local>) -> Option<DateTime<Local>> {
+fn next_rule_end_after(rule: &ByTimeRule, now: DateTime<Local>) -> Option<DateTime<Local>> {
     let (start, end) = enabled_rule_times(rule)?;
     let mut next = None;
     for day_offset in -1..=1 {
@@ -210,7 +207,7 @@ fn next_rule_end_after(rule: &ScheduleRule, now: DateTime<Local>) -> Option<Date
     next
 }
 
-fn enabled_rule_times(rule: &ScheduleRule) -> Option<(NaiveTime, NaiveTime)> {
+fn enabled_rule_times(rule: &ByTimeRule) -> Option<(NaiveTime, NaiveTime)> {
     rule.enabled.then(|| rule.parsed_times()).flatten()
 }
 
@@ -235,7 +232,7 @@ fn local_datetime(date: NaiveDate, time: NaiveTime) -> Option<DateTime<Local>> {
     }
 }
 
-fn rule_display_name(rule: &ScheduleRule) -> &str {
+fn rule_display_name(rule: &ByTimeRule) -> &str {
     let name = rule.name.trim();
     if name.is_empty() {
         "Unnamed rule"
@@ -268,7 +265,7 @@ mod tests {
 
     #[test]
     fn overnight_rule_applies_after_midnight_from_previous_day() {
-        let rule = ScheduleRule {
+        let rule = ByTimeRule {
             enabled: true,
             name: "Night".to_owned(),
             days: vec![WeekdaySetting::Fri],
@@ -283,7 +280,7 @@ mod tests {
 
     #[test]
     fn disabled_rule_does_not_apply() {
-        let rule = ScheduleRule {
+        let rule = ByTimeRule {
             enabled: false,
             name: "Night".to_owned(),
             days: vec![WeekdaySetting::Fri],
@@ -298,9 +295,9 @@ mod tests {
 
     #[test]
     fn next_change_wakes_at_overnight_rule_end() {
-        let settings = ScheduleModeSettings {
+        let settings = ByTimeSettings {
             enabled: true,
-            rules: vec![ScheduleRule {
+            rules: vec![ByTimeRule {
                 enabled: true,
                 name: "Night".to_owned(),
                 days: vec![WeekdaySetting::Fri],
@@ -308,7 +305,6 @@ mod tests {
                 end_time: "08:00".to_owned(),
                 power_plan_guid: None,
             }],
-            power_plans: Default::default(),
         };
         let now = Local.with_ymd_and_hms(2026, 5, 30, 2, 0, 0).unwrap();
 
@@ -320,9 +316,9 @@ mod tests {
 
     #[test]
     fn next_rule_start_finds_next_enabled_day() {
-        let settings = ScheduleModeSettings {
+        let settings = ByTimeSettings {
             enabled: true,
-            rules: vec![ScheduleRule {
+            rules: vec![ByTimeRule {
                 enabled: true,
                 name: "Work".to_owned(),
                 days: vec![WeekdaySetting::Mon],
@@ -330,7 +326,6 @@ mod tests {
                 end_time: "17:00".to_owned(),
                 power_plan_guid: None,
             }],
-            power_plans: Default::default(),
         };
         let now = Local.with_ymd_and_hms(2026, 5, 31, 12, 0, 0).unwrap();
 

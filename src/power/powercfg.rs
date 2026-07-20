@@ -32,8 +32,6 @@ pub struct PowerPlanManager;
 
 const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
 const ADAPTIVE_PLAN_DESCRIPTION_PREFIX: &str = "Winderust managed adaptive plan; restore=";
-const ADAPTIVE_PLAN_NAME_SUFFIX: &str = " Adaptive";
-const ADAPTIVE_PLAN_DESCRIPTION_SUFFIX: &str = " managed adaptive plan; restore=";
 
 #[derive(Debug)]
 pub struct EffectivePowerModeMonitor {
@@ -142,10 +140,7 @@ impl PowerPlanManager {
             .map(|plan| plan.guid.to_ascii_lowercase())
             .collect::<Vec<_>>();
 
-        for plan in plans
-            .iter()
-            .filter(|plan| plan.name.ends_with(ADAPTIVE_PLAN_NAME_SUFFIX))
-        {
+        for plan in plans.iter().filter(|plan| plan.name == ADAPTIVE_PLAN_NAME) {
             let guid = parse_guid(&plan.guid)
                 .ok_or_else(|| "Invalid managed power plan GUID.".to_owned())?;
             let description = read_scheme_description(&guid)?;
@@ -683,9 +678,10 @@ fn active_scheme_guid() -> Result<String, String> {
 }
 
 fn managed_adaptive_restore_guid<'a>(plan_name: &str, description: &'a str) -> Option<&'a str> {
-    let brand = plan_name.strip_suffix(ADAPTIVE_PLAN_NAME_SUFFIX)?;
-    let description = description.strip_prefix(brand)?;
-    let restore_guid = description.strip_prefix(ADAPTIVE_PLAN_DESCRIPTION_SUFFIX)?;
+    if plan_name != ADAPTIVE_PLAN_NAME {
+        return None;
+    }
+    let restore_guid = description.strip_prefix(ADAPTIVE_PLAN_DESCRIPTION_PREFIX)?;
     parse_guid(restore_guid).map(|_| restore_guid)
 }
 
@@ -754,20 +750,20 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_managed_adaptive_plan_across_brand_changes() {
+    fn recognizes_only_winderust_managed_adaptive_plan() {
         let restore_guid = "381b4222-f694-41f0-9685-ff5bb260df2e";
 
         assert_eq!(
             managed_adaptive_restore_guid(
-                "PreviousName Adaptive",
-                &format!("PreviousName managed adaptive plan; restore={restore_guid}"),
+                ADAPTIVE_PLAN_NAME,
+                &format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{restore_guid}"),
             ),
             Some(restore_guid)
         );
         assert_eq!(
             managed_adaptive_restore_guid(
-                "Unrelated Plan",
-                &format!("PreviousName managed adaptive plan; restore={restore_guid}"),
+                "Another App Adaptive",
+                &format!("Another App managed adaptive plan; restore={restore_guid}"),
             ),
             None
         );

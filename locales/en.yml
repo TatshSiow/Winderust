@@ -5,37 +5,37 @@ app:
   description: "Windows Performance & Power Manager"
 
 nav:
-  overview: "Home"
+  home: "Home"
   winderust_features: "Winderust Features"
-  power_automation: "Power Plan Control"
+  power_plan_control: "Power Plan Control"
   automation_group: "Automation"
   advanced_group: "Advanced"
-  processor_controls: "CPU Control"
+  cpu_control: "CPU Control"
   priority_control: "Priority Control"
   app: "App"
   advanced: "Advanced Controls"
   dashboard: "Dashboard"
-  activity: "By Activity"
-  cpu_usage: "By CPU Load"
-  core_parking: "Advanced Power Plan Tuning"
+  by_activity: "By Activity"
+  by_cpu_load: "By CPU Load"
+  advanced_power_plan_tuning: "Advanced Power Plan Tuning"
   process_priority: "Process Priority"
   thread_priority: "Thread Priority"
   dynamic_priority_boost: "Dynamic Priority Boost"
-  cpu_limiter: "Core Limiter"
+  core_limiter: "Core Limiter"
   background_cpu_restriction: "Background CPU Restriction"
   process_list: "Process List"
-  smart_saver_mode: "Adaptive Engine"
-  efficiency_mode: "Background Efficiency"
+  adaptive_engine: "Adaptive Engine"
+  background_efficiency: "Background Efficiency"
   app_suspension: "App Suspension"
-  performance_mode: "By Running App"
+  by_running_app: "By Running App"
   workload_engine: "Workload Engine"
   io_priority: "I/O Priority"
   gpu_priority: "GPU Priority"
   memory_priority: "Memory Priority"
   memory_trim: "Memory Trim"
-  cpu_affinity: "Core Steering"
-  foreground_rules: "By Foreground"
-  schedule: "By Time"
+  core_steering: "Core Steering"
+  by_foreground: "By Foreground"
+  by_time: "By Time"
   action_log: "Log"
   settings: "Settings"
   timer_resolution: "Timer Resolution"
@@ -137,8 +137,8 @@ admin_rights:
   ignore: "Ignore"
   relaunch: "Relaunch"
 
-dashboard:
-  overview: "Overview"
+home:
+  home: "Overview"
   intro_1: "Dashboard summarizes the current automation decision, detected state, and active power plan."
   intro_2: "Use it to verify what Winderust is doing before changing page settings."
   current_power_plan: "Current power plan"
@@ -146,7 +146,7 @@ dashboard:
   automation: "Automation"
   foreground_app: "Foreground app"
   activity_state: "Activity state"
-  cpu_usage: "CPU"
+  by_cpu_load: "CPU"
   cpu_load: "Usage"
   cpu_frequency: "Freq"
   memory_usage: "RAM"
@@ -159,9 +159,9 @@ dashboard:
   network_usage: "Network"
   network_download: "Download"
   network_upload: "Upload"
-  efficiency_mode: "Efficiency Mode"
+  background_efficiency: "Efficiency Mode"
   app_suspension: "App Suspension"
-  cpu_affinity: "Core Steering"
+  core_steering: "Core Steering"
   idle_time: "Idle time"
   time_rules: "Time scheduler"
   decision_reason: "Decision reason"
@@ -352,7 +352,7 @@ processor_power:
   loaded_values: "Loaded processor tuning values from %{plan}."
   applied_custom: "Applied custom processor tuning to %{plan}."
 
-activity:
+by_activity:
   intro_1: "By Activity switches power plans from keyboard, mouse, and controller activity."
   intro_2: "Idle and active plans are selected below; input detection controls when the app changes state."
   enable: "Enable By Activity"
@@ -365,7 +365,7 @@ activity:
   idle_timeout: "Idle Timeout"
   check_interval: "Check Interval"
 
-foreground:
+by_foreground:
   intro_1: "By Foreground switches power plans when a specific app is focused."
   intro_2: "Custom rules with a selected power plan override lower-priority automation; inherited/default rules combine with By Time, By CPU Load, and By Activity custom rules."
   enable: "Enable By Foreground"
@@ -374,7 +374,7 @@ foreground:
   focused_app: "Focused app"
   target_power_plan: "Target power plan"
 
-schedule:
+by_time:
   intro_1: "By Time switches power plans based on the current day and time."
   intro_2: "Each rule can use its own target plan; overnight ranges are supported."
   enable: "Enable By Time"
@@ -387,7 +387,7 @@ schedule:
   use_hhmm: "Use HH:MM"
   target_power_plan: "Target power plan"
 
-cpu_rules:
+by_cpu_load:
   intro_1: "By CPU Load switches the whole system power plan when total processor usage crosses a threshold for a duration."
   intro_2: "Use these for plan automation; use Core Limiter when a specific process needs a processor limit."
   enable: "Enable By CPU Load"
@@ -402,7 +402,7 @@ cpu_rules:
   else: "Else"
   else_use: "Else use"
 
-efficiency:
+background_efficiency:
   intro_1: "Background Efficiency applies Windows Efficiency Mode to background apps to reduce CPU power use."
   intro_2: "Winderust also lowers the target app's process priority while Background Efficiency is active."
   intro_3: "This is safer than App Suspension because apps keep running."
@@ -447,11 +447,11 @@ efficiency:
   scanned_processes: "Scanned processes"
   skipped_processes: "Skipped processes"
   failed_actions: "Failed actions"
-  whitelist: "Custom Rules"
-  whitelist_help: "Apps matched by these rules will never be put into Background Efficiency."
-  no_whitelist: "No custom rules are configured."
+  custom_rules: "Custom Rules"
+  custom_rules_help: "Apps matched by these rules will never be put into Background Efficiency."
+  no_custom_rules: "No custom rules are configured."
 
-smart_saver:
+adaptive_engine:
   intro_1: "Adaptive Engine combines dynamic processor power control with workload-aware CPU scheduling."
   intro_2: "Power Save and Balanced scale with demand. Performance and Speed hold fixed processor targets."
   intro_3: "Balanced is recommended for everyday use; choose a fixed profile only for sustained performance."
@@ -459,7 +459,7 @@ smart_saver:
   power_mode: "Operating profile"
   power_mode_help: "Power Save and Balanced adapt processor power to demand. Performance and Speed use fixed targets with stronger foreground scheduling."
   advanced_settings: "Enable advanced settings"
-  advanced_settings_help: "Show manual Smart Saver, Background Efficiency, and CPU scheduling controls."
+  advanced_settings_help: "Show manual Adaptive Engine, Background Efficiency, and CPU scheduling controls."
   cpu_behaviour: "CPU Behaviour"
   priority_control: "Priority Control"
   misc: "Misc"
@@ -511,7 +511,7 @@ background_cpu:
   exclusions_help: "Apps matched by these rules will not be restricted by Background CPU Restriction."
   no_exclusions: "No custom rules are configured."
 
-suspension:
+app_suspension:
   intro_1: "App Suspension pauses selected background apps after a delay to reduce CPU usage."
   intro_2: "Suspended apps are resumed automatically when you switch back to them or quit Winderust."
   intro_3: "Use it only for apps that are safe to pause in the background."
@@ -596,8 +596,8 @@ workload_engine:
   workload_engine_advanced_help: "These controls tune Workload Engine only. They do not change the separate I/O Priority, Memory Priority, or Core Steering pages."
   auto_process_priority: "Process priority"
   auto_process_priority_help: "Lowers eligible background process priority while Workload Engine is active and controls the foreground boost."
-  auto_efficiency_mode: "Background Efficiency"
-  auto_efficiency_mode_help: "Lets Workload Engine apply Background Efficiency when the separate Background Efficiency feature is off."
+  auto_background_efficiency: "Background Efficiency"
+  auto_background_efficiency_help: "Lets Workload Engine apply Background Efficiency when the separate Background Efficiency feature is off."
   auto_efficiency_level: "Protection profile"
   auto_efficiency_level_help: "Uses Background Efficiency's Safe, Balanced, and Aggressive protection profiles."
   auto_io_priority: "Background I/O priority"
@@ -606,7 +606,7 @@ workload_engine:
   auto_priority_assist: "Priority Assist"
   auto_priority_assist_help: "Tunes the temporary I/O, thread, dynamic boost, and GPU priority defaults Workload Engine applies while pressure is active."
   auto_thread_priority: "Thread priority"
-  auto_priority_boost: "Dynamic priority boost"
+  auto_dynamic_priority_boost: "Dynamic priority boost"
   auto_gpu_priority: "GPU priority"
   priority_foreground_value: "Foreground value"
   priority_background_value: "Background value"
@@ -739,7 +739,7 @@ thread_priority:
   priority_lowest: "Lowest"
   priority_idle: "Idle"
 
-priority_boost:
+dynamic_priority_boost:
   intro_1: "Dynamic Priority Boost controls whether Windows may temporarily boost process thread priority for interactive latency."
   intro_2: "Disabled maps to SetProcessPriorityBoost(TRUE). Enabled maps to SetProcessPriorityBoost(FALSE). Previous values are restored when a custom rule skips a process or the feature stops."
   enable: "Enable Dynamic Priority Boost"
@@ -841,7 +841,7 @@ memory_trim:
   category_thresholds: "Thresholds"
   category_thresholds_help: "Set the memory, process, CPU, and free-RAM limits that must be met before trimming."
   category_when_to_trim: "When To Trim"
-  category_when_to_trim_help: "Control scan timing, idle timing, cooldowns, and performance-mode purge gating."
+  category_when_to_trim_help: "Control scan timing, idle timing, cooldowns, and by-running-app purge gating."
   category_safety: "Safety"
   category_safety_help: "Protect foreground apps and custom-rule processes from Memory Trim actions."
   category_monitoring: "Monitoring"
@@ -879,7 +879,7 @@ memory_trim:
   exclusions_help: "Apps matched by these rules will never be memory-trimmed by Memory Trim."
   no_exclusions: "No custom rules are configured."
 
-affinity:
+core_steering:
   intro_1: "Core Steering sets preferred logical CPUs for selected background apps."
   intro_2: "Soft CPU Sets are preferred for most apps because Windows keeps more scheduling flexibility."
   intro_3: "Steering can hurt fully saturated workloads, apps that manage their own threads, or processor-group-unaware apps on very large CPUs."
@@ -957,7 +957,7 @@ action_log:
   time: "Time"
   pid: "PID"
 
-performance_mode:
+by_running_app:
   enable: "Enable By Running App"
   intro_1: "By Running App switches to a selected power plan while a matching process is running."
   intro_2: "Winderust restores the previous plan when the triggering process exits or the feature is disabled."
@@ -973,7 +973,7 @@ performance_mode:
   no_rules: "No custom rules are configured."
   indicator_active: "Active"
 
-cpu_limiter:
+core_limiter:
   enable: "Enable Core Limiter"
   intro_1: "Core Limiter watches selected background processes for sustained high CPU usage."
   intro_2: "When a rule triggers, Winderust temporarily constrains the process to fewer logical processors."

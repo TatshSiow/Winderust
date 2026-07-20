@@ -20,17 +20,14 @@ use backend::{
     process_icon, self_power, startup, tray, win_registry, win_util, windows_events,
 };
 use features::{
-    advanced_controls::{app_suspension as suspension, timer_resolution},
-    cpu_control::{
-        background_cpu_restriction as background_cpu, core_limiter as cpu_limiter,
-        core_steering as affinity,
-    },
-    power_plan_control::by_running_app as performance_mode,
+    advanced_controls::{app_suspension, timer_resolution},
+    cpu_control::{background_cpu_restriction as background_cpu, core_limiter, core_steering},
+    power_plan_control::by_running_app,
     priority_control::{
-        dynamic_priority_boost as priority_boost, gpu_priority, io_priority, memory_priority,
-        process_priority, thread_priority,
+        dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,
+        thread_priority,
     },
-    winderust_features::{background_efficiency as ecoqos, memory_trim, workload_engine},
+    winderust_features::{background_efficiency, memory_trim, workload_engine},
 };
 use ui::{app, assets};
 

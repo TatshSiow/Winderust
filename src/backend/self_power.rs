@@ -16,7 +16,7 @@ struct SelfPowerState {
     previous_power_throttling: Option<PROCESS_POWER_THROTTLING_STATE>,
     previous_priority: Option<u32>,
     hidden_mode: bool,
-    smart_saver_mode: bool,
+    adaptive_engine: bool,
 }
 
 pub fn enable_hidden_mode() -> Result<(), String> {
@@ -27,12 +27,12 @@ pub fn disable_hidden_mode() -> Result<(), String> {
     set_hidden_mode(false)
 }
 
-pub fn enable_smart_saver_mode() -> Result<(), String> {
-    set_smart_saver_mode(true)
+pub fn enable_adaptive_engine() -> Result<(), String> {
+    set_adaptive_engine(true)
 }
 
-pub fn disable_smart_saver_mode() -> Result<(), String> {
-    set_smart_saver_mode(false)
+pub fn disable_adaptive_engine() -> Result<(), String> {
+    set_adaptive_engine(false)
 }
 
 fn set_hidden_mode(enabled: bool) -> Result<(), String> {
@@ -43,11 +43,11 @@ fn set_hidden_mode(enabled: bool) -> Result<(), String> {
     apply_self_power_state(&mut state)
 }
 
-fn set_smart_saver_mode(enabled: bool) -> Result<(), String> {
+fn set_adaptive_engine(enabled: bool) -> Result<(), String> {
     let mut state = SELF_POWER_STATE
         .lock()
         .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
-    ensure_state(&mut state)?.smart_saver_mode = enabled;
+    ensure_state(&mut state)?.adaptive_engine = enabled;
     apply_self_power_state(&mut state)
 }
 
@@ -58,7 +58,7 @@ fn ensure_state(state: &mut Option<SelfPowerState>) -> Result<&mut SelfPowerStat
             previous_power_throttling: power_throttling_state(process).ok(),
             previous_priority: priority_class(process).ok(),
             hidden_mode: false,
-            smart_saver_mode: false,
+            adaptive_engine: false,
         });
     }
 
@@ -73,9 +73,9 @@ fn apply_self_power_state(state: &mut Option<SelfPowerState>) -> Result<(), Stri
     };
 
     let process = unsafe { GetCurrentProcess() };
-    let enabled = current.hidden_mode || current.smart_saver_mode;
+    let enabled = current.hidden_mode || current.adaptive_engine;
     let next_power_state = if enabled {
-        power_throttling_enabled_state(current.previous_power_throttling, current.smart_saver_mode)
+        power_throttling_enabled_state(current.previous_power_throttling, current.adaptive_engine)
     } else {
         current
             .previous_power_throttling
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn smart_saver_state_ignores_self_timer_resolution() {
+    fn adaptive_engine_state_ignores_self_timer_resolution() {
         let state = power_throttling_enabled_state(None, true);
 
         assert_ne!(

@@ -23,12 +23,12 @@ use windows_sys::Win32::{
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    affinity::{self, CpuAffinityManager, LogicalProcessorInfo, LogicalProcessorKind},
     audio_activity::active_audio_process_ids,
     config::{
-        CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, EcoQosCpuRestrictionMode,
+        CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings, CpuRestrictionMode,
         ForegroundBoostPriority, PriorityRule, ProcessPriority, WorkloadEngineSettings,
     },
+    core_steering::{self, CoreSteeringManager, LogicalProcessorInfo, LogicalProcessorKind},
     cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_count_label,
@@ -94,10 +94,10 @@ pub struct WorkloadEngineManager {
     boosted: BTreeMap<u32, BoostedProcess>,
     foreground_candidate: Option<ForegroundCandidate>,
     foreground_cpu_sample: Option<(BTreeSet<u32>, ProcessCpuSample)>,
-    lower_background_affinity: CpuAffinityManager,
+    lower_background_affinity: CoreSteeringManager,
     workload_engine: BTreeMap<u32, WorkloadEngineProcess>,
     workload_engine_pressure_active: bool,
-    workload_engine_affinity: CpuAffinityManager,
+    workload_engine_affinity: CoreSteeringManager,
     workload_engine_memory_priority: MemoryPriorityManager,
     workload_engine_core_selection: Option<WorkloadEngineCoreSelection>,
     last_background_apply_summary_logged_at: Option<Instant>,
@@ -112,12 +112,12 @@ impl Default for WorkloadEngineManager {
             boosted: BTreeMap::new(),
             foreground_candidate: None,
             foreground_cpu_sample: None,
-            lower_background_affinity: CpuAffinityManager::with_action_log_feature(
+            lower_background_affinity: CoreSteeringManager::with_action_log_feature(
                 ActionLogFeature::WorkloadEngine,
             ),
             workload_engine: BTreeMap::new(),
             workload_engine_pressure_active: false,
-            workload_engine_affinity: CpuAffinityManager::with_action_log_feature(
+            workload_engine_affinity: CoreSteeringManager::with_action_log_feature(
                 ActionLogFeature::WorkloadEngine,
             ),
             workload_engine_memory_priority: MemoryPriorityManager::default(),
@@ -135,10 +135,10 @@ struct AdjustedProcess {
     creation_time: u64,
     previous_priority: u32,
     applied_priority: u32,
-    previous_priority_boost_disabled: Option<bool>,
-    applied_priority_boost_disabled: bool,
+    previous_dynamic_priority_boost_disabled: Option<bool>,
+    applied_dynamic_priority_boost_disabled: bool,
     previous_efficiency_state: Option<PROCESS_POWER_THROTTLING_STATE>,
-    applied_efficiency_mode: bool,
+    applied_background_efficiency: bool,
     applied_ignore_timer_resolution: bool,
 }
 
@@ -212,7 +212,7 @@ pub struct WorkloadEngineUpdate<'a> {
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
     pub background_efficiency_managed: bool,
-    pub eco_qos_process_ids: &'a BTreeSet<u32>,
+    pub background_efficiency_process_ids: &'a BTreeSet<u32>,
 }
 
 struct ForegroundBoostGroup<'a> {
@@ -231,9 +231,9 @@ struct ApplyPriorityRequest<'a> {
     existing: Option<&'a AdjustedProcess>,
     source: PriorityTargetSource,
     apply_priority_class: bool,
-    apply_efficiency_mode: bool,
+    apply_background_efficiency: bool,
     ignore_timer_resolution: bool,
-    disable_priority_boost: bool,
+    disable_dynamic_priority_boost: bool,
     log_success: bool,
 }
 
@@ -257,7 +257,7 @@ impl WorkloadEngineManager {
             foreground_process_id,
             total_cpu_usage_percent,
             background_efficiency_managed,
-            eco_qos_process_ids,
+            background_efficiency_process_ids,
         } = input;
 
         if !automation_enabled {
@@ -336,7 +336,7 @@ impl WorkloadEngineManager {
                 foreground_process_id,
                 &foreground_process_group_ids,
                 foreground_process_name.as_deref(),
-                eco_qos_process_ids,
+                background_efficiency_process_ids,
             ) {
                 continue;
             }
@@ -352,7 +352,7 @@ impl WorkloadEngineManager {
         let foreground_launch_boost_target = foreground_process_id
             .zip(foreground_process_name.as_deref())
             .is_some_and(|(process_id, process_name)| {
-                !eco_qos_process_ids.contains(&process_id)
+                !background_efficiency_process_ids.contains(&process_id)
                     && foreground_boost_eligible(
                         process_id,
                         process_name,
@@ -373,8 +373,9 @@ impl WorkloadEngineManager {
         let lower_background_policy_enabled =
             settings.lower_background_apps && background_policy_can_run;
         let auto_efficiency_policy_enabled =
-            settings.workload_engine_efficiency_mode_enabled && background_policy_can_run;
-        if (settings.lower_background_apps || settings.workload_engine_efficiency_mode_enabled)
+            settings.workload_engine_background_efficiency_enabled && background_policy_can_run;
+        if (settings.lower_background_apps
+            || settings.workload_engine_background_efficiency_enabled)
             && !background_efficiency_managed
         {
             for (process_id, process_name) in &lowerable_background_processes {
@@ -406,7 +407,7 @@ impl WorkloadEngineManager {
             total_cpu_usage_percent,
         );
         let workload_engine_restraints_running = workload_engine_running && !launch_boost_running;
-        let lower_background_affinity_settings = CpuAffinitySettings {
+        let lower_background_affinity_settings = CoreSteeringSettings {
             enabled: false,
             exclude_foreground_app: true,
             rules: Vec::new(),
@@ -437,7 +438,7 @@ impl WorkloadEngineManager {
                 for process in processes
                     .iter()
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
-                    .filter(|process| !eco_qos_process_ids.contains(&process.id))
+                    .filter(|process| !background_efficiency_process_ids.contains(&process.id))
                     .filter(|process| {
                         !settings.workload_engine_exclusion_enabled_for(&process.name)
                     })
@@ -527,7 +528,7 @@ impl WorkloadEngineManager {
                 }
                 if candidate.decision == WorkloadEngineDecision::RestrictAffinity {
                     if let Some(core_mask) = workload_engine_core_mask {
-                        workload_engine_rules.push(CpuAffinityRule {
+                        workload_engine_rules.push(CoreSteeringRule {
                             enabled: true,
                             mode: workload_engine_affinity_mode(settings),
                             process_name: candidate.process_name,
@@ -542,7 +543,7 @@ impl WorkloadEngineManager {
             self.workload_engine_core_selection = None;
         }
 
-        let affinity_settings = CpuAffinitySettings {
+        let affinity_settings = CoreSteeringSettings {
             enabled: settings.enabled
                 && settings.workload_engine_enabled
                 && workload_engine_restraints_running,
@@ -629,13 +630,14 @@ impl WorkloadEngineManager {
                     existing: self.adjusted.get(&process_id),
                     source,
                     apply_priority_class,
-                    apply_efficiency_mode: settings.workload_engine_efficiency_mode_enabled
+                    apply_background_efficiency: settings
+                        .workload_engine_background_efficiency_enabled
                         && source != PriorityTargetSource::WorkloadEngine,
                     ignore_timer_resolution: ignore_timer_resolution_allowed(
                         process_id,
                         active_audio_process_ids.as_ref(),
                     ),
-                    disable_priority_boost: false,
+                    disable_dynamic_priority_boost: false,
                     log_success: source == PriorityTargetSource::Rule,
                 },
                 action_log,
@@ -721,12 +723,12 @@ impl WorkloadEngineManager {
 
         if let Some(foreground_id) = foreground_process_id {
             if (settings.boost_foreground_app || launch_boost_running)
-                && !eco_qos_process_ids.contains(&foreground_id)
+                && !background_efficiency_process_ids.contains(&foreground_id)
             {
                 let boost_targets = processes
                     .iter()
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
-                    .filter(|process| !eco_qos_process_ids.contains(&process.id))
+                    .filter(|process| !background_efficiency_process_ids.contains(&process.id))
                     .filter(|process| {
                         foreground_boost_eligible(
                             process.id,
@@ -844,7 +846,7 @@ impl WorkloadEngineManager {
         self.workload_engine.clear();
         self.workload_engine_pressure_active = false;
         self.last_background_apply_summary_logged_at = None;
-        let affinity_settings = CpuAffinitySettings {
+        let affinity_settings = CoreSteeringSettings {
             enabled: false,
             exclude_foreground_app: true,
             rules: Vec::new(),
@@ -1426,9 +1428,7 @@ impl WorkloadEngineManager {
             return None;
         }
 
-        if workload_engine_effective_restriction_mode(settings)
-            == EcoQosCpuRestrictionMode::SoftCpuSets
-        {
+        if workload_engine_effective_restriction_mode(settings) == CpuRestrictionMode::SoftCpuSets {
             if let Some(mask) = self.load_aware_workload_engine_core_mask(
                 percent,
                 settings.workload_engine_max_logical_processors,
@@ -1450,7 +1450,7 @@ impl WorkloadEngineManager {
         max_logical_processors: u8,
         now: Instant,
     ) -> Option<u64> {
-        let processors = affinity::logical_processors();
+        let processors = core_steering::logical_processors();
         let usages = self.per_processor_usage.sample()?;
         let next_mask =
             load_aware_limited_core_mask(&processors, &usages, percent, max_logical_processors)?;
@@ -1634,11 +1634,11 @@ fn should_skip_process(
     foreground_process_id: Option<u32>,
     foreground_process_group_ids: &BTreeSet<u32>,
     foreground_process_name: Option<&str>,
-    eco_qos_process_ids: &BTreeSet<u32>,
+    background_efficiency_process_ids: &BTreeSet<u32>,
 ) -> bool {
     process_id == 0
         || process_id == current_process_id
-        || eco_qos_process_ids.contains(&process_id)
+        || background_efficiency_process_ids.contains(&process_id)
         || is_builtin_excluded(process_name)
         || should_skip_foreground_process(
             process_id,
@@ -1749,18 +1749,18 @@ fn foreground_cpu_saturates_workload(usage: f32) -> bool {
 
 fn workload_engine_effective_restriction_mode(
     settings: &WorkloadEngineSettings,
-) -> EcoQosCpuRestrictionMode {
+) -> CpuRestrictionMode {
     if settings.lower_background_auto_cpu_percent {
-        EcoQosCpuRestrictionMode::SoftCpuSets
+        CpuRestrictionMode::SoftCpuSets
     } else {
         settings.workload_engine_affinity_mode
     }
 }
 
-fn workload_engine_affinity_mode(settings: &WorkloadEngineSettings) -> CpuAffinityMode {
+fn workload_engine_affinity_mode(settings: &WorkloadEngineSettings) -> CoreSteeringMode {
     match workload_engine_effective_restriction_mode(settings) {
-        EcoQosCpuRestrictionMode::SoftCpuSets => CpuAffinityMode::Soft,
-        EcoQosCpuRestrictionMode::HardAffinity => CpuAffinityMode::Hard,
+        CpuRestrictionMode::SoftCpuSets => CoreSteeringMode::Soft,
+        CpuRestrictionMode::HardAffinity => CoreSteeringMode::Hard,
     }
 }
 
@@ -1915,13 +1915,13 @@ fn workload_engine_minimum_cpu_percent_for_topology(
 }
 
 fn workload_engine_has_efficiency_cores() -> bool {
-    affinity::logical_processors()
+    core_steering::logical_processors()
         .iter()
         .any(|processor| processor.kind == LogicalProcessorKind::Efficiency)
 }
 
 fn limited_efficiency_preferred_core_mask(percent: u8, max_logical_processors: u8) -> Option<u64> {
-    let processors = affinity::logical_processors();
+    let processors = core_steering::logical_processors();
     if processors.is_empty() {
         return None;
     }
@@ -2072,9 +2072,9 @@ fn apply_priority(
         existing,
         source,
         apply_priority_class,
-        apply_efficiency_mode,
+        apply_background_efficiency,
         ignore_timer_resolution,
-        disable_priority_boost,
+        disable_dynamic_priority_boost,
         log_success,
     } = request;
     let mut changed = false;
@@ -2108,10 +2108,10 @@ fn apply_priority(
             changed,
         });
     }
-    let previous_priority_boost_disabled = if disable_priority_boost {
-        let current_disabled = process.priority_boost_disabled().ok();
+    let previous_dynamic_priority_boost_disabled = if disable_dynamic_priority_boost {
+        let current_disabled = process.dynamic_priority_boost_disabled().ok();
         if current_disabled == Some(false) {
-            process.set_priority_boost_disabled(true)?;
+            process.set_dynamic_priority_boost_disabled(true)?;
             changed = true;
             if log_success {
                 action_log.record(
@@ -2125,20 +2125,20 @@ fn apply_priority(
             }
         }
         reusable_existing
-            .and_then(|adjusted| adjusted.previous_priority_boost_disabled)
+            .and_then(|adjusted| adjusted.previous_dynamic_priority_boost_disabled)
             .or(current_disabled)
     } else {
         if let Some(adjusted) =
-            reusable_existing.filter(|adjusted| adjusted.applied_priority_boost_disabled)
+            reusable_existing.filter(|adjusted| adjusted.applied_dynamic_priority_boost_disabled)
         {
-            if let Some(previous_disabled) = adjusted.previous_priority_boost_disabled {
-                process.set_priority_boost_disabled(previous_disabled)?;
+            if let Some(previous_disabled) = adjusted.previous_dynamic_priority_boost_disabled {
+                process.set_dynamic_priority_boost_disabled(previous_disabled)?;
                 changed = true;
             }
         }
-        reusable_existing.and_then(|adjusted| adjusted.previous_priority_boost_disabled)
+        reusable_existing.and_then(|adjusted| adjusted.previous_dynamic_priority_boost_disabled)
     };
-    let previous_efficiency_state = if apply_efficiency_mode {
+    let previous_efficiency_state = if apply_background_efficiency {
         let current_state = process.power_throttling_state().ok();
         let previous_state = reusable_existing
             .and_then(|adjusted| adjusted.previous_efficiency_state)
@@ -2171,7 +2171,7 @@ fn apply_priority(
         previous_state
     } else {
         if let Some(adjusted) =
-            reusable_existing.filter(|adjusted| adjusted.applied_efficiency_mode)
+            reusable_existing.filter(|adjusted| adjusted.applied_background_efficiency)
         {
             let state = adjusted
                 .previous_efficiency_state
@@ -2198,9 +2198,9 @@ fn apply_priority(
     if reusable_existing.is_some_and(|adjusted| {
         adjusted.applied_priority == applied_priority
             && priority_already_applied
-            && adjusted.applied_efficiency_mode == apply_efficiency_mode
+            && adjusted.applied_background_efficiency == apply_background_efficiency
             && adjusted.applied_ignore_timer_resolution == ignore_timer_resolution
-            && adjusted.applied_priority_boost_disabled == disable_priority_boost
+            && adjusted.applied_dynamic_priority_boost_disabled == disable_dynamic_priority_boost
     }) {
         return Ok(ApplyPriorityOutcome {
             adjusted: existing.cloned(),
@@ -2238,11 +2238,11 @@ fn apply_priority(
             creation_time,
             previous_priority,
             applied_priority,
-            previous_priority_boost_disabled,
-            applied_priority_boost_disabled: disable_priority_boost,
+            previous_dynamic_priority_boost_disabled,
+            applied_dynamic_priority_boost_disabled: disable_dynamic_priority_boost,
             previous_efficiency_state,
-            applied_efficiency_mode: apply_efficiency_mode,
-            applied_ignore_timer_resolution: apply_efficiency_mode && ignore_timer_resolution,
+            applied_background_efficiency: apply_background_efficiency,
+            applied_ignore_timer_resolution: apply_background_efficiency && ignore_timer_resolution,
         }),
         skipped: false,
         changed,
@@ -2265,7 +2265,7 @@ fn restore_adjusted_process(
     process_state: &AdjustedProcess,
 ) -> Result<(), PriorityError> {
     let mut last_error = None;
-    if process_state.applied_efficiency_mode {
+    if process_state.applied_background_efficiency {
         let state = process_state
             .previous_efficiency_state
             .unwrap_or_else(power_throttling_disabled_state);
@@ -2273,10 +2273,10 @@ fn restore_adjusted_process(
             last_error = Some(err);
         }
     }
-    if process_state.applied_priority_boost_disabled {
-        if let Err(err) = process.set_priority_boost_disabled(
+    if process_state.applied_dynamic_priority_boost_disabled {
+        if let Err(err) = process.set_dynamic_priority_boost_disabled(
             process_state
-                .previous_priority_boost_disabled
+                .previous_dynamic_priority_boost_disabled
                 .unwrap_or(false),
         ) {
             last_error = Some(err);
@@ -2565,7 +2565,7 @@ impl ProcessHandle {
         }
     }
 
-    fn priority_boost_disabled(&self) -> Result<bool, PriorityError> {
+    fn dynamic_priority_boost_disabled(&self) -> Result<bool, PriorityError> {
         let mut disabled = 0;
         let ok = unsafe { GetProcessPriorityBoost(self.0.raw(), &mut disabled) };
         if ok == 0 {
@@ -2578,7 +2578,7 @@ impl ProcessHandle {
         }
     }
 
-    fn set_priority_boost_disabled(&self, disabled: bool) -> Result<(), PriorityError> {
+    fn set_dynamic_priority_boost_disabled(&self, disabled: bool) -> Result<(), PriorityError> {
         let ok = unsafe { SetProcessPriorityBoost(self.0.raw(), i32::from(disabled)) };
         if ok == 0 {
             Err(PriorityError::Failed(format!(
@@ -2845,13 +2845,14 @@ mod tests {
         let settings = WorkloadEngineSettings {
             enabled: true,
             lower_background_apps: true,
-            workload_engine_efficiency_mode_enabled: true,
+            workload_engine_background_efficiency_enabled: true,
             workload_engine_background_priority: ProcessPriority::BelowNormal,
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: crate::config::ProcessIoPriority::VeryLow,
             workload_engine_io_priority: crate::config::IoPrioritySettings::default(),
             workload_engine_thread_priority: crate::config::ThreadPrioritySettings::default(),
-            workload_engine_priority_boost: crate::config::PriorityBoostSettings::default(),
+            workload_engine_dynamic_priority_boost:
+                crate::config::DynamicPriorityBoostSettings::default(),
             workload_engine_gpu_priority: crate::config::GpuPrioritySettings::default(),
             workload_engine_memory_priority_enabled: false,
             workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
@@ -2860,7 +2861,7 @@ mod tests {
             workload_engine_enabled: false,
             workload_engine_advanced_settings_enabled: false,
             workload_engine_affinity_escalation_enabled: false,
-            workload_engine_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            workload_engine_affinity_mode: CpuRestrictionMode::SoftCpuSets,
             workload_engine_cpu_percent: 50,
             workload_engine_max_logical_processors: 0,
             workload_engine_total_threshold_percent: 70,
@@ -3350,10 +3351,10 @@ mod tests {
                 creation_time: 0,
                 previous_priority: NORMAL_PRIORITY_CLASS,
                 applied_priority: BELOW_NORMAL_PRIORITY_CLASS,
-                previous_priority_boost_disabled: None,
-                applied_priority_boost_disabled: false,
+                previous_dynamic_priority_boost_disabled: None,
+                applied_dynamic_priority_boost_disabled: false,
                 previous_efficiency_state: None,
-                applied_efficiency_mode: false,
+                applied_background_efficiency: false,
                 applied_ignore_timer_resolution: false,
             },
         );

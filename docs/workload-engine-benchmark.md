@@ -171,7 +171,7 @@ Winderust launch scenario:
 Power-drain benchmark:
 
 ```powershell
-.\scripts\power_drain_benchmark.ps1 -Phases Baseline,SmartSaver -MinPasses 3 -MaxPasses 8 -SampleSeconds 30 -StableCvPercent 5
+.\scripts\power_drain_benchmark.ps1 -Phases Baseline,AdaptiveEngine -MinPasses 3 -MaxPasses 8 -SampleSeconds 30 -StableCvPercent 5
 ```
 
 Quick sensor check:

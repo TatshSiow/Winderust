@@ -19,7 +19,7 @@
 - Repeated process failure suppression uses `ExecutionFailureTracker` in `src/rules/execution_failure.rs`; the threshold comes from `settings.advanced.execution_failure_suppression_threshold`.
 - Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
-- Rule-only fallbacks use disabled rules: CPU Affinity, CPU Limiter, App Suspension.
+- Rule-only fallbacks use disabled rules: Core Steering, Core Limiter, App Suspension.
 - Exclusion-list features append `ProcessExclusionRule`.
 - Timer Resolution and Performance Mode do not use process failure suppression.
 

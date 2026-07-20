@@ -1,5 +1,5 @@
-pub mod cpu_usage_rule;
-pub mod schedule_rule;
+pub mod by_cpu_load;
+pub mod by_time;
 
-pub use cpu_usage_rule::{CpuUsageDecision, CpuUsageScheduler};
-pub use schedule_rule::{ScheduleDecision, Scheduler};
+pub use by_cpu_load::{ByCpuLoadDecision, ByCpuLoadScheduler};
+pub use by_time::{ByTimeDecision, ByTimeScheduler};

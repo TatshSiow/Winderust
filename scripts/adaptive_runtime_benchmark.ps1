@@ -40,29 +40,27 @@ start_minimized = true
 hide_to_tray = false
 check_interval_ms = 250
 
-[smart_saver]
+[adaptive_engine]
 enabled = true
 processor_policy_enabled = true
 
-[smart_saver.processor_policy_values]
+[adaptive_engine.processor_policy_values]
 core_parking_min = 25
 performance_min = 5
 performance_max = 95
 boost_policy = 60
 boost_mode = "efficient_enabled"
 
-[power_plans]
-
-[activity_mode]
+[by_activity]
 enabled = false
 idle_timeout_seconds = 300
 switch_to_performance_on_resume = false
 
-[foreground_rules]
+[by_foreground]
 enabled = false
 rules = []
 
-[schedule_mode]
+[by_time]
 enabled = false
 rules = []
 '@

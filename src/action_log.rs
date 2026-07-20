@@ -24,13 +24,13 @@ pub enum ActionLogFeature {
     AppSuspension,
     BackgroundCpuRestriction,
     CoreSteering,
-    EcoQos,
-    CpuLimiter,
-    PerformanceMode,
+    BackgroundEfficiency,
+    CoreLimiter,
+    ByRunningApp,
     WorkloadEngine,
     ProcessPriority,
     ThreadPriority,
-    PriorityBoost,
+    DynamicPriorityBoost,
     IoPriority,
     GpuPriority,
     MemoryPriority,
@@ -160,7 +160,7 @@ mod tests {
         let mut log = ActionLog::new(2);
 
         log.record(
-            ActionLogFeature::CpuLimiter,
+            ActionLogFeature::CoreLimiter,
             Some(1),
             "a.exe",
             ActionLogAction::Apply,
@@ -168,7 +168,7 @@ mod tests {
             "first",
         );
         log.record(
-            ActionLogFeature::CpuLimiter,
+            ActionLogFeature::CoreLimiter,
             Some(2),
             "b.exe",
             ActionLogAction::Apply,
@@ -176,7 +176,7 @@ mod tests {
             "second",
         );
         log.record(
-            ActionLogFeature::CpuLimiter,
+            ActionLogFeature::CoreLimiter,
             Some(3),
             "c.exe",
             ActionLogAction::Apply,
@@ -195,7 +195,7 @@ mod tests {
     fn action_log_clear_removes_entries_without_resetting_sequence() {
         let mut log = ActionLog::new(8);
         log.record(
-            ActionLogFeature::CpuLimiter,
+            ActionLogFeature::CoreLimiter,
             Some(1),
             "a.exe",
             ActionLogAction::Apply,
@@ -204,7 +204,7 @@ mod tests {
         );
         log.clear();
         log.record(
-            ActionLogFeature::CpuLimiter,
+            ActionLogFeature::CoreLimiter,
             Some(2),
             "b.exe",
             ActionLogAction::Apply,
@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(log.latest_sequence(), None);
 
         log.record(
-            ActionLogFeature::CpuLimiter,
+            ActionLogFeature::CoreLimiter,
             Some(1),
             "a.exe",
             ActionLogAction::Apply,
@@ -241,7 +241,7 @@ mod tests {
         let mut log = ActionLog::new(8);
         log.set_mode(ActionLogMode::Warning);
         log.record(
-            ActionLogFeature::EcoQos,
+            ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
             ActionLogAction::Apply,
@@ -249,7 +249,7 @@ mod tests {
             "applied",
         );
         log.record(
-            ActionLogFeature::EcoQos,
+            ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
             ActionLogAction::Skip,
@@ -257,7 +257,7 @@ mod tests {
             "skipped",
         );
         log.record(
-            ActionLogFeature::EcoQos,
+            ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
             ActionLogAction::Fail,
@@ -273,7 +273,7 @@ mod tests {
         let mut error_log = ActionLog::new(8);
         error_log.set_mode(ActionLogMode::Error);
         error_log.record(
-            ActionLogFeature::EcoQos,
+            ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
             ActionLogAction::Skip,
@@ -281,7 +281,7 @@ mod tests {
             "skipped",
         );
         error_log.record(
-            ActionLogFeature::EcoQos,
+            ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
             ActionLogAction::Fail,
@@ -294,7 +294,7 @@ mod tests {
 
         log.set_mode(ActionLogMode::Off);
         log.record(
-            ActionLogFeature::EcoQos,
+            ActionLogFeature::BackgroundEfficiency,
             Some(2),
             "other.exe",
             ActionLogAction::Restore,

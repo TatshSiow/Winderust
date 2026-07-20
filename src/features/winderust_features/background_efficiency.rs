@@ -20,7 +20,7 @@ use crate::win_util::{last_error, WinHandle};
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     audio_activity::active_audio_process_ids,
-    config::{EcoQosAggressiveness, EcoQosSettings},
+    config::{BackgroundEfficiencyAggressiveness, BackgroundEfficiencySettings},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
         process_session_id, should_ignore_foreground_process,
@@ -93,7 +93,7 @@ const AGGRESSIVE_BUILT_IN_EXCLUSIONS: &[&str] = &[
     "winlogon.exe",
 ];
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EcoQosSnapshot {
+pub struct BackgroundEfficiencySnapshot {
     pub enabled: bool,
     pub unsupported: bool,
     pub scanned_processes: usize,
@@ -107,7 +107,7 @@ pub struct EcoQosSnapshot {
 }
 
 #[derive(Default)]
-pub struct EcoQosManager {
+pub struct BackgroundEfficiencyManager {
     throttled: BTreeMap<u32, ThrottledProcess>,
     failure_suppression: ExecutionFailureTracker,
 }
@@ -121,23 +121,23 @@ struct ThrottledProcess {
     applied_ignore_timer_resolution: bool,
 }
 
-impl EcoQosManager {
+impl BackgroundEfficiencyManager {
     pub fn throttled_process_ids(&self) -> BTreeSet<u32> {
         self.throttled.keys().copied().collect()
     }
 
     pub fn update(
         &mut self,
-        settings: &EcoQosSettings,
+        settings: &BackgroundEfficiencySettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         manage_process_priority: bool,
         action_log: &mut ActionLog,
-    ) -> EcoQosSnapshot {
+    ) -> BackgroundEfficiencySnapshot {
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
             self.failure_suppression.clear();
-            return EcoQosSnapshot {
+            return BackgroundEfficiencySnapshot {
                 enabled: false,
                 failed_processes: failed.count,
                 message: "Automation disabled.".to_owned(),
@@ -149,7 +149,7 @@ impl EcoQosManager {
         if !settings.enabled {
             let failed = self.clear_all(action_log, "Background Efficiency disabled");
             self.failure_suppression.clear();
-            return EcoQosSnapshot {
+            return BackgroundEfficiencySnapshot {
                 enabled: false,
                 failed_processes: failed.count,
                 message: "Background Efficiency disabled.".to_owned(),
@@ -160,7 +160,7 @@ impl EcoQosManager {
 
         if settings.exclude_foreground_app && foreground_process_id.is_none() {
             let failed = self.clear_all(action_log, "foreground app is unknown");
-            return EcoQosSnapshot {
+            return BackgroundEfficiencySnapshot {
                 enabled: true,
                 failed_processes: failed.count,
                 message: "Paused: foreground app is unknown.".to_owned(),
@@ -172,7 +172,7 @@ impl EcoQosManager {
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
-            return EcoQosSnapshot {
+            return BackgroundEfficiencySnapshot {
                 enabled: true,
                 failed_processes: failed.count,
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -185,7 +185,7 @@ impl EcoQosManager {
             Ok(processes) => processes,
             Err(err) => {
                 let failed = self.clear_all(action_log, "process list unavailable");
-                return EcoQosSnapshot {
+                return BackgroundEfficiencySnapshot {
                     enabled: true,
                     failed_processes: failed.count,
                     message: err,
@@ -253,7 +253,7 @@ impl EcoQosManager {
                 continue;
             }
 
-            match apply_efficiency_mode_to_process(
+            match apply_background_efficiency_to_process(
                 process_id,
                 name.clone(),
                 ignore_timer_resolution_allowed(process_id, active_audio_process_ids.as_ref()),
@@ -266,12 +266,12 @@ impl EcoQosManager {
                         self.clear_process_failure(&name);
                     }
                 }
-                Err(EcoQosError::ProcessExited) => skipped_processes += 1,
-                Err(EcoQosError::AccessDenied) => {
+                Err(BackgroundEfficiencyError::ProcessExited) => skipped_processes += 1,
+                Err(BackgroundEfficiencyError::AccessDenied) => {
                     skipped_processes += 1;
                     self.record_process_failure(&name);
                     action_log.record(
-                        ActionLogFeature::EcoQos,
+                        ActionLogFeature::BackgroundEfficiency,
                         Some(process_id),
                         name,
                         ActionLogAction::Skip,
@@ -279,12 +279,12 @@ impl EcoQosManager {
                         "Skipped because the process could not be opened.",
                     );
                 }
-                Err(EcoQosError::Unsupported) => {
+                Err(BackgroundEfficiencyError::Unsupported) => {
                     skipped_processes += 1;
                     unsupported = true;
                     self.record_process_failure(&name);
                     action_log.record(
-                        ActionLogFeature::EcoQos,
+                        ActionLogFeature::BackgroundEfficiency,
                         Some(process_id),
                         name,
                         ActionLogAction::Skip,
@@ -293,7 +293,7 @@ impl EcoQosManager {
                     );
                 }
                 Err(error) => {
-                    let err = eco_qos_error_message(&error);
+                    let err = background_efficiency_error_message(&error);
                     if is_process_exited_message(&err) {
                         skipped_processes += 1;
                         continue;
@@ -304,7 +304,7 @@ impl EcoQosManager {
             }
         }
 
-        EcoQosSnapshot {
+        BackgroundEfficiencySnapshot {
             enabled: true,
             unsupported,
             scanned_processes,
@@ -327,7 +327,7 @@ impl EcoQosManager {
         target_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> EcoQosFailures {
+    ) -> BackgroundEfficiencyFailures {
         let process_ids = self
             .throttled
             .keys()
@@ -338,7 +338,11 @@ impl EcoQosManager {
         self.release_processes(&process_ids, action_log, reason)
     }
 
-    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> EcoQosFailures {
+    fn clear_all(
+        &mut self,
+        action_log: &mut ActionLog,
+        reason: &str,
+    ) -> BackgroundEfficiencyFailures {
         let process_ids = self.throttled.keys().copied().collect::<Vec<_>>();
         self.release_processes(&process_ids, action_log, reason)
     }
@@ -348,13 +352,13 @@ impl EcoQosManager {
         process_ids: &[u32],
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> EcoQosFailures {
-        let mut failures = EcoQosFailures::default();
+    ) -> BackgroundEfficiencyFailures {
+        let mut failures = BackgroundEfficiencyFailures::default();
         for process_id in process_ids {
             if let Some(process) = self.throttled.get(process_id).cloned() {
                 let process_name = process.process_name.clone();
-                if let Err(err) = restore_efficiency_mode(*process_id, &process) {
-                    let process_exited = matches!(&err, EcoQosError::ProcessExited);
+                if let Err(err) = restore_background_efficiency(*process_id, &process) {
+                    let process_exited = matches!(&err, BackgroundEfficiencyError::ProcessExited);
                     if process_exited {
                         self.throttled.remove(process_id);
                     }
@@ -370,7 +374,7 @@ impl EcoQosManager {
                 } else {
                     self.throttled.remove(process_id);
                     action_log.record(
-                        ActionLogFeature::EcoQos,
+                        ActionLogFeature::BackgroundEfficiency,
                         Some(*process_id),
                         process_name,
                         ActionLogAction::Restore,
@@ -392,7 +396,7 @@ impl EcoQosManager {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if suppression.newly_suppressed {
             action_log.record(
-                ActionLogFeature::EcoQos,
+                ActionLogFeature::BackgroundEfficiency,
                 Some(process_id),
                 process_name.to_owned(),
                 ActionLogAction::Skip,
@@ -430,14 +434,14 @@ impl EcoQosManager {
 
 type ProcessSuppression = ExecutionSuppression;
 
-impl Drop for EcoQosManager {
+impl Drop for BackgroundEfficiencyManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
         self.clear_all(&mut action_log, "EcoQoS manager dropped");
     }
 }
 
-impl Default for EcoQosSnapshot {
+impl Default for BackgroundEfficiencySnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -454,28 +458,33 @@ impl Default for EcoQosSnapshot {
     }
 }
 
-pub fn is_process_excluded(process_name: &str, settings: &EcoQosSettings) -> bool {
+pub fn is_process_excluded(process_name: &str, settings: &BackgroundEfficiencySettings) -> bool {
     is_builtin_excluded_for(process_name, settings.aggressiveness)
-        || settings.efficiency_exclusion_enabled_for(process_name)
+        || settings.custom_rule_enabled_for(process_name)
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    is_builtin_excluded_for(process_name, EcoQosAggressiveness::Safe)
+    is_builtin_excluded_for(process_name, BackgroundEfficiencyAggressiveness::Safe)
 }
 
-fn is_builtin_excluded_for(process_name: &str, aggressiveness: EcoQosAggressiveness) -> bool {
+fn is_builtin_excluded_for(
+    process_name: &str,
+    aggressiveness: BackgroundEfficiencyAggressiveness,
+) -> bool {
     contains_process_name(built_in_exclusions_for(aggressiveness), process_name)
 }
 
-fn built_in_exclusions_for(aggressiveness: EcoQosAggressiveness) -> &'static [&'static str] {
+fn built_in_exclusions_for(
+    aggressiveness: BackgroundEfficiencyAggressiveness,
+) -> &'static [&'static str] {
     match aggressiveness {
-        EcoQosAggressiveness::Safe => BUILT_IN_EXCLUSIONS,
-        EcoQosAggressiveness::Balanced => BALANCED_BUILT_IN_EXCLUSIONS,
-        EcoQosAggressiveness::Aggressive => AGGRESSIVE_BUILT_IN_EXCLUSIONS,
+        BackgroundEfficiencyAggressiveness::Safe => BUILT_IN_EXCLUSIONS,
+        BackgroundEfficiencyAggressiveness::Balanced => BALANCED_BUILT_IN_EXCLUSIONS,
+        BackgroundEfficiencyAggressiveness::Aggressive => AGGRESSIVE_BUILT_IN_EXCLUSIONS,
     }
 }
 
-enum EcoQosError {
+enum BackgroundEfficiencyError {
     AccessDenied,
     ProcessExited,
     Unsupported,
@@ -483,25 +492,25 @@ enum EcoQosError {
 }
 
 #[derive(Default)]
-struct EcoQosFailures {
+struct BackgroundEfficiencyFailures {
     count: usize,
     last_error: Option<String>,
 }
 
-impl EcoQosFailures {
+impl BackgroundEfficiencyFailures {
     fn record_error(
         &mut self,
         action: &str,
         process_id: u32,
         process_name: &str,
-        error: EcoQosError,
+        error: BackgroundEfficiencyError,
         action_log: &mut ActionLog,
     ) {
         let message = match error {
-            EcoQosError::AccessDenied => "Access denied.".to_owned(),
-            EcoQosError::ProcessExited => return,
-            EcoQosError::Unsupported => "Operation unsupported.".to_owned(),
-            EcoQosError::Failed(message) => message,
+            BackgroundEfficiencyError::AccessDenied => "Access denied.".to_owned(),
+            BackgroundEfficiencyError::ProcessExited => return,
+            BackgroundEfficiencyError::Unsupported => "Operation unsupported.".to_owned(),
+            BackgroundEfficiencyError::Failed(message) => message,
         };
         self.record_message(action, process_id, process_name, message, action_log);
     }
@@ -527,7 +536,7 @@ impl EcoQosFailures {
             ));
         }
         action_log.record(
-            ActionLogFeature::EcoQos,
+            ActionLogFeature::BackgroundEfficiency,
             Some(process_id),
             process_name.to_owned(),
             ActionLogAction::Fail,
@@ -537,16 +546,16 @@ impl EcoQosFailures {
     }
 }
 
-fn apply_efficiency_mode_to_process(
+fn apply_background_efficiency_to_process(
     process_id: u32,
     process_name: String,
     ignore_timer_resolution: bool,
     manage_process_priority: bool,
     throttled: &mut BTreeMap<u32, ThrottledProcess>,
     action_log: &mut ActionLog,
-) -> Result<bool, EcoQosError> {
+) -> Result<bool, BackgroundEfficiencyError> {
     if let Some(process) = throttled.get_mut(&process_id) {
-        let update = update_efficiency_mode(
+        let update = update_background_efficiency(
             process_id,
             process,
             ignore_timer_resolution,
@@ -554,14 +563,14 @@ fn apply_efficiency_mode_to_process(
         );
         match update {
             Ok(()) => return Ok(false),
-            Err(EcoQosError::ProcessExited) => {
+            Err(BackgroundEfficiencyError::ProcessExited) => {
                 throttled.remove(&process_id);
             }
             Err(err) => return Err(err),
         }
     }
 
-    let process = enable_efficiency_mode(
+    let process = enable_background_efficiency(
         process_id,
         process_name.clone(),
         ignore_timer_resolution,
@@ -569,7 +578,7 @@ fn apply_efficiency_mode_to_process(
     )?;
     throttled.insert(process_id, process);
     action_log.record(
-        ActionLogFeature::EcoQos,
+        ActionLogFeature::BackgroundEfficiency,
         Some(process_id),
         process_name,
         ActionLogAction::Apply,
@@ -579,12 +588,12 @@ fn apply_efficiency_mode_to_process(
     Ok(true)
 }
 
-fn update_efficiency_mode(
+fn update_background_efficiency(
     process_id: u32,
     process_state: &mut ThrottledProcess,
     ignore_timer_resolution: bool,
     manage_process_priority: bool,
-) -> Result<(), EcoQosError> {
+) -> Result<(), BackgroundEfficiencyError> {
     if process_state.applied_ignore_timer_resolution == ignore_timer_resolution
         && process_state.previous_priority.is_some() == manage_process_priority
     {
@@ -593,7 +602,7 @@ fn update_efficiency_mode(
 
     let process = ProcessHandle::open(process_id)?;
     if process.0.process_creation_time() != Some(process_state.creation_time) {
-        return Err(EcoQosError::ProcessExited);
+        return Err(BackgroundEfficiencyError::ProcessExited);
     }
     process.set_power_throttling_state(power_throttling_enabled_state(
         process_state.previous_state,
@@ -613,12 +622,12 @@ fn update_efficiency_mode(
     Ok(())
 }
 
-fn eco_qos_error_message(error: &EcoQosError) -> String {
+fn background_efficiency_error_message(error: &BackgroundEfficiencyError) -> String {
     match error {
-        EcoQosError::AccessDenied => "Access denied.".to_owned(),
-        EcoQosError::ProcessExited => "Process exited.".to_owned(),
-        EcoQosError::Unsupported => "Operation unsupported.".to_owned(),
-        EcoQosError::Failed(message) => message.clone(),
+        BackgroundEfficiencyError::AccessDenied => "Access denied.".to_owned(),
+        BackgroundEfficiencyError::ProcessExited => "Process exited.".to_owned(),
+        BackgroundEfficiencyError::Unsupported => "Operation unsupported.".to_owned(),
+        BackgroundEfficiencyError::Failed(message) => message.clone(),
     }
 }
 
@@ -631,17 +640,17 @@ fn process_failure_message(
     format!("{action} {process_name} ({process_id}): {message}")
 }
 
-fn enable_efficiency_mode(
+fn enable_background_efficiency(
     process_id: u32,
     process_name: String,
     ignore_timer_resolution: bool,
     manage_process_priority: bool,
-) -> Result<ThrottledProcess, EcoQosError> {
+) -> Result<ThrottledProcess, BackgroundEfficiencyError> {
     let process = ProcessHandle::open(process_id)?;
     let creation_time = process
         .0
         .process_creation_time()
-        .ok_or(EcoQosError::ProcessExited)?;
+        .ok_or(BackgroundEfficiencyError::ProcessExited)?;
     let previous_state = process.power_throttling_state().ok();
     let previous_priority = manage_process_priority
         .then(|| process.priority_class())
@@ -667,13 +676,13 @@ fn enable_efficiency_mode(
     })
 }
 
-fn restore_efficiency_mode(
+fn restore_background_efficiency(
     process_id: u32,
     process_state: &ThrottledProcess,
-) -> Result<(), EcoQosError> {
+) -> Result<(), BackgroundEfficiencyError> {
     let process = ProcessHandle::open(process_id)?;
     if process.0.process_creation_time() != Some(process_state.creation_time) {
-        return Err(EcoQosError::ProcessExited);
+        return Err(BackgroundEfficiencyError::ProcessExited);
     }
     let mut last_error = None;
 
@@ -737,7 +746,7 @@ fn ignore_timer_resolution_allowed(
 struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, EcoQosError> {
+    fn open(process_id: u32) -> Result<Self, BackgroundEfficiencyError> {
         let access_masks = [
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_LIMITED_INFORMATION,
@@ -755,7 +764,9 @@ impl ProcessHandle {
         Err(open_process_error(process_id, last_open_error))
     }
 
-    fn power_throttling_state(&self) -> Result<PROCESS_POWER_THROTTLING_STATE, EcoQosError> {
+    fn power_throttling_state(
+        &self,
+    ) -> Result<PROCESS_POWER_THROTTLING_STATE, BackgroundEfficiencyError> {
         let mut state = PROCESS_POWER_THROTTLING_STATE::default();
         let ok = unsafe {
             GetProcessInformation(
@@ -775,10 +786,10 @@ impl ProcessHandle {
         }
     }
 
-    fn priority_class(&self) -> Result<u32, EcoQosError> {
+    fn priority_class(&self) -> Result<u32, BackgroundEfficiencyError> {
         let priority = unsafe { GetPriorityClass(self.0.raw()) };
         if priority == 0 {
-            Err(EcoQosError::Failed(format!(
+            Err(BackgroundEfficiencyError::Failed(format!(
                 "GetPriorityClass failed with error {}.",
                 last_error()
             )))
@@ -790,7 +801,7 @@ impl ProcessHandle {
     fn set_power_throttling_state(
         &self,
         state: PROCESS_POWER_THROTTLING_STATE,
-    ) -> Result<(), EcoQosError> {
+    ) -> Result<(), BackgroundEfficiencyError> {
         let ok = unsafe {
             SetProcessInformation(
                 self.0.raw(),
@@ -809,10 +820,10 @@ impl ProcessHandle {
         }
     }
 
-    fn set_priority_class(&self, priority_class: u32) -> Result<(), EcoQosError> {
+    fn set_priority_class(&self, priority_class: u32) -> Result<(), BackgroundEfficiencyError> {
         let ok = unsafe { SetPriorityClass(self.0.raw(), priority_class) };
         if ok == 0 {
-            Err(EcoQosError::Failed(format!(
+            Err(BackgroundEfficiencyError::Failed(format!(
                 "SetPriorityClass failed with error {}.",
                 last_error()
             )))
@@ -822,18 +833,18 @@ impl ProcessHandle {
     }
 }
 
-fn process_power_throttling_error(operation: &str, error: u32) -> EcoQosError {
+fn process_power_throttling_error(operation: &str, error: u32) -> BackgroundEfficiencyError {
     match error {
-        ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED => EcoQosError::Unsupported,
-        _ => EcoQosError::Failed(format!("{operation} failed with error {error}.")),
+        ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED => BackgroundEfficiencyError::Unsupported,
+        _ => BackgroundEfficiencyError::Failed(format!("{operation} failed with error {error}.")),
     }
 }
 
-fn open_process_error(process_id: u32, error: u32) -> EcoQosError {
+fn open_process_error(process_id: u32, error: u32) -> BackgroundEfficiencyError {
     match error {
-        ERROR_ACCESS_DENIED => EcoQosError::AccessDenied,
-        ERROR_INVALID_PARAMETER => EcoQosError::ProcessExited,
-        _ => EcoQosError::Failed(format!(
+        ERROR_ACCESS_DENIED => BackgroundEfficiencyError::AccessDenied,
+        ERROR_INVALID_PARAMETER => BackgroundEfficiencyError::ProcessExited,
+        _ => BackgroundEfficiencyError::Failed(format!(
             "OpenProcess({process_id}) failed with error {error}."
         )),
     }
@@ -845,11 +856,11 @@ mod tests {
 
     #[test]
     fn exclusions_include_builtin_and_user_entries() {
-        let settings = EcoQosSettings {
+        let settings = BackgroundEfficiencySettings {
             enabled: true,
             exclude_foreground_app: true,
-            aggressiveness: EcoQosAggressiveness::Safe,
-            efficiency_whitelist: vec![crate::config::EcoQosExclusionRule {
+            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
+            custom_rules: vec![crate::config::BackgroundEfficiencyRule {
                 enabled: true,
                 process_name: "mouse.exe".to_owned(),
             }],
@@ -864,8 +875,8 @@ mod tests {
 
     #[test]
     fn aggressiveness_profiles_control_builtin_exclusions() {
-        let mut settings = EcoQosSettings {
-            aggressiveness: EcoQosAggressiveness::Safe,
+        let mut settings = BackgroundEfficiencySettings {
+            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             ..Default::default()
         };
 
@@ -873,12 +884,12 @@ mod tests {
         assert!(is_process_excluded("dwm.exe", &settings));
         assert!(is_process_excluded("winlogon.exe", &settings));
 
-        settings.aggressiveness = EcoQosAggressiveness::Balanced;
+        settings.aggressiveness = BackgroundEfficiencyAggressiveness::Balanced;
         assert!(!is_process_excluded("SearchHost.exe", &settings));
         assert!(is_process_excluded("dwm.exe", &settings));
         assert!(is_process_excluded("winlogon.exe", &settings));
 
-        settings.aggressiveness = EcoQosAggressiveness::Aggressive;
+        settings.aggressiveness = BackgroundEfficiencyAggressiveness::Aggressive;
         assert!(!is_process_excluded("SearchHost.exe", &settings));
         assert!(!is_process_excluded("dwm.exe", &settings));
         assert!(is_process_excluded("winlogon.exe", &settings));
@@ -886,17 +897,17 @@ mod tests {
 
     #[test]
     fn disabled_user_exclusions_do_not_exclude_processes() {
-        let settings = EcoQosSettings {
+        let settings = BackgroundEfficiencySettings {
             enabled: true,
             exclude_foreground_app: true,
-            aggressiveness: EcoQosAggressiveness::Safe,
-            efficiency_whitelist: vec![crate::config::EcoQosExclusionRule {
+            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
+            custom_rules: vec![crate::config::BackgroundEfficiencyRule {
                 enabled: false,
                 process_name: "mouse.exe".to_owned(),
             }],
         };
 
-        assert!(settings.contains_efficiency_exclusion("MOUSE.EXE"));
+        assert!(settings.contains_custom_rule("MOUSE.EXE"));
         assert!(!is_process_excluded("mouse.exe", &settings));
     }
 
@@ -904,11 +915,11 @@ mod tests {
     fn power_throttling_unsupported_codes_mark_feature_unsupported() {
         assert!(matches!(
             process_power_throttling_error("SetProcessInformation", ERROR_NOT_SUPPORTED),
-            EcoQosError::Unsupported
+            BackgroundEfficiencyError::Unsupported
         ));
         assert!(matches!(
             process_power_throttling_error("SetProcessInformation", ERROR_INVALID_PARAMETER),
-            EcoQosError::Unsupported
+            BackgroundEfficiencyError::Unsupported
         ));
     }
 
@@ -924,13 +935,13 @@ mod tests {
     fn open_process_invalid_parameter_means_process_exited() {
         assert!(matches!(
             open_process_error(42, ERROR_INVALID_PARAMETER),
-            EcoQosError::ProcessExited
+            BackgroundEfficiencyError::ProcessExited
         ));
     }
 
     #[test]
     fn repeated_failures_suppress_future_efficiency_attempts_once() {
-        let mut manager = EcoQosManager::default();
+        let mut manager = BackgroundEfficiencyManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("APP.exe");
@@ -951,7 +962,7 @@ mod tests {
 
     #[test]
     fn first_suppression_reports_auto_exclusion_once() {
-        let mut manager = EcoQosManager::default();
+        let mut manager = BackgroundEfficiencyManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("app.exe");
@@ -1011,7 +1022,7 @@ mod tests {
 
     #[test]
     fn foreground_ignore_matches_pid_or_process_name() {
-        let mut settings = EcoQosSettings {
+        let mut settings = BackgroundEfficiencySettings {
             exclude_foreground_app: true,
             ..Default::default()
         };
@@ -1050,7 +1061,7 @@ mod tests {
 
     #[test]
     fn release_processes_drops_exited_process_without_log_entry() {
-        let mut manager = EcoQosManager::default();
+        let mut manager = BackgroundEfficiencyManager::default();
         manager.throttled.insert(
             0,
             ThrottledProcess {

@@ -29,7 +29,7 @@ use crate::win_util::{last_error, WinHandle};
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::{CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings},
+    config::{CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
         process_names_by_id, process_session_id, same_process_name,
@@ -44,7 +44,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 const EXTRA_BUILT_IN_EXCLUSIONS: &[&str] = &["rtkauduservice64.exe"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CpuAffinitySnapshot {
+pub struct CoreSteeringSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
@@ -85,7 +85,7 @@ struct CpuSetInformationHeader {
     cpu_set_type: u32,
 }
 
-pub struct CpuAffinityManager {
+pub struct CoreSteeringManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
     failure_suppression: ExecutionFailureTracker,
     action_log_feature: ActionLogFeature,
@@ -113,7 +113,7 @@ enum AffinityAdjustment {
     },
 }
 
-impl CpuAffinityManager {
+impl CoreSteeringManager {
     pub fn with_action_log_feature(action_log_feature: ActionLogFeature) -> Self {
         Self {
             adjusted: BTreeMap::new(),
@@ -128,15 +128,15 @@ impl CpuAffinityManager {
 
     pub fn update(
         &mut self,
-        settings: &CpuAffinitySettings,
+        settings: &CoreSteeringSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
-    ) -> CpuAffinitySnapshot {
+    ) -> CoreSteeringSnapshot {
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
             self.failure_suppression.clear();
-            return CpuAffinitySnapshot {
+            return CoreSteeringSnapshot {
                 enabled: false,
                 failed_processes: failed,
                 message: "Automation disabled.".to_owned(),
@@ -147,7 +147,7 @@ impl CpuAffinityManager {
         if !settings.enabled {
             let failed = self.clear_all(action_log, &format!("{} disabled", self.feature_label()));
             self.failure_suppression.clear();
-            return CpuAffinitySnapshot {
+            return CoreSteeringSnapshot {
                 enabled: false,
                 failed_processes: failed,
                 message: format!("{} disabled.", self.feature_label()),
@@ -157,7 +157,7 @@ impl CpuAffinityManager {
 
         if settings.exclude_foreground_app && foreground_process_id.is_none() {
             let failed = self.clear_all(action_log, "foreground app is unknown");
-            return CpuAffinitySnapshot {
+            return CoreSteeringSnapshot {
                 enabled: true,
                 failed_processes: failed,
                 message: "Paused: foreground app is unknown.".to_owned(),
@@ -168,7 +168,7 @@ impl CpuAffinityManager {
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
-            return CpuAffinitySnapshot {
+            return CoreSteeringSnapshot {
                 enabled: true,
                 failed_processes: failed,
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -180,7 +180,7 @@ impl CpuAffinityManager {
             Ok(processes) => processes,
             Err(err) => {
                 let failed = self.clear_all(action_log, "process list unavailable");
-                return CpuAffinitySnapshot {
+                return CoreSteeringSnapshot {
                     enabled: true,
                     failed_processes: failed,
                     message: err,
@@ -307,7 +307,7 @@ impl CpuAffinityManager {
             }
         }
 
-        CpuAffinitySnapshot {
+        CoreSteeringSnapshot {
             enabled: true,
             scanned_processes,
             adjusted_processes: self.adjusted.len(),
@@ -319,7 +319,7 @@ impl CpuAffinityManager {
                     .values()
                     .map(|process| process.process_name.as_str()),
             ),
-            message: cpu_affinity_message(settings),
+            message: core_steering_message(settings),
             last_error,
         }
     }
@@ -451,7 +451,7 @@ impl CpuAffinityManager {
 
 type ProcessSuppression = ExecutionSuppression;
 
-impl Drop for CpuAffinityManager {
+impl Drop for CoreSteeringManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
         self.clear_all(
@@ -461,7 +461,7 @@ impl Drop for CpuAffinityManager {
     }
 }
 
-impl Default for CpuAffinityManager {
+impl Default for CoreSteeringManager {
     fn default() -> Self {
         Self {
             adjusted: BTreeMap::new(),
@@ -471,7 +471,7 @@ impl Default for CpuAffinityManager {
     }
 }
 
-impl Default for CpuAffinitySnapshot {
+impl Default for CoreSteeringSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -500,17 +500,17 @@ pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
     logical_processors_from_topology().unwrap_or_else(fallback_logical_processors)
 }
 
-fn cpu_affinity_message(settings: &CpuAffinitySettings) -> String {
-    cpu_affinity_message_for_group_count(
+fn core_steering_message(settings: &CoreSteeringSettings) -> String {
+    core_steering_message_for_group_count(
         active_processor_group_count(),
         settings
             .rules
             .iter()
-            .any(|rule| rule.enabled && rule.mode == CpuAffinityMode::Hard),
+            .any(|rule| rule.enabled && rule.mode == CoreSteeringMode::Hard),
     )
 }
 
-fn cpu_affinity_message_for_group_count(group_count: u16, has_hard_rules: bool) -> String {
+fn core_steering_message_for_group_count(group_count: u16, has_hard_rules: bool) -> String {
     if group_count > 1 && has_hard_rules {
         "Core Steering active. Multi-group CPU detected: hard steering can only control CPUs in the process primary processor group. Apps that are not processor-group-aware may not use the full CPU."
             .to_owned()
@@ -677,16 +677,16 @@ fn processor_kind(
 }
 
 fn matching_rule<'a>(
-    settings: &'a CpuAffinitySettings,
+    settings: &'a CoreSteeringSettings,
     process_name: &str,
-) -> Option<&'a CpuAffinityRule> {
+) -> Option<&'a CoreSteeringRule> {
     settings.rules.iter().find(|rule| {
         rule.enabled && rule_has_target(rule) && same_process_name(&rule.process_name, process_name)
     })
 }
 
-fn rule_has_target(rule: &CpuAffinityRule) -> bool {
-    rule.mode == CpuAffinityMode::EfficiencyOff || rule.core_mask != 0
+fn rule_has_target(rule: &CoreSteeringRule) -> bool {
+    rule.mode == CoreSteeringMode::EfficiencyOff || rule.core_mask != 0
 }
 
 enum AffinityError {
@@ -704,7 +704,7 @@ struct AffinityTarget {
 fn apply_affinity(
     process_id: u32,
     process_name: String,
-    mode: CpuAffinityMode,
+    mode: CoreSteeringMode,
     rule_mask: u64,
     existing: Option<&AdjustedProcess>,
     action_log_feature: ActionLogFeature,
@@ -741,7 +741,7 @@ fn apply_affinity(
     }
 
     match mode {
-        CpuAffinityMode::Hard => apply_hard_affinity(
+        CoreSteeringMode::Hard => apply_hard_affinity(
             AffinityTarget {
                 process_id,
                 process_name,
@@ -753,7 +753,7 @@ fn apply_affinity(
             action_log_feature,
             action_log,
         ),
-        CpuAffinityMode::Soft => apply_soft_affinity(
+        CoreSteeringMode::Soft => apply_soft_affinity(
             AffinityTarget {
                 process_id,
                 process_name,
@@ -765,7 +765,7 @@ fn apply_affinity(
             action_log_feature,
             action_log,
         ),
-        CpuAffinityMode::EfficiencyOff => apply_efficiency_mode_off(
+        CoreSteeringMode::EfficiencyOff => apply_background_efficiency_off(
             AffinityTarget {
                 process_id,
                 process_name,
@@ -906,7 +906,7 @@ fn apply_soft_affinity(
     }))
 }
 
-fn apply_efficiency_mode_off(
+fn apply_background_efficiency_off(
     target: AffinityTarget,
     process: &ProcessHandle,
     existing: Option<&AdjustedProcess>,
@@ -976,11 +976,11 @@ fn restore_adjustment(
 }
 
 impl AffinityAdjustment {
-    fn mode(&self) -> CpuAffinityMode {
+    fn mode(&self) -> CoreSteeringMode {
         match self {
-            Self::Hard { .. } => CpuAffinityMode::Hard,
-            Self::Soft { .. } => CpuAffinityMode::Soft,
-            Self::EfficiencyOff { .. } => CpuAffinityMode::EfficiencyOff,
+            Self::Hard { .. } => CoreSteeringMode::Hard,
+            Self::Soft { .. } => CoreSteeringMode::Soft,
+            Self::EfficiencyOff { .. } => CoreSteeringMode::EfficiencyOff,
         }
     }
 }
@@ -1249,31 +1249,31 @@ mod tests {
 
     #[test]
     fn rule_match_is_case_insensitive_and_ignores_disabled_or_empty_masks() {
-        let settings = CpuAffinitySettings {
+        let settings = CoreSteeringSettings {
             enabled: true,
             exclude_foreground_app: true,
             rules: vec![
-                CpuAffinityRule {
+                CoreSteeringRule {
                     enabled: false,
-                    mode: CpuAffinityMode::Hard,
+                    mode: CoreSteeringMode::Hard,
                     process_name: "browser.exe".to_owned(),
                     core_mask: 1,
                 },
-                CpuAffinityRule {
+                CoreSteeringRule {
                     enabled: true,
-                    mode: CpuAffinityMode::Hard,
+                    mode: CoreSteeringMode::Hard,
                     process_name: "backup.exe".to_owned(),
                     core_mask: 0,
                 },
-                CpuAffinityRule {
+                CoreSteeringRule {
                     enabled: true,
-                    mode: CpuAffinityMode::Soft,
+                    mode: CoreSteeringMode::Soft,
                     process_name: " Worker.EXE ".to_owned(),
                     core_mask: 0b11,
                 },
-                CpuAffinityRule {
+                CoreSteeringRule {
                     enabled: true,
-                    mode: CpuAffinityMode::EfficiencyOff,
+                    mode: CoreSteeringMode::EfficiencyOff,
                     process_name: "Game.EXE".to_owned(),
                     core_mask: 0,
                 },
@@ -1312,7 +1312,7 @@ mod tests {
 
     #[test]
     fn repeated_failures_suppress_future_core_steering_attempts_once() {
-        let mut manager = CpuAffinityManager::default();
+        let mut manager = CoreSteeringManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("APP.exe");
@@ -1333,8 +1333,9 @@ mod tests {
 
     #[test]
     fn configured_action_log_feature_is_used_for_suppression_entries() {
-        let mut manager =
-            CpuAffinityManager::with_action_log_feature(ActionLogFeature::BackgroundCpuRestriction);
+        let mut manager = CoreSteeringManager::with_action_log_feature(
+            ActionLogFeature::BackgroundCpuRestriction,
+        );
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("app.exe");
@@ -1353,8 +1354,9 @@ mod tests {
 
     #[test]
     fn first_background_cpu_suppression_reports_auto_exclusion_once() {
-        let mut manager =
-            CpuAffinityManager::with_action_log_feature(ActionLogFeature::BackgroundCpuRestriction);
+        let mut manager = CoreSteeringManager::with_action_log_feature(
+            ActionLogFeature::BackgroundCpuRestriction,
+        );
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("app.exe");
@@ -1371,16 +1373,16 @@ mod tests {
     }
 
     #[test]
-    fn cpu_affinity_message_warns_on_multiple_processor_groups() {
+    fn core_steering_message_warns_on_multiple_processor_groups() {
         assert_eq!(
-            cpu_affinity_message_for_group_count(1, true),
+            core_steering_message_for_group_count(1, true),
             "Core Steering active."
         );
         assert_eq!(
-            cpu_affinity_message_for_group_count(2, false),
+            core_steering_message_for_group_count(2, false),
             "Core Steering active."
         );
-        let message = cpu_affinity_message_for_group_count(2, true);
+        let message = core_steering_message_for_group_count(2, true);
         assert!(message.contains("Multi-group CPU detected"));
         assert!(message.contains("processor-group-aware"));
     }
@@ -1408,7 +1410,7 @@ mod tests {
 
     #[test]
     fn foreground_skip_matches_pid_or_name() {
-        let mut settings = CpuAffinitySettings {
+        let mut settings = CoreSteeringSettings {
             exclude_foreground_app: true,
             ..Default::default()
         };
@@ -1454,7 +1456,7 @@ mod tests {
 
     #[test]
     fn release_processes_skips_restore_when_process_identity_is_unknown() {
-        let mut manager = CpuAffinityManager::default();
+        let mut manager = CoreSteeringManager::default();
         manager.adjusted.insert(
             0,
             AdjustedProcess {

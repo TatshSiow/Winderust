@@ -5,37 +5,37 @@ pub(crate) mod assets;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
-    Dashboard,
-    PowerPlanAutomation,
+    Home,
+    PowerPlanControl,
     WinderustFeatures,
-    ProcessorControls,
+    CpuControl,
     PriorityControl,
-    AppHome,
-    AdvancedHome,
-    Activity,
-    CpuUsage,
-    CoreParking,
+    SettingsHome,
+    AdvancedControls,
+    ByActivity,
+    ByCpuLoad,
+    AdvancedPowerPlanTuning,
     ProcessPriority,
     ThreadPriority,
     DynamicPriorityBoost,
-    CpuLimiter,
+    CoreLimiter,
     BackgroundCpuRestriction,
     ProcessList,
-    SmartSaverMode,
-    EfficiencyMode,
+    AdaptiveEngine,
+    BackgroundEfficiency,
     AppSuspension,
-    PerformanceMode,
+    ByRunningApp,
     IoPriority,
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
-    CpuAffinity,
-    ForegroundRules,
-    Schedule,
+    CoreSteering,
+    ByForeground,
+    ByTime,
     ActionLog,
-    Settings,
-    SettingsAppearance,
-    SettingsExperimental,
+    WinderustBehaviour,
+    LanguageAndAppearance,
+    ExperimentalFeatures,
     TimerResolution,
     Win32PrioritySeparation,
     About,
@@ -46,20 +46,20 @@ pub struct PageSection {
     pub pages: &'static [Page],
 }
 
-const OVERVIEW_PAGES: [Page; 1] = [Page::Dashboard];
+const OVERVIEW_PAGES: [Page; 1] = [Page::Home];
 const PROCESS_LIST_PAGES: [Page; 1] = [Page::ProcessList];
-const POWER_AUTOMATION_PAGES: [Page; 6] = [
-    Page::ForegroundRules,
-    Page::PerformanceMode,
-    Page::CpuUsage,
-    Page::Activity,
-    Page::Schedule,
-    Page::CoreParking,
+const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
+    Page::ByForeground,
+    Page::ByRunningApp,
+    Page::ByCpuLoad,
+    Page::ByActivity,
+    Page::ByTime,
+    Page::AdvancedPowerPlanTuning,
 ];
 const CPU_CONTROL_PAGES: [Page; 3] = [
-    Page::CpuLimiter,
+    Page::CoreLimiter,
     Page::BackgroundCpuRestriction,
-    Page::CpuAffinity,
+    Page::CoreSteering,
 ];
 const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::ProcessPriority,
@@ -69,23 +69,26 @@ const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::GpuPriority,
     Page::MemoryPriority,
 ];
-const WINDERUST_FEATURE_PAGES: [Page; 3] =
-    [Page::SmartSaverMode, Page::EfficiencyMode, Page::MemoryTrim];
+const WINDERUST_FEATURE_PAGES: [Page; 3] = [
+    Page::AdaptiveEngine,
+    Page::BackgroundEfficiency,
+    Page::MemoryTrim,
+];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
-const APP_PAGES: [Page; 4] = [
-    Page::Settings,
-    Page::SettingsAppearance,
-    Page::SettingsExperimental,
+const SETTINGS_PAGES: [Page; 4] = [
+    Page::WinderustBehaviour,
+    Page::LanguageAndAppearance,
+    Page::ExperimentalFeatures,
     Page::About,
 ];
-const ADVANCED_PAGES: [Page; 3] = [
+const ADVANCED_CONTROLS_PAGES: [Page; 3] = [
     Page::AppSuspension,
     Page::TimerResolution,
     Page::Win32PrioritySeparation,
 ];
 const PAGE_SECTIONS: [PageSection; 9] = [
     PageSection {
-        landing_page: Page::Dashboard,
+        landing_page: Page::Home,
         pages: &OVERVIEW_PAGES,
     },
     PageSection {
@@ -97,15 +100,15 @@ const PAGE_SECTIONS: [PageSection; 9] = [
         pages: &WINDERUST_FEATURE_PAGES,
     },
     PageSection {
-        landing_page: Page::PowerPlanAutomation,
-        pages: &POWER_AUTOMATION_PAGES,
+        landing_page: Page::PowerPlanControl,
+        pages: &POWER_PLAN_CONTROL_PAGES,
     },
     PageSection {
         landing_page: Page::PriorityControl,
         pages: &PRIORITY_CONTROL_PAGES,
     },
     PageSection {
-        landing_page: Page::ProcessorControls,
+        landing_page: Page::CpuControl,
         pages: &CPU_CONTROL_PAGES,
     },
     PageSection {
@@ -113,49 +116,49 @@ const PAGE_SECTIONS: [PageSection; 9] = [
         pages: &ACTION_LOG_PAGES,
     },
     PageSection {
-        landing_page: Page::AppHome,
-        pages: &APP_PAGES,
+        landing_page: Page::SettingsHome,
+        pages: &SETTINGS_PAGES,
     },
     PageSection {
-        landing_page: Page::AdvancedHome,
-        pages: &ADVANCED_PAGES,
+        landing_page: Page::AdvancedControls,
+        pages: &ADVANCED_CONTROLS_PAGES,
     },
 ];
 
 impl Page {
     pub fn label(self) -> String {
         match self {
-            Self::Dashboard => t!("nav.overview"),
-            Self::PowerPlanAutomation => t!("nav.power_automation"),
+            Self::Home => t!("nav.home"),
+            Self::PowerPlanControl => t!("nav.power_plan_control"),
             Self::WinderustFeatures => t!("nav.winderust_features"),
-            Self::ProcessorControls => t!("nav.processor_controls"),
+            Self::CpuControl => t!("nav.cpu_control"),
             Self::PriorityControl => t!("nav.priority_control"),
-            Self::AppHome => t!("nav.settings"),
-            Self::AdvancedHome => t!("nav.advanced"),
-            Self::Activity => t!("nav.activity"),
-            Self::CpuUsage => t!("nav.cpu_usage"),
-            Self::CoreParking => t!("nav.core_parking"),
+            Self::SettingsHome => t!("nav.settings"),
+            Self::AdvancedControls => t!("nav.advanced"),
+            Self::ByActivity => t!("nav.by_activity"),
+            Self::ByCpuLoad => t!("nav.by_cpu_load"),
+            Self::AdvancedPowerPlanTuning => t!("nav.advanced_power_plan_tuning"),
             Self::ProcessPriority => t!("nav.process_priority"),
             Self::ThreadPriority => t!("nav.thread_priority"),
             Self::DynamicPriorityBoost => t!("nav.dynamic_priority_boost"),
-            Self::CpuLimiter => t!("nav.cpu_limiter"),
+            Self::CoreLimiter => t!("nav.core_limiter"),
             Self::BackgroundCpuRestriction => t!("nav.background_cpu_restriction"),
             Self::ProcessList => t!("nav.process_list"),
-            Self::SmartSaverMode => t!("nav.smart_saver_mode"),
-            Self::EfficiencyMode => t!("nav.efficiency_mode"),
+            Self::AdaptiveEngine => t!("nav.adaptive_engine"),
+            Self::BackgroundEfficiency => t!("nav.background_efficiency"),
             Self::AppSuspension => t!("nav.app_suspension"),
-            Self::PerformanceMode => t!("nav.performance_mode"),
+            Self::ByRunningApp => t!("nav.by_running_app"),
             Self::IoPriority => t!("nav.io_priority"),
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
             Self::MemoryTrim => t!("nav.memory_trim"),
-            Self::CpuAffinity => t!("nav.cpu_affinity"),
-            Self::ForegroundRules => t!("nav.foreground_rules"),
-            Self::Schedule => t!("nav.schedule"),
+            Self::CoreSteering => t!("nav.core_steering"),
+            Self::ByForeground => t!("nav.by_foreground"),
+            Self::ByTime => t!("nav.by_time"),
             Self::ActionLog => t!("nav.action_log"),
-            Self::Settings => t!("settings.winderust_behaviour"),
-            Self::SettingsAppearance => t!("settings.language_and_appearance"),
-            Self::SettingsExperimental => t!("settings.experimental_features"),
+            Self::WinderustBehaviour => t!("settings.winderust_behaviour"),
+            Self::LanguageAndAppearance => t!("settings.language_and_appearance"),
+            Self::ExperimentalFeatures => t!("settings.experimental_features"),
             Self::TimerResolution => t!("nav.timer_resolution"),
             Self::Win32PrioritySeparation => t!("nav.win32_priority_separation"),
             Self::About => t!("nav.about"),
@@ -165,22 +168,22 @@ impl Page {
 
     pub fn section_label(self) -> String {
         match self {
-            Self::Dashboard => t!("nav.overview"),
-            Self::PowerPlanAutomation => t!("nav.power_automation"),
+            Self::Home => t!("nav.home"),
+            Self::PowerPlanControl => t!("nav.power_plan_control"),
             Self::WinderustFeatures => t!("nav.winderust_features"),
-            Self::ProcessorControls => t!("nav.processor_controls"),
+            Self::CpuControl => t!("nav.cpu_control"),
             Self::PriorityControl => t!("nav.priority_control"),
-            Self::AppHome => t!("nav.settings"),
-            Self::AdvancedHome => t!("nav.advanced"),
+            Self::SettingsHome => t!("nav.settings"),
+            Self::AdvancedControls => t!("nav.advanced"),
             Self::ProcessList => t!("nav.process_list"),
-            Self::Activity
-            | Self::Schedule
-            | Self::ForegroundRules
-            | Self::PerformanceMode
-            | Self::CpuUsage
-            | Self::CoreParking => t!("nav.power_automation"),
-            Self::CpuLimiter | Self::BackgroundCpuRestriction | Self::CpuAffinity => {
-                t!("nav.processor_controls")
+            Self::ByActivity
+            | Self::ByTime
+            | Self::ByForeground
+            | Self::ByRunningApp
+            | Self::ByCpuLoad
+            | Self::AdvancedPowerPlanTuning => t!("nav.power_plan_control"),
+            Self::CoreLimiter | Self::BackgroundCpuRestriction | Self::CoreSteering => {
+                t!("nav.cpu_control")
             }
             Self::ProcessPriority
             | Self::ThreadPriority
@@ -188,13 +191,13 @@ impl Page {
             | Self::IoPriority
             | Self::GpuPriority
             | Self::MemoryPriority => t!("nav.priority_control"),
-            Self::SmartSaverMode | Self::EfficiencyMode | Self::MemoryTrim => {
+            Self::AdaptiveEngine | Self::BackgroundEfficiency | Self::MemoryTrim => {
                 t!("nav.winderust_features")
             }
             Self::ActionLog => t!("nav.action_log"),
-            Self::Settings
-            | Self::SettingsAppearance
-            | Self::SettingsExperimental
+            Self::WinderustBehaviour
+            | Self::LanguageAndAppearance
+            | Self::ExperimentalFeatures
             | Self::About => t!("nav.settings"),
             Self::AppSuspension | Self::TimerResolution | Self::Win32PrioritySeparation => {
                 t!("nav.advanced")
@@ -205,23 +208,23 @@ impl Page {
 
     pub const fn section_landing_page(self) -> Page {
         match self {
-            Self::Dashboard => Self::Dashboard,
+            Self::Home => Self::Home,
             Self::ProcessList => Self::ProcessList,
             Self::WinderustFeatures
-            | Self::SmartSaverMode
-            | Self::EfficiencyMode
+            | Self::AdaptiveEngine
+            | Self::BackgroundEfficiency
             | Self::MemoryTrim => Self::WinderustFeatures,
-            Self::PowerPlanAutomation
-            | Self::Activity
-            | Self::Schedule
-            | Self::ForegroundRules
-            | Self::PerformanceMode
-            | Self::CpuUsage
-            | Self::CoreParking => Self::PowerPlanAutomation,
-            Self::ProcessorControls
-            | Self::CpuLimiter
+            Self::PowerPlanControl
+            | Self::ByActivity
+            | Self::ByTime
+            | Self::ByForeground
+            | Self::ByRunningApp
+            | Self::ByCpuLoad
+            | Self::AdvancedPowerPlanTuning => Self::PowerPlanControl,
+            Self::CpuControl
+            | Self::CoreLimiter
             | Self::BackgroundCpuRestriction
-            | Self::CpuAffinity => Self::ProcessorControls,
+            | Self::CoreSteering => Self::CpuControl,
             Self::PriorityControl
             | Self::ProcessPriority
             | Self::ThreadPriority
@@ -230,28 +233,28 @@ impl Page {
             | Self::GpuPriority
             | Self::MemoryPriority => Self::PriorityControl,
             Self::ActionLog => Self::ActionLog,
-            Self::AppHome
-            | Self::Settings
-            | Self::SettingsAppearance
-            | Self::SettingsExperimental
-            | Self::About => Self::AppHome,
-            Self::AdvancedHome
+            Self::SettingsHome
+            | Self::WinderustBehaviour
+            | Self::LanguageAndAppearance
+            | Self::ExperimentalFeatures
+            | Self::About => Self::SettingsHome,
+            Self::AdvancedControls
             | Self::AppSuspension
             | Self::TimerResolution
-            | Self::Win32PrioritySeparation => Self::AdvancedHome,
+            | Self::Win32PrioritySeparation => Self::AdvancedControls,
         }
     }
 
     pub const fn child_pages(self) -> Option<&'static [Page]> {
         match self {
-            Self::Dashboard => Some(&OVERVIEW_PAGES),
+            Self::Home => Some(&OVERVIEW_PAGES),
             Self::ProcessList => Some(&PROCESS_LIST_PAGES),
             Self::WinderustFeatures => Some(&WINDERUST_FEATURE_PAGES),
-            Self::PowerPlanAutomation => Some(&POWER_AUTOMATION_PAGES),
-            Self::ProcessorControls => Some(&CPU_CONTROL_PAGES),
+            Self::PowerPlanControl => Some(&POWER_PLAN_CONTROL_PAGES),
+            Self::CpuControl => Some(&CPU_CONTROL_PAGES),
             Self::PriorityControl => Some(&PRIORITY_CONTROL_PAGES),
-            Self::AppHome => Some(&APP_PAGES),
-            Self::AdvancedHome => Some(&ADVANCED_PAGES),
+            Self::SettingsHome => Some(&SETTINGS_PAGES),
+            Self::AdvancedControls => Some(&ADVANCED_CONTROLS_PAGES),
             _ => None,
         }
     }

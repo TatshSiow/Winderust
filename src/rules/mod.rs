@@ -2,7 +2,7 @@ pub mod decision_engine;
 pub mod execution_failure;
 
 pub use decision_engine::{
-    DecisionEngine, DecisionInput, DecisionOutcome, DecisionState, PerformanceModeDecision,
+    ByRunningAppDecision, DecisionEngine, DecisionInput, DecisionOutcome, DecisionState,
 };
 pub use execution_failure::{
     execution_failure_suppression_threshold, normalize_execution_failure_suppression_threshold,

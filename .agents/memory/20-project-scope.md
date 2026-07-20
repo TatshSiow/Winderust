@@ -13,11 +13,11 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 - Power-plan automation by foreground app, running app, CPU load, idle/activity, and schedule.
 - Processor power-plan tuning for core parking and processor performance values.
 - Foreground responsiveness / ProBalance-style background restraint.
-- CPU limiter, background CPU restriction, and CPU affinity/core steering.
+- Core Limiter, Background CPU Restriction, and Core Steering.
 - Efficiency Mode / EcoQoS.
 - App Suspension for explicit opt-in apps.
 - IO, GPU, and memory priority policies.
-- Smart Trim and memory-priority controls.
+- Memory Trim and memory-priority controls.
 - Timer resolution rules tied to foreground apps.
 - Action Log and CSV export.
 - Process List as the main per-process policy surface.
@@ -29,8 +29,8 @@ Covered enough for day-to-day responsiveness:
 - ProBalance-like restraint.
 - Foreground exclusions.
 - Per-process policy rules.
-- CPU limiter.
-- Priority and affinity controls.
+- Core Limiter.
+- Priority and Core Steering controls.
 - Action history.
 - Process table/policy surface.
 

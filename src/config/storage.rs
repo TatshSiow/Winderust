@@ -44,16 +44,12 @@ fn base_config_dir() -> PathBuf {
 }
 
 pub fn load() -> Result<Settings, String> {
-    let path = load_config_path();
+    let path = config_path();
     if !path.exists() {
         return Ok(Settings::default());
     }
 
     read_toml_settings(&path)
-}
-
-fn load_config_path() -> PathBuf {
-    config_path()
 }
 
 pub fn save(settings: &Settings) -> Result<(), String> {
@@ -74,10 +70,7 @@ pub fn import_toml_from(path: &Path) -> Result<Settings, String> {
 fn read_toml_settings(path: &Path) -> Result<Settings, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {err}", path.display()))?;
-    let mut settings = toml_to_settings(&raw)
-        .map_err(|err| format!("Failed to parse {}: {err}", path.display()))?;
-    settings.fill_missing_power_plan_mappings();
-    Ok(settings)
+    toml_to_settings(&raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
 }
 
 fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
@@ -104,20 +97,21 @@ fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
 mod tests {
     use super::*;
     use crate::config::{
-        AccentSettings, ActionLogMode, ActivityModeSettings, AdvancedSettings, AnimationMode,
+        AccentSettings, ActionLogMode, AdaptiveEngineSettings, AdvancedSettings, AnimationMode,
         AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
-        BackgroundCpuRestrictionSettings, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        CpuLimiterRule, CpuLimiterSettings, CpuUsageComparison, CpuUsageModeSettings, CpuUsageRule,
-        EcoQosAggressiveness, EcoQosCpuRestrictionMode, EcoQosExclusionRule, EcoQosSettings,
-        ForegroundBoostPriority, ForegroundRule, ForegroundRules, GeneralSettings,
+        BackgroundCpuRestrictionSettings, BackgroundEfficiencyAggressiveness,
+        BackgroundEfficiencyRule, BackgroundEfficiencySettings, ByActivitySettings, ByCpuLoadRule,
+        ByCpuLoadSettings, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
+        ByRunningAppSettings, ByTimeRule, ByTimeSettings, CoreLimiterRule, CoreLimiterSettings,
+        CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings, CpuRestrictionMode,
+        CpuUsageComparison, DynamicPriorityBoostSettings, ForegroundBoostPriority, GeneralSettings,
         GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings,
-        MemoryTrimSettings, NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings,
-        PowerPlanSettings, PriorityBoostSettings, PriorityRule, ProcessExclusionRule,
-        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
-        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
-        ProcessPriorityBoostSetting, ProcessPrioritySetting, ProcessPrioritySettings,
-        ScheduleModeSettings, ScheduleRule, SmartSaverSettings, TimerResolutionRule,
-        TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
+        MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings, PriorityRule,
+        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
+        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
+        ProcessMemoryPrioritySetting, ProcessPriority, ProcessPrioritySetting,
+        ProcessPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
+        WorkloadEngineSettings,
     };
 
     #[test]
@@ -141,7 +135,7 @@ mod tests {
                 expose_all_priority_values: true,
                 show_advanced_controls: true,
             },
-            smart_saver: SmartSaverSettings {
+            adaptive_engine: AdaptiveEngineSettings {
                 enabled: true,
                 processor_policy_enabled: true,
                 processor_policy_values:
@@ -153,11 +147,7 @@ mod tests {
                         crate::power::plan::ProcessorBoostMode::Disabled,
                     ),
             },
-            power_plans: PowerPlanSettings {
-                power_save_guid: Some("idle-guid".to_owned()),
-                performance_guid: Some("active-guid".to_owned()),
-            },
-            activity_mode: ActivityModeSettings {
+            by_activity: ByActivitySettings {
                 enabled: true,
                 idle_timeout_seconds: 12,
                 switch_to_performance_on_resume: true,
@@ -171,31 +161,26 @@ mod tests {
                     performance_guid: Some("activity-active-guid".to_owned()),
                 },
             },
-            foreground_rules: ForegroundRules {
+            by_foreground: ByForegroundSettings {
                 enabled: true,
                 rules: vec![
-                    ForegroundRule {
+                    ByForegroundRule {
                         enabled: true,
                         name: "Game plan".to_owned(),
                         process_name: "game.exe".to_owned(),
                         power_plan_guid: Some("gaming-guid".to_owned()),
                     },
-                    ForegroundRule {
+                    ByForegroundRule {
                         enabled: false,
                         name: "Backup plan".to_owned(),
                         process_name: "backup\\tool.exe".to_owned(),
                         power_plan_guid: Some("backup-guid".to_owned()),
                     },
                 ],
-                power_plans: PowerPlanSettings {
-                    power_save_guid: Some("foreground-idle-guid".to_owned()),
-                    performance_guid: Some("foreground-active-guid".to_owned()),
-                },
             },
-            schedule_mode: ScheduleModeSettings {
+            by_time: ByTimeSettings {
                 enabled: true,
-                power_plans: PowerPlanSettings::default(),
-                rules: vec![ScheduleRule {
+                rules: vec![ByTimeRule {
                     enabled: true,
                     name: "Work hours".to_owned(),
                     days: vec![WeekdaySetting::Mon, WeekdaySetting::Fri],
@@ -204,10 +189,9 @@ mod tests {
                     power_plan_guid: Some("work-hours-guid".to_owned()),
                 }],
             },
-            cpu_usage_mode: CpuUsageModeSettings {
+            by_cpu_load: ByCpuLoadSettings {
                 enabled: true,
-                power_plans: PowerPlanSettings::default(),
-                rules: vec![CpuUsageRule {
+                rules: vec![ByCpuLoadRule {
                     enabled: true,
                     name: "Low CPU".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,
@@ -219,16 +203,16 @@ mod tests {
                     else_power_plan_guid: Some("normal-cpu-guid".to_owned()),
                 }],
             },
-            eco_qos: EcoQosSettings {
+            background_efficiency: BackgroundEfficiencySettings {
                 enabled: true,
                 exclude_foreground_app: false,
-                aggressiveness: EcoQosAggressiveness::Safe,
-                efficiency_whitelist: vec![
-                    EcoQosExclusionRule {
+                aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
+                custom_rules: vec![
+                    BackgroundEfficiencyRule {
                         enabled: true,
                         process_name: "mouse.exe".to_owned(),
                     },
-                    EcoQosExclusionRule {
+                    BackgroundEfficiencyRule {
                         enabled: false,
                         process_name: "comma,app.exe".to_owned(),
                     },
@@ -267,35 +251,35 @@ mod tests {
                     },
                 ],
             },
-            cpu_affinity: CpuAffinitySettings {
+            core_steering: CoreSteeringSettings {
                 enabled: true,
                 exclude_foreground_app: true,
                 rules: vec![
-                    CpuAffinityRule {
+                    CoreSteeringRule {
                         enabled: true,
-                        mode: CpuAffinityMode::Hard,
+                        mode: CoreSteeringMode::Hard,
                         process_name: "backup.exe".to_owned(),
                         core_mask: 0b0011,
                     },
-                    CpuAffinityRule {
+                    CoreSteeringRule {
                         enabled: false,
-                        mode: CpuAffinityMode::Soft,
+                        mode: CoreSteeringMode::Soft,
                         process_name: "indexer.exe".to_owned(),
                         core_mask: 0b1100,
                     },
-                    CpuAffinityRule {
+                    CoreSteeringRule {
                         enabled: true,
-                        mode: CpuAffinityMode::EfficiencyOff,
+                        mode: CoreSteeringMode::EfficiencyOff,
                         process_name: "game.exe".to_owned(),
                         core_mask: 0,
                     },
                 ],
             },
             background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
-            cpu_limiter: CpuLimiterSettings {
+            core_limiter: CoreLimiterSettings {
                 enabled: true,
                 exclude_foreground_app: true,
-                rules: vec![CpuLimiterRule {
+                rules: vec![CoreLimiterRule {
                     enabled: true,
                     process_name: "encoder.exe".to_owned(),
                     threshold_percent: 80,
@@ -304,9 +288,9 @@ mod tests {
                     max_logical_processors: 2,
                 }],
             },
-            performance_mode: PerformanceModeSettings {
+            by_running_app: ByRunningAppSettings {
                 enabled: true,
-                rules: vec![PerformanceModeRule {
+                rules: vec![ByRunningAppRule {
                     enabled: true,
                     name: "Game performance".to_owned(),
                     process_name: "game.exe".to_owned(),
@@ -316,13 +300,13 @@ mod tests {
             workload_engine: WorkloadEngineSettings {
                 enabled: true,
                 lower_background_apps: true,
-                workload_engine_efficiency_mode_enabled: true,
+                workload_engine_background_efficiency_enabled: true,
                 workload_engine_background_priority: ProcessPriority::BelowNormal,
                 lower_background_io_priority_enabled: true,
                 lower_background_io_priority: ProcessIoPriority::VeryLow,
                 workload_engine_io_priority: IoPrioritySettings::default(),
                 workload_engine_thread_priority: crate::config::ThreadPrioritySettings::default(),
-                workload_engine_priority_boost: PriorityBoostSettings::default(),
+                workload_engine_dynamic_priority_boost: DynamicPriorityBoostSettings::default(),
                 workload_engine_gpu_priority: GpuPrioritySettings::default(),
                 workload_engine_memory_priority_enabled: true,
                 workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
@@ -331,7 +315,7 @@ mod tests {
                 workload_engine_enabled: true,
                 workload_engine_advanced_settings_enabled: true,
                 workload_engine_affinity_escalation_enabled: true,
-                workload_engine_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+                workload_engine_affinity_mode: CpuRestrictionMode::SoftCpuSets,
                 workload_engine_cpu_percent: 50,
                 workload_engine_max_logical_processors: 0,
                 workload_engine_total_threshold_percent: 70,
@@ -369,11 +353,11 @@ mod tests {
                 }],
             },
             thread_priority: crate::config::ThreadPrioritySettings::default(),
-            priority_boost: PriorityBoostSettings {
+            dynamic_priority_boost: DynamicPriorityBoostSettings {
                 enabled: true,
                 foreground_detection_enabled: true,
-                foreground_boost: ProcessPriorityBoostSetting::Default,
-                background_boost: ProcessPriorityBoostSetting::Disabled,
+                foreground_boost: ProcessDynamicPriorityBoostSetting::Default,
+                background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
                     process_name: "backup.exe".to_owned(),

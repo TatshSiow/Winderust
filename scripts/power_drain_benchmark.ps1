@@ -1,6 +1,6 @@
 param(
     [string]$CounterPath = '',
-    [string[]]$Phases = @('Baseline', 'SmartSaver'),
+    [string[]]$Phases = @('Baseline', 'AdaptiveEngine'),
     [int]$MinPasses = 3,
     [int]$MaxPasses = 8,
     [int]$SampleSeconds = 30,

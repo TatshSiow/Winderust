@@ -1,21 +1,21 @@
 use crate::{
     action_log::{ActionLog, ActionLogFeature},
-    affinity::{self, CpuAffinityManager, CpuAffinitySnapshot, LogicalProcessorKind},
     config::{
-        BackgroundCpuRestrictionSettings, CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings,
-        EcoQosCpuRestrictionControlStyle, EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy,
+        BackgroundCpuRestrictionSettings, CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings,
+        CpuRestrictionControlStyle, CpuRestrictionMode, CpuRestrictionStrategy,
     },
+    core_steering::{self, CoreSteeringManager, CoreSteeringSnapshot, LogicalProcessorKind},
     foreground::list_processes,
 };
 
 pub struct BackgroundCpuRestrictionManager {
-    affinity: CpuAffinityManager,
+    affinity: CoreSteeringManager,
 }
 
 impl Default for BackgroundCpuRestrictionManager {
     fn default() -> Self {
         Self {
-            affinity: CpuAffinityManager::with_action_log_feature(
+            affinity: CoreSteeringManager::with_action_log_feature(
                 ActionLogFeature::BackgroundCpuRestriction,
             ),
         }
@@ -29,9 +29,9 @@ impl BackgroundCpuRestrictionManager {
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
-    ) -> CpuAffinitySnapshot {
+    ) -> CoreSteeringSnapshot {
         if !automation_enabled || !settings.enabled {
-            let affinity_settings = CpuAffinitySettings {
+            let affinity_settings = CoreSteeringSettings {
                 enabled: false,
                 exclude_foreground_app: settings.exclude_foreground_app,
                 rules: Vec::new(),
@@ -51,7 +51,7 @@ impl BackgroundCpuRestrictionManager {
         }
 
         let Some(core_mask) = background_restriction_core_mask(settings) else {
-            let affinity_settings = CpuAffinitySettings {
+            let affinity_settings = CoreSteeringSettings {
                 enabled: false,
                 exclude_foreground_app: settings.exclude_foreground_app,
                 rules: Vec::new(),
@@ -68,8 +68,8 @@ impl BackgroundCpuRestrictionManager {
         };
 
         let mode = match settings.mode {
-            EcoQosCpuRestrictionMode::SoftCpuSets => CpuAffinityMode::Soft,
-            EcoQosCpuRestrictionMode::HardAffinity => CpuAffinityMode::Hard,
+            CpuRestrictionMode::SoftCpuSets => CoreSteeringMode::Soft,
+            CpuRestrictionMode::HardAffinity => CoreSteeringMode::Hard,
         };
         let rules = list_processes()
             .map(|processes| {
@@ -77,10 +77,10 @@ impl BackgroundCpuRestrictionManager {
                     .into_iter()
                     .filter(|process| {
                         process.id != 0
-                            && !affinity::is_builtin_excluded(&process.name)
+                            && !core_steering::is_builtin_excluded(&process.name)
                             && !settings.exclusion_enabled_for(&process.name)
                     })
-                    .map(|process| CpuAffinityRule {
+                    .map(|process| CoreSteeringRule {
                         enabled: true,
                         mode,
                         process_name: process.name,
@@ -90,7 +90,7 @@ impl BackgroundCpuRestrictionManager {
             })
             .unwrap_or_default();
 
-        let affinity_settings = CpuAffinitySettings {
+        let affinity_settings = CoreSteeringSettings {
             enabled: true,
             exclude_foreground_app: settings.exclude_foreground_app,
             rules,
@@ -107,25 +107,25 @@ impl BackgroundCpuRestrictionManager {
 }
 
 fn background_restriction_core_mask(settings: &BackgroundCpuRestrictionSettings) -> Option<u64> {
-    if settings.strategy == EcoQosCpuRestrictionStrategy::Off {
+    if settings.strategy == CpuRestrictionStrategy::Off {
         return None;
     }
 
-    let processors = affinity::logical_processors();
+    let processors = core_steering::logical_processors();
     if processors.is_empty() {
         return None;
     }
 
-    if settings.control_style == EcoQosCpuRestrictionControlStyle::CoreToggle {
-        let mask = settings.core_mask & affinity_processors_mask(&processors);
+    if settings.control_style == CpuRestrictionControlStyle::CoreToggle {
+        let mask = settings.core_mask & core_steering_processors_mask(&processors);
         return (mask != 0).then_some(mask);
     }
 
     let mut selected = match settings.strategy {
-        EcoQosCpuRestrictionStrategy::Off => Vec::new(),
-        EcoQosCpuRestrictionStrategy::Auto => {
+        CpuRestrictionStrategy::Off => Vec::new(),
+        CpuRestrictionStrategy::Auto => {
             let e_core_mask =
-                affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency);
+                core_steering_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency);
             if e_core_mask != 0 {
                 processors
                     .iter()
@@ -136,12 +136,12 @@ fn background_restriction_core_mask(settings: &BackgroundCpuRestrictionSettings)
                 processors.iter().map(|processor| processor.index).collect()
             }
         }
-        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => processors
+        CpuRestrictionStrategy::PreferEfficiencyCores => processors
             .iter()
             .filter(|processor| processor.kind == LogicalProcessorKind::Efficiency)
             .map(|processor| processor.index)
             .collect(),
-        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => {
+        CpuRestrictionStrategy::LimitLogicalCpus => {
             processors.iter().map(|processor| processor.index).collect()
         }
     };
@@ -151,7 +151,7 @@ fn background_restriction_core_mask(settings: &BackgroundCpuRestrictionSettings)
     logical_indices_to_limited_mask(&selected, settings.percent, settings.max_logical_processors)
 }
 
-fn affinity_processors_mask(processors: &[affinity::LogicalProcessorInfo]) -> u64 {
+fn core_steering_processors_mask(processors: &[core_steering::LogicalProcessorInfo]) -> u64 {
     processors.iter().fold(0_u64, |mask, processor| {
         if processor.index < u64::BITS as usize {
             mask | (1_u64 << processor.index)
@@ -161,8 +161,8 @@ fn affinity_processors_mask(processors: &[affinity::LogicalProcessorInfo]) -> u6
     })
 }
 
-fn affinity_processors_kind_mask(
-    processors: &[affinity::LogicalProcessorInfo],
+fn core_steering_processors_kind_mask(
+    processors: &[core_steering::LogicalProcessorInfo],
     kind: LogicalProcessorKind,
 ) -> u64 {
     processors.iter().fold(0_u64, |mask, processor| {

@@ -14,25 +14,24 @@ pub struct Settings {
     #[serde(default)]
     pub advanced: AdvancedSettings,
     #[serde(default)]
-    pub smart_saver: SmartSaverSettings,
-    pub power_plans: PowerPlanSettings,
-    pub activity_mode: ActivityModeSettings,
-    pub foreground_rules: ForegroundRules,
-    pub schedule_mode: ScheduleModeSettings,
+    pub adaptive_engine: AdaptiveEngineSettings,
+    pub by_activity: ByActivitySettings,
+    pub by_foreground: ByForegroundSettings,
+    pub by_time: ByTimeSettings,
     #[serde(default)]
-    pub cpu_usage_mode: CpuUsageModeSettings,
+    pub by_cpu_load: ByCpuLoadSettings,
     #[serde(default)]
-    pub eco_qos: EcoQosSettings,
+    pub background_efficiency: BackgroundEfficiencySettings,
     #[serde(default)]
     pub app_suspension: AppSuspensionSettings,
     #[serde(default)]
-    pub cpu_affinity: CpuAffinitySettings,
+    pub core_steering: CoreSteeringSettings,
     #[serde(default)]
     pub background_cpu_restriction: BackgroundCpuRestrictionSettings,
     #[serde(default)]
-    pub cpu_limiter: CpuLimiterSettings,
+    pub core_limiter: CoreLimiterSettings,
     #[serde(default)]
-    pub performance_mode: PerformanceModeSettings,
+    pub by_running_app: ByRunningAppSettings,
     #[serde(default)]
     pub workload_engine: WorkloadEngineSettings,
     #[serde(default)]
@@ -40,7 +39,7 @@ pub struct Settings {
     #[serde(default)]
     pub thread_priority: ThreadPrioritySettings,
     #[serde(default)]
-    pub priority_boost: PriorityBoostSettings,
+    pub dynamic_priority_boost: DynamicPriorityBoostSettings,
     #[serde(default)]
     pub io_priority: IoPrioritySettings,
     #[serde(default)]
@@ -203,7 +202,7 @@ pub struct PowerPlanSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActivityModeSettings {
+pub struct ByActivitySettings {
     pub enabled: bool,
     pub idle_timeout_seconds: u64,
     pub switch_to_performance_on_resume: bool,
@@ -224,17 +223,15 @@ pub struct InputDetectionSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ForegroundRules {
+pub struct ByForegroundSettings {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
-    pub rules: Vec<ForegroundRule>,
-    #[serde(default)]
-    pub power_plans: PowerPlanSettings,
+    pub rules: Vec<ByForegroundRule>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ForegroundRule {
+pub struct ByForegroundRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -246,15 +243,13 @@ pub struct ForegroundRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleModeSettings {
+pub struct ByTimeSettings {
     pub enabled: bool,
-    pub rules: Vec<ScheduleRule>,
-    #[serde(default, skip_serializing_if = "PowerPlanSettings::is_empty")]
-    pub power_plans: PowerPlanSettings,
+    pub rules: Vec<ByTimeRule>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ScheduleRule {
+pub struct ByTimeRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub name: String,
@@ -266,51 +261,49 @@ pub struct ScheduleRule {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CpuUsageModeSettings {
+pub struct ByCpuLoadSettings {
     pub enabled: bool,
-    pub rules: Vec<CpuUsageRule>,
-    #[serde(default, skip_serializing_if = "PowerPlanSettings::is_empty")]
-    pub power_plans: PowerPlanSettings,
+    pub rules: Vec<ByCpuLoadRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EcoQosSettings {
+pub struct BackgroundEfficiencySettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
-    pub aggressiveness: EcoQosAggressiveness,
+    pub aggressiveness: BackgroundEfficiencyAggressiveness,
     #[serde(default)]
-    pub efficiency_whitelist: Vec<EcoQosExclusionRule>,
+    pub custom_rules: Vec<BackgroundEfficiencyRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SmartSaverSettings {
+pub struct AdaptiveEngineSettings {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub processor_policy_enabled: bool,
-    #[serde(default = "default_smart_saver_processor_policy_values")]
+    #[serde(default = "default_adaptive_engine_processor_policy_values")]
     pub processor_policy_values: ProcessorPowerValues,
 }
 
-impl Default for SmartSaverSettings {
+impl Default for AdaptiveEngineSettings {
     fn default() -> Self {
         Self {
             enabled: false,
             processor_policy_enabled: true,
-            processor_policy_values: default_smart_saver_processor_policy_values(),
+            processor_policy_values: default_adaptive_engine_processor_policy_values(),
         }
     }
 }
 
-fn default_smart_saver_processor_policy_values() -> ProcessorPowerValues {
+fn default_adaptive_engine_processor_policy_values() -> ProcessorPowerValues {
     ProcessorPowerValues::new_with_boost_mode(0, 5, 45, 0, ProcessorBoostMode::Disabled)
         .normalized()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EcoQosExclusionRule {
+pub struct BackgroundEfficiencyRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
@@ -318,32 +311,32 @@ pub struct EcoQosExclusionRule {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EcoQosAggressiveness {
+pub enum BackgroundEfficiencyAggressiveness {
     #[default]
     Safe,
     Balanced,
     Aggressive,
 }
 
-impl EcoQosAggressiveness {
+impl BackgroundEfficiencyAggressiveness {
     pub const ALL: [Self; 3] = [Self::Safe, Self::Balanced, Self::Aggressive];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EcoQosCpuRestrictionMode {
+pub enum CpuRestrictionMode {
     #[default]
     SoftCpuSets,
     HardAffinity,
 }
 
-impl EcoQosCpuRestrictionMode {
+impl CpuRestrictionMode {
     pub const ALL: [Self; 2] = [Self::SoftCpuSets, Self::HardAffinity];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EcoQosCpuRestrictionStrategy {
+pub enum CpuRestrictionStrategy {
     Off,
     #[default]
     Auto,
@@ -353,13 +346,13 @@ pub enum EcoQosCpuRestrictionStrategy {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EcoQosCpuRestrictionControlStyle {
+pub enum CpuRestrictionControlStyle {
     #[default]
     Percentage,
     CoreToggle,
 }
 
-impl EcoQosCpuRestrictionControlStyle {
+impl CpuRestrictionControlStyle {
     pub const ALL: [Self; 2] = [Self::Percentage, Self::CoreToggle];
 }
 
@@ -386,12 +379,12 @@ pub struct AppSuspensionSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CpuAffinitySettings {
+pub struct CoreSteeringSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
-    pub rules: Vec<CpuAffinityRule>,
+    pub rules: Vec<CoreSteeringRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -400,14 +393,14 @@ pub struct BackgroundCpuRestrictionSettings {
     #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
-    pub mode: EcoQosCpuRestrictionMode,
+    pub mode: CpuRestrictionMode,
     #[serde(default)]
-    pub strategy: EcoQosCpuRestrictionStrategy,
+    pub strategy: CpuRestrictionStrategy,
     #[serde(default)]
-    pub control_style: EcoQosCpuRestrictionControlStyle,
-    #[serde(default = "default_eco_qos_cpu_restriction_percent")]
+    pub control_style: CpuRestrictionControlStyle,
+    #[serde(default = "default_cpu_restriction_percent")]
     pub percent: u8,
-    #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
+    #[serde(default = "default_cpu_restriction_max_logical_processors")]
     pub max_logical_processors: u8,
     #[serde(default)]
     pub core_mask: u64,
@@ -429,9 +422,9 @@ pub struct ProcessExclusionRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_background_priority: Option<ProcessThreadPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority_boost_foreground: Option<ProcessPriorityBoostSetting>,
+    pub dynamic_priority_boost_foreground: Option<ProcessDynamicPriorityBoostSetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub priority_boost_background: Option<ProcessPriorityBoostSetting>,
+    pub dynamic_priority_boost_background: Option<ProcessDynamicPriorityBoostSetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub io_foreground_priority: Option<ProcessIoPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -455,8 +448,8 @@ impl Default for ProcessExclusionRule {
             process_background_priority: None,
             thread_foreground_priority: None,
             thread_background_priority: None,
-            priority_boost_foreground: None,
-            priority_boost_background: None,
+            dynamic_priority_boost_foreground: None,
+            dynamic_priority_boost_background: None,
             io_foreground_priority: None,
             io_background_priority: None,
             gpu_foreground_priority: None,
@@ -514,24 +507,27 @@ impl ProcessExclusionRule {
         );
     }
 
-    pub fn priority_boost_override(&self, foreground: bool) -> ProcessPriorityBoostSetting {
+    pub fn dynamic_priority_boost_override(
+        &self,
+        foreground: bool,
+    ) -> ProcessDynamicPriorityBoostSetting {
         if foreground {
-            self.priority_boost_foreground.unwrap_or_default()
+            self.dynamic_priority_boost_foreground.unwrap_or_default()
         } else {
-            self.priority_boost_background.unwrap_or_default()
+            self.dynamic_priority_boost_background.unwrap_or_default()
         }
     }
 
-    pub fn set_priority_boost_override(
+    pub fn set_dynamic_priority_boost_override(
         &mut self,
         foreground: bool,
-        boost: ProcessPriorityBoostSetting,
+        boost: ProcessDynamicPriorityBoostSetting,
     ) {
         set_optional_default(
             if foreground {
-                &mut self.priority_boost_foreground
+                &mut self.dynamic_priority_boost_foreground
             } else {
-                &mut self.priority_boost_background
+                &mut self.dynamic_priority_boost_background
             },
             boost,
         );
@@ -615,48 +611,48 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CpuAffinityRule {
+pub struct CoreSteeringRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
-    pub mode: CpuAffinityMode,
+    pub mode: CoreSteeringMode,
     pub process_name: String,
     pub core_mask: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CpuLimiterSettings {
+pub struct CoreLimiterSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
-    pub rules: Vec<CpuLimiterRule>,
+    pub rules: Vec<CoreLimiterRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CpuLimiterRule {
+pub struct CoreLimiterRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub process_name: String,
-    #[serde(default = "default_cpu_limiter_threshold_percent")]
+    #[serde(default = "default_core_limiter_threshold_percent")]
     pub threshold_percent: u8,
-    #[serde(default = "default_cpu_limiter_sustain_seconds")]
+    #[serde(default = "default_core_limiter_sustain_seconds")]
     pub sustain_seconds: u64,
-    #[serde(default = "default_cpu_limiter_cooldown_seconds")]
+    #[serde(default = "default_core_limiter_cooldown_seconds")]
     pub cooldown_seconds: u64,
-    #[serde(default = "default_cpu_limiter_max_logical_processors")]
+    #[serde(default = "default_core_limiter_max_logical_processors")]
     pub max_logical_processors: u8,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PerformanceModeSettings {
+pub struct ByRunningAppSettings {
     pub enabled: bool,
     #[serde(default)]
-    pub rules: Vec<PerformanceModeRule>,
+    pub rules: Vec<ByRunningAppRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PerformanceModeRule {
+pub struct ByRunningAppRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default)]
@@ -672,7 +668,7 @@ pub struct WorkloadEngineSettings {
     #[serde(default = "default_true")]
     pub lower_background_apps: bool,
     #[serde(default = "default_true")]
-    pub workload_engine_efficiency_mode_enabled: bool,
+    pub workload_engine_background_efficiency_enabled: bool,
     #[serde(default = "default_workload_engine_background_priority")]
     pub workload_engine_background_priority: ProcessPriority,
     #[serde(default)]
@@ -683,8 +679,8 @@ pub struct WorkloadEngineSettings {
     pub workload_engine_io_priority: IoPrioritySettings,
     #[serde(default = "default_workload_engine_thread_priority_settings")]
     pub workload_engine_thread_priority: ThreadPrioritySettings,
-    #[serde(default = "default_workload_engine_priority_boost_settings")]
-    pub workload_engine_priority_boost: PriorityBoostSettings,
+    #[serde(default = "default_workload_engine_dynamic_priority_boost_settings")]
+    pub workload_engine_dynamic_priority_boost: DynamicPriorityBoostSettings,
     #[serde(default = "default_workload_engine_gpu_priority_settings")]
     pub workload_engine_gpu_priority: GpuPrioritySettings,
     #[serde(default)]
@@ -702,10 +698,10 @@ pub struct WorkloadEngineSettings {
     #[serde(default)]
     pub workload_engine_affinity_escalation_enabled: bool,
     #[serde(default)]
-    pub workload_engine_affinity_mode: EcoQosCpuRestrictionMode,
+    pub workload_engine_affinity_mode: CpuRestrictionMode,
     #[serde(default = "default_workload_engine_cpu_percent")]
     pub workload_engine_cpu_percent: u8,
-    #[serde(default = "default_eco_qos_cpu_restriction_max_logical_processors")]
+    #[serde(default = "default_cpu_restriction_max_logical_processors")]
     pub workload_engine_max_logical_processors: u8,
     #[serde(default = "default_workload_engine_total_threshold_percent")]
     pub workload_engine_total_threshold_percent: u8,
@@ -785,14 +781,14 @@ pub struct ThreadPrioritySettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PriorityBoostSettings {
+pub struct DynamicPriorityBoostSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub foreground_detection_enabled: bool,
-    #[serde(default = "default_priority_boost_foreground")]
-    pub foreground_boost: ProcessPriorityBoostSetting,
-    #[serde(default = "default_priority_boost_background")]
-    pub background_boost: ProcessPriorityBoostSetting,
+    #[serde(default = "default_dynamic_priority_boost_foreground")]
+    pub foreground_boost: ProcessDynamicPriorityBoostSetting,
+    #[serde(default = "default_dynamic_priority_boost_background")]
+    pub background_boost: ProcessDynamicPriorityBoostSetting,
     #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
@@ -1262,7 +1258,7 @@ impl ProcessPrioritySetting {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProcessPriorityBoostSetting {
+pub enum ProcessDynamicPriorityBoostSetting {
     #[default]
     Default,
     Auto,
@@ -1270,7 +1266,7 @@ pub enum ProcessPriorityBoostSetting {
     Disabled,
 }
 
-impl ProcessPriorityBoostSetting {
+impl ProcessDynamicPriorityBoostSetting {
     pub const ALL: [Self; 3] = [Self::Default, Self::Enabled, Self::Disabled];
     pub const CUSTOM_RULE_ALL: [Self; 4] =
         [Self::Default, Self::Auto, Self::Enabled, Self::Disabled];
@@ -1316,14 +1312,14 @@ impl ForegroundBoostPriority {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CpuAffinityMode {
+pub enum CoreSteeringMode {
     #[default]
     Hard,
     Soft,
     EfficiencyOff,
 }
 
-impl CpuAffinityMode {
+impl CoreSteeringMode {
     pub const ALL: [Self; 3] = [Self::Hard, Self::Soft, Self::EfficiencyOff];
 }
 
@@ -1361,7 +1357,7 @@ pub enum NetworkThresholdUnit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CpuUsageRule {
+pub struct ByCpuLoadRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
     pub name: String,
@@ -1415,20 +1411,18 @@ impl Default for Settings {
                 check_interval_ms: 1000,
             },
             advanced: AdvancedSettings::default(),
-            smart_saver: SmartSaverSettings::default(),
-            power_plans: PowerPlanSettings::default(),
-            activity_mode: ActivityModeSettings {
+            adaptive_engine: AdaptiveEngineSettings::default(),
+            by_activity: ByActivitySettings {
                 enabled: true,
                 idle_timeout_seconds: 300,
                 switch_to_performance_on_resume: true,
                 input_detection: InputDetectionSettings::default(),
                 power_plans: PowerPlanSettings::default(),
             },
-            foreground_rules: ForegroundRules::default(),
-            schedule_mode: ScheduleModeSettings {
+            by_foreground: ByForegroundSettings::default(),
+            by_time: ByTimeSettings {
                 enabled: false,
-                power_plans: PowerPlanSettings::default(),
-                rules: vec![ScheduleRule {
+                rules: vec![ByTimeRule {
                     enabled: true,
                     name: "Night Idle Plan".to_owned(),
                     days: WeekdaySetting::all().to_vec(),
@@ -1437,17 +1431,17 @@ impl Default for Settings {
                     power_plan_guid: None,
                 }],
             },
-            cpu_usage_mode: CpuUsageModeSettings::default(),
-            eco_qos: EcoQosSettings::default(),
+            by_cpu_load: ByCpuLoadSettings::default(),
+            background_efficiency: BackgroundEfficiencySettings::default(),
             app_suspension: AppSuspensionSettings::default(),
-            cpu_affinity: CpuAffinitySettings::default(),
+            core_steering: CoreSteeringSettings::default(),
             background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
-            cpu_limiter: CpuLimiterSettings::default(),
-            performance_mode: PerformanceModeSettings::default(),
+            core_limiter: CoreLimiterSettings::default(),
+            by_running_app: ByRunningAppSettings::default(),
             workload_engine: WorkloadEngineSettings::default(),
             process_priority: ProcessPrioritySettings::default(),
             thread_priority: ThreadPrioritySettings::default(),
-            priority_boost: PriorityBoostSettings::default(),
+            dynamic_priority_boost: DynamicPriorityBoostSettings::default(),
             io_priority: IoPrioritySettings::default(),
             gpu_priority: GpuPrioritySettings::default(),
             memory_priority: MemoryPrioritySettings::default(),
@@ -1487,23 +1481,21 @@ const fn default_true() -> bool {
     true
 }
 
-impl Default for ForegroundRules {
+impl Default for ByForegroundSettings {
     fn default() -> Self {
         Self {
             enabled: true,
             rules: Vec::new(),
-            power_plans: PowerPlanSettings::default(),
         }
     }
 }
 
-impl Default for CpuUsageModeSettings {
+impl Default for ByCpuLoadSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            power_plans: PowerPlanSettings::default(),
             rules: vec![
-                CpuUsageRule {
+                ByCpuLoadRule {
                     enabled: true,
                     name: "Low CPU Idle".to_owned(),
                     comparison: CpuUsageComparison::AtOrBelow,
@@ -1514,7 +1506,7 @@ impl Default for CpuUsageModeSettings {
                     else_enabled: false,
                     else_power_plan_guid: None,
                 },
-                CpuUsageRule {
+                ByCpuLoadRule {
                     enabled: true,
                     name: "High CPU Active".to_owned(),
                     comparison: CpuUsageComparison::AtOrAbove,
@@ -1530,13 +1522,13 @@ impl Default for CpuUsageModeSettings {
     }
 }
 
-impl Default for EcoQosSettings {
+impl Default for BackgroundEfficiencySettings {
     fn default() -> Self {
         Self {
             enabled: false,
             exclude_foreground_app: default_true(),
-            aggressiveness: EcoQosAggressiveness::Safe,
-            efficiency_whitelist: Vec::new(),
+            aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
+            custom_rules: Vec::new(),
         }
     }
 }
@@ -1565,12 +1557,12 @@ const fn default_thread_priority_background() -> ProcessThreadPrioritySetting {
     ProcessThreadPrioritySetting::BelowNormal
 }
 
-const fn default_priority_boost_foreground() -> ProcessPriorityBoostSetting {
-    ProcessPriorityBoostSetting::Default
+const fn default_dynamic_priority_boost_foreground() -> ProcessDynamicPriorityBoostSetting {
+    ProcessDynamicPriorityBoostSetting::Default
 }
 
-const fn default_priority_boost_background() -> ProcessPriorityBoostSetting {
-    ProcessPriorityBoostSetting::Disabled
+const fn default_dynamic_priority_boost_background() -> ProcessDynamicPriorityBoostSetting {
+    ProcessDynamicPriorityBoostSetting::Disabled
 }
 
 const fn default_gpu_priority_foreground() -> ProcessGpuPrioritySetting {
@@ -1653,12 +1645,12 @@ fn default_workload_engine_thread_priority_settings() -> ThreadPrioritySettings 
     }
 }
 
-fn default_workload_engine_priority_boost_settings() -> PriorityBoostSettings {
-    PriorityBoostSettings {
+fn default_workload_engine_dynamic_priority_boost_settings() -> DynamicPriorityBoostSettings {
+    DynamicPriorityBoostSettings {
         enabled: true,
         foreground_detection_enabled: true,
-        foreground_boost: ProcessPriorityBoostSetting::Enabled,
-        background_boost: ProcessPriorityBoostSetting::Disabled,
+        foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
+        background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         exclusions: Vec::new(),
     }
 }
@@ -1679,19 +1671,19 @@ const fn default_foreground_stability_delay_ms() -> u64 {
     750
 }
 
-const fn default_cpu_limiter_threshold_percent() -> u8 {
+const fn default_core_limiter_threshold_percent() -> u8 {
     75
 }
 
-const fn default_cpu_limiter_sustain_seconds() -> u64 {
+const fn default_core_limiter_sustain_seconds() -> u64 {
     5
 }
 
-const fn default_cpu_limiter_cooldown_seconds() -> u64 {
+const fn default_core_limiter_cooldown_seconds() -> u64 {
     10
 }
 
-const fn default_cpu_limiter_max_logical_processors() -> u8 {
+const fn default_core_limiter_max_logical_processors() -> u8 {
     1
 }
 
@@ -1727,11 +1719,11 @@ const fn default_timer_resolution_100ns() -> u32 {
     10_000
 }
 
-const fn default_eco_qos_cpu_restriction_percent() -> u8 {
+const fn default_cpu_restriction_percent() -> u8 {
     50
 }
 
-const fn default_eco_qos_cpu_restriction_max_logical_processors() -> u8 {
+const fn default_cpu_restriction_max_logical_processors() -> u8 {
     0
 }
 
@@ -1835,7 +1827,7 @@ impl Default for AppSuspensionSettings {
     }
 }
 
-impl Default for CpuAffinitySettings {
+impl Default for CoreSteeringSettings {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -1850,18 +1842,18 @@ impl Default for BackgroundCpuRestrictionSettings {
         Self {
             enabled: false,
             exclude_foreground_app: default_true(),
-            mode: EcoQosCpuRestrictionMode::HardAffinity,
-            strategy: EcoQosCpuRestrictionStrategy::Auto,
-            control_style: EcoQosCpuRestrictionControlStyle::Percentage,
-            percent: default_eco_qos_cpu_restriction_percent(),
-            max_logical_processors: default_eco_qos_cpu_restriction_max_logical_processors(),
+            mode: CpuRestrictionMode::HardAffinity,
+            strategy: CpuRestrictionStrategy::Auto,
+            control_style: CpuRestrictionControlStyle::Percentage,
+            percent: default_cpu_restriction_percent(),
+            max_logical_processors: default_cpu_restriction_max_logical_processors(),
             core_mask: 0,
             exclusions: Vec::new(),
         }
     }
 }
 
-impl Default for CpuLimiterSettings {
+impl Default for CoreLimiterSettings {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -1876,13 +1868,14 @@ impl Default for WorkloadEngineSettings {
         Self {
             enabled: false,
             lower_background_apps: default_true(),
-            workload_engine_efficiency_mode_enabled: default_true(),
+            workload_engine_background_efficiency_enabled: default_true(),
             workload_engine_background_priority: default_workload_engine_background_priority(),
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             workload_engine_io_priority: default_workload_engine_io_priority_settings(),
             workload_engine_thread_priority: default_workload_engine_thread_priority_settings(),
-            workload_engine_priority_boost: default_workload_engine_priority_boost_settings(),
+            workload_engine_dynamic_priority_boost:
+                default_workload_engine_dynamic_priority_boost_settings(),
             workload_engine_gpu_priority: default_workload_engine_gpu_priority_settings(),
             workload_engine_memory_priority_enabled: false,
             workload_engine_foreground_memory_priority:
@@ -1892,10 +1885,10 @@ impl Default for WorkloadEngineSettings {
             workload_engine_enabled: false,
             workload_engine_advanced_settings_enabled: false,
             workload_engine_affinity_escalation_enabled: false,
-            workload_engine_affinity_mode: EcoQosCpuRestrictionMode::SoftCpuSets,
+            workload_engine_affinity_mode: CpuRestrictionMode::SoftCpuSets,
             workload_engine_cpu_percent: default_workload_engine_cpu_percent(),
-            workload_engine_max_logical_processors:
-                default_eco_qos_cpu_restriction_max_logical_processors(),
+            workload_engine_max_logical_processors: default_cpu_restriction_max_logical_processors(
+            ),
             workload_engine_total_threshold_percent:
                 default_workload_engine_total_threshold_percent(),
             workload_engine_threshold_percent: default_workload_engine_threshold_percent(),
@@ -1958,13 +1951,13 @@ impl Default for ThreadPrioritySettings {
     }
 }
 
-impl Default for PriorityBoostSettings {
+impl Default for DynamicPriorityBoostSettings {
     fn default() -> Self {
         Self {
             enabled: false,
             foreground_detection_enabled: default_true(),
-            foreground_boost: default_priority_boost_foreground(),
-            background_boost: default_priority_boost_background(),
+            foreground_boost: default_dynamic_priority_boost_foreground(),
+            background_boost: default_dynamic_priority_boost_background(),
             exclusions: Vec::new(),
         }
     }
@@ -2105,7 +2098,7 @@ impl ThreadPrioritySettings {
     }
 }
 
-impl PriorityBoostSettings {
+impl DynamicPriorityBoostSettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
@@ -2116,12 +2109,12 @@ impl PriorityBoostSettings {
         &self,
         process_name: &str,
         foreground: bool,
-    ) -> Option<Option<ProcessPriorityBoostSetting>> {
+    ) -> Option<Option<ProcessDynamicPriorityBoostSetting>> {
         process_custom_rule_override(
             &self.exclusions,
             process_name,
             foreground,
-            |rule, foreground| rule.priority_boost_override(foreground),
+            |rule, foreground| rule.dynamic_priority_boost_override(foreground),
         )
     }
 }
@@ -2285,15 +2278,15 @@ impl AppSuspensionSettings {
     }
 }
 
-impl EcoQosSettings {
-    pub fn contains_efficiency_exclusion(&self, process_name: &str) -> bool {
-        self.efficiency_whitelist
+impl BackgroundEfficiencySettings {
+    pub fn contains_custom_rule(&self, process_name: &str) -> bool {
+        self.custom_rules
             .iter()
             .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
-    pub fn efficiency_exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.efficiency_whitelist
+    pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {
+        self.custom_rules
             .iter()
             .any(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
     }
@@ -2313,7 +2306,7 @@ impl BackgroundCpuRestrictionSettings {
     }
 }
 
-impl CpuAffinitySettings {
+impl CoreSteeringSettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules
             .iter()
@@ -2398,35 +2391,6 @@ impl InputDetectionSettings {
     }
 }
 
-impl Settings {
-    pub fn fill_missing_power_plan_mappings(&mut self) {
-        self.activity_mode
-            .power_plans
-            .fill_missing_from(&self.power_plans);
-        self.foreground_rules
-            .power_plans
-            .fill_missing_from(&self.power_plans);
-        self.cpu_usage_mode
-            .power_plans
-            .fill_missing_from(&self.power_plans);
-    }
-}
-
-impl PowerPlanSettings {
-    pub fn is_empty(&self) -> bool {
-        self.power_save_guid.is_none() && self.performance_guid.is_none()
-    }
-
-    pub fn fill_missing_from(&mut self, fallback: &Self) {
-        if self.power_save_guid.is_none() {
-            self.power_save_guid = fallback.power_save_guid.clone();
-        }
-        if self.performance_guid.is_none() {
-            self.performance_guid = fallback.performance_guid.clone();
-        }
-    }
-}
-
 impl WeekdaySetting {
     pub const fn all() -> [Self; 7] {
         [
@@ -2465,7 +2429,7 @@ impl WeekdaySetting {
     }
 }
 
-impl ScheduleRule {
+impl ByTimeRule {
     pub fn parsed_times(&self) -> Option<(NaiveTime, NaiveTime)> {
         let start = NaiveTime::parse_from_str(&self.start_time, "%H:%M").ok()?;
         let end = NaiveTime::parse_from_str(&self.end_time, "%H:%M").ok()?;
@@ -2473,7 +2437,7 @@ impl ScheduleRule {
     }
 }
 
-impl CpuUsageRule {
+impl ByCpuLoadRule {
     pub fn matches_usage(&self, cpu_usage_percent: f32) -> bool {
         let threshold = f32::from(self.threshold_percent.min(100));
         match self.comparison {

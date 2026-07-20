@@ -1,25 +1,25 @@
 use std::time::Instant;
 
-use crate::config::CpuUsageModeSettings;
+use crate::config::ByCpuLoadSettings;
 
 #[derive(Debug, Clone)]
-pub struct CpuUsageDecision {
+pub struct ByCpuLoadDecision {
     pub rule_name: String,
     pub power_plan_guid: Option<String>,
     pub usage_percent: f32,
 }
 
 #[derive(Debug, Default)]
-pub struct CpuUsageScheduler {
+pub struct ByCpuLoadScheduler {
     matched_since: Vec<Option<Instant>>,
 }
 
-impl CpuUsageScheduler {
+impl ByCpuLoadScheduler {
     pub fn current_decision(
         &mut self,
-        settings: &CpuUsageModeSettings,
+        settings: &ByCpuLoadSettings,
         usage_percent: Option<f32>,
-    ) -> Option<CpuUsageDecision> {
+    ) -> Option<ByCpuLoadDecision> {
         if !settings.enabled || settings.rules.is_empty() {
             self.matched_since.clear();
             return None;
@@ -55,7 +55,7 @@ impl CpuUsageScheduler {
 
             let matched_since = self.matched_since[index].get_or_insert(now);
             if matched_since.elapsed().as_secs() >= rule.duration_seconds {
-                return Some(CpuUsageDecision {
+                return Some(ByCpuLoadDecision {
                     rule_name: rule.name.clone(),
                     power_plan_guid: rule.power_plan_guid.clone(),
                     usage_percent,
@@ -63,7 +63,7 @@ impl CpuUsageScheduler {
             }
         }
 
-        else_decision.map(|(rule_name, power_plan_guid)| CpuUsageDecision {
+        else_decision.map(|(rule_name, power_plan_guid)| ByCpuLoadDecision {
             rule_name,
             power_plan_guid,
             usage_percent,
@@ -71,7 +71,7 @@ impl CpuUsageScheduler {
     }
 }
 
-fn else_decision_for_rule(rule: &crate::config::CpuUsageRule) -> Option<(String, Option<String>)> {
+fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String, Option<String>)> {
     if rule.else_enabled {
         return Some((
             format!("{} else", rule.name),
@@ -89,15 +89,14 @@ fn else_decision_for_rule(rule: &crate::config::CpuUsageRule) -> Option<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{CpuUsageComparison, CpuUsageRule, PowerPlanSettings};
+    use crate::config::{ByCpuLoadRule, CpuUsageComparison, PowerPlanSettings};
 
     #[test]
-    fn returns_matching_zero_duration_rule() {
-        let mut scheduler = CpuUsageScheduler::default();
-        let settings = CpuUsageModeSettings {
+    fn by_cpu_load_returns_matching_zero_duration_rule() {
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let settings = ByCpuLoadSettings {
             enabled: true,
-            power_plans: PowerPlanSettings::default(),
-            rules: vec![CpuUsageRule {
+            rules: vec![ByCpuLoadRule {
                 enabled: true,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
@@ -118,11 +117,10 @@ mod tests {
 
     #[test]
     fn ignores_non_matching_rule() {
-        let mut scheduler = CpuUsageScheduler::default();
-        let settings = CpuUsageModeSettings {
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let settings = ByCpuLoadSettings {
             enabled: true,
-            power_plans: PowerPlanSettings::default(),
-            rules: vec![CpuUsageRule {
+            rules: vec![ByCpuLoadRule {
                 enabled: true,
                 name: "Low CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrBelow,
@@ -140,11 +138,10 @@ mod tests {
 
     #[test]
     fn returns_between_rule_when_usage_is_in_range() {
-        let mut scheduler = CpuUsageScheduler::default();
-        let settings = CpuUsageModeSettings {
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let settings = ByCpuLoadSettings {
             enabled: true,
-            power_plans: PowerPlanSettings::default(),
-            rules: vec![CpuUsageRule {
+            rules: vec![ByCpuLoadRule {
                 enabled: true,
                 name: "Medium CPU".to_owned(),
                 comparison: CpuUsageComparison::Between,
@@ -165,11 +162,10 @@ mod tests {
 
     #[test]
     fn else_branch_applies_until_condition_duration_is_met() {
-        let mut scheduler = CpuUsageScheduler::default();
-        let settings = CpuUsageModeSettings {
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let settings = ByCpuLoadSettings {
             enabled: true,
-            power_plans: PowerPlanSettings::default(),
-            rules: vec![CpuUsageRule {
+            rules: vec![ByCpuLoadRule {
                 enabled: true,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,
@@ -196,11 +192,10 @@ mod tests {
 
     #[test]
     fn disabled_rule_is_ignored() {
-        let mut scheduler = CpuUsageScheduler::default();
-        let settings = CpuUsageModeSettings {
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let settings = ByCpuLoadSettings {
             enabled: true,
-            power_plans: PowerPlanSettings::default(),
-            rules: vec![CpuUsageRule {
+            rules: vec![ByCpuLoadRule {
                 enabled: false,
                 name: "High CPU".to_owned(),
                 comparison: CpuUsageComparison::AtOrAbove,

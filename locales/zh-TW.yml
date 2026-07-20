@@ -5,37 +5,37 @@ app:
   description: "Windows Performance & Power Manager"
 
 nav:
-  overview: "首頁"
+  home: "首頁"
   winderust_features: "Winderust 功能"
-  power_automation: "電源計畫控制"
+  power_plan_control: "電源計畫控制"
   automation_group: "自動化"
   advanced_group: "進階"
-  processor_controls: "CPU 控制"
+  cpu_control: "CPU 控制"
   priority_control: "優先順序控制"
   app: "應用程式"
   advanced: "進階控制"
   dashboard: "儀表板"
-  activity: "操作狀態排程"
-  cpu_usage: "CPU 負載偵測"
-  core_parking: "進階電源計畫調校"
+  by_activity: "操作狀態排程"
+  by_cpu_load: "CPU 負載偵測"
+  advanced_power_plan_tuning: "進階電源計畫調校"
   process_priority: "程序優先順序"
   thread_priority: "執行緒優先順序"
   dynamic_priority_boost: "動態優先順序提升"
-  cpu_limiter: "核心限制器"
+  core_limiter: "核心限制器"
   background_cpu_restriction: "背景 CPU 限制"
   process_list: "程序清單"
-  smart_saver_mode: "自適應引擎"
-  efficiency_mode: "背景效率"
+  adaptive_engine: "自適應引擎"
+  background_efficiency: "背景效率"
   app_suspension: "應用程式暫停"
   workload_engine: "工作負載引擎"
   io_priority: "I/O 優先順序"
   gpu_priority: "GPU 優先順序"
   memory_priority: "記憶體優先順序"
   memory_trim: "記憶體修剪"
-  performance_mode: "執行中應用程式電源計畫"
-  cpu_affinity: "核心導向"
-  foreground_rules: "前景電源計畫"
-  schedule: "時間規則"
+  by_running_app: "執行中應用程式電源計畫"
+  core_steering: "核心導向"
+  by_foreground: "前景電源計畫"
+  by_time: "時間規則"
   action_log: "記錄"
   settings: "設定"
   timer_resolution: "計時器解析度"
@@ -130,8 +130,8 @@ admin_rights:
   ignore: "忽略"
   relaunch: "重新啟動"
 
-dashboard:
-  overview: "總覽"
+home:
+  home: "總覽"
   intro_1: "儀表板會摘要目前的自動化決策、偵測狀態與作用中的電源計畫。"
   intro_2: "變更各頁設定前，可先在此確認 Winderust 正在執行的動作。"
   current_power_plan: "目前電源計畫"
@@ -139,7 +139,7 @@ dashboard:
   automation: "自動化"
   foreground_app: "前景應用程式"
   activity_state: "活動狀態"
-  cpu_usage: "CPU"
+  by_cpu_load: "CPU"
   cpu_load: "使用率"
   cpu_frequency: "頻率"
   memory_usage: "RAM"
@@ -152,9 +152,9 @@ dashboard:
   network_usage: "網路"
   network_download: "下載"
   network_upload: "上傳"
-  efficiency_mode: "效率模式"
+  background_efficiency: "效率模式"
   app_suspension: "應用程式暫停"
-  cpu_affinity: "核心導向"
+  core_steering: "核心導向"
   idle_time: "閒置時間"
   time_rules: "時間規則"
   decision_reason: "決策原因"
@@ -325,7 +325,7 @@ processor_power:
   loaded_values: "已從 %{plan} 載入處理器調校數值。"
   applied_custom: "已將自訂處理器調校套用到 %{plan}。"
 
-activity:
+by_activity:
   intro_1: "操作狀態排程會根據鍵盤、滑鼠與控制器活動切換電源計畫。"
   intro_2: "可在下方選擇閒置與活動時的電源計畫；輸入偵測會控制應用程式何時切換狀態。"
   enable: "啟用操作狀態排程"
@@ -338,7 +338,7 @@ activity:
   idle_timeout: "閒置逾時"
   check_interval: "檢查間隔"
 
-foreground:
+by_foreground:
   intro_1: "前景電源計畫會在特定應用程式取得焦點時切換電源計畫。"
   intro_2: "已選擇電源計畫的規則會覆蓋較低優先順序的自動化；繼承或預設規則會與時間、CPU 負載與操作狀態規則組合。"
   enable: "啟用前景電源計畫"
@@ -347,7 +347,7 @@ foreground:
   focused_app: "取得焦點的應用程式"
   target_power_plan: "目標電源計畫"
 
-schedule:
+by_time:
   intro_1: "時間規則會根據目前日期與時間切換電源計畫。"
   intro_2: "每個規則都可使用自己的目標電源計畫，並支援跨夜時段。"
   enable: "啟用時間規則"
@@ -360,7 +360,7 @@ schedule:
   use_hhmm: "請使用 HH:MM"
   target_power_plan: "目標電源計畫"
 
-cpu_rules:
+by_cpu_load:
   intro_1: "CPU 負載計畫會在整體處理器使用率超過門檻並持續一段時間後切換全系統電源計畫。"
   intro_2: "這裡用於電源計畫自動化；特定程序需要處理器上限時，請使用 CPU 上限規則。"
   enable: "啟用 CPU 負載計畫"
@@ -375,7 +375,7 @@ cpu_rules:
   else: "否則"
   else_use: "否則使用"
 
-efficiency:
+background_efficiency:
   intro_1: "背景效率會對背景應用程式套用 Windows 效率模式，以降低 CPU 耗電。"
   intro_2: "背景效率作用時，Winderust 也會降低目標應用程式的程序優先順序。"
   intro_3: "這比應用程式暫停更安全，因為應用程式會持續執行。"
@@ -420,11 +420,11 @@ efficiency:
   scanned_processes: "已掃描程序"
   skipped_processes: "已略過程序"
   failed_actions: "失敗動作"
-  whitelist: "排除清單"
-  whitelist_help: "此排除清單中的應用程式永遠不會進入背景效率。"
-  no_whitelist: "沒有排除的應用程式。"
+  custom_rules: "排除清單"
+  custom_rules_help: "此排除清單中的應用程式永遠不會進入背景效率。"
+  no_custom_rules: "沒有排除的應用程式。"
 
-smart_saver:
+adaptive_engine:
   intro_1: "自適應引擎會整合動態處理器電源控制與工作負載感知 CPU 排程。"
   intro_2: "省電和平衡會依需求動態調整；效能和速度會維持固定的處理器目標。"
   intro_3: "日常使用建議選擇平衡；只有需要持續高效能時才使用固定模式。"
@@ -432,7 +432,7 @@ smart_saver:
   power_mode: "運作模式"
   power_mode_help: "省電和平衡會依負載動態調整處理器電源；效能和速度會使用固定目標並加強前景排程。"
   advanced_settings: "啟用進階設定"
-  advanced_settings_help: "顯示手動智慧省電、背景效率與 CPU 排程控制。"
+  advanced_settings_help: "顯示手動自適應引擎、背景效率與 CPU 排程控制。"
   cpu_behaviour: "CPU 行為"
   priority_control: "優先順序控制"
   misc: "其他"
@@ -464,7 +464,7 @@ smart_saver:
   timer_ignored: "計時器保護"
   restrained: "已限制"
 
-suspension:
+app_suspension:
   intro_1: "應用程式暫停會在延遲後暫停選取的背景應用程式，以降低 CPU 使用率。"
   intro_2: "當你切回暫停的應用程式或退出 Winderust 時，系統會自動恢復它們。"
   intro_3: "請只對適合在背景暫停的應用程式使用此功能。"
@@ -547,8 +547,8 @@ workload_engine:
   workload_engine_advanced_help: "微調行為背後的閾值與計時器。多數使用者可保持收合。"
   auto_process_priority: "處理程序優先權"
   auto_process_priority_help: "工作負載引擎啟用時降低符合條件的背景處理程序優先權，並控制前景提升。"
-  auto_efficiency_mode: "背景效率"
-  auto_efficiency_mode_help: "獨立的背景效率功能關閉時，讓工作負載引擎套用背景效率。"
+  auto_background_efficiency: "背景效率"
+  auto_background_efficiency_help: "獨立的背景效率功能關閉時，讓工作負載引擎套用背景效率。"
   auto_efficiency_level: "保護設定檔"
   auto_efficiency_level_help: "使用背景效率的安全、平衡、積極保護設定檔。"
   auto_io_priority: "自動 I/O 優先順序"
@@ -613,7 +613,7 @@ workload_engine:
   auto_priority_assist: "優先權輔助"
   auto_priority_assist_help: "調整工作負載引擎在壓力期間套用的暫時 I/O、執行緒、動態提升與 GPU 優先權預設值。"
   auto_thread_priority: "執行緒優先權"
-  auto_priority_boost: "動態優先權提升"
+  auto_dynamic_priority_boost: "動態優先權提升"
   auto_gpu_priority: "GPU 優先權"
   priority_foreground_value: "前景值"
   priority_background_value: "背景值"
@@ -761,7 +761,7 @@ memory_trim:
   exclusions_help: "此清單中的應用程式不會被 記憶體修剪 修剪記憶體。"
   no_exclusions: "沒有排除的應用程式。"
 
-affinity:
+core_steering:
   intro_1: "核心導向會為選取的背景應用程式設定偏好的邏輯 CPU。"
   intro_2: "大多數應用程式建議使用軟性 CPU Sets，讓 Windows 保留更多排程彈性。"
   intro_3: "導向可能影響已完全吃滿 CPU 的工作負載、已自行管理執行緒的應用程式，或在大型 CPU 上不支援處理器群組的應用程式。"
@@ -839,7 +839,7 @@ action_log:
   time: "時間"
   pid: "PID"
 
-performance_mode:
+by_running_app:
   enable: "啟用執行中應用程式電源計畫"
   intro_1: "執行中應用程式電源計畫會在相符程序執行時切換到選取的電源計畫。"
   intro_2: "當觸發程序結束或功能停用時，Winderust 會還原先前的電源計畫。"

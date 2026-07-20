@@ -4,7 +4,7 @@ use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::{PerformanceModeRule, PerformanceModeSettings, PowerPlanSettings},
+    config::{ByRunningAppRule, ByRunningAppSettings},
     foreground::{
         contains_process_name, list_processes, process_session_id, same_process_name, ProcessInfo,
         EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
@@ -14,7 +14,7 @@ use crate::{
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PerformanceModeSnapshot {
+pub struct ByRunningAppSnapshot {
     pub enabled: bool,
     pub active: bool,
     pub scanned_processes: usize,
@@ -28,12 +28,12 @@ pub struct PerformanceModeSnapshot {
 }
 
 #[derive(Default)]
-pub struct PerformanceModeManager {
-    active: Option<ActivePerformanceMode>,
+pub struct ByRunningAppManager {
+    active: Option<ActiveByRunningApp>,
 }
 
 #[derive(Debug, Clone)]
-struct ActivePerformanceMode {
+struct ActiveByRunningApp {
     rule_name: String,
     process_id: u32,
     process_name: String,
@@ -41,24 +41,23 @@ struct ActivePerformanceMode {
 }
 
 #[derive(Debug, Clone)]
-struct PerformanceModeMatch {
+struct ByRunningAppMatch {
     rule_name: String,
     process_id: u32,
     process_name: String,
     target_guid: String,
 }
 
-impl PerformanceModeManager {
+impl ByRunningAppManager {
     pub fn update(
         &mut self,
-        settings: &PerformanceModeSettings,
-        power_plans: &PowerPlanSettings,
+        settings: &ByRunningAppSettings,
         automation_enabled: bool,
         action_log: &mut ActionLog,
-    ) -> PerformanceModeSnapshot {
+    ) -> ByRunningAppSnapshot {
         if !automation_enabled {
             self.release(action_log, "automation disabled");
-            return PerformanceModeSnapshot {
+            return ByRunningAppSnapshot {
                 enabled: false,
                 message: "Automation disabled.".to_owned(),
                 ..Default::default()
@@ -67,7 +66,7 @@ impl PerformanceModeManager {
 
         if !settings.enabled {
             self.release(action_log, "By Running App disabled");
-            return PerformanceModeSnapshot {
+            return ByRunningAppSnapshot {
                 enabled: false,
                 message: "By Running App disabled.".to_owned(),
                 ..Default::default()
@@ -77,7 +76,7 @@ impl PerformanceModeManager {
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             self.release(action_log, "current Windows session is unknown");
-            return PerformanceModeSnapshot {
+            return ByRunningAppSnapshot {
                 enabled: true,
                 message: "Paused: current Windows session is unknown.".to_owned(),
                 ..Default::default()
@@ -88,7 +87,7 @@ impl PerformanceModeManager {
             Ok(processes) => processes,
             Err(err) => {
                 self.release(action_log, "process list unavailable");
-                return PerformanceModeSnapshot {
+                return ByRunningAppSnapshot {
                     enabled: true,
                     message: err,
                     ..Default::default()
@@ -107,11 +106,11 @@ impl PerformanceModeManager {
             })
             .collect::<Vec<_>>();
         let matched_processes = matching_process_names(settings, &eligible_processes).len();
-        let matched = matching_rule_process(settings, power_plans, &eligible_processes);
+        let matched = matching_rule_process(settings, &eligible_processes);
 
         let Some(matched) = matched else {
             self.release(action_log, "no By Running App process is running");
-            return PerformanceModeSnapshot {
+            return ByRunningAppSnapshot {
                 enabled: true,
                 scanned_processes,
                 matched_processes,
@@ -125,7 +124,7 @@ impl PerformanceModeManager {
         }
 
         action_log.record(
-            ActionLogFeature::PerformanceMode,
+            ActionLogFeature::ByRunningApp,
             Some(matched.process_id),
             matched.process_name.clone(),
             ActionLogAction::Apply,
@@ -135,7 +134,7 @@ impl PerformanceModeManager {
                 matched.rule_name, matched.target_guid
             ),
         );
-        self.active = Some(ActivePerformanceMode {
+        self.active = Some(ActiveByRunningApp {
             rule_name: matched.rule_name,
             process_id: matched.process_id,
             process_name: matched.process_name,
@@ -165,7 +164,7 @@ impl PerformanceModeManager {
         })
     }
 
-    fn active_matches(&self, matched: &PerformanceModeMatch) -> bool {
+    fn active_matches(&self, matched: &ByRunningAppMatch) -> bool {
         self.active.as_ref().is_some_and(|active| {
             active.process_id == matched.process_id
                 && same_process_name(&active.process_name, &matched.process_name)
@@ -181,7 +180,7 @@ impl PerformanceModeManager {
         };
 
         action_log.record(
-            ActionLogFeature::PerformanceMode,
+            ActionLogFeature::ByRunningApp,
             Some(active.process_id),
             active.process_name,
             ActionLogAction::Restore,
@@ -196,9 +195,9 @@ impl PerformanceModeManager {
         scanned_processes: usize,
         matched_processes: usize,
         last_error: Option<String>,
-    ) -> PerformanceModeSnapshot {
+    ) -> ByRunningAppSnapshot {
         let Some(active) = self.active.as_ref() else {
-            return PerformanceModeSnapshot {
+            return ByRunningAppSnapshot {
                 enabled,
                 scanned_processes,
                 matched_processes,
@@ -212,7 +211,7 @@ impl PerformanceModeManager {
             };
         };
 
-        PerformanceModeSnapshot {
+        ByRunningAppSnapshot {
             enabled,
             active: true,
             scanned_processes,
@@ -227,14 +226,14 @@ impl PerformanceModeManager {
     }
 }
 
-impl Drop for PerformanceModeManager {
+impl Drop for ByRunningAppManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
         self.release(&mut action_log, "By Running App manager dropped");
     }
 }
 
-impl Default for PerformanceModeSnapshot {
+impl Default for ByRunningAppSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -256,19 +255,14 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 }
 
 fn matching_rule_process(
-    settings: &PerformanceModeSettings,
-    power_plans: &PowerPlanSettings,
+    settings: &ByRunningAppSettings,
     processes: &[ProcessInfo],
-) -> Option<PerformanceModeMatch> {
+) -> Option<ByRunningAppMatch> {
     for rule in &settings.rules {
         if !rule.enabled || rule.process_name.trim().is_empty() {
             continue;
         }
-        let Some(target_guid) = rule
-            .power_plan_guid
-            .clone()
-            .or_else(|| power_plans.performance_guid.clone())
-        else {
+        let Some(target_guid) = rule.power_plan_guid.clone() else {
             continue;
         };
         let Some(process) = processes
@@ -278,7 +272,7 @@ fn matching_rule_process(
             continue;
         };
 
-        return Some(PerformanceModeMatch {
+        return Some(ByRunningAppMatch {
             rule_name: performance_rule_name(rule),
             process_id: process.id,
             process_name: process.name.clone(),
@@ -290,7 +284,7 @@ fn matching_rule_process(
 }
 
 fn matching_process_names(
-    settings: &PerformanceModeSettings,
+    settings: &ByRunningAppSettings,
     processes: &[ProcessInfo],
 ) -> BTreeSet<String> {
     processes
@@ -306,7 +300,7 @@ fn matching_process_names(
         .collect()
 }
 
-fn performance_rule_name(rule: &PerformanceModeRule) -> String {
+fn performance_rule_name(rule: &ByRunningAppRule) -> String {
     let name = rule.name.trim();
     if name.is_empty() {
         rule.process_name.trim().to_owned()
@@ -320,10 +314,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matching_rule_uses_rule_plan_before_global_plan() {
-        let settings = PerformanceModeSettings {
+    fn matching_rule_uses_selected_plan() {
+        let settings = ByRunningAppSettings {
             enabled: true,
-            rules: vec![PerformanceModeRule {
+            rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game".to_owned(),
                 process_name: "Game.EXE".to_owned(),
@@ -336,63 +330,24 @@ mod tests {
             name: "game.exe".to_owned(),
         }];
 
-        let matched = matching_rule_process(
-            &settings,
-            &PowerPlanSettings {
-                power_save_guid: None,
-                performance_guid: Some("global-guid".to_owned()),
-            },
-            &processes,
-        )
-        .unwrap();
+        let matched = matching_rule_process(&settings, &processes).unwrap();
 
         assert_eq!(matched.rule_name, "Game");
         assert_eq!(matched.target_guid, "custom-guid");
     }
 
     #[test]
-    fn matching_rule_falls_back_to_global_performance_plan() {
-        let settings = PerformanceModeSettings {
-            enabled: true,
-            rules: vec![PerformanceModeRule {
-                enabled: true,
-                name: String::new(),
-                process_name: "game.exe".to_owned(),
-                power_plan_guid: None,
-            }],
-        };
-        let processes = vec![ProcessInfo {
-            id: 42,
-            parent_id: None,
-            name: "game.exe".to_owned(),
-        }];
-
-        let matched = matching_rule_process(
-            &settings,
-            &PowerPlanSettings {
-                power_save_guid: None,
-                performance_guid: Some("global-guid".to_owned()),
-            },
-            &processes,
-        )
-        .unwrap();
-
-        assert_eq!(matched.rule_name, "game.exe");
-        assert_eq!(matched.target_guid, "global-guid");
-    }
-
-    #[test]
     fn matching_rule_ignores_disabled_and_missing_plan_rules() {
-        let settings = PerformanceModeSettings {
+        let settings = ByRunningAppSettings {
             enabled: true,
             rules: vec![
-                PerformanceModeRule {
+                ByRunningAppRule {
                     enabled: false,
                     name: "Disabled".to_owned(),
                     process_name: "game.exe".to_owned(),
                     power_plan_guid: Some("disabled-guid".to_owned()),
                 },
-                PerformanceModeRule {
+                ByRunningAppRule {
                     enabled: true,
                     name: "Missing plan".to_owned(),
                     process_name: "game.exe".to_owned(),
@@ -406,23 +361,21 @@ mod tests {
             name: "game.exe".to_owned(),
         }];
 
-        assert!(
-            matching_rule_process(&settings, &PowerPlanSettings::default(), &processes).is_none()
-        );
+        assert!(matching_rule_process(&settings, &processes).is_none());
     }
 
     #[test]
     fn matching_rule_continues_past_unmatched_rules() {
-        let settings = PerformanceModeSettings {
+        let settings = ByRunningAppSettings {
             enabled: true,
             rules: vec![
-                PerformanceModeRule {
+                ByRunningAppRule {
                     enabled: true,
                     name: "Missing process".to_owned(),
                     process_name: "missing.exe".to_owned(),
                     power_plan_guid: Some("missing-guid".to_owned()),
                 },
-                PerformanceModeRule {
+                ByRunningAppRule {
                     enabled: true,
                     name: "Game".to_owned(),
                     process_name: "game.exe".to_owned(),
@@ -436,8 +389,7 @@ mod tests {
             name: "game.exe".to_owned(),
         }];
 
-        let matched =
-            matching_rule_process(&settings, &PowerPlanSettings::default(), &processes).unwrap();
+        let matched = matching_rule_process(&settings, &processes).unwrap();
 
         assert_eq!(matched.rule_name, "Game");
         assert_eq!(matched.target_guid, "game-guid");

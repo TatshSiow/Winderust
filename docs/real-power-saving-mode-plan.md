@@ -2,9 +2,9 @@
 
 ## Decision
 
-Do not build a new `Adaptive Saver Engine`.
+Do not build a second adaptive engine.
 
-Implement `Smart Saver Mode` by extending the systems that already exist:
+Implement `Adaptive Engine` by extending the systems that already exist:
 
 - `src/features/winderust_features/background_efficiency.rs`: background EcoQoS and priority restore.
 - `src/features/winderust_features/workload_engine.rs`: adaptive background restraint under CPU pressure.
@@ -25,7 +25,7 @@ power hint only when it is safe.
 ## Goals
 
 - Reduce real battery and idle/background power use without switching Windows power plans.
-- Temporarily apply and restore processor Saver values while Smart Saver is enabled.
+- Temporarily apply and restore processor Saver values while Adaptive Engine is enabled.
 - Preserve foreground responsiveness.
 - Restore process state when a process becomes foreground, exits, is excluded, or automation is disabled.
 - Avoid media, calls, audio, input, system, security, and foreground workloads.
@@ -47,30 +47,30 @@ power hint only when it is safe.
 | Need | Existing code | Use it how |
 | --- | --- | --- |
 | Foreground protection | `foreground::process_list`, `ForegroundDetector`, `WorkloadEngineManager::update` | Keep foreground PID/name exclusion as the primary safety gate. |
-| Background EcoQoS | `EcoQosManager` | Add ignore-timer-resolution to the same saved/restored throttling state. |
+| Background EcoQoS | `BackgroundEfficiencyManager` | Add ignore-timer-resolution to the same saved/restored throttling state. |
 | Adaptive CPU-pressure response | `WorkloadEngineManager` | Keep current pressure, sustain, cooldown, and candidate selection logic. |
-| Priority lowering/restoration | `EcoQosManager`, `WorkloadEngineManager` | Reuse existing previous-priority tracking. |
-| CPU Sets | `CpuAffinityManager` | Keep as Phase 2 escalation through existing Workload Engine settings. |
+| Priority lowering/restoration | `BackgroundEfficiencyManager`, `WorkloadEngineManager` | Reuse existing previous-priority tracking. |
+| CPU Sets | `CoreSteeringManager` | Keep as Phase 2 escalation through existing Workload Engine settings. |
 | Audio activity | `suspension::active_audio_process_ids` logic | Extract a small shared helper before applying the timer-resolution flag. |
 | Exclusions | existing exclusion/rule lists | Reuse; do not add a second whitelist system. |
 | Action history | `ActionLog` | Extend messages only where a new timer policy is applied/skipped. |
 
 ## MVP Behavior
 
-### Winderust Self Saver
+### Winderust Self Power Handling
 
-When Smart Saver is enabled:
+When Adaptive Engine is enabled:
 
 - Save the active plan's processor-power values.
-- Apply the existing Winderust `ProcessorPowerPreset::Saver` shape to the active plan when the Smart Saver Processor power policy toggle is enabled by default.
+- Apply the existing Winderust `ProcessorPowerPreset::Saver` shape to the active plan when the Adaptive Engine processor power policy toggle is enabled by default.
 - Apply EcoQoS to Winderust itself.
 - Ignore Winderust's own high-resolution timer requests.
 - Keep process-wide idle priority only for hidden-to-tray mode.
-- Restore the saved processor-power values when Smart Saver is disabled or Winderust exits.
+- Restore the saved processor-power values when Adaptive Engine is disabled or Winderust exits.
 
 ### Background Efficiency
 
-Background Efficiency is an opt-in Smart Saver escalation. When it targets a process:
+Background Efficiency is an opt-in Adaptive Engine escalation. When it targets a process:
 
 - Apply EcoQoS.
 - Lower priority as it already does.
@@ -79,7 +79,7 @@ Background Efficiency is an opt-in Smart Saver escalation. When it targets a pro
 
 ### Workload Engine
 
-Workload Engine is an opt-in Smart Saver escalation, not part of the default
+Workload Engine is an opt-in Adaptive Engine escalation, not part of the default
 master toggle. When enabled and applying automatic background efficiency:
 
 - Keep current CPU-pressure gating.
@@ -140,9 +140,9 @@ applied_ignore_timer_resolution: bool
 
 Use it only for status/log clarity. Rollback should still restore the previous raw throttling state.
 
-### 4. Add a Minimal Smart Saver Page
+### 4. Add a Minimal Adaptive Engine Page
 
-Add `Smart Saver Mode` under Winderust Features as a thin preset surface over
+Add `Adaptive Engine` under Winderust Features as a thin preset surface over
 the existing Background Efficiency and Workload Engine settings.
 
 The page should:
@@ -172,38 +172,38 @@ graphify update .
 Run the package-watt benchmark when measuring power savings:
 
 ```powershell
-.\scripts\power_drain_benchmark.ps1 -Phases Baseline,SmartSaver -MinPasses 3 -MaxPasses 8 -SampleSeconds 30 -StableCvPercent 5
+.\scripts\power_drain_benchmark.ps1 -Phases Baseline,AdaptiveEngine -MinPasses 3 -MaxPasses 8 -SampleSeconds 30 -StableCvPercent 5
 ```
 
-Latest integrated Smart Saver benchmark:
+Latest integrated Adaptive Engine benchmark:
 
-| Build | Median package W avg | Stable | Delta vs previous Smart Saver |
+| Build | Median package W avg | Stable | Delta vs previous Adaptive Engine |
 | --- | ---: | --- | ---: |
 | Closed / no Winderust | 7.167 W | true | 0.6% higher |
 | Closed / no Winderust, 75s samples | 6.764 W | true | 5.1% lower |
-| Previous Smart Saver | 7.125 W | true | baseline |
-| Tuned Smart Saver | 5.915 W | true | 17.0% lower |
-| Visible tuned Smart Saver with slow app tick | 5.953 W | true | 16.4% lower |
-| Hidden tuned Smart Saver with worker cadence fix, 75s samples | 5.792 W | true | 18.7% lower |
+| Previous Adaptive Engine | 7.125 W | true | baseline |
+| Tuned Adaptive Engine | 5.915 W | true | 17.0% lower |
+| Visible tuned Adaptive Engine with slow app tick | 5.953 W | true | 16.4% lower |
+| Hidden tuned Adaptive Engine with worker cadence fix, 75s samples | 5.792 W | true | 18.7% lower |
 | Closed / no Winderust after hook suppression, 75s samples | 6.612 W | true | 7.2% lower |
-| Hidden Smart Saver with hook suppression, 75s samples | 5.809 W | true | 18.5% lower |
+| Hidden Adaptive Engine with hook suppression, 75s samples | 5.809 W | true | 18.5% lower |
 
 Same-run closed-vs-hidden package result after hook suppression:
-Hidden Smart Saver measured 5.809 W vs closed/no-app 6.612 W, a 12.1% lower package-power median.
+Hidden Adaptive Engine measured 5.809 W vs closed/no-app 6.612 W, a 12.1% lower package-power median.
 
 ## Implementation Status
 
 - Added `src/backend/audio_activity.rs` and reused it from suspension, EcoQoS, and Workload Engine.
-- Added Smart Saver self-power handling for Winderust's own EcoQoS and timer requests.
-- Added temporary active-plan processor Saver values with restore-on-disable/drop and a Smart Saver child toggle to disable that processor-policy change.
-- Tuned the Smart Saver processor shape to cap processor performance at 60% with boost disabled after package-watt benchmarking.
-- Slowed Winderust's own UI maintenance tick from 1 second to 60 seconds while saved Smart Saver is enabled to reduce idle wakeups.
-- Slowed hidden Smart Saver process-appearance and suspended-app release polling to the same 60-second cadence.
-- Suppressed Smart Saver appearance-only Windows event watching plus app-suspension/process foreground, window, and input hooks so package residency is not kept worse by idle global hooks.
+- Added Adaptive Engine self-power handling for Winderust's own EcoQoS and timer requests.
+- Added temporary active-plan processor Saver values with restore-on-disable/drop and an Adaptive Engine child toggle to disable that processor-policy change.
+- Tuned the Adaptive Engine processor shape to cap processor performance at 60% with boost disabled after package-watt benchmarking.
+- Slowed Winderust's own UI maintenance tick from 1 second to 60 seconds while Adaptive Engine is enabled to reduce idle wakeups.
+- Slowed hidden Adaptive Engine process-appearance and suspended-app release polling to the same 60-second cadence.
+- Suppressed Adaptive Engine appearance-only Windows event watching plus app-suspension/process foreground, window, and input hooks so package residency is not kept worse by idle global hooks.
 - Added guarded `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION` handling to EcoQoS and Workload Engine.
 - Added timer-resolution status counters to the EcoQoS and Workload Engine snapshots.
-- Added the Smart Saver page under Winderust Features with English and Traditional Chinese labels.
-- Kept Workload Engine restraint opt-in from Smart Saver after package-watt testing showed the heavier path can raise idle drain.
+- Added the Adaptive Engine page under Winderust Features with English and Traditional Chinese labels.
+- Kept Workload Engine restraint opt-in from Adaptive Engine after package-watt testing showed the heavier path can raise idle drain.
 - Added `scripts/power_drain_benchmark.ps1` for repeated core/package watt sampling.
 - Added focused bitmask and guard tests.
 
@@ -222,10 +222,10 @@ Use a small manual baseline before marketing or release notes claim power saving
 
 | Scenario | Compare | Pass condition |
 | --- | --- | --- |
-| Idle desktop on battery | disabled vs Smart Saver | Lower discharge trend, no app breakage. |
-| Background CPU load | disabled vs Smart Saver | Foreground feels same or better, background CPU/power lower. |
-| Browser with media tab | disabled vs Smart Saver | No audio stutter, active tab normal. |
-| Game/fullscreen foreground | disabled vs Smart Saver | Background apps restrained, foreground unaffected. |
+| Idle desktop on battery | disabled vs Adaptive Engine | Lower discharge trend, no app breakage. |
+| Background CPU load | disabled vs Adaptive Engine | Foreground feels same or better, background CPU/power lower. |
+| Browser with media tab | disabled vs Adaptive Engine | No audio stutter, active tab normal. |
+| Game/fullscreen foreground | disabled vs Adaptive Engine | Background apps restrained, foreground unaffected. |
 
 Use Windows battery report, Task Manager process CPU, Action Log, and observed foreground responsiveness first.
 Use `scripts/power_drain_benchmark.ps1` for repeated package-watt readings; do not claim savings when it reports `stable = false`.
@@ -238,7 +238,7 @@ Use `scripts/power_drain_benchmark.ps1` for repeated package-watt readings; do n
    Mitigation: extract shared active-audio PID detection first; if detection fails, skip only the timer flag.
 
 2. Medium: The old plan duplicated existing engine concepts and would create parallel policy ownership.
-   Mitigation: keep Smart Saver inside Background Efficiency and Workload Engine.
+   Mitigation: keep Adaptive Engine inside Background Efficiency and Workload Engine.
 
 3. Medium: Power savings are not proven by code changes alone.
    Mitigation: require stable baseline measurements before release claims; use package wattage as the release metric for repeatable local checks. Core, L3, and APU/STAPM rails can improve while package power still regresses if Winderust keeps package-level wake sources active.
@@ -254,7 +254,7 @@ The Windows binding for `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION` is av
 ## Final MVP
 
 ```text
-Smart Saver Mode =
+Adaptive Engine =
   temporary active-plan processor Saver values
   + Winderust self EcoQoS
   + Winderust self ignore-timer-resolution

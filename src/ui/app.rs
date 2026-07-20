@@ -44,31 +44,34 @@ use crate::{
         merge_activity_snapshot, ActivitySnapshot, ActivityState, ControllerActivityDetector,
         IdleDetector, InputHook, InputHookConfig,
     },
-    affinity::{self, CpuAffinitySnapshot, LogicalProcessorInfo, LogicalProcessorKind},
+    app_suspension::{self, AppSuspensionSnapshot},
     automation::BackgroundAutomation,
+    background_efficiency::{self, BackgroundEfficiencySnapshot},
+    by_running_app::{self, ByRunningAppSnapshot},
     config::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
         AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
-        CpuAffinityMode, CpuAffinityRule, CpuAffinitySettings, CpuLimiterRule, CpuLimiterSettings,
-        CpuUsageComparison, CpuUsageRule, EcoQosAggressiveness, EcoQosCpuRestrictionControlStyle,
-        EcoQosCpuRestrictionMode, EcoQosCpuRestrictionStrategy, EcoQosExclusionRule,
-        EcoQosSettings, ForegroundBoostPriority, ForegroundRule, ForegroundRules,
-        GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings,
-        NetworkThresholdUnit, PerformanceModeRule, PerformanceModeSettings, PriorityBoostSettings,
+        BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
+        ByCpuLoadRule, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
+        ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings, CoreSteeringMode,
+        CoreSteeringRule, CoreSteeringSettings, CpuRestrictionControlStyle, CpuRestrictionMode,
+        CpuRestrictionStrategy, CpuUsageComparison, DynamicPriorityBoostSettings,
+        ForegroundBoostPriority, GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings,
+        MemoryTrimSettings, NetworkThresholdUnit, ProcessDynamicPriorityBoostSetting,
         ProcessExclusionRule, ProcessGpuPrioritySetting, ProcessIoPriority,
         ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
-        ProcessPriority, ProcessPriorityBoostSetting, ProcessPrioritySetting,
-        ProcessPrioritySettings, ProcessThreadPrioritySetting, ScheduleRule, Settings,
-        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
-        WorkloadEngineSettings,
+        ProcessPriority, ProcessPrioritySetting, ProcessPrioritySettings,
+        ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings, TimerResolutionRule,
+        TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
     },
+    core_limiter::{self, CoreLimiterSnapshot},
+    core_steering::{self, CoreSteeringSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     cpu::{CpuUsageMonitor, CpuUsageSnapshot},
-    cpu_limiter::{self, CpuLimiterSnapshot},
     dashboard_metrics::{
         IoUsageMonitor, IoUsageSnapshot, MemoryUsageMonitor, MemoryUsageSnapshot,
         NetworkUsageMonitor, NetworkUsageSnapshot,
     },
-    ecoqos::{self, EcoQosSnapshot},
+    dynamic_priority_boost::{self, DynamicPriorityBoostSnapshot},
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
         capture_process_action_target, list_process_candidates, list_processes, same_process_name,
@@ -78,24 +81,20 @@ use crate::{
     io_priority::{self, IoPrioritySnapshot},
     memory_priority::{self, MemoryPrioritySnapshot},
     memory_trim::{self, MemoryTrimSnapshot},
-    performance_mode::{self, PerformanceModeSnapshot},
     power::{
         EffectivePowerMode, EffectivePowerModeMonitor, PowerPlan, PowerPlanManager,
         PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerAcDcValues, ProcessorPowerPreset,
         ProcessorPowerValues,
     },
-    power_source,
-    priority_boost::{self, PriorityBoostSnapshot},
-    privilege,
+    power_source, privilege,
     process_icon::load_process_icon,
     process_priority::{self, ProcessPrioritySnapshot},
     rules::{
-        DecisionEngine, DecisionInput, DecisionOutcome, DecisionState, PerformanceModeDecision,
+        ByRunningAppDecision, DecisionEngine, DecisionInput, DecisionOutcome, DecisionState,
         MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
-    scheduler::{CpuUsageScheduler, Scheduler},
+    scheduler::{ByCpuLoadScheduler, ByTimeScheduler},
     self_power, startup,
-    suspension::{self, AppSuspensionSnapshot},
     thread_priority::{self, ThreadPrioritySnapshot},
     timer_resolution::{self, TimerResolutionSnapshot},
     tray::{self, TrayIcon},
@@ -114,7 +113,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
-const SMART_SAVER_APP_TICK_INTERVAL: Duration = Duration::from_secs(60);
+const ADAPTIVE_ENGINE_APP_TICK_INTERVAL: Duration = Duration::from_secs(60);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DASHBOARD_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TIMER_RESOLUTION_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -289,13 +288,13 @@ impl ActionLogFeatureFilter {
         Self::Feature(ActionLogFeature::AppSuspension),
         Self::Feature(ActionLogFeature::BackgroundCpuRestriction),
         Self::Feature(ActionLogFeature::CoreSteering),
-        Self::Feature(ActionLogFeature::EcoQos),
-        Self::Feature(ActionLogFeature::CpuLimiter),
-        Self::Feature(ActionLogFeature::PerformanceMode),
+        Self::Feature(ActionLogFeature::BackgroundEfficiency),
+        Self::Feature(ActionLogFeature::CoreLimiter),
+        Self::Feature(ActionLogFeature::ByRunningApp),
         Self::Feature(ActionLogFeature::WorkloadEngine),
         Self::Feature(ActionLogFeature::ProcessPriority),
         Self::Feature(ActionLogFeature::ThreadPriority),
-        Self::Feature(ActionLogFeature::PriorityBoost),
+        Self::Feature(ActionLogFeature::DynamicPriorityBoost),
         Self::Feature(ActionLogFeature::IoPriority),
         Self::Feature(ActionLogFeature::GpuPriority),
         Self::Feature(ActionLogFeature::MemoryPriority),
@@ -432,16 +431,16 @@ pub struct WinderustApp {
     io_usage_history: VecDeque<IoUsageHistorySample>,
     network_usage: NetworkUsageSnapshot,
     network_usage_history: VecDeque<NetworkUsageHistorySample>,
-    eco_qos_status: EcoQosSnapshot,
+    background_efficiency_status: BackgroundEfficiencySnapshot,
     app_suspension_status: AppSuspensionSnapshot,
-    cpu_limiter_status: CpuLimiterSnapshot,
-    cpu_affinity_status: CpuAffinitySnapshot,
-    background_cpu_restriction_status: CpuAffinitySnapshot,
-    performance_mode_status: PerformanceModeSnapshot,
+    core_limiter_status: CoreLimiterSnapshot,
+    core_steering_status: CoreSteeringSnapshot,
+    background_cpu_restriction_status: CoreSteeringSnapshot,
+    by_running_app_status: ByRunningAppSnapshot,
     workload_engine_status: WorkloadEngineSnapshot,
     process_priority_status: ProcessPrioritySnapshot,
     thread_priority_status: ThreadPrioritySnapshot,
-    priority_boost_status: PriorityBoostSnapshot,
+    dynamic_priority_boost_status: DynamicPriorityBoostSnapshot,
     io_priority_status: IoPrioritySnapshot,
     gpu_priority_status: GpuPrioritySnapshot,
     memory_priority_status: MemoryPrioritySnapshot,
@@ -477,8 +476,8 @@ pub struct WinderustApp {
     input_hook: Option<InputHook>,
     tray_hide_on_close: bool,
     foreground_detector: ForegroundDetector,
-    scheduler: Scheduler,
-    cpu_usage_scheduler: CpuUsageScheduler,
+    by_time_scheduler: ByTimeScheduler,
+    by_cpu_load_scheduler: ByCpuLoadScheduler,
     decision_engine: DecisionEngine,
     hwnd: Option<HWND>,
     tray_icon: Option<TrayIcon>,
@@ -634,24 +633,24 @@ struct ListItemRemovalTarget {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ListItemRemovalKind {
-    ForegroundRule,
-    ScheduleRule,
-    CpuUsageRule,
-    EcoQosExclusion,
+    ByForegroundRule,
+    ByTimeRule,
+    ByCpuLoadRule,
+    BackgroundEfficiencyExclusion,
     AppSuspensionRule,
     BackgroundCpuExclusion,
-    CpuLimiterRule,
-    PerformanceModeRule,
+    CoreLimiterRule,
+    ByRunningAppRule,
     WorkloadEngineExclusion,
     ProcessPriorityExclusion,
     ThreadPriorityExclusion,
-    PriorityBoostExclusion,
+    DynamicPriorityBoostExclusion,
     IoPriorityExclusion,
     GpuPriorityExclusion,
     MemoryPriorityExclusion,
     TimerResolutionRule,
     MemoryTrimExclusion,
-    CpuAffinityRule,
+    CoreSteeringRule,
 }
 
 impl ListItemRemovalTarget {
@@ -674,26 +673,26 @@ impl ListItemRemovalTarget {
 
 struct UiInputs {
     dashboard_search: Entity<InputState>,
-    cpu_rule_names: Vec<Entity<InputState>>,
+    by_cpu_load_rule_names: Vec<Entity<InputState>>,
     cpu_rule_thresholds: Vec<Entity<SliderState>>,
     cpu_rule_upper_thresholds: Vec<Entity<SliderState>>,
-    schedule_rule_names: Vec<Entity<InputState>>,
+    by_time_rule_names: Vec<Entity<InputState>>,
     schedule_start_times: Vec<Entity<InputState>>,
     schedule_end_times: Vec<Entity<InputState>>,
     foreground_rule_names: Vec<Entity<InputState>>,
     foreground_rule_processes: Vec<Entity<InputState>>,
     foreground_process: Entity<InputState>,
-    eco_qos_exclusion: Entity<InputState>,
+    background_efficiency_process: Entity<InputState>,
     background_cpu_exclusion: Entity<InputState>,
     memory_trim_exclusion: Entity<InputState>,
-    suspension_process: Entity<InputState>,
-    cpu_limiter_process: Entity<InputState>,
+    app_suspension_process: Entity<InputState>,
+    core_limiter_process: Entity<InputState>,
     performance_process: Entity<InputState>,
-    affinity_process: Entity<InputState>,
+    core_steering_process: Entity<InputState>,
     workload_engine_process: Entity<InputState>,
     process_priority_process: Entity<InputState>,
     thread_priority_process: Entity<InputState>,
-    priority_boost_process: Entity<InputState>,
+    dynamic_priority_boost_process: Entity<InputState>,
     io_priority_process: Entity<InputState>,
     gpu_priority_process: Entity<InputState>,
     memory_priority_process: Entity<InputState>,
@@ -756,69 +755,69 @@ impl UiInputs {
     ) -> Self {
         let processor_power_values = processor_power_values.normalized();
         Self {
-            dashboard_search: make_input(window, cx, "", &t!("dashboard.search_placeholder")),
-            cpu_rule_names: settings
-                .cpu_usage_mode
+            dashboard_search: make_input(window, cx, "", &t!("home.search_placeholder")),
+            by_cpu_load_rule_names: settings
+                .by_cpu_load
                 .rules
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.name, "Rule name"))
                 .collect(),
             cpu_rule_thresholds: settings
-                .cpu_usage_mode
+                .by_cpu_load
                 .rules
                 .iter()
                 .map(|rule| make_percent_slider(cx, rule.threshold_percent as u64))
                 .collect(),
             cpu_rule_upper_thresholds: settings
-                .cpu_usage_mode
+                .by_cpu_load
                 .rules
                 .iter()
                 .map(|rule| {
                     make_percent_slider(cx, rule.upper_threshold_percent.unwrap_or(100) as u64)
                 })
                 .collect(),
-            schedule_rule_names: settings
-                .schedule_mode
+            by_time_rule_names: settings
+                .by_time
                 .rules
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.name, "Rule name"))
                 .collect(),
             schedule_start_times: settings
-                .schedule_mode
+                .by_time
                 .rules
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.start_time, "HH:MM"))
                 .collect(),
             schedule_end_times: settings
-                .schedule_mode
+                .by_time
                 .rules
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.end_time, "HH:MM"))
                 .collect(),
             foreground_rule_names: settings
-                .foreground_rules
+                .by_foreground
                 .rules
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.name, "Rule name"))
                 .collect(),
             foreground_rule_processes: settings
-                .foreground_rules
+                .by_foreground
                 .rules
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.process_name, "process.exe"))
                 .collect(),
             foreground_process: make_input(window, cx, "", "Search running apps..."),
-            eco_qos_exclusion: make_input(window, cx, "", "Search running apps..."),
+            background_efficiency_process: make_input(window, cx, "", "Search running apps..."),
             background_cpu_exclusion: make_input(window, cx, "", "Search running apps..."),
             memory_trim_exclusion: make_input(window, cx, "", "Search running apps..."),
-            suspension_process: make_input(window, cx, "", "Search running apps..."),
-            cpu_limiter_process: make_input(window, cx, "", "Search running apps..."),
+            app_suspension_process: make_input(window, cx, "", "Search running apps..."),
+            core_limiter_process: make_input(window, cx, "", "Search running apps..."),
             performance_process: make_input(window, cx, "", "Search running apps..."),
-            affinity_process: make_input(window, cx, "", "Search running apps..."),
+            core_steering_process: make_input(window, cx, "", "Search running apps..."),
             workload_engine_process: make_input(window, cx, "", "Search running apps..."),
             process_priority_process: make_input(window, cx, "", "Search running apps..."),
             thread_priority_process: make_input(window, cx, "", "Search running apps..."),
-            priority_boost_process: make_input(window, cx, "", "Search running apps..."),
+            dynamic_priority_boost_process: make_input(window, cx, "", "Search running apps..."),
             io_priority_process: make_input(window, cx, "", "Search running apps..."),
             gpu_priority_process: make_input(window, cx, "", "Search running apps..."),
             memory_priority_process: make_input(window, cx, "", "Search running apps..."),
@@ -826,7 +825,7 @@ impl UiInputs {
             numeric_value: make_input(window, cx, "", "Value"),
             activity_idle_timeout: make_range_slider(
                 cx,
-                settings.activity_mode.idle_timeout_seconds,
+                settings.by_activity.idle_timeout_seconds,
                 ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
                 ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
                 1,
@@ -880,67 +879,67 @@ impl UiInputs {
         settings: &Settings,
     ) {
         sync_input_vec(
-            &mut self.cpu_rule_names,
-            settings.cpu_usage_mode.rules.len(),
+            &mut self.by_cpu_load_rule_names,
+            settings.by_cpu_load.rules.len(),
             window,
             cx,
-            |index| settings.cpu_usage_mode.rules[index].name.clone(),
+            |index| settings.by_cpu_load.rules[index].name.clone(),
             "Rule name",
         );
         sync_slider_vec(
             &mut self.cpu_rule_thresholds,
-            settings.cpu_usage_mode.rules.len(),
+            settings.by_cpu_load.rules.len(),
             cx,
-            |index| settings.cpu_usage_mode.rules[index].threshold_percent as u64,
+            |index| settings.by_cpu_load.rules[index].threshold_percent as u64,
         );
         sync_slider_vec(
             &mut self.cpu_rule_upper_thresholds,
-            settings.cpu_usage_mode.rules.len(),
+            settings.by_cpu_load.rules.len(),
             cx,
             |index| {
-                settings.cpu_usage_mode.rules[index]
+                settings.by_cpu_load.rules[index]
                     .upper_threshold_percent
                     .unwrap_or(100) as u64
             },
         );
         sync_input_vec(
-            &mut self.schedule_rule_names,
-            settings.schedule_mode.rules.len(),
+            &mut self.by_time_rule_names,
+            settings.by_time.rules.len(),
             window,
             cx,
-            |index| settings.schedule_mode.rules[index].name.clone(),
+            |index| settings.by_time.rules[index].name.clone(),
             "Rule name",
         );
         sync_input_vec(
             &mut self.schedule_start_times,
-            settings.schedule_mode.rules.len(),
+            settings.by_time.rules.len(),
             window,
             cx,
-            |index| settings.schedule_mode.rules[index].start_time.clone(),
+            |index| settings.by_time.rules[index].start_time.clone(),
             "HH:MM",
         );
         sync_input_vec(
             &mut self.schedule_end_times,
-            settings.schedule_mode.rules.len(),
+            settings.by_time.rules.len(),
             window,
             cx,
-            |index| settings.schedule_mode.rules[index].end_time.clone(),
+            |index| settings.by_time.rules[index].end_time.clone(),
             "HH:MM",
         );
         sync_input_vec(
             &mut self.foreground_rule_names,
-            settings.foreground_rules.rules.len(),
+            settings.by_foreground.rules.len(),
             window,
             cx,
-            |index| settings.foreground_rules.rules[index].name.clone(),
+            |index| settings.by_foreground.rules[index].name.clone(),
             "Rule name",
         );
         sync_input_vec(
             &mut self.foreground_rule_processes,
-            settings.foreground_rules.rules.len(),
+            settings.by_foreground.rules.len(),
             window,
             cx,
-            |index| settings.foreground_rules.rules[index].process_name.clone(),
+            |index| settings.by_foreground.rules[index].process_name.clone(),
             "process.exe",
         );
     }
@@ -1059,7 +1058,7 @@ impl WinderustApp {
             saved_settings: settings.clone(),
             last_background_settings: Arc::new(settings.clone()),
             settings,
-            page: Page::Dashboard,
+            page: Page::Home,
             back_stack: Vec::new(),
             forward_stack: Vec::new(),
             plans: initial_processor_power.plans,
@@ -1076,16 +1075,16 @@ impl WinderustApp {
             io_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
             network_usage: NetworkUsageSnapshot::default(),
             network_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
-            eco_qos_status: EcoQosSnapshot::default(),
+            background_efficiency_status: BackgroundEfficiencySnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
-            cpu_limiter_status: CpuLimiterSnapshot::default(),
-            cpu_affinity_status: CpuAffinitySnapshot::default(),
-            background_cpu_restriction_status: CpuAffinitySnapshot::default(),
-            performance_mode_status: PerformanceModeSnapshot::default(),
+            core_limiter_status: CoreLimiterSnapshot::default(),
+            core_steering_status: CoreSteeringSnapshot::default(),
+            background_cpu_restriction_status: CoreSteeringSnapshot::default(),
+            by_running_app_status: ByRunningAppSnapshot::default(),
             workload_engine_status: WorkloadEngineSnapshot::default(),
             process_priority_status: ProcessPrioritySnapshot::default(),
             thread_priority_status: ThreadPrioritySnapshot::default(),
-            priority_boost_status: PriorityBoostSnapshot::default(),
+            dynamic_priority_boost_status: DynamicPriorityBoostSnapshot::default(),
             io_priority_status: IoPrioritySnapshot::default(),
             gpu_priority_status: GpuPrioritySnapshot::default(),
             memory_priority_status: MemoryPrioritySnapshot::default(),
@@ -1125,8 +1124,8 @@ impl WinderustApp {
             input_hook: None,
             tray_hide_on_close: false,
             foreground_detector: ForegroundDetector,
-            scheduler: Scheduler,
-            cpu_usage_scheduler: CpuUsageScheduler::default(),
+            by_time_scheduler: ByTimeScheduler,
+            by_cpu_load_scheduler: ByCpuLoadScheduler::default(),
             decision_engine: DecisionEngine,
             hwnd,
             tray_icon: None,
@@ -1201,7 +1200,7 @@ impl WinderustApp {
         window.on_window_should_close(cx, |_, _| !tray::is_hidden_to_tray());
         app.sync_tray_icon();
         let startup_settings = app.saved_settings.clone();
-        app.sync_smart_saver_mode(&startup_settings);
+        app.sync_adaptive_engine(&startup_settings);
         app.run_check(false, Instant::now());
         app.sync_processor_power_slider_states(window, cx);
         app.sync_input_hook();
@@ -1384,36 +1383,39 @@ impl WinderustApp {
         let index = target.index();
 
         match target.kind {
-            ListItemRemovalKind::ForegroundRule => {
-                if index < self.settings.foreground_rules.rules.len() {
-                    self.settings.foreground_rules.rules.remove(index);
+            ListItemRemovalKind::ByForegroundRule => {
+                if index < self.settings.by_foreground.rules.len() {
+                    self.settings.by_foreground.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalKind::ScheduleRule => {
-                if index < self.settings.schedule_mode.rules.len() {
-                    self.settings.schedule_mode.rules.remove(index);
+            ListItemRemovalKind::ByTimeRule => {
+                if index < self.settings.by_time.rules.len() {
+                    self.settings.by_time.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalKind::CpuUsageRule => {
-                if index < self.settings.cpu_usage_mode.rules.len() {
-                    self.settings.cpu_usage_mode.rules.remove(index);
+            ListItemRemovalKind::ByCpuLoadRule => {
+                if index < self.settings.by_cpu_load.rules.len() {
+                    self.settings.by_cpu_load.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
-            ListItemRemovalKind::EcoQosExclusion => {
-                if index < self.settings.eco_qos.efficiency_whitelist.len() {
-                    self.settings.eco_qos.efficiency_whitelist.remove(index);
+            ListItemRemovalKind::BackgroundEfficiencyExclusion => {
+                if index < self.settings.background_efficiency.custom_rules.len() {
+                    self.settings
+                        .background_efficiency
+                        .custom_rules
+                        .remove(index);
                 }
             }
             ListItemRemovalKind::AppSuspensionRule => {
                 if let Some(rule) = self.settings.app_suspension.suspendable_apps.get(index) {
                     self.expanded_rule_cards
-                        .remove(&RuleCardTarget::Suspension(rule.process_name.clone()));
+                        .remove(&RuleCardTarget::AppSuspension(rule.process_name.clone()));
                 }
                 if index < self.settings.app_suspension.suspendable_apps.len() {
                     self.settings.app_suspension.suspendable_apps.remove(index);
@@ -1427,18 +1429,18 @@ impl WinderustApp {
                         .remove(index);
                 }
             }
-            ListItemRemovalKind::CpuLimiterRule => {
-                if let Some(rule) = self.settings.cpu_limiter.rules.get(index) {
+            ListItemRemovalKind::CoreLimiterRule => {
+                if let Some(rule) = self.settings.core_limiter.rules.get(index) {
                     self.expanded_rule_cards
-                        .remove(&RuleCardTarget::CpuLimiter(rule.process_name.clone()));
+                        .remove(&RuleCardTarget::CoreLimiter(rule.process_name.clone()));
                 }
-                if index < self.settings.cpu_limiter.rules.len() {
-                    self.settings.cpu_limiter.rules.remove(index);
+                if index < self.settings.core_limiter.rules.len() {
+                    self.settings.core_limiter.rules.remove(index);
                 }
             }
-            ListItemRemovalKind::PerformanceModeRule => {
-                if index < self.settings.performance_mode.rules.len() {
-                    self.settings.performance_mode.rules.remove(index);
+            ListItemRemovalKind::ByRunningAppRule => {
+                if index < self.settings.by_running_app.rules.len() {
+                    self.settings.by_running_app.rules.remove(index);
                 }
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
@@ -1467,9 +1469,12 @@ impl WinderustApp {
                     self.settings.thread_priority.exclusions.remove(index);
                 }
             }
-            ListItemRemovalKind::PriorityBoostExclusion => {
-                if index < self.settings.priority_boost.exclusions.len() {
-                    self.settings.priority_boost.exclusions.remove(index);
+            ListItemRemovalKind::DynamicPriorityBoostExclusion => {
+                if index < self.settings.dynamic_priority_boost.exclusions.len() {
+                    self.settings
+                        .dynamic_priority_boost
+                        .exclusions
+                        .remove(index);
                 }
             }
             ListItemRemovalKind::IoPriorityExclusion => {
@@ -1497,13 +1502,13 @@ impl WinderustApp {
                     self.settings.memory_trim.exclusions.remove(index);
                 }
             }
-            ListItemRemovalKind::CpuAffinityRule => {
-                if let Some(rule) = self.settings.cpu_affinity.rules.get(index) {
+            ListItemRemovalKind::CoreSteeringRule => {
+                if let Some(rule) = self.settings.core_steering.rules.get(index) {
                     self.expanded_rule_cards
-                        .remove(&RuleCardTarget::Affinity(rule.process_name.clone()));
+                        .remove(&RuleCardTarget::CoreSteering(rule.process_name.clone()));
                 }
-                if index < self.settings.cpu_affinity.rules.len() {
-                    self.settings.cpu_affinity.rules.remove(index);
+                if index < self.settings.core_steering.rules.len() {
+                    self.settings.core_steering.rules.remove(index);
                 }
             }
         }
@@ -1592,11 +1597,11 @@ impl WinderustApp {
         true
     }
 
-    fn sync_smart_saver_mode(&self, settings: &Settings) {
-        if settings.smart_saver.enabled {
-            let _ = self_power::enable_smart_saver_mode();
+    fn sync_adaptive_engine(&self, settings: &Settings) {
+        if settings.adaptive_engine.enabled {
+            let _ = self_power::enable_adaptive_engine();
         } else {
-            let _ = self_power::disable_smart_saver_mode();
+            let _ = self_power::disable_adaptive_engine();
         }
     }
 
@@ -1782,38 +1787,41 @@ impl WinderustApp {
         }
     }
 
-    fn smart_saver_processor_policy_percent(&self, field: SmartSaverProcessorPolicyField) -> u32 {
+    fn adaptive_engine_processor_policy_percent(
+        &self,
+        field: AdaptiveEngineProcessorPolicyField,
+    ) -> u32 {
         let values = self
             .settings
-            .smart_saver
+            .adaptive_engine
             .processor_policy_values
             .normalized();
         match field {
-            SmartSaverProcessorPolicyField::CoreParkingMin => values.core_parking_min,
-            SmartSaverProcessorPolicyField::PerformanceMin => values.performance_min,
-            SmartSaverProcessorPolicyField::PerformanceMax => values.performance_max,
-            SmartSaverProcessorPolicyField::BoostPolicy => values.boost_policy,
+            AdaptiveEngineProcessorPolicyField::CoreParkingMin => values.core_parking_min,
+            AdaptiveEngineProcessorPolicyField::PerformanceMin => values.performance_min,
+            AdaptiveEngineProcessorPolicyField::PerformanceMax => values.performance_max,
+            AdaptiveEngineProcessorPolicyField::BoostPolicy => values.boost_policy,
         }
     }
 
-    fn set_smart_saver_processor_policy_percent(
+    fn set_adaptive_engine_processor_policy_percent(
         &mut self,
-        field: SmartSaverProcessorPolicyField,
+        field: AdaptiveEngineProcessorPolicyField,
         value: u64,
     ) {
         let mut values = self
             .settings
-            .smart_saver
+            .adaptive_engine
             .processor_policy_values
             .normalized();
         let value = value.min(100) as u32;
         match field {
-            SmartSaverProcessorPolicyField::CoreParkingMin => values.core_parking_min = value,
-            SmartSaverProcessorPolicyField::PerformanceMin => values.performance_min = value,
-            SmartSaverProcessorPolicyField::PerformanceMax => values.performance_max = value,
-            SmartSaverProcessorPolicyField::BoostPolicy => values.boost_policy = value,
+            AdaptiveEngineProcessorPolicyField::CoreParkingMin => values.core_parking_min = value,
+            AdaptiveEngineProcessorPolicyField::PerformanceMin => values.performance_min = value,
+            AdaptiveEngineProcessorPolicyField::PerformanceMax => values.performance_max = value,
+            AdaptiveEngineProcessorPolicyField::BoostPolicy => values.boost_policy = value,
         }
-        self.settings.smart_saver.processor_policy_values = values.normalized();
+        self.settings.adaptive_engine.processor_policy_values = values.normalized();
     }
 
     fn sync_processor_power_slider_states(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1865,12 +1873,12 @@ impl WinderustApp {
         let value = value.min(100);
         match slider {
             CpuThresholdSlider::Lower(index) => {
-                if let Some(rule) = self.settings.cpu_usage_mode.rules.get_mut(index) {
+                if let Some(rule) = self.settings.by_cpu_load.rules.get_mut(index) {
                     rule.threshold_percent = value;
                 }
             }
             CpuThresholdSlider::Upper(index) => {
-                if let Some(rule) = self.settings.cpu_usage_mode.rules.get_mut(index) {
+                if let Some(rule) = self.settings.by_cpu_load.rules.get_mut(index) {
                     rule.upper_threshold_percent = Some(value);
                 }
             }
@@ -1878,7 +1886,7 @@ impl WinderustApp {
     }
 
     fn sync_cpu_threshold_slider_states(&self, window: &mut Window, cx: &mut Context<Self>) {
-        for (index, rule) in self.settings.cpu_usage_mode.rules.iter().enumerate() {
+        for (index, rule) in self.settings.by_cpu_load.rules.iter().enumerate() {
             self.sync_cpu_threshold_slider_state(
                 CpuThresholdSlider::Lower(index),
                 rule.threshold_percent,
@@ -1915,7 +1923,7 @@ impl WinderustApp {
     fn set_activity_slider_value(&mut self, slider: ActivitySlider, value: u64) {
         match slider {
             ActivitySlider::IdleTimeout => {
-                self.settings.activity_mode.idle_timeout_seconds = value.clamp(
+                self.settings.by_activity.idle_timeout_seconds = value.clamp(
                     ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
                     ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
                 );
@@ -1935,7 +1943,7 @@ impl WinderustApp {
             (
                 ActivitySlider::IdleTimeout,
                 self.inputs.activity_idle_timeout.clone(),
-                self.settings.activity_mode.idle_timeout_seconds.clamp(
+                self.settings.by_activity.idle_timeout_seconds.clamp(
                     ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
                     ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
                 ),
@@ -2017,23 +2025,23 @@ impl WinderustApp {
         let decision_settings = self.cached_runtime_settings();
         let decision_settings = decision_settings.as_ref();
         self.activity = self.activity_snapshot(decision_settings, now);
-        if sample_dashboard && self.page == Page::Dashboard {
+        if sample_dashboard && self.page == Page::Home {
             self.refresh_dashboard_resource_samples();
-        } else if decision_settings.cpu_usage_mode.enabled {
+        } else if decision_settings.by_cpu_load.enabled {
             self.refresh_cpu_usage_sample(now);
         }
         self.foreground_app = foreground_lookup_required(decision_settings)
             .then(|| self.foreground_detector.process_name())
             .flatten();
-        let schedule = self
-            .scheduler
-            .current_decision(&decision_settings.schedule_mode);
-        let cpu_usage = self
-            .cpu_usage_scheduler
-            .current_decision(&decision_settings.cpu_usage_mode, self.cpu_usage.percent);
+        let by_time = self
+            .by_time_scheduler
+            .current_decision(&decision_settings.by_time);
+        let by_cpu_load = self
+            .by_cpu_load_scheduler
+            .current_decision(&decision_settings.by_cpu_load, self.cpu_usage.percent);
         self.next_schedule = self
-            .scheduler
-            .next_switch_label(&decision_settings.schedule_mode);
+            .by_time_scheduler
+            .next_switch_label(&decision_settings.by_time);
 
         self.decision = self.decision_engine.decide(
             decision_settings,
@@ -2041,15 +2049,15 @@ impl WinderustApp {
                 activity_state: self.activity.state,
                 foreground_app: self.foreground_app.clone(),
                 plugged_in: power_source::is_plugged_in(),
-                performance_mode: performance_mode_decision(&self.performance_mode_status),
-                schedule,
-                cpu_usage,
+                by_running_app: by_running_app_decision(&self.by_running_app_status),
+                by_time,
+                by_cpu_load,
             },
         );
 
         if !(decision_settings.general.enabled
-            && decision_settings.smart_saver.enabled
-            && decision_settings.smart_saver.processor_policy_enabled)
+            && decision_settings.adaptive_engine.enabled
+            && decision_settings.adaptive_engine.processor_policy_enabled)
         {
             self.apply_decision();
         }
@@ -2078,7 +2086,7 @@ impl WinderustApp {
             || self.memory_usage != memory_usage
             || self.io_usage != io_usage
             || self.network_usage != network_usage;
-        let resource_samples_visible = self.page == Page::Dashboard;
+        let resource_samples_visible = self.page == Page::Home;
 
         self.activity.state != activity_state
             || self.activity.idle_for != activity_idle_for
@@ -2097,9 +2105,9 @@ impl WinderustApp {
     }
 
     fn activity_snapshot(&mut self, settings: &Settings, now: Instant) -> ActivitySnapshot {
-        let idle_timeout = Duration::from_secs(settings.activity_mode.idle_timeout_seconds);
+        let idle_timeout = Duration::from_secs(settings.by_activity.idle_timeout_seconds);
         let snapshot = self.idle_detector.snapshot(idle_timeout);
-        let controller_idle_for = if settings.activity_mode.input_detection.controller {
+        let controller_idle_for = if settings.by_activity.input_detection.controller {
             self.controller_activity_detector.poll(now);
             self.controller_activity_detector.idle_for(now)
         } else {
@@ -2632,8 +2640,8 @@ impl WinderustApp {
         {
             self.last_background_status_generation = background_status.generation;
 
-            if self.eco_qos_status != background_status.eco_qos {
-                self.eco_qos_status = background_status.eco_qos;
+            if self.background_efficiency_status != background_status.background_efficiency {
+                self.background_efficiency_status = background_status.background_efficiency;
                 changed = true;
             }
 
@@ -2642,13 +2650,13 @@ impl WinderustApp {
                 changed = true;
             }
 
-            if self.cpu_limiter_status != background_status.cpu_limiter {
-                self.cpu_limiter_status = background_status.cpu_limiter;
+            if self.core_limiter_status != background_status.core_limiter {
+                self.core_limiter_status = background_status.core_limiter;
                 changed = true;
             }
 
-            if self.cpu_affinity_status != background_status.cpu_affinity {
-                self.cpu_affinity_status = background_status.cpu_affinity;
+            if self.core_steering_status != background_status.core_steering {
+                self.core_steering_status = background_status.core_steering;
                 changed = true;
             }
 
@@ -2660,8 +2668,8 @@ impl WinderustApp {
                 changed = true;
             }
 
-            if self.performance_mode_status != background_status.performance_mode {
-                self.performance_mode_status = background_status.performance_mode;
+            if self.by_running_app_status != background_status.by_running_app {
+                self.by_running_app_status = background_status.by_running_app;
                 changed = true;
             }
 
@@ -2680,8 +2688,8 @@ impl WinderustApp {
                 changed = true;
             }
 
-            if self.priority_boost_status != background_status.priority_boost {
-                self.priority_boost_status = background_status.priority_boost;
+            if self.dynamic_priority_boost_status != background_status.dynamic_priority_boost {
+                self.dynamic_priority_boost_status = background_status.dynamic_priority_boost;
                 changed = true;
             }
 
@@ -2756,7 +2764,7 @@ impl WinderustApp {
             }
         }
 
-        if self.page == Page::Dashboard {
+        if self.page == Page::Home {
             changed |= self.refresh_dashboard_resource_samples();
         }
 
@@ -2790,30 +2798,31 @@ impl WinderustApp {
         };
         let mut changed = false;
 
-        for process in pending.eco_qos {
-            if can_add_eco_qos_process(&self.settings.eco_qos, &process) {
+        for process in pending.background_efficiency {
+            if can_add_background_efficiency_process(&self.settings.background_efficiency, &process)
+            {
                 self.settings
-                    .eco_qos
-                    .efficiency_whitelist
-                    .push(new_eco_qos_exclusion_rule(&process));
+                    .background_efficiency
+                    .custom_rules
+                    .push(new_background_efficiency_rule(&process));
                 changed = true;
             }
         }
 
         for process in pending.app_suspension {
-            if can_add_suspension_process(&self.settings.app_suspension, &process) {
-                let mut rule = new_suspension_rule(&process);
+            if can_add_app_suspension_process(&self.settings.app_suspension, &process) {
+                let mut rule = new_app_suspension_rule(&process);
                 rule.enabled = false;
                 self.settings.app_suspension.suspendable_apps.push(rule);
                 changed = true;
             }
         }
 
-        for process in pending.cpu_affinity {
-            if can_add_affinity_process(&self.settings.cpu_affinity, &process) {
-                let mut rule = new_affinity_rule(&process);
+        for process in pending.core_steering {
+            if can_add_core_steering_process(&self.settings.core_steering, &process) {
+                let mut rule = new_core_steering_rule(&process);
                 rule.enabled = false;
-                self.settings.cpu_affinity.rules.push(rule);
+                self.settings.core_steering.rules.push(rule);
                 changed = true;
             }
         }
@@ -2829,11 +2838,11 @@ impl WinderustApp {
             }
         }
 
-        for process in pending.cpu_limiter {
-            if can_add_cpu_limiter_process(&self.settings.cpu_limiter, &process) {
-                let mut rule = new_cpu_limiter_rule(&process);
+        for process in pending.core_limiter {
+            if can_add_core_limiter_process(&self.settings.core_limiter, &process) {
+                let mut rule = new_core_limiter_rule(&process);
                 rule.enabled = false;
-                self.settings.cpu_limiter.rules.push(rule);
+                self.settings.core_limiter.rules.push(rule);
                 changed = true;
             }
         }
@@ -2878,10 +2887,13 @@ impl WinderustApp {
             }
         }
 
-        for process in pending.priority_boost {
-            if can_add_priority_boost_exclusion(&self.settings.priority_boost, &process) {
+        for process in pending.dynamic_priority_boost {
+            if can_add_dynamic_priority_boost_exclusion(
+                &self.settings.dynamic_priority_boost,
+                &process,
+            ) {
                 self.settings
-                    .priority_boost
+                    .dynamic_priority_boost
                     .exclusions
                     .push(new_process_exclusion_rule(&process));
                 changed = true;
@@ -2928,19 +2940,19 @@ impl WinderustApp {
     fn page_uses_process_candidates(&self) -> bool {
         matches!(
             self.page,
-            Page::ForegroundRules
-                | Page::EfficiencyMode
+            Page::ByForeground
+                | Page::BackgroundEfficiency
                 | Page::AppSuspension
                 | Page::ProcessPriority
                 | Page::DynamicPriorityBoost
-                | Page::CpuLimiter
+                | Page::CoreLimiter
                 | Page::BackgroundCpuRestriction
                 | Page::IoPriority
                 | Page::GpuPriority
                 | Page::MemoryPriority
                 | Page::TimerResolution
-                | Page::PerformanceMode
-                | Page::CpuAffinity
+                | Page::ByRunningApp
+                | Page::CoreSteering
         )
     }
 
@@ -3016,7 +3028,7 @@ impl WinderustApp {
     }
 
     fn rule_title_input_count(&self) -> usize {
-        self.inputs.schedule_rule_names.len() + self.inputs.cpu_rule_names.len()
+        self.inputs.by_time_rule_names.len() + self.inputs.by_cpu_load_rule_names.len()
     }
 
     fn ensure_rule_title_input_subscriptions(
@@ -3037,19 +3049,19 @@ impl WinderustApp {
         let mut inputs = Vec::new();
         inputs.extend(
             self.inputs
-                .schedule_rule_names
+                .by_time_rule_names
                 .iter()
                 .cloned()
                 .enumerate()
-                .map(|(index, input)| (input, RuleTitleTarget::Schedule(index))),
+                .map(|(index, input)| (input, RuleTitleTarget::ByTime(index))),
         );
         inputs.extend(
             self.inputs
-                .cpu_rule_names
+                .by_cpu_load_rule_names
                 .iter()
                 .cloned()
                 .enumerate()
-                .map(|(index, input)| (input, RuleTitleTarget::Cpu(index))),
+                .map(|(index, input)| (input, RuleTitleTarget::ByCpuLoad(index))),
         );
 
         self._rule_title_input_subscriptions.clear();
@@ -3246,8 +3258,8 @@ impl WinderustApp {
 
     fn rule_title_input(&self, target: RuleTitleTarget) -> Option<Entity<InputState>> {
         match target {
-            RuleTitleTarget::Schedule(index) => self.inputs.schedule_rule_names.get(index),
-            RuleTitleTarget::Cpu(index) => self.inputs.cpu_rule_names.get(index),
+            RuleTitleTarget::ByTime(index) => self.inputs.by_time_rule_names.get(index),
+            RuleTitleTarget::ByCpuLoad(index) => self.inputs.by_cpu_load_rule_names.get(index),
         }
         .cloned()
     }
@@ -3540,9 +3552,9 @@ impl WinderustApp {
                     );
                 }
             }
-            NumericField::SmartSaverProcessorPolicy(field) => {
+            NumericField::AdaptiveEngineProcessorPolicy(field) => {
                 if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.set_smart_saver_processor_policy_percent(field, value);
+                    self.set_adaptive_engine_processor_policy_percent(field, value);
                 }
             }
             NumericField::CpuThreshold(index) => {
@@ -3563,39 +3575,39 @@ impl WinderustApp {
             }
             NumericField::CpuDuration(index) => {
                 if let (Some(rule), Some(value)) = (
-                    self.settings.cpu_usage_mode.rules.get_mut(index),
+                    self.settings.by_cpu_load.rules.get_mut(index),
                     parse_u64_input(&value, 0, 86_400),
                 ) {
                     rule.duration_seconds = value;
                 }
             }
-            NumericField::CpuLimiterThreshold(index) => {
+            NumericField::CoreLimiterThreshold(index) => {
                 if let (Some(rule), Some(value)) = (
-                    self.settings.cpu_limiter.rules.get_mut(index),
+                    self.settings.core_limiter.rules.get_mut(index),
                     parse_u64_input(&value, 1, 100),
                 ) {
                     rule.threshold_percent = value as u8;
                 }
             }
-            NumericField::CpuLimiterSustain(index) => {
+            NumericField::CoreLimiterSustain(index) => {
                 if let (Some(rule), Some(value)) = (
-                    self.settings.cpu_limiter.rules.get_mut(index),
+                    self.settings.core_limiter.rules.get_mut(index),
                     parse_u64_input(&value, 1, 86_400),
                 ) {
                     rule.sustain_seconds = value;
                 }
             }
-            NumericField::CpuLimiterCooldown(index) => {
+            NumericField::CoreLimiterCooldown(index) => {
                 if let (Some(rule), Some(value)) = (
-                    self.settings.cpu_limiter.rules.get_mut(index),
+                    self.settings.core_limiter.rules.get_mut(index),
                     parse_u64_input(&value, 1, 86_400),
                 ) {
                     rule.cooldown_seconds = value;
                 }
             }
-            NumericField::CpuLimiterMaxProcessors(index) => {
+            NumericField::CoreLimiterMaxProcessors(index) => {
                 if let (Some(rule), Some(value)) = (
-                    self.settings.cpu_limiter.rules.get_mut(index),
+                    self.settings.core_limiter.rules.get_mut(index),
                     parse_u64_input(&value, 1, max_logical_processor_count() as u64),
                 ) {
                     rule.max_logical_processors = value as u8;
@@ -3744,7 +3756,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) {
         set_foreground_power_plan_override(
-            &mut self.settings.foreground_rules,
+            &mut self.settings.by_foreground,
             &process_name,
             power_plan_guid,
         );
@@ -3757,8 +3769,8 @@ impl WinderustApp {
         power_plan_guid: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        set_performance_mode_power_plan_override(
-            &mut self.settings.performance_mode,
+        set_by_running_app_power_plan_override(
+            &mut self.settings.by_running_app,
             &process_name,
             power_plan_guid,
         );
@@ -3771,7 +3783,11 @@ impl WinderustApp {
         included: bool,
         cx: &mut Context<Self>,
     ) {
-        set_eco_qos_efficiency_exclusion(&mut self.settings.eco_qos, &process_name, !included);
+        set_background_efficiency_custom_rule(
+            &mut self.settings.background_efficiency,
+            &process_name,
+            !included,
+        );
         self.finish_process_list_edit(cx);
     }
 
@@ -3789,14 +3805,14 @@ impl WinderustApp {
         self.finish_process_list_edit(cx);
     }
 
-    fn set_process_list_cpu_limiter(
+    fn set_process_list_core_limiter(
         &mut self,
         process_name: String,
         max_logical_processors: Option<u8>,
         cx: &mut Context<Self>,
     ) {
-        set_cpu_limiter_override(
-            &mut self.settings.cpu_limiter,
+        set_core_limiter_override(
+            &mut self.settings.core_limiter,
             &process_name,
             max_logical_processors,
         );
@@ -4034,15 +4050,15 @@ impl WinderustApp {
     fn sync_input_values(&mut self, cx: &mut Context<Self>) {
         for (rule, input) in self
             .settings
-            .cpu_usage_mode
+            .by_cpu_load
             .rules
             .iter_mut()
-            .zip(&self.inputs.cpu_rule_names)
+            .zip(&self.inputs.by_cpu_load_rule_names)
         {
             rule.name = input.read(cx).value().to_string();
         }
-        for (index, rule) in self.settings.schedule_mode.rules.iter_mut().enumerate() {
-            if let Some(input) = self.inputs.schedule_rule_names.get(index) {
+        for (index, rule) in self.settings.by_time.rules.iter_mut().enumerate() {
+            if let Some(input) = self.inputs.by_time_rule_names.get(index) {
                 rule.name = input.read(cx).value().to_string();
             }
             if let Some(input) = self.inputs.schedule_start_times.get(index) {
@@ -4052,7 +4068,7 @@ impl WinderustApp {
                 rule.end_time = input.read(cx).value().to_string();
             }
         }
-        for (index, rule) in self.settings.foreground_rules.rules.iter_mut().enumerate() {
+        for (index, rule) in self.settings.by_foreground.rules.iter_mut().enumerate() {
             if let Some(input) = self.inputs.foreground_rule_names.get(index) {
                 rule.name = input.read(cx).value().to_string();
             }
@@ -4085,7 +4101,7 @@ impl WinderustApp {
         }
 
         let settings = Arc::new(self.background_settings());
-        self.sync_smart_saver_mode(settings.as_ref());
+        self.sync_adaptive_engine(settings.as_ref());
         self.background_automation
             .update_settings(settings.as_ref());
         self.last_background_settings = settings;
@@ -4094,7 +4110,7 @@ impl WinderustApp {
 
 impl Drop for WinderustApp {
     fn drop(&mut self) {
-        let _ = self_power::disable_smart_saver_mode();
+        let _ = self_power::disable_adaptive_engine();
     }
 }
 
@@ -4119,18 +4135,17 @@ fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Set
             == current.general.pause_power_plan_switching_while_plugged_in
         && settings.general.check_interval_ms == current.general.check_interval_ms
         && settings.advanced == current.advanced
-        && settings.smart_saver == saved.smart_saver
-        && settings.power_plans == saved.power_plans
-        && settings.activity_mode == saved.activity_mode
-        && settings.foreground_rules == saved.foreground_rules
-        && settings.schedule_mode == saved.schedule_mode
-        && settings.cpu_usage_mode == saved.cpu_usage_mode
-        && settings.eco_qos == saved.eco_qos
+        && settings.adaptive_engine == saved.adaptive_engine
+        && settings.by_activity == saved.by_activity
+        && settings.by_foreground == saved.by_foreground
+        && settings.by_time == saved.by_time
+        && settings.by_cpu_load == saved.by_cpu_load
+        && settings.background_efficiency == saved.background_efficiency
         && settings.app_suspension == saved.app_suspension
-        && settings.cpu_affinity == saved.cpu_affinity
+        && settings.core_steering == saved.core_steering
         && settings.background_cpu_restriction == saved.background_cpu_restriction
-        && settings.cpu_limiter == saved.cpu_limiter
-        && settings.performance_mode == saved.performance_mode
+        && settings.core_limiter == saved.core_limiter
+        && settings.by_running_app == saved.by_running_app
         && settings.workload_engine == saved.workload_engine
         && settings.io_priority == saved.io_priority
         && settings.gpu_priority == saved.gpu_priority
@@ -4395,7 +4410,7 @@ impl WinderustApp {
     }
 
     fn nav_section_visible(&self, page: Page) -> bool {
-        page != Page::AdvancedHome || self.settings.advanced.show_advanced_controls
+        page != Page::AdvancedControls || self.settings.advanced.show_advanced_controls
     }
 
     fn render_unsaved_popup(
@@ -4553,45 +4568,43 @@ impl WinderustApp {
 
     fn render_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         match self.page {
-            Page::Dashboard => self.render_dashboard(cx),
-            Page::PowerPlanAutomation => {
-                self.render_section_landing_page(Page::PowerPlanAutomation, cx)
-            }
+            Page::Home => self.render_home_page(cx),
+            Page::PowerPlanControl => self.render_section_landing_page(Page::PowerPlanControl, cx),
             Page::WinderustFeatures => {
                 self.render_section_landing_page(Page::WinderustFeatures, cx)
             }
-            Page::ProcessorControls => {
-                self.render_section_landing_page(Page::ProcessorControls, cx)
-            }
+            Page::CpuControl => self.render_section_landing_page(Page::CpuControl, cx),
             Page::PriorityControl => self.render_section_landing_page(Page::PriorityControl, cx),
-            Page::AppHome => self.render_section_landing_page(Page::AppHome, cx),
-            Page::AdvancedHome => self.render_section_landing_page(Page::AdvancedHome, cx),
-            Page::Activity => self.render_activity_page(window, cx),
-            Page::ForegroundRules => self.render_foreground_rules_page(window, cx),
-            Page::Schedule => self.render_schedule_page(window, cx),
-            Page::CpuUsage => self.render_cpu_usage_page(window, cx),
-            Page::CoreParking => self.render_core_parking_page(window, cx),
+            Page::SettingsHome => self.render_section_landing_page(Page::SettingsHome, cx),
+            Page::AdvancedControls => self.render_section_landing_page(Page::AdvancedControls, cx),
+            Page::ByActivity => self.render_by_activity_page(window, cx),
+            Page::ByForeground => self.render_by_foreground_page(window, cx),
+            Page::ByTime => self.render_by_time_page(window, cx),
+            Page::ByCpuLoad => self.render_by_cpu_load_page(window, cx),
+            Page::AdvancedPowerPlanTuning => {
+                self.render_advanced_power_plan_tuning_page(window, cx)
+            }
             Page::ProcessPriority => self.render_process_priority_page(window, cx),
             Page::ThreadPriority => self.render_thread_priority_page(window, cx),
-            Page::DynamicPriorityBoost => self.render_priority_boost_page(window, cx),
-            Page::CpuLimiter => self.render_cpu_limiter_page(window, cx),
+            Page::DynamicPriorityBoost => self.render_dynamic_priority_boost_page(window, cx),
+            Page::CoreLimiter => self.render_core_limiter_page(window, cx),
             Page::BackgroundCpuRestriction => {
                 self.render_background_cpu_restriction_page(window, cx)
             }
-            Page::SmartSaverMode => self.render_smart_saver_page(window, cx),
-            Page::EfficiencyMode => self.render_efficiency_page(window, cx),
-            Page::AppSuspension => self.render_suspension_page(window, cx),
-            Page::PerformanceMode => self.render_performance_mode_page(window, cx),
+            Page::AdaptiveEngine => self.render_adaptive_engine_page(window, cx),
+            Page::BackgroundEfficiency => self.render_background_efficiency_page(window, cx),
+            Page::AppSuspension => self.render_app_suspension_page(window, cx),
+            Page::ByRunningApp => self.render_by_running_app_page(window, cx),
             Page::ProcessList => self.render_process_list_page(window, cx),
             Page::IoPriority => self.render_io_priority_page(window, cx),
             Page::GpuPriority => self.render_gpu_priority_page(window, cx),
             Page::MemoryPriority => self.render_memory_priority_page(window, cx),
             Page::MemoryTrim => self.render_memory_trim_page(window, cx),
-            Page::CpuAffinity => self.render_affinity_page(window, cx),
+            Page::CoreSteering => self.render_core_steering_page(window, cx),
             Page::ActionLog => self.render_action_log_page(window, cx),
-            Page::Settings => self.render_winderust_behaviour_page(window, cx),
-            Page::SettingsAppearance => self.render_settings_appearance_page(window, cx),
-            Page::SettingsExperimental => self.render_settings_experimental_page(window, cx),
+            Page::WinderustBehaviour => self.render_winderust_behaviour_page(window, cx),
+            Page::LanguageAndAppearance => self.render_language_and_appearance_page(window, cx),
+            Page::ExperimentalFeatures => self.render_experimental_features_page(window, cx),
             Page::TimerResolution => self.render_timer_resolution_page(window, cx),
             Page::Win32PrioritySeparation => self.render_win32_priority_separation_page(window, cx),
             Page::About => self.render_about_page(cx),
@@ -4605,14 +4618,14 @@ impl WinderustApp {
     ) -> AnyElement {
         let mut cards = v_flex().w_full().min_w(px(0.0)).gap_2();
 
-        if section_page == Page::PowerPlanAutomation {
+        if section_page == Page::PowerPlanControl {
             cards = cards.child(section_title_text(t!("nav.automation_group").to_string()));
             for target in [
-                Page::ForegroundRules,
-                Page::PerformanceMode,
-                Page::CpuUsage,
-                Page::Activity,
-                Page::Schedule,
+                Page::ByForeground,
+                Page::ByRunningApp,
+                Page::ByCpuLoad,
+                Page::ByActivity,
+                Page::ByTime,
             ] {
                 cards = cards.child(
                     section_landing_card(target, cx)
@@ -4624,7 +4637,7 @@ impl WinderustApp {
             }
 
             cards = cards.child(section_title_text(t!("nav.advanced_group").to_string()));
-            let target = Page::CoreParking;
+            let target = Page::AdvancedPowerPlanTuning;
             cards = cards.child(
                 section_landing_card(target, cx)
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
@@ -4650,7 +4663,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_dashboard_page_card(&self, target: Page, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_home_page_page_card(&self, target: Page, cx: &mut Context<Self>) -> gpui::Div {
         dashboard_card_slot(
             section_landing_card(target, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
@@ -4701,9 +4714,7 @@ impl WinderustApp {
                     .w_full()
                     .min_w(px(0.0))
                     .py_2()
-                    .child(text_muted(
-                        t!("dashboard.no_matching_functions").to_string(),
-                    ))
+                    .child(text_muted(t!("home.no_matching_functions").to_string()))
                     .into_any_element(),
             ));
         } else {
@@ -4723,7 +4734,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_dashboard(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_home_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let settings = &self.saved_settings;
         let mut section_cards = h_flex()
             .w_full()
@@ -4736,7 +4747,7 @@ impl WinderustApp {
             dashboard_sections_in_nav_order(self.settings.advanced.show_advanced_controls)
         {
             section_cards =
-                section_cards.child(self.render_dashboard_page_card(section.landing_page, cx));
+                section_cards.child(self.render_home_page_page_card(section.landing_page, cx));
         }
 
         let summary = h_flex()
@@ -4759,18 +4770,16 @@ impl WinderustApp {
             ))
             .child(dashboard_card_slot(
                 titled_status_list(
-                    &t!("dashboard.enabled_rules"),
+                    &t!("home.enabled_rules"),
                     self.dashboard_enabled_function_items(settings),
                 )
                 .into_any_element(),
             ));
 
-        self.page_shell(Page::Dashboard, cx)
-            .child(section_title_text(t!("dashboard.overview").to_string()))
+        self.page_shell(Page::Home, cx)
+            .child(section_title_text(t!("home.overview").to_string()))
             .child(summary)
-            .child(section_title_text(
-                t!("dashboard.main_sections").to_string(),
-            ))
+            .child(section_title_text(t!("home.main_sections").to_string()))
             .child(section_cards)
             .into_any_element()
     }
@@ -4780,44 +4789,44 @@ impl WinderustApp {
 
         if settings.general.enabled {
             items.push((
-                t!("dashboard.automation").to_string(),
+                t!("home.automation").to_string(),
                 t!("common.enabled").to_string(),
             ));
         }
-        if settings.foreground_rules.enabled {
+        if settings.by_foreground.enabled {
             items.push((
-                t!("nav.foreground_rules").to_string(),
-                rule_count_label(settings.foreground_rules.rules.len()),
+                t!("nav.by_foreground").to_string(),
+                rule_count_label(settings.by_foreground.rules.len()),
             ));
         }
-        if settings.performance_mode.enabled {
+        if settings.by_running_app.enabled {
             items.push((
-                t!("nav.performance_mode").to_string(),
-                self.performance_mode_status
+                t!("nav.by_running_app").to_string(),
+                self.by_running_app_status
                     .active_process
                     .clone()
-                    .unwrap_or_else(|| rule_count_label(settings.performance_mode.rules.len())),
+                    .unwrap_or_else(|| rule_count_label(settings.by_running_app.rules.len())),
             ));
         }
-        if settings.cpu_usage_mode.enabled {
+        if settings.by_cpu_load.enabled {
             items.push((
-                t!("nav.cpu_usage").to_string(),
+                t!("nav.by_cpu_load").to_string(),
                 cpu_usage_label(self.cpu_usage.percent),
             ));
         }
-        if settings.activity_mode.enabled {
+        if settings.by_activity.enabled {
             items.push((
-                t!("nav.activity").to_string(),
+                t!("nav.by_activity").to_string(),
                 format!("{:?}", self.activity.state),
             ));
         }
-        if settings.schedule_mode.enabled {
-            items.push((t!("nav.schedule").to_string(), self.next_schedule.clone()));
+        if settings.by_time.enabled {
+            items.push((t!("nav.by_time").to_string(), self.next_schedule.clone()));
         }
-        if settings.cpu_limiter.enabled {
+        if settings.core_limiter.enabled {
             items.push((
-                t!("nav.cpu_limiter").to_string(),
-                format!("{} limited", self.cpu_limiter_status.limited_processes),
+                t!("nav.core_limiter").to_string(),
+                format!("{} limited", self.core_limiter_status.limited_processes),
             ));
         }
         if settings.background_cpu_restriction.enabled {
@@ -4829,10 +4838,13 @@ impl WinderustApp {
                 ),
             ));
         }
-        if settings.eco_qos.enabled {
+        if settings.background_efficiency.enabled {
             items.push((
-                t!("nav.efficiency_mode").to_string(),
-                format!("{} throttled", self.eco_qos_status.throttled_processes),
+                t!("nav.background_efficiency").to_string(),
+                format!(
+                    "{} throttled",
+                    self.background_efficiency_status.throttled_processes
+                ),
             ));
         }
         if settings.app_suspension.enabled {
@@ -4879,10 +4891,10 @@ impl WinderustApp {
                 format!("{} trimmed", self.memory_trim_status.trimmed_processes),
             ));
         }
-        if settings.cpu_affinity.enabled {
+        if settings.core_steering.enabled {
             items.push((
-                t!("nav.cpu_affinity").to_string(),
-                format!("{} adjusted", self.cpu_affinity_status.adjusted_processes),
+                t!("nav.core_steering").to_string(),
+                format!("{} adjusted", self.core_steering_status.adjusted_processes),
             ));
         }
 
@@ -4905,12 +4917,12 @@ impl WinderustApp {
             .justify_end()
             .child(dashboard_split_value_row([
                 dashboard_split_value(
-                    t!("dashboard.cpu_load").to_string(),
+                    t!("home.cpu_load").to_string(),
                     cpu_usage_label(self.cpu_usage.percent),
                     dashboard_primary_series_color(),
                 ),
                 dashboard_split_value(
-                    t!("dashboard.cpu_frequency").to_string(),
+                    t!("home.cpu_frequency").to_string(),
                     cpu_frequency_label(self.cpu_usage.frequency_mhz),
                     dashboard_secondary_series_color(),
                 ),
@@ -4918,7 +4930,7 @@ impl WinderustApp {
             .child(graph);
 
         dashboard_summary_card(
-            t!("dashboard.cpu_usage").to_string(),
+            t!("home.cpu_usage").to_string(),
             Some(
                 dashboard_summary_header_value(cpu_usage_label(self.cpu_usage.percent))
                     .into_any_element(),
@@ -4939,12 +4951,12 @@ impl WinderustApp {
             .justify_end()
             .child(dashboard_split_value_row([
                 dashboard_split_value(
-                    t!("dashboard.memory_used").to_string(),
+                    t!("home.memory_used").to_string(),
                     memory_usage_value_label(self.memory_usage),
                     dashboard_primary_series_color(),
                 ),
                 dashboard_split_value(
-                    t!("dashboard.memory_cache").to_string(),
+                    t!("home.memory_cache").to_string(),
                     memory_cache_value_label(self.memory_usage),
                     dashboard_secondary_series_color(),
                 ),
@@ -4952,7 +4964,7 @@ impl WinderustApp {
             .child(graph);
 
         dashboard_summary_card(
-            t!("dashboard.memory_usage").to_string(),
+            t!("home.memory_usage").to_string(),
             Some(
                 dashboard_summary_header_value(memory_usage_label(self.memory_usage.percent))
                     .into_any_element(),
@@ -4965,7 +4977,7 @@ impl WinderustApp {
         let graph = self.render_io_history_graph("io", &self.io_usage_history);
 
         dashboard_summary_card(
-            t!("dashboard.io_usage").to_string(),
+            t!("home.io_usage").to_string(),
             Some(
                 dashboard_summary_header_value(io_usage_label(self.io_usage.bytes_per_second))
                     .into_any_element(),
@@ -4980,12 +4992,12 @@ impl WinderustApp {
                 .justify_end()
                 .child(dashboard_split_value_row([
                     io_usage_split_value(
-                        t!("dashboard.io_read").to_string(),
+                        t!("home.io_read").to_string(),
                         self.io_usage.read_bytes_per_second,
                         dashboard_primary_series_color(),
                     ),
                     io_usage_split_value(
-                        t!("dashboard.io_write").to_string(),
+                        t!("home.io_write").to_string(),
                         self.io_usage.write_bytes_per_second,
                         dashboard_secondary_series_color(),
                     ),
@@ -4999,7 +5011,7 @@ impl WinderustApp {
         let graph = self.render_network_history_graph("network", &self.network_usage_history);
 
         dashboard_summary_card(
-            t!("dashboard.network_usage").to_string(),
+            t!("home.network_usage").to_string(),
             Some(
                 dashboard_summary_header_value(io_usage_label(self.network_usage.bytes_per_second))
                     .into_any_element(),
@@ -5014,12 +5026,12 @@ impl WinderustApp {
                 .justify_end()
                 .child(dashboard_split_value_row([
                     io_usage_split_value(
-                        t!("dashboard.network_download").to_string(),
+                        t!("home.network_download").to_string(),
                         self.network_usage.download_bytes_per_second,
                         dashboard_primary_series_color(),
                     ),
                     io_usage_split_value(
-                        t!("dashboard.network_upload").to_string(),
+                        t!("home.network_upload").to_string(),
                         self.network_usage.upload_bytes_per_second,
                         dashboard_secondary_series_color(),
                     ),
@@ -5039,8 +5051,8 @@ impl WinderustApp {
             dashboard_cpu_dual_line_points(history, self.cpu_usage.base_frequency_mhz),
             dashboard_primary_series_color(),
             dashboard_secondary_series_color(),
-            t!("dashboard.cpu_load").to_string(),
-            t!("dashboard.cpu_frequency").to_string(),
+            t!("home.cpu_load").to_string(),
+            t!("home.cpu_frequency").to_string(),
             Some(DASHBOARD_PERCENT_CHART_MAX),
         )
     }
@@ -5061,8 +5073,8 @@ impl WinderustApp {
             ),
             dashboard_primary_series_color(),
             dashboard_secondary_series_color(),
-            t!("dashboard.memory_used").to_string(),
-            t!("dashboard.memory_cache").to_string(),
+            t!("home.memory_used").to_string(),
+            t!("home.memory_cache").to_string(),
             Some(DASHBOARD_PERCENT_CHART_MAX),
         )
     }
@@ -5083,8 +5095,8 @@ impl WinderustApp {
             ),
             dashboard_primary_series_color(),
             dashboard_secondary_series_color(),
-            t!("dashboard.io_read").to_string(),
-            t!("dashboard.io_write").to_string(),
+            t!("home.io_read").to_string(),
+            t!("home.io_write").to_string(),
             None,
         )
     }
@@ -5108,8 +5120,8 @@ impl WinderustApp {
             ),
             dashboard_primary_series_color(),
             dashboard_secondary_series_color(),
-            t!("dashboard.network_download").to_string(),
-            t!("dashboard.network_upload").to_string(),
+            t!("home.network_download").to_string(),
+            t!("home.network_upload").to_string(),
             None,
         )
     }
@@ -5387,17 +5399,17 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_activity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_by_activity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.sync_activity_slider_states(window, cx);
-        let enabled = self.settings.activity_mode.enabled;
+        let enabled = self.settings.by_activity.enabled;
         let body = feature_body(enabled)
             .child(setting_action_card(
                 "activity-idle-plan-card",
-                t!("activity.idle_plan").to_string(),
+                t!("by_activity.idle_plan").to_string(),
                 self.render_inline_power_plan_picker(
                     "activity-idle-plan",
                     self.settings
-                        .activity_mode
+                        .by_activity
                         .power_plans
                         .power_save_guid
                         .clone(),
@@ -5408,11 +5420,11 @@ impl WinderustApp {
             ))
             .child(setting_action_card(
                 "activity-active-plan-card",
-                t!("activity.active_plan").to_string(),
+                t!("by_activity.active_plan").to_string(),
                 self.render_inline_power_plan_picker(
                     "activity-active-plan",
                     self.settings
-                        .activity_mode
+                        .by_activity
                         .power_plans
                         .performance_guid
                         .clone(),
@@ -5423,75 +5435,75 @@ impl WinderustApp {
             ))
             .child(feature_toggle_switch(
                 "keyboard-input",
-                t!("activity.keyboard_input").to_string(),
-                self.settings.activity_mode.input_detection.keyboard,
+                t!("by_activity.keyboard_input").to_string(),
+                self.settings.by_activity.input_detection.keyboard,
                 cx.listener(|app, checked: &bool, _, cx| {
                     if !*checked
-                        && !app.settings.activity_mode.input_detection.mouse
-                        && !app.settings.activity_mode.input_detection.controller
+                        && !app.settings.by_activity.input_detection.mouse
+                        && !app.settings.by_activity.input_detection.controller
                     {
                         return;
                     }
-                    app.settings.activity_mode.input_detection.keyboard = *checked;
+                    app.settings.by_activity.input_detection.keyboard = *checked;
                     app.settings
-                        .activity_mode
+                        .by_activity
                         .input_detection
                         .ensure_any_enabled();
-                    app.settings.activity_mode.switch_to_performance_on_resume =
-                        app.settings.activity_mode.input_detection.any_enabled();
+                    app.settings.by_activity.switch_to_performance_on_resume =
+                        app.settings.by_activity.input_detection.any_enabled();
                     cx.notify();
                 }),
             ))
             .child(feature_toggle_switch(
                 "mouse-input",
-                t!("activity.mouse_input").to_string(),
-                self.settings.activity_mode.input_detection.mouse,
+                t!("by_activity.mouse_input").to_string(),
+                self.settings.by_activity.input_detection.mouse,
                 cx.listener(|app, checked: &bool, _, cx| {
                     if !*checked
-                        && !app.settings.activity_mode.input_detection.keyboard
-                        && !app.settings.activity_mode.input_detection.controller
+                        && !app.settings.by_activity.input_detection.keyboard
+                        && !app.settings.by_activity.input_detection.controller
                     {
                         return;
                     }
-                    app.settings.activity_mode.input_detection.mouse = *checked;
+                    app.settings.by_activity.input_detection.mouse = *checked;
                     app.settings
-                        .activity_mode
+                        .by_activity
                         .input_detection
                         .ensure_any_enabled();
-                    app.settings.activity_mode.switch_to_performance_on_resume =
-                        app.settings.activity_mode.input_detection.any_enabled();
+                    app.settings.by_activity.switch_to_performance_on_resume =
+                        app.settings.by_activity.input_detection.any_enabled();
                     cx.notify();
                 }),
             ))
             .child(feature_toggle_switch(
                 "controller-input",
-                t!("activity.controller_input").to_string(),
-                self.settings.activity_mode.input_detection.controller,
+                t!("by_activity.controller_input").to_string(),
+                self.settings.by_activity.input_detection.controller,
                 cx.listener(|app, checked: &bool, _, cx| {
                     if !*checked
-                        && !app.settings.activity_mode.input_detection.keyboard
-                        && !app.settings.activity_mode.input_detection.mouse
+                        && !app.settings.by_activity.input_detection.keyboard
+                        && !app.settings.by_activity.input_detection.mouse
                     {
                         return;
                     }
-                    app.settings.activity_mode.input_detection.controller = *checked;
+                    app.settings.by_activity.input_detection.controller = *checked;
                     app.settings
-                        .activity_mode
+                        .by_activity
                         .input_detection
                         .ensure_any_enabled();
-                    app.settings.activity_mode.switch_to_performance_on_resume =
-                        app.settings.activity_mode.input_detection.any_enabled();
+                    app.settings.by_activity.switch_to_performance_on_resume =
+                        app.settings.by_activity.input_detection.any_enabled();
                     cx.notify();
                 }),
             ))
             .child(activity_slider_card(
                 ActivitySliderCardSpec {
                     id: SharedString::from("activity-idle-timeout"),
-                    label: SharedString::from(t!("activity.idle_timeout").to_string()),
+                    label: SharedString::from(t!("by_activity.idle_timeout").to_string()),
                     value_element: self.render_numeric_value(
                         NumericField::ActivityIdleTimeout,
-                        seconds_label(self.settings.activity_mode.idle_timeout_seconds),
-                        self.settings.activity_mode.idle_timeout_seconds.to_string(),
+                        seconds_label(self.settings.by_activity.idle_timeout_seconds),
+                        self.settings.by_activity.idle_timeout_seconds.to_string(),
                         cx,
                     ),
                     state: &self.inputs.activity_idle_timeout,
@@ -5506,7 +5518,7 @@ impl WinderustApp {
                 cx,
                 cx.listener(|app, change: &StepChange<u64>, _, cx| {
                     let value = apply_u64_step(
-                        app.settings.activity_mode.idle_timeout_seconds,
+                        app.settings.by_activity.idle_timeout_seconds,
                         change,
                         ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
                         ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
@@ -5518,7 +5530,7 @@ impl WinderustApp {
             .child(activity_slider_card(
                 ActivitySliderCardSpec {
                     id: SharedString::from("general-check-interval"),
-                    label: SharedString::from(t!("activity.check_interval").to_string()),
+                    label: SharedString::from(t!("by_activity.check_interval").to_string()),
                     value_element: self.render_numeric_value(
                         NumericField::GeneralCheckInterval,
                         milliseconds_label(self.settings.general.check_interval_ms),
@@ -5548,20 +5560,20 @@ impl WinderustApp {
             ));
 
         let help = tooltip_lines(vec![
-            t!("activity.intro_1").to_string(),
-            t!("activity.intro_2").to_string(),
+            t!("by_activity.intro_1").to_string(),
+            t!("by_activity.intro_2").to_string(),
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
 
-        self.page_shell(Page::Activity, cx)
+        self.page_shell(Page::ByActivity, cx)
             .child(feature_toggle_switch_with_help(
                 "activity-enabled",
-                t!("activity.enable").to_string(),
+                t!("by_activity.enable").to_string(),
                 help,
                 enabled,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.activity_mode.enabled = *checked;
+                    app.settings.by_activity.enabled = *checked;
                     cx.notify();
                 }),
             ))
@@ -5569,28 +5581,24 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_foreground_rules_page(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_by_foreground_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let input_value = self.inputs.foreground_process.read(cx).value().to_string();
-        let enabled = self.settings.foreground_rules.enabled;
+        let enabled = self.settings.by_foreground.enabled;
         let help = tooltip_lines(vec![
-            t!("foreground.intro_1").to_string(),
-            t!("foreground.intro_2").to_string(),
+            t!("by_foreground.intro_1").to_string(),
+            t!("by_foreground.intro_2").to_string(),
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
         let mut content =
-            self.page_shell(Page::ForegroundRules, cx)
+            self.page_shell(Page::ByForeground, cx)
                 .child(feature_toggle_switch_with_help(
                     "foreground-enabled",
-                    t!("foreground.enable").to_string(),
+                    t!("by_foreground.enable").to_string(),
                     help,
                     enabled,
                     cx.listener(|app, checked, _, cx| {
-                        app.settings.foreground_rules.enabled = *checked;
+                        app.settings.by_foreground.enabled = *checked;
                         cx.notify();
                     }),
                 ));
@@ -5610,22 +5618,21 @@ impl WinderustApp {
                     cx,
                 ))
                 .child(
-                    primary_control_button(Button::new("add-foreground-rule"), cx)
+                    primary_control_button(Button::new("add-by-foreground"), cx)
                         .label(t!("common.add").to_string())
                         .disabled(
-                            !self.settings.foreground_rules.enabled
+                            !self.settings.by_foreground.enabled
                                 || !can_add_foreground_process(
-                                    &self.settings.foreground_rules,
+                                    &self.settings.by_foreground,
                                     &input_value,
                                 ),
                         )
                         .on_click(cx.listener(|app, _, window, cx| {
                             let process =
                                 app.inputs.foreground_process.read(cx).value().to_string();
-                            if can_add_foreground_process(&app.settings.foreground_rules, &process)
-                            {
+                            if can_add_foreground_process(&app.settings.by_foreground, &process) {
                                 app.settings
-                                    .foreground_rules
+                                    .by_foreground
                                     .rules
                                     .push(app.new_foreground_rule(&process));
                                 app.inputs.ensure_for_settings(window, cx, &app.settings);
@@ -5638,22 +5645,22 @@ impl WinderustApp {
         let mut rules = rule_list(vec![
             rule_table_active_header(),
             rule_table_title_header(t!("process_list.process_name").to_string()),
-            priority_exclusion_table_cell(t!("performance_mode.power_plan").to_string()),
+            priority_exclusion_table_cell(t!("by_running_app.power_plan").to_string()),
             rule_table_action_header(),
         ]);
-        for (index, rule) in self.settings.foreground_rules.rules.iter().enumerate() {
+        for (index, rule) in self.settings.by_foreground.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::ForegroundRule, index),
-                SharedString::from(format!("foreground-rule-{index}")),
+                ListItemRemovalTarget::new(ListItemRemovalKind::ByForegroundRule, index),
+                SharedString::from(format!("by-foreground-{index}")),
                 self.render_foreground_rule(index, rule, window, cx),
             ));
         }
-        if self.settings.foreground_rules.rules.is_empty() {
+        if self.settings.by_foreground.rules.is_empty() {
             rules = rules.child(text_muted(t!("common.no_custom_rules").to_string()).p_4());
         }
         body = body.child(rules);
         content = content.child(disabled_feature_body(
-            "foreground-rules-body",
+            "by-foreground-body",
             body,
             enabled,
             cx,
@@ -5665,16 +5672,16 @@ impl WinderustApp {
     fn render_foreground_rule(
         &self,
         index: usize,
-        rule: &ForegroundRule,
+        rule: &ByForegroundRule,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        compact_rule_row(format!("foreground-rule-row-{index}"))
+        compact_rule_row(format!("by-foreground-row-{index}"))
             .child(rule_active_cell(
-                format!("foreground-rule-enabled-{index}"),
+                format!("by-foreground-enabled-{index}"),
                 rule.enabled,
                 cx.listener(move |app, checked, _, cx| {
-                    if let Some(rule) = app.settings.foreground_rules.rules.get_mut(index) {
+                    if let Some(rule) = app.settings.by_foreground.rules.get_mut(index) {
                         rule.enabled = *checked;
                     }
                     cx.notify();
@@ -5682,19 +5689,19 @@ impl WinderustApp {
             ))
             .child(self.process_rule_title(&rule.process_name, cx))
             .child(self.render_inline_power_plan_picker(
-                format!("foreground-rule-plan-{index}"),
+                format!("by-foreground-plan-{index}"),
                 rule.power_plan_guid.clone(),
-                PowerPlanField::ForegroundRule(index),
+                PowerPlanField::ByForegroundRule(index),
                 window,
                 cx,
             ))
             .child(rule_table_action_cell(
                 remove_control_button(Button::new(SharedString::from(format!(
-                    "remove-foreground-rule-{index}"
+                    "remove-by-foreground-{index}"
                 ))))
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.request_list_item_removal(
-                        ListItemRemovalTarget::new(ListItemRemovalKind::ForegroundRule, index),
+                        ListItemRemovalTarget::new(ListItemRemovalKind::ByForegroundRule, index),
                         cx,
                     );
                 }))
@@ -5703,15 +5710,15 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn new_foreground_rule(&self, process: &str) -> ForegroundRule {
+    fn new_foreground_rule(&self, process: &str) -> ByForegroundRule {
         new_foreground_rule(
             process,
             self.current_plan.as_ref().map(|plan| plan.guid.clone()),
         )
     }
 
-    fn new_performance_mode_rule(&self, process: &str) -> PerformanceModeRule {
-        new_performance_mode_rule(
+    fn new_by_running_app_rule(&self, process: &str) -> ByRunningAppRule {
+        new_by_running_app_rule(
             process,
             self.current_plan.as_ref().map(|plan| plan.guid.clone()),
         )
@@ -5779,39 +5786,39 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_schedule_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let enabled = self.settings.schedule_mode.enabled;
+    fn render_by_time_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let enabled = self.settings.by_time.enabled;
         let help = tooltip_lines(vec![
-            t!("schedule.intro_1").to_string(),
-            t!("schedule.intro_2").to_string(),
+            t!("by_time.intro_1").to_string(),
+            t!("by_time.intro_2").to_string(),
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
-        let mut content =
-            self.page_shell(Page::Schedule, cx)
-                .child(feature_toggle_switch_with_help(
-                    "schedule-enabled",
-                    t!("schedule.enable").to_string(),
-                    help,
-                    enabled,
-                    cx.listener(|app, checked, _, cx| {
-                        app.settings.schedule_mode.enabled = *checked;
-                        cx.notify();
-                    }),
-                ));
+        let mut content = self
+            .page_shell(Page::ByTime, cx)
+            .child(feature_toggle_switch_with_help(
+                "schedule-enabled",
+                t!("by_time.enable").to_string(),
+                help,
+                enabled,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.by_time.enabled = *checked;
+                    cx.notify();
+                }),
+            ));
 
         let mut body =
             feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
         body = body.child(create_rule_card(
             "create-time-rule-card",
-            t!("schedule.rule_title").to_string(),
+            t!("by_time.rule_title").to_string(),
             primary_control_button(Button::new("add-time-rule"), cx)
                 .label(t!("common.create").to_string())
                 .disabled(!enabled)
                 .on_click(cx.listener(|app, _, window, cx| {
-                    app.settings.schedule_mode.rules.push(ScheduleRule {
+                    app.settings.by_time.rules.push(ByTimeRule {
                         enabled: true,
-                        name: t!("schedule.new_rule").to_string(),
+                        name: t!("by_time.new_rule").to_string(),
                         days: WeekdaySetting::all().to_vec(),
                         start_time: "22:00".to_owned(),
                         end_time: "08:00".to_owned(),
@@ -5825,23 +5832,23 @@ impl WinderustApp {
         let mut rules = rule_list(vec![
             rule_table_active_header(),
             rule_table_title_input_header(t!("common.rule_name").to_string()),
-            priority_exclusion_table_cell(t!("schedule.days").to_string()),
-            rule_table_centered_header(t!("schedule.start").to_string(), 96.0),
-            rule_table_centered_header(t!("schedule.end").to_string(), 96.0),
+            priority_exclusion_table_cell(t!("by_time.days").to_string()),
+            rule_table_centered_header(t!("by_time.start").to_string(), 96.0),
+            rule_table_centered_header(t!("by_time.end").to_string(), 96.0),
             rule_table_centered_header(
-                t!("schedule.target_power_plan").to_string(),
+                t!("by_time.target_power_plan").to_string(),
                 DROPDOWN_SELECT_STANDARD_WIDTH,
             ),
             rule_table_action_header(),
         ]);
-        for (index, rule) in self.settings.schedule_mode.rules.iter().enumerate() {
+        for (index, rule) in self.settings.by_time.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::ScheduleRule, index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::ByTimeRule, index),
                 SharedString::from(format!("schedule-rule-{index}")),
-                self.render_schedule_rule(index, rule, window, cx),
+                self.render_by_time_rule(index, rule, window, cx),
             ));
         }
-        if self.settings.schedule_mode.rules.is_empty() {
+        if self.settings.by_time.rules.is_empty() {
             rules = rules.child(text_muted(t!("common.no_custom_rules").to_string()).p_4());
         }
         body = body.child(rules);
@@ -5850,14 +5857,14 @@ impl WinderustApp {
         content.into_any_element()
     }
 
-    fn render_schedule_rule(
+    fn render_by_time_rule(
         &self,
         index: usize,
-        rule: &ScheduleRule,
+        rule: &ByTimeRule,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(name_input) = self.inputs.schedule_rule_names.get(index).cloned() else {
+        let Some(name_input) = self.inputs.by_time_rule_names.get(index).cloned() else {
             return syncing_rule_card(index);
         };
         let name_focused = name_input.read(cx).focus_handle(cx).is_focused(window);
@@ -5869,7 +5876,7 @@ impl WinderustApp {
                 format!("schedule-rule-enabled-{index}"),
                 rule.enabled,
                 cx.listener(move |app, checked, _, cx| {
-                    if let Some(rule) = app.settings.schedule_mode.rules.get_mut(index) {
+                    if let Some(rule) = app.settings.by_time.rules.get_mut(index) {
                         rule.enabled = *checked;
                     }
                     cx.notify();
@@ -5880,7 +5887,7 @@ impl WinderustApp {
                 name_focused,
                 cx,
             )))
-            .child(self.render_schedule_days_dropdown(index, &rule.days, window, cx))
+            .child(self.render_by_time_days_dropdown(index, &rule.days, window, cx))
             .child(match start_input {
                 Some(input) => rule_table_input_cell(input, 96.0, window, cx).into_any_element(),
                 None => text_muted(t!("common.unknown").to_string()).into_any_element(),
@@ -5892,7 +5899,7 @@ impl WinderustApp {
             .child(self.render_inline_power_plan_picker(
                 format!("schedule-rule-plan-{index}"),
                 rule.power_plan_guid.clone(),
-                PowerPlanField::ScheduleRule(index),
+                PowerPlanField::ByTimeRule(index),
                 window,
                 cx,
             ))
@@ -5902,7 +5909,7 @@ impl WinderustApp {
                 ))))
                 .on_click(cx.listener(move |app, _, _, cx| {
                     app.request_list_item_removal(
-                        ListItemRemovalTarget::new(ListItemRemovalKind::ScheduleRule, index),
+                        ListItemRemovalTarget::new(ListItemRemovalKind::ByTimeRule, index),
                         cx,
                     );
                 }))
@@ -5911,7 +5918,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_schedule_days_dropdown(
+    fn render_by_time_days_dropdown(
         &self,
         index: usize,
         days: &[WeekdaySetting],
@@ -5957,8 +5964,7 @@ impl WinderustApp {
                             ))
                             .child(day.short_label())
                             .on_click(cx.listener(move |app, _, _, cx| {
-                                if let Some(rule) = app.settings.schedule_mode.rules.get_mut(index)
-                                {
+                                if let Some(rule) = app.settings.by_time.rules.get_mut(index) {
                                     let next = !rule.days.contains(&day);
                                     begin_control_motion(motion_id.clone(), next, cx);
                                     if next {
@@ -5976,25 +5982,25 @@ impl WinderustApp {
         )
     }
 
-    fn render_cpu_usage_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_by_cpu_load_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.sync_cpu_threshold_slider_states(window, cx);
 
-        let enabled = self.settings.cpu_usage_mode.enabled;
+        let enabled = self.settings.by_cpu_load.enabled;
         let help = tooltip_lines(vec![
-            t!("cpu_rules.intro_1").to_string(),
-            t!("cpu_rules.intro_2").to_string(),
+            t!("by_cpu_load.intro_1").to_string(),
+            t!("by_cpu_load.intro_2").to_string(),
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
         let mut content =
-            self.page_shell(Page::CpuUsage, cx)
+            self.page_shell(Page::ByCpuLoad, cx)
                 .child(feature_toggle_switch_with_help(
                     "cpu-usage-enabled",
-                    t!("cpu_rules.enable").to_string(),
+                    t!("by_cpu_load.enable").to_string(),
                     help,
                     enabled,
                     cx.listener(|app, checked, _, cx| {
-                        app.settings.cpu_usage_mode.enabled = *checked;
+                        app.settings.by_cpu_load.enabled = *checked;
                         cx.notify();
                     }),
                 ));
@@ -6003,14 +6009,14 @@ impl WinderustApp {
             feature_body(enabled).child(section_title_text(t!("common.rules").to_string()));
         body = body.child(create_rule_card(
             "create-cpu-rule-card",
-            t!("cpu_rules.rule_title").to_string(),
+            t!("by_cpu_load.rule_title").to_string(),
             primary_control_button(Button::new("add-cpu-rule"), cx)
                 .label(t!("common.create").to_string())
                 .disabled(!enabled)
                 .on_click(cx.listener(|app, _, window, cx| {
-                    app.settings.cpu_usage_mode.rules.push(CpuUsageRule {
+                    app.settings.by_cpu_load.rules.push(ByCpuLoadRule {
                         enabled: true,
-                        name: t!("cpu_rules.new_rule").to_string(),
+                        name: t!("by_cpu_load.new_rule").to_string(),
                         comparison: CpuUsageComparison::AtOrBelow,
                         threshold_percent: 20,
                         upper_threshold_percent: None,
@@ -6032,14 +6038,14 @@ impl WinderustApp {
             rule_table_title_header(t!("common.rule_name").to_string()),
             rule_table_action_header(),
         ]);
-        for (index, rule) in self.settings.cpu_usage_mode.rules.iter().enumerate() {
+        for (index, rule) in self.settings.by_cpu_load.rules.iter().enumerate() {
             rules = rules.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::CpuUsageRule, index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::ByCpuLoadRule, index),
                 SharedString::from(format!("cpu-rule-{index}")),
-                self.render_cpu_rule(index, rule, enabled, window, cx),
+                self.render_by_cpu_load_rule(index, rule, enabled, window, cx),
             ));
         }
-        if self.settings.cpu_usage_mode.rules.is_empty() {
+        if self.settings.by_cpu_load.rules.is_empty() {
             rules = rules.child(text_muted(t!("common.no_custom_rules").to_string()).p_4());
         }
         body = body.child(rules);
@@ -6048,15 +6054,15 @@ impl WinderustApp {
         content.into_any_element()
     }
 
-    fn render_cpu_rule(
+    fn render_by_cpu_load_rule(
         &self,
         index: usize,
-        rule: &CpuUsageRule,
+        rule: &ByCpuLoadRule,
         feature_enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let Some(name_input) = self.inputs.cpu_rule_names.get(index).cloned() else {
+        let Some(name_input) = self.inputs.by_cpu_load_rule_names.get(index).cloned() else {
             return syncing_rule_card(index);
         };
         let Some(threshold_state) = self.inputs.cpu_rule_thresholds.get(index).cloned() else {
@@ -6093,7 +6099,7 @@ impl WinderustApp {
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
+                            if let Some(rule) = app.settings.by_cpu_load.rules.get_mut(index) {
                                 rule.comparison = comparison;
                                 if comparison == CpuUsageComparison::Between {
                                     rule.upper_threshold_percent.get_or_insert(100);
@@ -6109,8 +6115,8 @@ impl WinderustApp {
         );
 
         let upper = rule.upper_threshold_percent.unwrap_or(100);
-        let title_target = RuleTitleTarget::Cpu(index);
-        let card_target = RuleCardTarget::Cpu(index);
+        let title_target = RuleTitleTarget::ByCpuLoad(index);
+        let card_target = RuleCardTarget::ByCpuLoad(index);
         let collapsed = self.is_rule_card_collapsed(&card_target);
         let mut card = rule_card(
             self.render_rule_title(&rule_card_title(&rule.name), &name_input, title_target, cx),
@@ -6118,7 +6124,7 @@ impl WinderustApp {
                 format!("cpu-rule-enabled-{index}"),
                 rule.enabled,
                 cx.listener(move |app, checked, _, cx| {
-                    if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
+                    if let Some(rule) = app.settings.by_cpu_load.rules.get_mut(index) {
                         rule.enabled = *checked;
                     }
                     cx.notify();
@@ -6134,14 +6140,14 @@ impl WinderustApp {
                 vec![
                     rule_action_row(
                         format!("cpu-rule-comparison-{index}"),
-                        t!("cpu_rules.when_cpu_load").to_string(),
+                        t!("by_cpu_load.when_cpu_load").to_string(),
                         comparison_dropdown,
                     )
                     .into_any_element(),
                     threshold_level_slider(
                         SliderRowSpec {
                             id: SharedString::from(format!("cpu-rule-threshold-{index}")),
-                            label: SharedString::from(t!("cpu_rules.threshold").to_string()),
+                            label: SharedString::from(t!("by_cpu_load.threshold").to_string()),
                             value_element: self.render_numeric_value(
                                 NumericField::CpuThreshold(index),
                                 format!("{}%", rule.threshold_percent),
@@ -6156,7 +6162,7 @@ impl WinderustApp {
                         cx,
                         cx.listener(move |app, change: &StepChange<u8>, _, cx| {
                             if let Some(value) =
-                                app.settings.cpu_usage_mode.rules.get(index).map(|rule| {
+                                app.settings.by_cpu_load.rules.get(index).map(|rule| {
                                     apply_u8_step(rule.threshold_percent, change, 0, 100)
                                 })
                             {
@@ -6175,7 +6181,9 @@ impl WinderustApp {
                     threshold_level_slider(
                         SliderRowSpec {
                             id: SharedString::from(format!("cpu-rule-upper-threshold-{index}")),
-                            label: SharedString::from(t!("cpu_rules.upper_threshold").to_string()),
+                            label: SharedString::from(
+                                t!("by_cpu_load.upper_threshold").to_string(),
+                            ),
                             value_element: self.render_numeric_value(
                                 NumericField::CpuUpperThreshold(index),
                                 format!("{upper}%"),
@@ -6190,7 +6198,7 @@ impl WinderustApp {
                         cx,
                         cx.listener(move |app, change: &StepChange<u8>, _, cx| {
                             if let Some(value) =
-                                app.settings.cpu_usage_mode.rules.get(index).map(|rule| {
+                                app.settings.by_cpu_load.rules.get(index).map(|rule| {
                                     apply_u8_step(
                                         rule.upper_threshold_percent.unwrap_or(100),
                                         change,
@@ -6213,7 +6221,7 @@ impl WinderustApp {
             condition_fields.push(
                 rule_stepper_row_u64(
                     format!("cpu-rule-duration-{index}"),
-                    t!("cpu_rules.duration").to_string(),
+                    t!("by_cpu_load.duration").to_string(),
                     rule.duration_seconds,
                     self.render_numeric_value(
                         NumericField::CpuDuration(index),
@@ -6222,7 +6230,7 @@ impl WinderustApp {
                         cx,
                     ),
                     cx.listener(move |app, change: &StepChange<u64>, _, cx| {
-                        if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
+                        if let Some(rule) = app.settings.by_cpu_load.rules.get_mut(index) {
                             rule.duration_seconds =
                                 apply_u64_step(rule.duration_seconds, change, 0, 86_400);
                         }
@@ -6235,7 +6243,7 @@ impl WinderustApp {
             let mut plan_fields = vec![
                 rule_action_row(
                     format!("cpu-rule-plan-{index}"),
-                    t!("cpu_rules.use").to_string(),
+                    t!("by_cpu_load.use").to_string(),
                     self.render_inline_power_plan_picker(
                         format!("cpu-rule-plan-{index}"),
                         rule.power_plan_guid.clone(),
@@ -6247,11 +6255,11 @@ impl WinderustApp {
                 .into_any_element(),
                 rule_checkbox_row(
                     format!("cpu-rule-else-{index}"),
-                    t!("cpu_rules.else").to_string(),
+                    t!("by_cpu_load.else").to_string(),
                     rule.else_enabled,
                     cx.listener(move |app, checked, _, cx| {
                         let current_plan = app.current_plan.as_ref().map(|plan| plan.guid.clone());
-                        if let Some(rule) = app.settings.cpu_usage_mode.rules.get_mut(index) {
+                        if let Some(rule) = app.settings.by_cpu_load.rules.get_mut(index) {
                             rule.else_enabled = *checked;
                             if rule.else_enabled && rule.else_power_plan_guid.is_none() {
                                 rule.else_power_plan_guid = current_plan;
@@ -6265,7 +6273,7 @@ impl WinderustApp {
                 plan_fields.push(
                     rule_action_row(
                         format!("cpu-rule-else-plan-{index}"),
-                        t!("cpu_rules.else_use").to_string(),
+                        t!("by_cpu_load.else_use").to_string(),
                         self.render_inline_power_plan_picker(
                             format!("cpu-rule-else-plan-{index}"),
                             rule.else_power_plan_guid.clone(),
@@ -6305,7 +6313,7 @@ impl WinderustApp {
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.request_list_item_removal(
                                 ListItemRemovalTarget::new(
-                                    ListItemRemovalKind::CpuUsageRule,
+                                    ListItemRemovalKind::ByCpuLoadRule,
                                     index,
                                 ),
                                 cx,
@@ -6318,24 +6326,28 @@ impl WinderustApp {
         card.into_any_element()
     }
 
-    fn render_smart_saver_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_adaptive_engine_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let enabled = adaptive_engine_enabled(&self.settings);
-        let timer_guard_available = self.settings.eco_qos.enabled
+        let timer_guard_available = self.settings.background_efficiency.enabled
             || (self.settings.workload_engine.enabled
                 && self
                     .settings
                     .workload_engine
-                    .workload_engine_efficiency_mode_enabled);
+                    .workload_engine_background_efficiency_enabled);
         let timer_guard_label = if timer_guard_available {
-            t!("smart_saver.audio_guarded").to_string()
-        } else if self.settings.smart_saver.enabled
-            && self.settings.smart_saver.processor_policy_enabled
+            t!("adaptive_engine.audio_guarded").to_string()
+        } else if self.settings.adaptive_engine.enabled
+            && self.settings.adaptive_engine.processor_policy_enabled
         {
-            t!("smart_saver.cpu_saver_active").to_string()
-        } else if self.settings.smart_saver.enabled {
-            t!("smart_saver.winderust_guarded").to_string()
+            t!("adaptive_engine.cpu_saver_active").to_string()
+        } else if self.settings.adaptive_engine.enabled {
+            t!("adaptive_engine.winderust_guarded").to_string()
         } else {
-            t!("smart_saver.timer_guard_unavailable").to_string()
+            t!("adaptive_engine.timer_guard_unavailable").to_string()
         };
         let advanced_enabled = self
             .settings
@@ -6366,16 +6378,16 @@ impl WinderustApp {
         );
         let manual_tuning = feature_body(enabled)
             .child(section_title_text(
-                t!("smart_saver.cpu_behaviour").to_string(),
+                t!("adaptive_engine.cpu_behaviour").to_string(),
             ))
-            .child(self.render_smart_saver_processor_policy_group(window, cx))
-            .child(self.render_smart_saver_cpu_scheduling_group(window, cx))
+            .child(self.render_adaptive_engine_processor_policy_group(window, cx))
+            .child(self.render_adaptive_engine_cpu_scheduling_group(window, cx))
             .child(setting_action_card_with_help(
-                "smart-saver-cpu-pressure",
-                t!("smart_saver.cpu_pressure").to_string(),
-                t!("smart_saver.cpu_pressure_help").to_string(),
+                "adaptive-engine-cpu-pressure",
+                t!("adaptive_engine.cpu_pressure").to_string(),
+                t!("adaptive_engine.cpu_pressure_help").to_string(),
                 switch_toggle_action(
-                    "smart-saver-cpu-pressure-toggle",
+                    "adaptive-engine-cpu-pressure-toggle",
                     self.settings.workload_engine.workload_engine_enabled,
                     cx.listener(|app, checked, _, cx| {
                         app.settings.workload_engine.workload_engine_enabled = *checked;
@@ -6393,26 +6405,26 @@ impl WinderustApp {
                 ),
             ))
             .child(disabled_feature_body(
-                "smart-saver-workload-engine-tunables",
+                "adaptive-engine-workload-engine-tunables",
                 workload_engine_tunables,
                 self.settings.workload_engine.enabled,
                 cx,
             ))
-            .child(section_title_text(t!("smart_saver.misc").to_string()))
+            .child(section_title_text(t!("adaptive_engine.misc").to_string()))
             .child(disabled_feature_body(
-                "smart-saver-workload-engine-efficiency",
+                "adaptive-engine-workload-engine-efficiency",
                 workload_engine_efficiency,
                 self.settings.workload_engine.enabled,
                 cx,
             ))
             .child(setting_action_card_with_help(
-                "smart-saver-timer-requests",
-                t!("smart_saver.timer_requests").to_string(),
-                t!("smart_saver.timer_requests_help").to_string(),
+                "adaptive-engine-timer-requests",
+                t!("adaptive_engine.timer_requests").to_string(),
+                t!("adaptive_engine.timer_requests_help").to_string(),
                 value_pill(timer_guard_label).into_any_element(),
             ))
             .child(disabled_feature_body(
-                "smart-saver-workload-engine-exclusions",
+                "adaptive-engine-workload-engine-exclusions",
                 workload_engine_exclusions,
                 self.settings.workload_engine.enabled,
                 cx,
@@ -6431,25 +6443,30 @@ impl WinderustApp {
         }
 
         let help = tooltip_lines(vec![
-            t!("smart_saver.intro_1").to_string(),
-            t!("smart_saver.intro_2").to_string(),
-            t!("smart_saver.intro_3").to_string(),
+            t!("adaptive_engine.intro_1").to_string(),
+            t!("adaptive_engine.intro_2").to_string(),
+            t!("adaptive_engine.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::SmartSaverMode, cx)
+        self.page_shell(Page::AdaptiveEngine, cx)
             .child(feature_toggle_switch_with_help(
-                "smart-saver-enabled",
-                t!("smart_saver.enable").to_string(),
+                "adaptive-engine-enabled",
+                t!("adaptive_engine.enable").to_string(),
                 help,
                 enabled,
                 cx.listener(|app, checked, _, cx| {
-                    apply_smart_saver_mode(&mut app.settings, *checked);
+                    apply_adaptive_engine(&mut app.settings, *checked);
                     cx.notify();
                 }),
             ))
             .child(self.render_power_mode_preset_selector(window, cx))
-            .child(disabled_feature_body("smart-saver-body", body, enabled, cx))
-            .child(self.render_smart_saver_status_card())
+            .child(disabled_feature_body(
+                "adaptive-engine-body",
+                body,
+                enabled,
+                cx,
+            ))
+            .child(self.render_adaptive_engine_status_card())
             .into_any_element()
     }
 
@@ -6463,7 +6480,7 @@ impl WinderustApp {
             .copied()
             .find(|preset| power_mode_matches_preset(&self.settings, *preset));
         let dropdown = self.render_dropdown_select(
-            "smart-saver-power-mode",
+            "adaptive-engine-power-mode",
             selected_preset
                 .map(power_mode_preset_label)
                 .unwrap_or_else(|| t!("common.custom").to_string()),
@@ -6477,7 +6494,9 @@ impl WinderustApp {
                 for preset in PowerModePreset::ALL {
                     options = options.child(
                         dropdown_option_row(
-                            SharedString::from(format!("smart-saver-power-mode-option-{preset:?}")),
+                            SharedString::from(format!(
+                                "adaptive-engine-power-mode-option-{preset:?}"
+                            )),
                             power_mode_preset_label(preset),
                             selected_preset == Some(preset),
                             cx,
@@ -6494,15 +6513,15 @@ impl WinderustApp {
         );
 
         setting_action_card_with_help(
-            "smart-saver-power-mode",
-            t!("smart_saver.power_mode").to_string(),
-            t!("smart_saver.power_mode_help").to_string(),
+            "adaptive-engine-power-mode",
+            t!("adaptive_engine.power_mode").to_string(),
+            t!("adaptive_engine.power_mode_help").to_string(),
             dropdown,
         )
         .into_any_element()
     }
 
-    fn render_smart_saver_status_card(&self) -> gpui::Div {
+    fn render_adaptive_engine_status_card(&self) -> gpui::Div {
         let selected_preset = PowerModePreset::ALL
             .iter()
             .copied()
@@ -6511,51 +6530,52 @@ impl WinderustApp {
             .map(power_mode_preset_label)
             .unwrap_or_else(|| t!("common.custom").to_string());
         titled_status_list(
-            &t!("smart_saver.status"),
+            &t!("adaptive_engine.status"),
             vec![
-                (t!("smart_saver.power_mode").to_string(), power_mode),
+                (t!("adaptive_engine.power_mode").to_string(), power_mode),
                 (
-                    t!("smart_saver.processor_policy").to_string(),
+                    t!("adaptive_engine.processor_policy").to_string(),
                     if let Some(profile) = &self.workload_engine_status.adaptive_power_profile {
                         format!("Adaptive · {profile}")
                     } else if matches!(
                         selected_preset,
                         Some(PowerModePreset::Performance) | Some(PowerModePreset::Speed)
                     ) {
-                        t!("smart_saver.processor_policy_fixed").to_string()
-                    } else if self.settings.smart_saver.enabled
-                        && self.settings.smart_saver.processor_policy_enabled
+                        t!("adaptive_engine.processor_policy_fixed").to_string()
+                    } else if self.settings.adaptive_engine.enabled
+                        && self.settings.adaptive_engine.processor_policy_enabled
                     {
-                        t!("smart_saver.processor_policy_dynamic").to_string()
+                        t!("adaptive_engine.processor_policy_dynamic").to_string()
                     } else {
                         t!("common.disabled").to_string()
                     },
                 ),
                 (
-                    t!("smart_saver.background_efficiency").to_string(),
-                    if self.settings.eco_qos.enabled {
+                    t!("adaptive_engine.background_efficiency").to_string(),
+                    if self.settings.background_efficiency.enabled {
                         format!(
                             "{} {}",
-                            self.eco_qos_status.throttled_processes,
-                            t!("efficiency.throttled_processes")
+                            self.background_efficiency_status.throttled_processes,
+                            t!("background_efficiency.throttled_processes")
                         )
                     } else {
                         t!("common.disabled").to_string()
                     },
                 ),
                 (
-                    t!("smart_saver.timer_ignored").to_string(),
+                    t!("adaptive_engine.timer_ignored").to_string(),
                     format!(
                         "{} {}",
-                        self.eco_qos_status.timer_resolution_ignored_processes
+                        self.background_efficiency_status
+                            .timer_resolution_ignored_processes
                             + self
                                 .workload_engine_status
                                 .timer_resolution_ignored_processes,
-                        t!("smart_saver.audio_guarded")
+                        t!("adaptive_engine.audio_guarded")
                     ),
                 ),
                 (
-                    t!("smart_saver.workload_engine").to_string(),
+                    t!("adaptive_engine.workload_engine").to_string(),
                     if self.settings.workload_engine.enabled {
                         format!(
                             "{} {}",
@@ -6567,30 +6587,39 @@ impl WinderustApp {
                     },
                 ),
                 (
-                    t!("smart_saver.restrained").to_string(),
+                    t!("adaptive_engine.restrained").to_string(),
                     self.workload_engine_status.workload_engine_message.clone(),
                 ),
             ],
         )
     }
 
-    fn render_efficiency_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let input_value = self.inputs.eco_qos_exclusion.read(cx).value().to_string();
-        let enabled = self.settings.eco_qos.enabled;
+    fn render_background_efficiency_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .background_efficiency_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.background_efficiency.enabled;
         let body = feature_body(enabled)
             .child(feature_toggle_switch_with_help(
-                "eco-qos-foreground",
-                t!("efficiency.focus_detection").to_string(),
-                t!("efficiency.focus_detection_help").to_string(),
-                self.settings.eco_qos.exclude_foreground_app,
+                "background-efficiency-foreground",
+                t!("background_efficiency.focus_detection").to_string(),
+                t!("background_efficiency.focus_detection_help").to_string(),
+                self.settings.background_efficiency.exclude_foreground_app,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.eco_qos.exclude_foreground_app = *checked;
+                    app.settings.background_efficiency.exclude_foreground_app = *checked;
                     cx.notify();
                 }),
             ))
             .child(section_header(
-                &t!("efficiency.whitelist"),
-                t!("efficiency.whitelist_help").to_string(),
+                &t!("background_efficiency.custom_rules"),
+                t!("background_efficiency.custom_rules_help").to_string(),
             ))
             .child(
                 h_flex()
@@ -6598,46 +6627,56 @@ impl WinderustApp {
                     .items_start()
                     .flex_wrap()
                     .child(self.render_process_picker(
-                        "eco-qos-suggestion",
-                        &self.inputs.eco_qos_exclusion,
-                        SuggestionTarget::EcoQos,
+                        "background-efficiency-suggestion",
+                        &self.inputs.background_efficiency_process,
+                        SuggestionTarget::BackgroundEfficiency,
                         window,
                         cx,
                     ))
                     .child(
-                        primary_control_button(Button::new("add-eco-qos-exclusion"), cx)
-                            .label(t!("common.add").to_string())
-                            .disabled(
-                                !enabled
-                                    || !can_add_eco_qos_process(
-                                        &self.settings.eco_qos,
-                                        &input_value,
-                                    ),
-                            )
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.eco_qos_exclusion.read(cx).value().to_string();
-                                if can_add_eco_qos_process(&app.settings.eco_qos, &process) {
-                                    app.settings
-                                        .eco_qos
-                                        .efficiency_whitelist
-                                        .push(new_eco_qos_exclusion_rule(&process));
-                                    clear_input(&app.inputs.eco_qos_exclusion, window, cx);
-                                }
-                                cx.notify();
-                            })),
+                        primary_control_button(
+                            Button::new("add-background-efficiency-exclusion"),
+                            cx,
+                        )
+                        .label(t!("common.add").to_string())
+                        .disabled(
+                            !enabled
+                                || !can_add_background_efficiency_process(
+                                    &self.settings.background_efficiency,
+                                    &input_value,
+                                ),
+                        )
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            let process = app
+                                .inputs
+                                .background_efficiency_process
+                                .read(cx)
+                                .value()
+                                .to_string();
+                            if can_add_background_efficiency_process(
+                                &app.settings.background_efficiency,
+                                &process,
+                            ) {
+                                app.settings
+                                    .background_efficiency
+                                    .custom_rules
+                                    .push(new_background_efficiency_rule(&process));
+                                clear_input(&app.inputs.background_efficiency_process, window, cx);
+                            }
+                            cx.notify();
+                        })),
                     ),
             )
-            .child(self.render_eco_qos_whitelist(cx));
+            .child(self.render_background_custom_rules(cx));
 
         let help = tooltip_lines(vec![
-            t!("efficiency.intro_1").to_string(),
-            t!("efficiency.intro_2").to_string(),
-            t!("efficiency.intro_3").to_string(),
+            t!("background_efficiency.intro_1").to_string(),
+            t!("background_efficiency.intro_2").to_string(),
+            t!("background_efficiency.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::EfficiencyMode, cx)
-            .child(self.render_efficiency_enable_card(enabled, help, window, cx))
+        self.page_shell(Page::BackgroundEfficiency, cx)
+            .child(self.render_background_efficiency_enable_card(enabled, help, window, cx))
             .child(disabled_feature_body(
                 "efficiency-exclusions-body",
                 body,
@@ -6647,7 +6686,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_efficiency_enable_card(
+    fn render_background_efficiency_enable_card(
         &self,
         enabled: bool,
         help: impl Into<SharedString>,
@@ -6656,32 +6695,32 @@ impl WinderustApp {
     ) -> AnyElement {
         setting_group_with_help(
             SettingGroupTarget::EfficiencyEnable,
-            (t!("efficiency.enable").to_string(), help),
+            (t!("background_efficiency.enable").to_string(), help),
             setting_group_switch_action(
-                "eco-qos-enabled-switch",
+                "background-efficiency-enabled-switch",
                 enabled,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.eco_qos.enabled = *checked;
+                    app.settings.background_efficiency.enabled = *checked;
                     cx.notify();
                 }),
             ),
             self.is_setting_group_collapsed(SettingGroupTarget::EfficiencyEnable),
-            vec![self.render_efficiency_aggressiveness_selector(enabled, window, cx)],
+            vec![self.render_background_efficiency_aggressiveness_selector(enabled, window, cx)],
             window,
             cx,
         )
         .into_any_element()
     }
 
-    fn render_efficiency_aggressiveness_selector(
+    fn render_background_efficiency_aggressiveness_selector(
         &self,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let selected = self.settings.eco_qos.aggressiveness;
+        let selected = self.settings.background_efficiency.aggressiveness;
         setting_group_action_row_element(
-            "eco-qos-aggressiveness-row",
+            "background-efficiency-aggressiveness-row",
             h_flex()
                 .flex_1()
                 .min_w(px(0.0))
@@ -6691,49 +6730,49 @@ impl WinderustApp {
                     div()
                         .min_w(px(0.0))
                         .truncate()
-                        .child(t!("efficiency.aggressiveness").to_string()),
+                        .child(t!("background_efficiency.aggressiveness").to_string()),
                 )
                 .child(title_info_button(
-                    "eco-qos-aggressiveness-info",
-                    t!("efficiency.aggressiveness_help").to_string(),
+                    "background-efficiency-aggressiveness-info",
+                    t!("background_efficiency.aggressiveness_help").to_string(),
                 ))
                 .into_any_element(),
-            self.render_efficiency_aggressiveness_picker(selected, enabled, window, cx),
+            self.render_background_efficiency_aggressiveness_picker(selected, enabled, window, cx),
             true,
         )
         .when(!enabled, |row| row.opacity(0.42).cursor_default())
         .into_any_element()
     }
 
-    fn render_efficiency_aggressiveness_picker(
+    fn render_background_efficiency_aggressiveness_picker(
         &self,
-        selected: EcoQosAggressiveness,
+        selected: BackgroundEfficiencyAggressiveness,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.render_dropdown_select(
-            "eco-qos-aggressiveness",
-            efficiency_aggressiveness_label(selected),
+            "background-efficiency-aggressiveness",
+            background_efficiency_aggressiveness_label(selected),
             enabled,
             DropdownSelectWidth::Standard,
-            EcoQosAggressiveness::ALL.len(),
+            BackgroundEfficiencyAggressiveness::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for aggressiveness in EcoQosAggressiveness::ALL {
+                for aggressiveness in BackgroundEfficiencyAggressiveness::ALL {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!(
-                                "eco-qos-aggressiveness-option-{aggressiveness:?}"
+                                "background-efficiency-aggressiveness-option-{aggressiveness:?}"
                             )),
-                            efficiency_aggressiveness_label(aggressiveness),
+                            background_efficiency_aggressiveness_label(aggressiveness),
                             selected == aggressiveness,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            app.settings.eco_qos.aggressiveness = aggressiveness;
+                            app.settings.background_efficiency.aggressiveness = aggressiveness;
                             app.active_power_plan_picker = None;
                             cx.notify();
                         })),
@@ -6744,26 +6783,30 @@ impl WinderustApp {
         )
     }
 
-    fn effective_background_cpu_restriction_strategy(&self) -> EcoQosCpuRestrictionStrategy {
+    fn effective_background_cpu_restriction_strategy(&self) -> CpuRestrictionStrategy {
         self.settings.background_cpu_restriction.strategy
     }
 
-    fn render_eco_qos_whitelist(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_background_custom_rules(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self
             .settings
-            .eco_qos
-            .efficiency_whitelist
+            .background_efficiency
+            .custom_rules
             .iter()
             .enumerate()
         {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(format!("eco-qos-exclusion-row-{index}"))
+            let row = compact_rule_row(format!("background-efficiency-exclusion-row-{index}"))
                 .child(rule_active_cell(
-                    format!("eco-qos-exclusion-enabled-{index}"),
+                    format!("background-efficiency-exclusion-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.eco_qos.efficiency_whitelist.get_mut(index)
+                        if let Some(rule) = app
+                            .settings
+                            .background_efficiency
+                            .custom_rules
+                            .get_mut(index)
                         {
                             rule.enabled = *checked;
                         }
@@ -6773,30 +6816,46 @@ impl WinderustApp {
                 .child(self.process_rule_title(&process, cx))
                 .child(rule_table_action_cell(
                     remove_control_button(Button::new(SharedString::from(format!(
-                        "remove-eco-qos-{index}"
+                        "remove-background-efficiency-{index}"
                     ))))
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
-                            ListItemRemovalTarget::new(ListItemRemovalKind::EcoQosExclusion, index),
+                            ListItemRemovalTarget::new(
+                                ListItemRemovalKind::BackgroundEfficiencyExclusion,
+                                index,
+                            ),
                             cx,
                         );
                     }))
                     .into_any_element(),
                 ));
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::EcoQosExclusion, index),
-                SharedString::from(format!("eco-qos-exclusion-{index}")),
+                ListItemRemovalTarget::new(
+                    ListItemRemovalKind::BackgroundEfficiencyExclusion,
+                    index,
+                ),
+                SharedString::from(format!("background-efficiency-exclusion-{index}")),
                 row.into_any_element(),
             ));
         }
-        if self.settings.eco_qos.efficiency_whitelist.is_empty() {
-            list = list.child(text_muted(t!("efficiency.no_whitelist").to_string()).p_4());
+        if self.settings.background_efficiency.custom_rules.is_empty() {
+            list = list
+                .child(text_muted(t!("background_efficiency.no_custom_rules").to_string()).p_4());
         }
         list.into_any_element()
     }
 
-    fn render_suspension_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let input_value = self.inputs.suspension_process.read(cx).value().to_string();
+    fn render_app_suspension_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let input_value = self
+            .inputs
+            .app_suspension_process
+            .read(cx)
+            .value()
+            .to_string();
         let enabled = self.settings.app_suspension.enabled;
         let thaw_group_collapsed =
             self.is_setting_group_collapsed(SettingGroupTarget::SuspensionThaw);
@@ -6807,7 +6866,7 @@ impl WinderustApp {
         let body = feature_body(enabled)
             .child(setting_stepper_card_u64(
                 "suspension-background-delay",
-                t!("suspension.background_delay").to_string(),
+                t!("app_suspension.background_delay").to_string(),
                 self.settings.app_suspension.background_delay_seconds,
                 self.render_numeric_value(
                     NumericField::SuspensionBackgroundDelay,
@@ -6833,7 +6892,7 @@ impl WinderustApp {
             ))
             .child(setting_group(
                 SettingGroupTarget::SuspensionThaw,
-                t!("suspension.temporary_thaw").to_string(),
+                t!("app_suspension.temporary_thaw").to_string(),
                 setting_group_switch_action(
                     "temporary-thaw",
                     self.settings.app_suspension.temporary_thaw_enabled,
@@ -6846,7 +6905,7 @@ impl WinderustApp {
                 vec![
                     setting_group_stepper_row_u64(
                         "suspension-thaw-interval",
-                        t!("suspension.thaw_every").to_string(),
+                        t!("app_suspension.thaw_every").to_string(),
                         self.settings.app_suspension.temporary_thaw_interval_seconds,
                         self.render_numeric_value(
                             NumericField::SuspensionThawInterval,
@@ -6874,7 +6933,7 @@ impl WinderustApp {
                     ),
                     setting_group_stepper_row_u64(
                         "suspension-thaw-duration",
-                        t!("suspension.thaw_duration").to_string(),
+                        t!("app_suspension.thaw_duration").to_string(),
                         self.settings.app_suspension.temporary_thaw_duration_seconds,
                         self.render_numeric_value(
                             NumericField::SuspensionThawDuration,
@@ -6906,7 +6965,7 @@ impl WinderustApp {
             ))
             .child(setting_group(
                 SettingGroupTarget::SuspensionAudio,
-                t!("suspension.audio_detection").to_string(),
+                t!("app_suspension.audio_detection").to_string(),
                 setting_group_switch_action(
                     "audio-wake",
                     self.settings.app_suspension.audio_wake_enabled,
@@ -6918,7 +6977,7 @@ impl WinderustApp {
                 audio_group_collapsed,
                 vec![setting_group_stepper_row_u64(
                     "suspension-audio-refreeze",
-                    t!("suspension.audio_refreeze").to_string(),
+                    t!("app_suspension.audio_refreeze").to_string(),
                     self.settings.app_suspension.audio_wake_duration_seconds,
                     self.render_numeric_value(
                         NumericField::SuspensionAudioRefreeze,
@@ -6948,7 +7007,7 @@ impl WinderustApp {
             ))
             .child(setting_group(
                 SettingGroupTarget::SuspensionNetwork,
-                t!("suspension.network_detection").to_string(),
+                t!("app_suspension.network_detection").to_string(),
                 setting_group_switch_action(
                     "network-wake",
                     self.settings.app_suspension.network_wake_enabled,
@@ -6960,7 +7019,7 @@ impl WinderustApp {
                 network_group_collapsed,
                 vec![setting_group_stepper_row_u64(
                     "suspension-network-refreeze",
-                    t!("suspension.network_refreeze").to_string(),
+                    t!("app_suspension.network_refreeze").to_string(),
                     self.settings.app_suspension.network_wake_duration_seconds,
                     self.render_numeric_value(
                         NumericField::SuspensionNetworkRefreeze,
@@ -6989,8 +7048,8 @@ impl WinderustApp {
                 cx,
             ))
             .child(section_header(
-                &t!("suspension.suspendable_apps"),
-                t!("suspension.suspendable_help").to_string(),
+                &t!("app_suspension.suspendable_apps"),
+                t!("app_suspension.suspendable_help").to_string(),
             ))
             .child(
                 h_flex()
@@ -6999,8 +7058,8 @@ impl WinderustApp {
                     .flex_wrap()
                     .child(self.render_process_picker(
                         "suspension-suggestion",
-                        &self.inputs.suspension_process,
-                        SuggestionTarget::Suspension,
+                        &self.inputs.app_suspension_process,
+                        SuggestionTarget::AppSuspension,
                         window,
                         cx,
                     ))
@@ -7009,23 +7068,27 @@ impl WinderustApp {
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
-                                    || !can_add_suspension_process(
+                                    || !can_add_app_suspension_process(
                                         &self.settings.app_suspension,
                                         &input_value,
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.suspension_process.read(cx).value().to_string();
-                                if can_add_suspension_process(
+                                let process = app
+                                    .inputs
+                                    .app_suspension_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_app_suspension_process(
                                     &app.settings.app_suspension,
                                     &process,
                                 ) {
                                     app.settings
                                         .app_suspension
                                         .suspendable_apps
-                                        .push(new_suspension_rule(&process));
-                                    clear_input(&app.inputs.suspension_process, window, cx);
+                                        .push(new_app_suspension_rule(&process));
+                                    clear_input(&app.inputs.app_suspension_process, window, cx);
                                 }
                                 cx.notify();
                             })),
@@ -7034,15 +7097,15 @@ impl WinderustApp {
             .child(self.render_suspendable_apps(window, cx));
 
         let help = tooltip_lines(vec![
-            t!("suspension.intro_1").to_string(),
-            t!("suspension.intro_2").to_string(),
-            t!("suspension.intro_3").to_string(),
+            t!("app_suspension.intro_1").to_string(),
+            t!("app_suspension.intro_2").to_string(),
+            t!("app_suspension.intro_3").to_string(),
         ]);
 
         self.page_shell(Page::AppSuspension, cx)
             .child(feature_toggle_switch_with_help(
                 "app-suspension-enabled",
-                t!("suspension.enable").to_string(),
+                t!("app_suspension.enable").to_string(),
                 help,
                 enabled,
                 cx.listener(|app, checked, _, cx| {
@@ -7068,11 +7131,11 @@ impl WinderustApp {
             ),
             rule_table_title_header(t!("process_list.process_name").to_string()),
             rule_table_centered_header(
-                t!("suspension.audio").to_string(),
+                t!("app_suspension.audio").to_string(),
                 SUSPENSION_DETECT_COLUMN_WIDTH,
             ),
             rule_table_centered_header(
-                t!("suspension.network").to_string(),
+                t!("app_suspension.network").to_string(),
                 SUSPENSION_DETECT_COLUMN_WIDTH,
             ),
             rule_table_centered_header("Download".to_string(), 172.0),
@@ -7090,7 +7153,7 @@ impl WinderustApp {
             .enumerate()
         {
             let process = rule.process_name.clone();
-            let indicator = suspension_indicator(&self.app_suspension_status, &process);
+            let indicator = app_suspension_indicator(&self.app_suspension_status, &process);
             let rule_enabled = rule.enabled;
             let network_thresholds_enabled = rule_enabled
                 && self.settings.app_suspension.network_wake_enabled
@@ -7193,7 +7256,7 @@ impl WinderustApp {
                             ))))
                             .with_size(px(32.0))
                             .icon(Icon::new(NavIcon::Snowflake).with_size(px(14.0)))
-                            .tooltip(t!("suspension.freeze").to_string())
+                            .tooltip(t!("app_suspension.freeze").to_string())
                             .disabled(
                                 !rule_enabled
                                     || !can_manual_freeze(&self.app_suspension_status, &process),
@@ -7204,9 +7267,11 @@ impl WinderustApp {
                                     cx.stop_propagation();
                                     app.background_automation
                                         .request_app_suspension_freeze(&process);
-                                    app.status_message =
-                                        t!("suspension.manual_freeze_requested", process = process)
-                                            .to_string();
+                                    app.status_message = t!(
+                                        "app_suspension.manual_freeze_requested",
+                                        process = process
+                                    )
+                                    .to_string();
                                     cx.notify();
                                 }
                             })),
@@ -7236,7 +7301,7 @@ impl WinderustApp {
             ));
         }
         if self.settings.app_suspension.suspendable_apps.is_empty() {
-            list = list.child(text_muted(t!("suspension.no_suspendable").to_string()).p_4());
+            list = list.child(text_muted(t!("app_suspension.no_suspendable").to_string()).p_4());
         }
         list.into_any_element()
     }
@@ -7254,30 +7319,30 @@ impl WinderustApp {
             .to_string();
         let settings = &self.settings.background_cpu_restriction;
         let enabled = settings.enabled;
-        let processors = affinity::logical_processors();
+        let processors = core_steering::logical_processors();
         let has_efficiency_cores =
-            affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency) != 0;
+            core_steering_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency) != 0;
         let has_multiple_processors = processors.len() > 1;
         let selected = self.effective_background_cpu_restriction_strategy();
-        let restriction_enabled = selected != EcoQosCpuRestrictionStrategy::Off;
-        let available_mask = affinity_processors_mask(&processors);
+        let restriction_enabled = selected != CpuRestrictionStrategy::Off;
+        let available_mask = core_steering_processors_mask(&processors);
 
         let selected_mode = settings.mode;
         let mode_dropdown = self.render_dropdown_select(
             "background-cpu-mode",
-            efficiency_cpu_restriction_mode_label(selected_mode),
+            cpu_restriction_mode_label(selected_mode),
             restriction_enabled,
             DropdownSelectWidth::Standard,
-            EcoQosCpuRestrictionMode::ALL.len(),
+            CpuRestrictionMode::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for mode in EcoQosCpuRestrictionMode::ALL {
+                for mode in CpuRestrictionMode::ALL {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!("background-cpu-mode-option-{mode:?}")),
-                            efficiency_cpu_restriction_mode_label(mode),
+                            cpu_restriction_mode_label(mode),
                             selected_mode == mode,
                             cx,
                         )
@@ -7293,13 +7358,13 @@ impl WinderustApp {
         );
 
         let strategy_options = [
-            EcoQosCpuRestrictionStrategy::Auto,
-            EcoQosCpuRestrictionStrategy::PreferEfficiencyCores,
-            EcoQosCpuRestrictionStrategy::LimitLogicalCpus,
+            CpuRestrictionStrategy::Auto,
+            CpuRestrictionStrategy::PreferEfficiencyCores,
+            CpuRestrictionStrategy::LimitLogicalCpus,
         ];
         let strategy_dropdown = self.render_dropdown_select(
             "background-cpu-strategy",
-            efficiency_cpu_restriction_strategy_label(selected),
+            cpu_restriction_strategy_label(selected),
             restriction_enabled,
             DropdownSelectWidth::Wide,
             strategy_options.len(),
@@ -7309,15 +7374,13 @@ impl WinderustApp {
                 let mut options = dropdown_surface(cx, max_height);
                 for strategy in strategy_options {
                     let option_enabled = match strategy {
-                        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
-                        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
-                        EcoQosCpuRestrictionStrategy::Auto | EcoQosCpuRestrictionStrategy::Off => {
-                            true
-                        }
+                        CpuRestrictionStrategy::PreferEfficiencyCores => has_efficiency_cores,
+                        CpuRestrictionStrategy::LimitLogicalCpus => has_multiple_processors,
+                        CpuRestrictionStrategy::Auto | CpuRestrictionStrategy::Off => true,
                     };
                     let row = dropdown_option_row(
                         SharedString::from(format!("background-cpu-strategy-option-{strategy:?}")),
-                        efficiency_cpu_restriction_strategy_label(strategy),
+                        cpu_restriction_strategy_label(strategy),
                         selected == strategy,
                         cx,
                     )
@@ -7326,10 +7389,11 @@ impl WinderustApp {
                         row.on_click(cx.listener(move |app, _, _, cx| {
                             app.settings.background_cpu_restriction.strategy = strategy;
                             if app.settings.background_cpu_restriction.control_style
-                                == EcoQosCpuRestrictionControlStyle::CoreToggle
+                                == CpuRestrictionControlStyle::CoreToggle
                             {
-                                let processors = affinity::logical_processors();
-                                let mask = eco_qos_strategy_core_mask(&processors, strategy);
+                                let processors = core_steering::logical_processors();
+                                let mask =
+                                    background_efficiency_strategy_core_mask(&processors, strategy);
                                 if mask != 0 {
                                     app.settings.background_cpu_restriction.core_mask = mask;
                                 }
@@ -7349,31 +7413,31 @@ impl WinderustApp {
         let selected_style = settings.control_style;
         let style_dropdown = self.render_dropdown_select(
             "background-cpu-style",
-            efficiency_cpu_restriction_control_style_label(selected_style),
+            cpu_restriction_control_style_label(selected_style),
             restriction_enabled,
             DropdownSelectWidth::Standard,
-            EcoQosCpuRestrictionControlStyle::ALL.len(),
+            CpuRestrictionControlStyle::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for style in EcoQosCpuRestrictionControlStyle::ALL {
+                for style in CpuRestrictionControlStyle::ALL {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!("background-cpu-style-option-{style:?}")),
-                            efficiency_cpu_restriction_control_style_label(style),
+                            cpu_restriction_control_style_label(style),
                             selected_style == style,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             app.settings.background_cpu_restriction.control_style = style;
-                            if style == EcoQosCpuRestrictionControlStyle::CoreToggle
+                            if style == CpuRestrictionControlStyle::CoreToggle
                                 && app.settings.background_cpu_restriction.core_mask == 0
                             {
-                                let processors = affinity::logical_processors();
+                                let processors = core_steering::logical_processors();
                                 let strategy = app.effective_background_cpu_restriction_strategy();
                                 app.settings.background_cpu_restriction.core_mask =
-                                    eco_qos_strategy_core_mask(&processors, strategy);
+                                    background_efficiency_strategy_core_mask(&processors, strategy);
                             }
                             app.active_power_plan_picker = None;
                             cx.notify();
@@ -7394,7 +7458,7 @@ impl WinderustApp {
 
         let mut rows = vec![
             setting_group_action_row(
-                "background-cpu-affinity-control",
+                "background-core-steering-control",
                 t!("background_cpu.core_affinity_control").to_string(),
                 mode_dropdown,
                 true,
@@ -7416,14 +7480,14 @@ impl WinderustApp {
             .into_any_element(),
         ];
         rows.push(match settings.control_style {
-            EcoQosCpuRestrictionControlStyle::Percentage => setting_group_action_row(
+            CpuRestrictionControlStyle::Percentage => setting_group_action_row(
                 "background-cpu-percent",
                 t!("background_cpu.core_allocation_percentage").to_string(),
                 percentage_control,
                 true,
             )
             .into_any_element(),
-            EcoQosCpuRestrictionControlStyle::CoreToggle => setting_group_stacked_action_row(
+            CpuRestrictionControlStyle::CoreToggle => setting_group_stacked_action_row(
                 "background-cpu-core-toggle-list",
                 t!("background_cpu.selected_cores").to_string(),
                 self.render_core_tile_grid(
@@ -7439,10 +7503,8 @@ impl WinderustApp {
             .into_any_element(),
         });
         let body_animation_height = match settings.control_style {
-            EcoQosCpuRestrictionControlStyle::Percentage => {
-                CARD_ROW_HEIGHT * rows.len().max(1) as f32
-            }
-            EcoQosCpuRestrictionControlStyle::CoreToggle => setting_group_core_grid_body_height(3),
+            CpuRestrictionControlStyle::Percentage => CARD_ROW_HEIGHT * rows.len().max(1) as f32,
+            CpuRestrictionControlStyle::CoreToggle => setting_group_core_grid_body_height(3),
         };
 
         let body = feature_body(enabled)
@@ -7470,9 +7532,9 @@ impl WinderustApp {
                     restriction_enabled,
                     cx.listener(|app, checked, _, cx| {
                         app.settings.background_cpu_restriction.strategy = if *checked {
-                            EcoQosCpuRestrictionStrategy::Auto
+                            CpuRestrictionStrategy::Auto
                         } else {
-                            EcoQosCpuRestrictionStrategy::Off
+                            CpuRestrictionStrategy::Off
                         };
                         cx.notify();
                     }),
@@ -7643,23 +7705,28 @@ impl WinderustApp {
         list.into_any_element()
     }
 
-    fn render_cpu_limiter_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let input_value = self.inputs.cpu_limiter_process.read(cx).value().to_string();
-        let enabled = self.settings.cpu_limiter.enabled;
+    fn render_core_limiter_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self
+            .inputs
+            .core_limiter_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.core_limiter.enabled;
         let body = feature_body(enabled)
             .child(feature_toggle_switch_with_help(
-                "cpu-limiter-foreground",
-                t!("cpu_limiter.focus_detection").to_string(),
-                t!("cpu_limiter.focus_detection_help").to_string(),
-                self.settings.cpu_limiter.exclude_foreground_app,
+                "core-limiter-foreground",
+                t!("core_limiter.focus_detection").to_string(),
+                t!("core_limiter.focus_detection_help").to_string(),
+                self.settings.core_limiter.exclude_foreground_app,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_limiter.exclude_foreground_app = *checked;
+                    app.settings.core_limiter.exclude_foreground_app = *checked;
                     cx.notify();
                 }),
             ))
             .child(section_header(
-                &t!("cpu_limiter.rules"),
-                t!("cpu_limiter.rules_help").to_string(),
+                &t!("core_limiter.rules"),
+                t!("core_limiter.rules_help").to_string(),
             ))
             .child(
                 h_flex()
@@ -7667,74 +7734,81 @@ impl WinderustApp {
                     .items_start()
                     .flex_wrap()
                     .child(self.render_process_picker(
-                        "cpu-limiter-suggestion",
-                        &self.inputs.cpu_limiter_process,
-                        SuggestionTarget::CpuLimiter,
+                        "core-limiter-suggestion",
+                        &self.inputs.core_limiter_process,
+                        SuggestionTarget::CoreLimiter,
                         window,
                         cx,
                     ))
                     .child(
-                        primary_control_button(Button::new("add-cpu-limiter-process"), cx)
+                        primary_control_button(Button::new("add-core-limiter-process"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
-                                    || !can_add_cpu_limiter_process(
-                                        &self.settings.cpu_limiter,
+                                    || !can_add_core_limiter_process(
+                                        &self.settings.core_limiter,
                                         &input_value,
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
                                 let process =
-                                    app.inputs.cpu_limiter_process.read(cx).value().to_string();
-                                if can_add_cpu_limiter_process(&app.settings.cpu_limiter, &process)
-                                {
+                                    app.inputs.core_limiter_process.read(cx).value().to_string();
+                                if can_add_core_limiter_process(
+                                    &app.settings.core_limiter,
+                                    &process,
+                                ) {
                                     app.settings
-                                        .cpu_limiter
+                                        .core_limiter
                                         .rules
-                                        .push(new_cpu_limiter_rule(&process));
-                                    clear_input(&app.inputs.cpu_limiter_process, window, cx);
+                                        .push(new_core_limiter_rule(&process));
+                                    clear_input(&app.inputs.core_limiter_process, window, cx);
                                 }
                                 cx.notify();
                             })),
                     ),
             )
-            .child(self.render_cpu_limiter_rules(window, cx));
+            .child(self.render_core_limiter_rules(window, cx));
 
         let help = tooltip_lines(vec![
-            t!("cpu_limiter.intro_1").to_string(),
-            t!("cpu_limiter.intro_2").to_string(),
-            t!("cpu_limiter.intro_3").to_string(),
+            t!("core_limiter.intro_1").to_string(),
+            t!("core_limiter.intro_2").to_string(),
+            t!("core_limiter.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::CpuLimiter, cx)
+        self.page_shell(Page::CoreLimiter, cx)
             .child(feature_toggle_switch_with_help(
-                "cpu-limiter-enabled",
-                t!("cpu_limiter.enable").to_string(),
+                "core-limiter-enabled",
+                t!("core_limiter.enable").to_string(),
                 help,
                 enabled,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_limiter.enabled = *checked;
+                    app.settings.core_limiter.enabled = *checked;
                     cx.notify();
                 }),
             ))
-            .child(disabled_feature_body("cpu-limiter-body", body, enabled, cx))
+            .child(disabled_feature_body(
+                "core-limiter-body",
+                body,
+                enabled,
+                cx,
+            ))
             .into_any_element()
     }
 
-    fn render_cpu_limiter_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_core_limiter_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let mut list = rule_list(process_rule_table_headers());
-        for (index, rule) in self.settings.cpu_limiter.rules.iter().enumerate() {
+        for (index, rule) in self.settings.core_limiter.rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            let indicator = cpu_limiter_indicator(&self.cpu_limiter_status, &process);
-            let card_target = RuleCardTarget::CpuLimiter(process.clone());
+            let indicator = core_limiter_indicator(&self.core_limiter_status, &process);
+            let card_target = RuleCardTarget::CoreLimiter(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
                 self.process_rule_title(&process, cx),
                 rule_active_cell(
-                    format!("cpu-limiter-rule-enabled-{index}"),
+                    format!("core-limiter-rule-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.cpu_limiter.rules.get_mut(index) {
+                        if let Some(rule) = app.settings.core_limiter.rules.get_mut(index) {
                             rule.enabled = *checked;
                         }
                         cx.notify();
@@ -7752,7 +7826,7 @@ impl WinderustApp {
                         0,
                         1,
                         rule_card_body_row(vec![rule_action_row(
-                            format!("cpu-limiter-rule-status-{index}"),
+                            format!("core-limiter-rule-status-{index}"),
                             t!("common.status").to_string(),
                             status_pill(indicator.0, indicator.1, indicator.2).into_any_element(),
                         )
@@ -7763,18 +7837,18 @@ impl WinderustApp {
                         1,
                         2,
                         rule_card_body_row(vec![
-                            self.render_cpu_limiter_numeric_row(
+                            self.render_core_limiter_numeric_row(
                                 index,
-                                NumericField::CpuLimiterThreshold(index),
-                                t!("cpu_limiter.threshold").to_string(),
+                                NumericField::CoreLimiterThreshold(index),
+                                t!("core_limiter.threshold").to_string(),
                                 format!("{}%", rule.threshold_percent),
                                 rule.threshold_percent.to_string(),
                                 cx,
                             ),
-                            self.render_cpu_limiter_numeric_row(
+                            self.render_core_limiter_numeric_row(
                                 index,
-                                NumericField::CpuLimiterMaxProcessors(index),
-                                t!("cpu_limiter.max_processors").to_string(),
+                                NumericField::CoreLimiterMaxProcessors(index),
+                                t!("core_limiter.max_processors").to_string(),
                                 rule.max_logical_processors.to_string(),
                                 rule.max_logical_processors.to_string(),
                                 cx,
@@ -7786,18 +7860,18 @@ impl WinderustApp {
                         2,
                         2,
                         rule_card_body_row(vec![
-                            self.render_cpu_limiter_numeric_row(
+                            self.render_core_limiter_numeric_row(
                                 index,
-                                NumericField::CpuLimiterSustain(index),
-                                t!("cpu_limiter.sustain").to_string(),
+                                NumericField::CoreLimiterSustain(index),
+                                t!("core_limiter.sustain").to_string(),
                                 format!("{} sec", rule.sustain_seconds),
                                 rule.sustain_seconds.to_string(),
                                 cx,
                             ),
-                            self.render_cpu_limiter_numeric_row(
+                            self.render_core_limiter_numeric_row(
                                 index,
-                                NumericField::CpuLimiterCooldown(index),
-                                t!("cpu_limiter.cooldown").to_string(),
+                                NumericField::CoreLimiterCooldown(index),
+                                t!("core_limiter.cooldown").to_string(),
                                 format!("{} sec", rule.cooldown_seconds),
                                 rule.cooldown_seconds.to_string(),
                                 cx,
@@ -7810,13 +7884,13 @@ impl WinderustApp {
                         1,
                         rule_card_body_action(
                             remove_control_button(Button::new(SharedString::from(format!(
-                                "remove-cpu-limiter-{index}"
+                                "remove-core-limiter-{index}"
                             ))))
                             .on_click(cx.listener({
                                 move |app, _, _, cx| {
                                     app.request_list_item_removal(
                                         ListItemRemovalTarget::new(
-                                            ListItemRemovalKind::CpuLimiterRule,
+                                            ListItemRemovalKind::CoreLimiterRule,
                                             index,
                                         ),
                                         cx,
@@ -7828,18 +7902,18 @@ impl WinderustApp {
                     ));
             }
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::CpuLimiterRule, index),
-                SharedString::from(format!("cpu-limiter-rule-{index}")),
+                ListItemRemovalTarget::new(ListItemRemovalKind::CoreLimiterRule, index),
+                SharedString::from(format!("core-limiter-rule-{index}")),
                 card.into_any_element(),
             ));
         }
-        if self.settings.cpu_limiter.rules.is_empty() {
-            list = list.child(text_muted(t!("cpu_limiter.no_rules").to_string()).p_4());
+        if self.settings.core_limiter.rules.is_empty() {
+            list = list.child(text_muted(t!("core_limiter.no_rules").to_string()).p_4());
         }
         list.into_any_element()
     }
 
-    fn render_cpu_limiter_numeric_row(
+    fn render_core_limiter_numeric_row(
         &self,
         index: usize,
         field: NumericField,
@@ -7849,20 +7923,20 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         rule_action_row(
-            format!("cpu-limiter-numeric-{index}-{field:?}"),
+            format!("core-limiter-numeric-{index}-{field:?}"),
             label,
             self.render_numeric_value(field, display_value, edit_value, cx),
         )
         .into_any_element()
     }
 
-    fn render_performance_mode_page(
+    fn render_by_running_app_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let input_value = self.inputs.performance_process.read(cx).value().to_string();
-        let enabled = self.settings.performance_mode.enabled;
+        let enabled = self.settings.by_running_app.enabled;
         let body = feature_body(enabled)
             .child(section_title_text(t!("common.rules").to_string()))
             .child(
@@ -7871,33 +7945,33 @@ impl WinderustApp {
                     .items_start()
                     .flex_wrap()
                     .child(self.render_process_picker(
-                        "performance-mode-suggestion",
+                        "by-running-app-suggestion",
                         &self.inputs.performance_process,
-                        SuggestionTarget::PerformanceMode,
+                        SuggestionTarget::ByRunningApp,
                         window,
                         cx,
                     ))
                     .child(
-                        primary_control_button(Button::new("add-performance-mode-process"), cx)
+                        primary_control_button(Button::new("add-by-running-app-process"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
-                                    || !can_add_performance_mode_process(
-                                        &self.settings.performance_mode,
+                                    || !can_add_by_running_app_process(
+                                        &self.settings.by_running_app,
                                         &input_value,
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
                                 let process =
                                     app.inputs.performance_process.read(cx).value().to_string();
-                                if can_add_performance_mode_process(
-                                    &app.settings.performance_mode,
+                                if can_add_by_running_app_process(
+                                    &app.settings.by_running_app,
                                     &process,
                                 ) {
                                     app.settings
-                                        .performance_mode
+                                        .by_running_app
                                         .rules
-                                        .push(app.new_performance_mode_rule(&process));
+                                        .push(app.new_by_running_app_rule(&process));
                                     app.inputs.ensure_for_settings(window, cx, &app.settings);
                                     clear_input(&app.inputs.performance_process, window, cx);
                                 }
@@ -7905,29 +7979,29 @@ impl WinderustApp {
                             })),
                     ),
             )
-            .child(self.render_performance_mode_rules(window, cx));
+            .child(self.render_by_running_app_rules(window, cx));
 
         let help = tooltip_lines(vec![
-            t!("performance_mode.intro_1").to_string(),
-            t!("performance_mode.intro_2").to_string(),
-            t!("performance_mode.intro_3").to_string(),
+            t!("by_running_app.intro_1").to_string(),
+            t!("by_running_app.intro_2").to_string(),
+            t!("by_running_app.intro_3").to_string(),
             t!("common.power_plan_priority").to_string(),
             t!("common.power_plan_pause_priority").to_string(),
         ]);
 
-        self.page_shell(Page::PerformanceMode, cx)
+        self.page_shell(Page::ByRunningApp, cx)
             .child(feature_toggle_switch_with_help(
-                "performance-mode-enabled",
-                t!("performance_mode.enable").to_string(),
+                "by-running-app-enabled",
+                t!("by_running_app.enable").to_string(),
                 help,
                 enabled,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.performance_mode.enabled = *checked;
+                    app.settings.by_running_app.enabled = *checked;
                     cx.notify();
                 }),
             ))
             .child(disabled_feature_body(
-                "performance-mode-body",
+                "by-running-app-body",
                 body,
                 enabled,
                 cx,
@@ -7935,7 +8009,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_performance_mode_rules(
+    fn render_by_running_app_rules(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -7943,17 +8017,17 @@ impl WinderustApp {
         let mut list = rule_list(vec![
             rule_table_active_header(),
             rule_table_title_header(t!("process_list.process_name").to_string()),
-            priority_exclusion_table_cell(t!("performance_mode.power_plan").to_string()),
+            priority_exclusion_table_cell(t!("by_running_app.power_plan").to_string()),
             rule_table_action_header(),
         ]);
-        for (index, rule) in self.settings.performance_mode.rules.iter().enumerate() {
+        for (index, rule) in self.settings.by_running_app.rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            let row = compact_rule_row(format!("performance-mode-rule-row-{index}"))
+            let row = compact_rule_row(format!("by-running-app-rule-row-{index}"))
                 .child(rule_active_cell(
-                    format!("performance-mode-rule-enabled-{index}"),
+                    format!("by-running-app-rule-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.performance_mode.rules.get_mut(index) {
+                        if let Some(rule) = app.settings.by_running_app.rules.get_mut(index) {
                             rule.enabled = *checked;
                         }
                         cx.notify();
@@ -7961,20 +8035,20 @@ impl WinderustApp {
                 ))
                 .child(self.process_rule_title(&process, cx))
                 .child(self.render_inline_power_plan_picker(
-                    format!("performance-mode-plan-{index}"),
+                    format!("by-running-app-plan-{index}"),
                     rule.power_plan_guid.clone(),
-                    PowerPlanField::PerformanceModeRule(index),
+                    PowerPlanField::ByRunningAppRule(index),
                     window,
                     cx,
                 ))
                 .child(rule_table_action_cell(
                     remove_control_button(Button::new(SharedString::from(format!(
-                        "remove-performance-mode-{index}"
+                        "remove-by-running-app-{index}"
                     ))))
                     .on_click(cx.listener(move |app, _, _, cx| {
                         app.request_list_item_removal(
                             ListItemRemovalTarget::new(
-                                ListItemRemovalKind::PerformanceModeRule,
+                                ListItemRemovalKind::ByRunningAppRule,
                                 index,
                             ),
                             cx,
@@ -7983,12 +8057,12 @@ impl WinderustApp {
                     .into_any_element(),
                 ));
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::PerformanceModeRule, index),
-                SharedString::from(format!("performance-mode-rule-{index}")),
+                ListItemRemovalTarget::new(ListItemRemovalKind::ByRunningAppRule, index),
+                SharedString::from(format!("by-running-app-rule-{index}")),
                 row.into_any_element(),
             ));
         }
-        if self.settings.performance_mode.rules.is_empty() {
+        if self.settings.by_running_app.rules.is_empty() {
             list = list.child(text_muted(t!("common.no_custom_rules").to_string()).p_4());
         }
         list.into_any_element()
@@ -8006,8 +8080,8 @@ impl WinderustApp {
     fn render_power_mode_advanced_settings_toggle(&self, cx: &mut Context<Self>) -> AnyElement {
         setting_action_card_with_help(
             "power-mode-advanced-settings-enabled",
-            t!("smart_saver.advanced_settings").to_string(),
-            t!("smart_saver.advanced_settings_help").to_string(),
+            t!("adaptive_engine.advanced_settings").to_string(),
+            t!("adaptive_engine.advanced_settings_help").to_string(),
             switch_toggle_action(
                 "power-mode-advanced-settings-toggle",
                 self.settings
@@ -8025,55 +8099,55 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    fn render_smart_saver_processor_policy_group(
+    fn render_adaptive_engine_processor_policy_group(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         setting_group_with_help(
-            SettingGroupTarget::SmartSaverProcessorPolicy,
+            SettingGroupTarget::AdaptiveEngineProcessorPolicy,
             (
-                t!("smart_saver.processor_policy").to_string(),
-                t!("smart_saver.processor_policy_help").to_string(),
+                t!("adaptive_engine.processor_policy").to_string(),
+                t!("adaptive_engine.processor_policy_help").to_string(),
             ),
             setting_group_switch_action(
-                "smart-saver-processor-policy-toggle",
-                self.settings.smart_saver.processor_policy_enabled,
+                "adaptive-engine-processor-policy-toggle",
+                self.settings.adaptive_engine.processor_policy_enabled,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.smart_saver.processor_policy_enabled = *checked;
+                    app.settings.adaptive_engine.processor_policy_enabled = *checked;
                     cx.notify();
                 }),
             ),
-            self.is_setting_group_collapsed(SettingGroupTarget::SmartSaverProcessorPolicy),
+            self.is_setting_group_collapsed(SettingGroupTarget::AdaptiveEngineProcessorPolicy),
             vec![
-                self.render_smart_saver_processor_policy_row(
-                    SmartSaverProcessorPolicyField::CoreParkingMin,
-                    "smart-saver-processor-policy-core-parking-min",
+                self.render_adaptive_engine_processor_policy_row(
+                    AdaptiveEngineProcessorPolicyField::CoreParkingMin,
+                    "adaptive-engine-processor-policy-core-parking-min",
                     t!("processor_power.core_parking_min").to_string(),
                     cx,
                 ),
-                self.render_smart_saver_processor_policy_row(
-                    SmartSaverProcessorPolicyField::PerformanceMin,
-                    "smart-saver-processor-policy-performance-min",
+                self.render_adaptive_engine_processor_policy_row(
+                    AdaptiveEngineProcessorPolicyField::PerformanceMin,
+                    "adaptive-engine-processor-policy-performance-min",
                     t!("processor_power.processor_min").to_string(),
                     cx,
                 ),
-                self.render_smart_saver_processor_policy_row(
-                    SmartSaverProcessorPolicyField::PerformanceMax,
-                    "smart-saver-processor-policy-performance-max",
+                self.render_adaptive_engine_processor_policy_row(
+                    AdaptiveEngineProcessorPolicyField::PerformanceMax,
+                    "adaptive-engine-processor-policy-performance-max",
                     t!("processor_power.processor_max").to_string(),
                     cx,
                 ),
-                self.render_smart_saver_processor_policy_row(
-                    SmartSaverProcessorPolicyField::BoostPolicy,
-                    "smart-saver-processor-policy-boost-policy",
+                self.render_adaptive_engine_processor_policy_row(
+                    AdaptiveEngineProcessorPolicyField::BoostPolicy,
+                    "adaptive-engine-processor-policy-boost-policy",
                     t!("processor_power.boost_policy").to_string(),
                     cx,
                 ),
                 setting_group_action_row(
-                    "smart-saver-processor-policy-boost-mode",
+                    "adaptive-engine-processor-policy-boost-mode",
                     t!("processor_power.boost_mode").to_string(),
-                    self.render_smart_saver_processor_boost_mode_picker(window, cx),
+                    self.render_adaptive_engine_processor_boost_mode_picker(window, cx),
                     true,
                 )
                 .into_any_element(),
@@ -8084,40 +8158,40 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    fn render_smart_saver_processor_policy_row(
+    fn render_adaptive_engine_processor_policy_row(
         &self,
-        field: SmartSaverProcessorPolicyField,
+        field: AdaptiveEngineProcessorPolicyField,
         id: &'static str,
         title: String,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let value = u64::from(self.smart_saver_processor_policy_percent(field));
+        let value = u64::from(self.adaptive_engine_processor_policy_percent(field));
         setting_group_stepper_row_u64(
             id,
             title,
             value,
             self.render_numeric_value(
-                NumericField::SmartSaverProcessorPolicy(field),
+                NumericField::AdaptiveEngineProcessorPolicy(field),
                 format!("{value}%"),
                 value.to_string(),
                 cx,
             ),
             true,
             cx.listener(move |app, change: &StepChange<u64>, _, cx| {
-                let current = u64::from(app.smart_saver_processor_policy_percent(field));
+                let current = u64::from(app.adaptive_engine_processor_policy_percent(field));
                 let value = apply_u64_step(current, change, 0, 100);
-                app.set_smart_saver_processor_policy_percent(field, value);
+                app.set_adaptive_engine_processor_policy_percent(field, value);
                 cx.notify();
             }),
         )
     }
 
-    fn render_smart_saver_processor_boost_mode_picker(
+    fn render_adaptive_engine_processor_boost_mode_picker(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let picker_id = "smart-saver-processor-policy-boost-mode-picker";
+        let picker_id = "adaptive-engine-processor-policy-boost-mode-picker";
         let is_open = self.active_power_plan_picker.as_deref() == Some(picker_id);
         let placement = self.dropdown_placement(
             picker_id,
@@ -8126,7 +8200,7 @@ impl WinderustApp {
         );
         let selected = self
             .settings
-            .smart_saver
+            .adaptive_engine
             .processor_policy_values
             .normalized()
             .boost_mode;
@@ -8135,7 +8209,7 @@ impl WinderustApp {
             options = options.child(
                 dropdown_option_row(
                     SharedString::from(format!(
-                        "smart-saver-processor-policy-boost-mode-option-{boost_mode:?}"
+                        "adaptive-engine-processor-policy-boost-mode-option-{boost_mode:?}"
                     )),
                     processor_boost_mode_label(boost_mode),
                     selected == boost_mode,
@@ -8144,11 +8218,11 @@ impl WinderustApp {
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                     let mut values = app
                         .settings
-                        .smart_saver
+                        .adaptive_engine
                         .processor_policy_values
                         .normalized();
                     values.boost_mode = boost_mode;
-                    app.settings.smart_saver.processor_policy_values = values;
+                    app.settings.adaptive_engine.processor_policy_values = values;
                     app.active_power_plan_picker = None;
                     cx.notify();
                 })),
@@ -8187,30 +8261,30 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_smart_saver_cpu_scheduling_group(
+    fn render_adaptive_engine_cpu_scheduling_group(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         setting_group_with_help(
-            SettingGroupTarget::SmartSaverCpuScheduling,
+            SettingGroupTarget::AdaptiveEngineCpuScheduling,
             (
-                t!("smart_saver.cpu_scheduling").to_string(),
-                t!("smart_saver.cpu_scheduling_help").to_string(),
+                t!("adaptive_engine.cpu_scheduling").to_string(),
+                t!("adaptive_engine.cpu_scheduling_help").to_string(),
             ),
             setting_group_switch_action(
-                "smart-saver-workload-engine-toggle",
+                "adaptive-engine-workload-engine-toggle",
                 self.settings.workload_engine.enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.workload_engine.enabled = *checked;
                     cx.notify();
                 }),
             ),
-            self.is_setting_group_collapsed(SettingGroupTarget::SmartSaverCpuScheduling),
+            self.is_setting_group_collapsed(SettingGroupTarget::AdaptiveEngineCpuScheduling),
             vec![setting_group_action_row_with_help(
-                "smart-saver-cpu-scheduling-target",
-                t!("smart_saver.cpu_scheduling_target").to_string(),
-                t!("smart_saver.cpu_scheduling_target_help").to_string(),
+                "adaptive-engine-cpu-scheduling-target",
+                t!("adaptive_engine.cpu_scheduling_target").to_string(),
+                t!("adaptive_engine.cpu_scheduling_target_help").to_string(),
                 self.render_workload_engine_target_preset_selector(window, cx),
                 true,
             )
@@ -8231,7 +8305,7 @@ impl WinderustApp {
             .copied()
             .find(|preset| workload_engine_matches_preset(&self.settings.workload_engine, *preset));
         self.render_dropdown_select(
-            "smart-saver-cpu-scheduling-target-preset",
+            "adaptive-engine-cpu-scheduling-target-preset",
             selected_preset
                 .map(workload_engine_preset_label)
                 .unwrap_or_else(|| t!("common.custom").to_string()),
@@ -8246,7 +8320,7 @@ impl WinderustApp {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!(
-                                "smart-saver-cpu-scheduling-target-option-{preset:?}"
+                                "adaptive-engine-cpu-scheduling-target-option-{preset:?}"
                             )),
                             workload_engine_preset_label(preset),
                             selected_preset == Some(preset),
@@ -8272,19 +8346,19 @@ impl WinderustApp {
         let settings = &self.settings.workload_engine;
         let enabled = settings.enabled;
         let auto_efficiency_controls_enabled = enabled
-            && !self.settings.eco_qos.enabled
-            && settings.workload_engine_efficiency_mode_enabled;
-        let efficiency_action = if self.settings.eco_qos.enabled {
+            && !self.settings.background_efficiency.enabled
+            && settings.workload_engine_background_efficiency_enabled;
+        let efficiency_action = if self.settings.background_efficiency.enabled {
             value_pill(t!("workload_engine.background_efficiency_handled").to_string())
                 .into_any_element()
         } else {
             setting_group_switch_action(
                 "workload-engine-auto-efficiency-switch",
-                settings.workload_engine_efficiency_mode_enabled,
+                settings.workload_engine_background_efficiency_enabled,
                 cx.listener(|app, checked, _, cx| {
                     app.settings
                         .workload_engine
-                        .workload_engine_efficiency_mode_enabled = *checked;
+                        .workload_engine_background_efficiency_enabled = *checked;
                     cx.notify();
                 }),
             )
@@ -8293,8 +8367,8 @@ impl WinderustApp {
         setting_group_with_help(
             SettingGroupTarget::WorkloadEngineEfficiency,
             (
-                t!("workload_engine.auto_efficiency_mode").to_string(),
-                t!("workload_engine.auto_efficiency_mode_help").to_string(),
+                t!("workload_engine.auto_background_efficiency").to_string(),
+                t!("workload_engine.auto_background_efficiency_help").to_string(),
             ),
             efficiency_action,
             self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineEfficiency),
@@ -8302,8 +8376,8 @@ impl WinderustApp {
                 "workload-engine-auto-efficiency-level",
                 t!("workload_engine.auto_efficiency_level").to_string(),
                 t!("workload_engine.auto_efficiency_level_help").to_string(),
-                self.render_efficiency_aggressiveness_picker(
-                    self.settings.eco_qos.aggressiveness,
+                self.render_background_efficiency_aggressiveness_picker(
+                    self.settings.background_efficiency.aggressiveness,
                     auto_efficiency_controls_enabled,
                     window,
                     cx,
@@ -8326,7 +8400,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let settings = &self.settings.workload_engine;
-        let process_priority_action = if self.settings.eco_qos.enabled {
+        let process_priority_action = if self.settings.background_efficiency.enabled {
             value_pill(t!("workload_engine.background_efficiency_handled").to_string())
                 .into_any_element()
         } else {
@@ -8353,9 +8427,7 @@ impl WinderustApp {
                 if settings.lower_background_auto_cpu_percent {
                     value_pill(format!(
                         "{} ({})",
-                        efficiency_cpu_restriction_mode_label(
-                            EcoQosCpuRestrictionMode::SoftCpuSets
-                        ),
+                        cpu_restriction_mode_label(CpuRestrictionMode::SoftCpuSets),
                         t!("workload_engine.priority_auto")
                     ))
                     .into_any_element()
@@ -8632,7 +8704,8 @@ impl WinderustApp {
                 cx,
             )
             .into_any_element(),
-            section_title_text(t!("smart_saver.priority_control").to_string()).into_any_element(),
+            section_title_text(t!("adaptive_engine.priority_control").to_string())
+                .into_any_element(),
             setting_group_with_help(
                 SettingGroupTarget::WorkloadEngineProcessPriority,
                 (
@@ -8707,7 +8780,7 @@ impl WinderustApp {
         let settings = &self.settings.workload_engine;
         let io_enabled = settings.workload_engine_io_priority.enabled;
         let thread_enabled = settings.workload_engine_thread_priority.enabled;
-        let boost_enabled = settings.workload_engine_priority_boost.enabled;
+        let boost_enabled = settings.workload_engine_dynamic_priority_boost.enabled;
         let gpu_enabled = settings.workload_engine_gpu_priority.enabled;
         v_flex()
             .w_full()
@@ -8769,10 +8842,10 @@ impl WinderustApp {
             )
             .child(
                 setting_group_with_help(
-                    SettingGroupTarget::WorkloadEnginePriorityBoost,
+                    SettingGroupTarget::WorkloadEngineDynamicPriorityBoost,
                     (
-                        t!("workload_engine.auto_priority_boost").to_string(),
-                        t!("priority_boost.intro_1").to_string(),
+                        t!("workload_engine.auto_dynamic_priority_boost").to_string(),
+                        t!("dynamic_priority_boost.intro_1").to_string(),
                     ),
                     setting_group_switch_action(
                         "workload-engine-auto-boost-enabled-switch",
@@ -8780,21 +8853,23 @@ impl WinderustApp {
                         cx.listener(|app, checked, _, cx| {
                             app.settings
                                 .workload_engine
-                                .workload_engine_priority_boost
+                                .workload_engine_dynamic_priority_boost
                                 .enabled = *checked;
                             cx.notify();
                         }),
                     ),
                     self.is_setting_group_collapsed(
-                        SettingGroupTarget::WorkloadEnginePriorityBoost,
+                        SettingGroupTarget::WorkloadEngineDynamicPriorityBoost,
                     ),
                     vec![
                         setting_group_action_row(
                             "workload-engine-auto-boost-foreground",
                             t!("workload_engine.priority_foreground_value").to_string(),
-                            self.render_workload_engine_priority_boost_selector(
-                                PriorityBoostDefaultTarget::Foreground,
-                                settings.workload_engine_priority_boost.foreground_boost,
+                            self.render_workload_engine_dynamic_priority_boost_selector(
+                                DynamicPriorityBoostDefaultTarget::Foreground,
+                                settings
+                                    .workload_engine_dynamic_priority_boost
+                                    .foreground_boost,
                                 boost_enabled,
                                 window,
                                 cx,
@@ -8805,9 +8880,11 @@ impl WinderustApp {
                         setting_group_action_row(
                             "workload-engine-auto-boost-background",
                             t!("workload_engine.priority_background_value").to_string(),
-                            self.render_workload_engine_priority_boost_selector(
-                                PriorityBoostDefaultTarget::Background,
-                                settings.workload_engine_priority_boost.background_boost,
+                            self.render_workload_engine_dynamic_priority_boost_selector(
+                                DynamicPriorityBoostDefaultTarget::Background,
+                                settings
+                                    .workload_engine_dynamic_priority_boost
+                                    .background_boost,
                                 boost_enabled,
                                 window,
                                 cx,
@@ -9055,48 +9132,48 @@ impl WinderustApp {
         )
     }
 
-    fn render_workload_engine_priority_boost_selector(
+    fn render_workload_engine_dynamic_priority_boost_selector(
         &self,
-        target: PriorityBoostDefaultTarget,
-        selected_boost: ProcessPriorityBoostSetting,
+        target: DynamicPriorityBoostDefaultTarget,
+        selected_boost: ProcessDynamicPriorityBoostSetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            PriorityBoostDefaultTarget::Background => "workload-engine-boost-background",
-            PriorityBoostDefaultTarget::Foreground => "workload-engine-boost-foreground",
+            DynamicPriorityBoostDefaultTarget::Background => "workload-engine-boost-background",
+            DynamicPriorityBoostDefaultTarget::Foreground => "workload-engine-boost-foreground",
         };
         self.render_dropdown_select(
             id,
-            process_priority_boost_setting_label(selected_boost),
+            process_dynamic_priority_boost_setting_label(selected_boost),
             enabled,
             DropdownSelectWidth::Standard,
-            ProcessPriorityBoostSetting::ALL.len(),
+            ProcessDynamicPriorityBoostSetting::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for boost in ProcessPriorityBoostSetting::ALL {
+                for boost in ProcessDynamicPriorityBoostSetting::ALL {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!("{id}-option-{boost:?}")),
-                            process_priority_boost_setting_label(boost),
+                            process_dynamic_priority_boost_setting_label(boost),
                             selected_boost == boost,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                PriorityBoostDefaultTarget::Background => {
+                                DynamicPriorityBoostDefaultTarget::Background => {
                                     app.settings
                                         .workload_engine
-                                        .workload_engine_priority_boost
+                                        .workload_engine_dynamic_priority_boost
                                         .background_boost = boost;
                                 }
-                                PriorityBoostDefaultTarget::Foreground => {
+                                DynamicPriorityBoostDefaultTarget::Foreground => {
                                     app.settings
                                         .workload_engine
-                                        .workload_engine_priority_boost
+                                        .workload_engine_dynamic_priority_boost
                                         .foreground_boost = boost;
                                 }
                             }
@@ -9404,21 +9481,21 @@ impl WinderustApp {
         let selected = self.settings.workload_engine.workload_engine_affinity_mode;
         self.render_dropdown_select(
             "workload-engine-auto-affinity-mode",
-            efficiency_cpu_restriction_mode_label(selected),
+            cpu_restriction_mode_label(selected),
             true,
             DropdownSelectWidth::Standard,
-            EcoQosCpuRestrictionMode::ALL.len(),
+            CpuRestrictionMode::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for mode in EcoQosCpuRestrictionMode::ALL {
+                for mode in CpuRestrictionMode::ALL {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!(
                                 "workload-engine-auto-affinity-mode-option-{mode:?}"
                             )),
-                            efficiency_cpu_restriction_mode_label(mode),
+                            cpu_restriction_mode_label(mode),
                             selected == mode,
                             cx,
                         )
@@ -10281,40 +10358,40 @@ impl WinderustApp {
         )
     }
 
-    fn render_priority_boost_page(
+    fn render_dynamic_priority_boost_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let input_value = self
             .inputs
-            .priority_boost_process
+            .dynamic_priority_boost_process
             .read(cx)
             .value()
             .to_string();
-        let enabled = self.settings.priority_boost.enabled;
+        let enabled = self.settings.dynamic_priority_boost.enabled;
         let help = tooltip_lines(vec![
-            t!("priority_boost.intro_1").to_string(),
-            t!("priority_boost.intro_2").to_string(),
+            t!("dynamic_priority_boost.intro_1").to_string(),
+            t!("dynamic_priority_boost.intro_2").to_string(),
         ]);
         let master_card = setting_group_with_help(
-            SettingGroupTarget::PriorityBoostMaster,
-            (t!("priority_boost.enable").to_string(), help),
+            SettingGroupTarget::DynamicPriorityBoostMaster,
+            (t!("dynamic_priority_boost.enable").to_string(), help),
             setting_group_switch_action(
-                "priority-boost-enabled-toggle",
+                "dynamic-priority-boost-enabled-toggle",
                 enabled,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.priority_boost.enabled = *checked;
+                    app.settings.dynamic_priority_boost.enabled = *checked;
                     cx.notify();
                 }),
             ),
-            self.is_setting_group_collapsed(SettingGroupTarget::PriorityBoostMaster),
+            self.is_setting_group_collapsed(SettingGroupTarget::DynamicPriorityBoostMaster),
             vec![setting_group_action_row(
-                "priority-boost-background-default-row",
-                t!("priority_boost.background_default").to_string(),
-                self.render_priority_boost_default_selector(
-                    PriorityBoostDefaultTarget::Background,
-                    self.settings.priority_boost.background_boost,
+                "dynamic-priority-boost-background-default-row",
+                t!("dynamic_priority_boost.background_default").to_string(),
+                self.render_dynamic_priority_boost_default_selector(
+                    DynamicPriorityBoostDefaultTarget::Background,
+                    self.settings.dynamic_priority_boost.background_boost,
                     enabled,
                     window,
                     cx,
@@ -10327,29 +10404,35 @@ impl WinderustApp {
         );
         let body = feature_body(enabled)
             .child(setting_group_with_help(
-                SettingGroupTarget::PriorityBoostForegroundDetection,
+                SettingGroupTarget::DynamicPriorityBoostForegroundDetection,
                 (
-                    t!("priority_boost.foreground_detection").to_string(),
-                    t!("priority_boost.foreground_detection_help").to_string(),
+                    t!("dynamic_priority_boost.foreground_detection").to_string(),
+                    t!("dynamic_priority_boost.foreground_detection_help").to_string(),
                 ),
                 setting_group_switch_action(
-                    "priority-boost-foreground-detection-toggle",
-                    self.settings.priority_boost.foreground_detection_enabled,
+                    "dynamic-priority-boost-foreground-detection-toggle",
+                    self.settings
+                        .dynamic_priority_boost
+                        .foreground_detection_enabled,
                     cx.listener(|app, checked, _, cx| {
-                        app.settings.priority_boost.foreground_detection_enabled = *checked;
+                        app.settings
+                            .dynamic_priority_boost
+                            .foreground_detection_enabled = *checked;
                         cx.notify();
                     }),
                 ),
                 self.is_setting_group_collapsed(
-                    SettingGroupTarget::PriorityBoostForegroundDetection,
+                    SettingGroupTarget::DynamicPriorityBoostForegroundDetection,
                 ),
                 vec![setting_group_action_row(
-                    "priority-boost-foreground-default-row",
-                    t!("priority_boost.foreground_default").to_string(),
-                    self.render_priority_boost_default_selector(
-                        PriorityBoostDefaultTarget::Foreground,
-                        self.settings.priority_boost.foreground_boost,
-                        self.settings.priority_boost.foreground_detection_enabled,
+                    "dynamic-priority-boost-foreground-default-row",
+                    t!("dynamic_priority_boost.foreground_default").to_string(),
+                    self.render_dynamic_priority_boost_default_selector(
+                        DynamicPriorityBoostDefaultTarget::Foreground,
+                        self.settings.dynamic_priority_boost.foreground_boost,
+                        self.settings
+                            .dynamic_priority_boost
+                            .foreground_detection_enabled,
                         window,
                         cx,
                     ),
@@ -10359,10 +10442,10 @@ impl WinderustApp {
                 window,
                 cx,
             ))
-            .child(self.render_priority_boost_status_card())
+            .child(self.render_dynamic_priority_boost_status_card())
             .child(section_header(
-                &t!("priority_boost.exclusions"),
-                t!("priority_boost.exclusions_help").to_string(),
+                &t!("dynamic_priority_boost.exclusions"),
+                t!("dynamic_priority_boost.exclusions_help").to_string(),
             ))
             .child(
                 h_flex()
@@ -10370,49 +10453,52 @@ impl WinderustApp {
                     .items_start()
                     .flex_wrap()
                     .child(self.render_process_picker(
-                        "priority-boost-process-suggestion",
-                        &self.inputs.priority_boost_process,
-                        SuggestionTarget::PriorityBoost,
+                        "dynamic-priority-boost-process-suggestion",
+                        &self.inputs.dynamic_priority_boost_process,
+                        SuggestionTarget::DynamicPriorityBoost,
                         window,
                         cx,
                     ))
                     .child(
-                        primary_control_button(Button::new("add-priority-boost-exclusion"), cx)
-                            .label(t!("common.add").to_string())
-                            .disabled(
-                                !enabled
-                                    || !can_add_priority_boost_exclusion(
-                                        &self.settings.priority_boost,
-                                        &input_value,
-                                    ),
-                            )
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .priority_boost_process
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
-                                if can_add_priority_boost_exclusion(
-                                    &app.settings.priority_boost,
-                                    &process,
-                                ) {
-                                    app.settings
-                                        .priority_boost
-                                        .exclusions
-                                        .push(new_process_exclusion_rule(&process));
-                                    clear_input(&app.inputs.priority_boost_process, window, cx);
-                                }
-                                cx.notify();
-                            })),
+                        primary_control_button(
+                            Button::new("add-dynamic-priority-boost-exclusion"),
+                            cx,
+                        )
+                        .label(t!("common.add").to_string())
+                        .disabled(
+                            !enabled
+                                || !can_add_dynamic_priority_boost_exclusion(
+                                    &self.settings.dynamic_priority_boost,
+                                    &input_value,
+                                ),
+                        )
+                        .on_click(cx.listener(|app, _, window, cx| {
+                            let process = app
+                                .inputs
+                                .dynamic_priority_boost_process
+                                .read(cx)
+                                .value()
+                                .to_string();
+                            if can_add_dynamic_priority_boost_exclusion(
+                                &app.settings.dynamic_priority_boost,
+                                &process,
+                            ) {
+                                app.settings
+                                    .dynamic_priority_boost
+                                    .exclusions
+                                    .push(new_process_exclusion_rule(&process));
+                                clear_input(&app.inputs.dynamic_priority_boost_process, window, cx);
+                            }
+                            cx.notify();
+                        })),
                     ),
             )
-            .child(self.render_priority_boost_exclusions(window, cx));
+            .child(self.render_dynamic_priority_boost_exclusions(window, cx));
 
         self.page_shell(Page::DynamicPriorityBoost, cx)
             .child(master_card)
             .child(disabled_feature_body(
-                "priority-boost-body",
+                "dynamic-priority-boost-body",
                 body,
                 enabled,
                 cx,
@@ -10420,44 +10506,44 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_priority_boost_exclusions(
+    fn render_dynamic_priority_boost_exclusions(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.render_priority_exclusion_table(
-            "priority-boost-exclusion",
-            &self.settings.priority_boost.exclusions,
-            ListItemRemovalKind::PriorityBoostExclusion,
-            t!("priority_boost.no_exclusions").to_string(),
+            "dynamic-priority-boost-exclusion",
+            &self.settings.dynamic_priority_boost.exclusions,
+            ListItemRemovalKind::DynamicPriorityBoostExclusion,
+            t!("dynamic_priority_boost.no_exclusions").to_string(),
             window,
             cx,
         )
     }
 
-    fn render_priority_boost_status_card(&self) -> gpui::Div {
-        let status = &self.priority_boost_status;
+    fn render_dynamic_priority_boost_status_card(&self) -> gpui::Div {
+        let status = &self.dynamic_priority_boost_status;
         let message = if status.message.is_empty() {
-            t!("priority_boost.not_checked").to_string()
+            t!("dynamic_priority_boost.not_checked").to_string()
         } else {
             status.message.clone()
         };
         let mut rows = vec![
             (t!("common.status").to_string(), message),
             (
-                t!("priority_boost.adjusted_processes").to_string(),
+                t!("dynamic_priority_boost.adjusted_processes").to_string(),
                 status.adjusted_processes.to_string(),
             ),
             (
-                t!("priority_boost.scanned_processes").to_string(),
+                t!("dynamic_priority_boost.scanned_processes").to_string(),
                 status.scanned_processes.to_string(),
             ),
             (
-                t!("priority_boost.skipped_processes").to_string(),
+                t!("dynamic_priority_boost.skipped_processes").to_string(),
                 status.skipped_processes.to_string(),
             ),
             (
-                t!("priority_boost.failed_actions").to_string(),
+                t!("dynamic_priority_boost.failed_actions").to_string(),
                 status.failed_processes.to_string(),
             ),
         ];
@@ -10467,43 +10553,47 @@ impl WinderustApp {
         stat_grid(rows)
     }
 
-    fn render_priority_boost_default_selector(
+    fn render_dynamic_priority_boost_default_selector(
         &self,
-        target: PriorityBoostDefaultTarget,
-        selected_boost: ProcessPriorityBoostSetting,
+        target: DynamicPriorityBoostDefaultTarget,
+        selected_boost: ProcessDynamicPriorityBoostSetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            PriorityBoostDefaultTarget::Background => "priority-boost-background-default",
-            PriorityBoostDefaultTarget::Foreground => "priority-boost-foreground-default",
+            DynamicPriorityBoostDefaultTarget::Background => {
+                "dynamic-priority-boost-background-default"
+            }
+            DynamicPriorityBoostDefaultTarget::Foreground => {
+                "dynamic-priority-boost-foreground-default"
+            }
         };
         self.render_dropdown_select(
             id,
-            process_priority_boost_setting_label(selected_boost),
+            process_dynamic_priority_boost_setting_label(selected_boost),
             enabled,
             DropdownSelectWidth::Standard,
-            ProcessPriorityBoostSetting::ALL.len(),
+            ProcessDynamicPriorityBoostSetting::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for boost in ProcessPriorityBoostSetting::ALL {
+                for boost in ProcessDynamicPriorityBoostSetting::ALL {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!("{id}-option-{boost:?}")),
-                            process_priority_boost_setting_label(boost),
+                            process_dynamic_priority_boost_setting_label(boost),
                             selected_boost == boost,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                PriorityBoostDefaultTarget::Background => {
-                                    app.settings.priority_boost.background_boost = boost;
+                                DynamicPriorityBoostDefaultTarget::Background => {
+                                    app.settings.dynamic_priority_boost.background_boost = boost;
                                 }
-                                PriorityBoostDefaultTarget::Foreground => {
-                                    app.settings.priority_boost.foreground_boost = boost;
+                                DynamicPriorityBoostDefaultTarget::Foreground => {
+                                    app.settings.dynamic_priority_boost.foreground_boost = boost;
                                 }
                             }
                             app.active_power_plan_picker = None;
@@ -10691,19 +10781,24 @@ impl WinderustApp {
                     cx,
                 )
             }
-            ListItemRemovalKind::PriorityBoostExclusion => {
-                let selected = self.settings.priority_boost.exclusions[index]
-                    .priority_boost_override(foreground);
+            ListItemRemovalKind::DynamicPriorityBoostExclusion => {
+                let selected = self.settings.dynamic_priority_boost.exclusions[index]
+                    .dynamic_priority_boost_override(foreground);
                 self.render_priority_rule_dropdown(
-                    "priority-boost-exclusion",
+                    "dynamic-priority-boost-exclusion",
                     index,
                     foreground,
                     selected,
-                    &ProcessPriorityBoostSetting::CUSTOM_RULE_ALL,
-                    process_priority_boost_setting_label,
+                    &ProcessDynamicPriorityBoostSetting::CUSTOM_RULE_ALL,
+                    process_dynamic_priority_boost_setting_label,
                     |app, index, foreground, boost| {
-                        if let Some(rule) = app.settings.priority_boost.exclusions.get_mut(index) {
-                            rule.set_priority_boost_override(foreground, boost);
+                        if let Some(rule) = app
+                            .settings
+                            .dynamic_priority_boost
+                            .exclusions
+                            .get_mut(index)
+                        {
+                            rule.set_dynamic_priority_boost_override(foreground, boost);
                         }
                     },
                     window,
@@ -10850,9 +10945,11 @@ impl WinderustApp {
             ListItemRemovalKind::ThreadPriorityExclusion => {
                 self.settings.thread_priority.exclusions.get_mut(index)
             }
-            ListItemRemovalKind::PriorityBoostExclusion => {
-                self.settings.priority_boost.exclusions.get_mut(index)
-            }
+            ListItemRemovalKind::DynamicPriorityBoostExclusion => self
+                .settings
+                .dynamic_priority_boost
+                .exclusions
+                .get_mut(index),
             ListItemRemovalKind::IoPriorityExclusion => {
                 self.settings.io_priority.exclusions.get_mut(index)
             }
@@ -11640,7 +11737,7 @@ impl WinderustApp {
                     )
                     .into_any_element(),
                     setting_group_action_row_element(
-                        "memory-trim-purge-performance-mode",
+                        "memory-trim-purge-by-running-app",
                         h_flex()
                             .flex_1()
                             .min_w(px(0.0))
@@ -11652,12 +11749,12 @@ impl WinderustApp {
                                 ),
                             )
                             .child(title_info_button(
-                                "memory-trim-purge-performance-mode-info",
+                                "memory-trim-purge-by-running-app-info",
                                 t!("memory_trim.only_purge_performance_mode_help").to_string(),
                             ))
                             .into_any_element(),
                         setting_group_switch_action(
-                            "memory-trim-purge-performance-mode-switch",
+                            "memory-trim-purge-by-running-app-switch",
                             settings.purge_only_in_performance_mode,
                             cx.listener(|app, checked, _, cx| {
                                 app.settings.memory_trim.purge_only_in_performance_mode = *checked;
@@ -11917,23 +12014,28 @@ impl WinderustApp {
         list.into_any_element()
     }
 
-    fn render_affinity_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let input_value = self.inputs.affinity_process.read(cx).value().to_string();
-        let enabled = self.settings.cpu_affinity.enabled;
+    fn render_core_steering_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let input_value = self
+            .inputs
+            .core_steering_process
+            .read(cx)
+            .value()
+            .to_string();
+        let enabled = self.settings.core_steering.enabled;
         let body = feature_body(enabled)
             .child(feature_toggle_switch_with_help(
-                "cpu-affinity-foreground",
-                t!("affinity.focus_detection").to_string(),
-                t!("affinity.focus_detection_help").to_string(),
-                self.settings.cpu_affinity.exclude_foreground_app,
+                "core-steering-foreground",
+                t!("core_steering.focus_detection").to_string(),
+                t!("core_steering.focus_detection_help").to_string(),
+                self.settings.core_steering.exclude_foreground_app,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_affinity.exclude_foreground_app = *checked;
+                    app.settings.core_steering.exclude_foreground_app = *checked;
                     cx.notify();
                 }),
             ))
             .child(section_header(
-                &t!("affinity.rules"),
-                t!("affinity.rules_help").to_string(),
+                &t!("core_steering.rules"),
+                t!("core_steering.rules_help").to_string(),
             ))
             .child(
                 h_flex()
@@ -11942,8 +12044,8 @@ impl WinderustApp {
                     .flex_wrap()
                     .child(self.render_process_picker(
                         "affinity-suggestion",
-                        &self.inputs.affinity_process,
-                        SuggestionTarget::Affinity,
+                        &self.inputs.core_steering_process,
+                        SuggestionTarget::CoreSteering,
                         window,
                         cx,
                     ))
@@ -11952,46 +12054,53 @@ impl WinderustApp {
                             .label(t!("common.add").to_string())
                             .disabled(
                                 !enabled
-                                    || !can_add_affinity_process(
-                                        &self.settings.cpu_affinity,
+                                    || !can_add_core_steering_process(
+                                        &self.settings.core_steering,
                                         &input_value,
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.affinity_process.read(cx).value().to_string();
-                                if can_add_affinity_process(&app.settings.cpu_affinity, &process) {
+                                let process = app
+                                    .inputs
+                                    .core_steering_process
+                                    .read(cx)
+                                    .value()
+                                    .to_string();
+                                if can_add_core_steering_process(
+                                    &app.settings.core_steering,
+                                    &process,
+                                ) {
                                     app.settings
-                                        .cpu_affinity
+                                        .core_steering
                                         .rules
-                                        .push(new_affinity_rule(&process));
-                                    clear_input(&app.inputs.affinity_process, window, cx);
+                                        .push(new_core_steering_rule(&process));
+                                    clear_input(&app.inputs.core_steering_process, window, cx);
                                 }
                                 cx.notify();
                             })),
                     ),
             )
-            .child(self.render_affinity_rules(window, cx));
+            .child(self.render_core_steering_rules(window, cx));
 
         let help = tooltip_lines(vec![
-            t!("affinity.intro_1").to_string(),
-            t!("affinity.intro_2").to_string(),
-            t!("affinity.intro_3").to_string(),
+            t!("core_steering.intro_1").to_string(),
+            t!("core_steering.intro_2").to_string(),
+            t!("core_steering.intro_3").to_string(),
         ]);
 
-        self.page_shell(Page::CpuAffinity, cx)
+        self.page_shell(Page::CoreSteering, cx)
             .child(feature_toggle_switch_with_help(
-                "cpu-affinity-enabled",
-                t!("affinity.enable").to_string(),
+                "core-steering-enabled",
+                t!("core_steering.enable").to_string(),
                 help,
                 enabled,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.cpu_affinity.enabled = *checked;
+                    app.settings.core_steering.enabled = *checked;
                     cx.notify();
                 }),
             ))
             .child(disabled_feature_body(
-                "cpu-affinity-body",
+                "core-steering-body",
                 body,
                 enabled,
                 cx,
@@ -11999,12 +12108,16 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_affinity_rules(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_core_steering_rules(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut list = rule_list(process_rule_table_headers());
-        for (index, rule) in self.settings.cpu_affinity.rules.iter().enumerate() {
+        for (index, rule) in self.settings.core_steering.rules.iter().enumerate() {
             let process = rule.process_name.clone();
-            let indicator = affinity_indicator(&self.cpu_affinity_status, &process);
-            let card_target = RuleCardTarget::Affinity(process.clone());
+            let indicator = core_steering_indicator(&self.core_steering_status, &process);
+            let card_target = RuleCardTarget::CoreSteering(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);
             let mut card = rule_card(
                 self.process_rule_title(&process, cx),
@@ -12012,7 +12125,7 @@ impl WinderustApp {
                     format!("affinity-rule-enabled-{index}"),
                     rule.enabled,
                     cx.listener(move |app, checked, _, cx| {
-                        if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                        if let Some(rule) = app.settings.core_steering.rules.get_mut(index) {
                             rule.enabled = *checked;
                         }
                         cx.notify();
@@ -12049,16 +12162,16 @@ impl WinderustApp {
                         1,
                         1,
                         rule_card_body_row(vec![
-                            self.render_affinity_mode_selector(index, rule.mode, window, cx)
+                            self.render_core_steering_mode_selector(index, rule.mode, window, cx)
                         ]),
                     ));
                 let mut body_index = 2;
-                if rule.mode != CpuAffinityMode::EfficiencyOff {
+                if rule.mode != CoreSteeringMode::EfficiencyOff {
                     card = card.child(animated_rule_card_body_child_with_height(
                         &card_target,
                         body_index,
-                        affinity_core_selector_body_height(),
-                        rule_card_body_row(vec![self.render_affinity_core_selector(
+                        core_steering_selector_body_height(),
+                        rule_card_body_row(vec![self.render_core_steering_core_selector(
                             index,
                             rule.core_mask,
                             window,
@@ -12079,7 +12192,7 @@ impl WinderustApp {
                             move |app, _, _, cx| {
                                 app.request_list_item_removal(
                                     ListItemRemovalTarget::new(
-                                        ListItemRemovalKind::CpuAffinityRule,
+                                        ListItemRemovalKind::CoreSteeringRule,
                                         index,
                                     ),
                                     cx,
@@ -12091,44 +12204,44 @@ impl WinderustApp {
                 ));
             }
             list = list.child(self.animated_list_item(
-                ListItemRemovalTarget::new(ListItemRemovalKind::CpuAffinityRule, index),
+                ListItemRemovalTarget::new(ListItemRemovalKind::CoreSteeringRule, index),
                 SharedString::from(format!("affinity-rule-{index}")),
                 card.into_any_element(),
             ));
         }
-        if self.settings.cpu_affinity.rules.is_empty() {
-            list = list.child(text_muted(t!("affinity.no_rules").to_string()).p_4());
+        if self.settings.core_steering.rules.is_empty() {
+            list = list.child(text_muted(t!("core_steering.no_rules").to_string()).p_4());
         }
         list.into_any_element()
     }
 
-    fn render_affinity_mode_selector(
+    fn render_core_steering_mode_selector(
         &self,
         index: usize,
-        selected_mode: CpuAffinityMode,
+        selected_mode: CoreSteeringMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let dropdown = self.render_dropdown_select(
             format!("affinity-mode-{index}"),
-            cpu_affinity_mode_label(selected_mode),
+            core_steering_mode_label(selected_mode),
             true,
             DropdownSelectWidth::Standard,
-            CpuAffinityMode::ALL.len(),
+            CoreSteeringMode::ALL.len(),
             window,
             cx,
             |max_height, cx| {
                 let mut options = dropdown_surface(cx, max_height);
-                for mode in CpuAffinityMode::ALL {
+                for mode in CoreSteeringMode::ALL {
                     options = options.child(
                         dropdown_option_row(
                             SharedString::from(format!("affinity-mode-{index}-option-{mode:?}")),
-                            cpu_affinity_mode_label(mode),
+                            core_steering_mode_label(mode),
                             selected_mode == mode,
                             cx,
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
-                            if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                            if let Some(rule) = app.settings.core_steering.rules.get_mut(index) {
                                 rule.mode = mode;
                             }
                             app.active_power_plan_picker = None;
@@ -12141,41 +12254,41 @@ impl WinderustApp {
         );
         rule_action_row(
             format!("affinity-mode-row-{index}"),
-            t!("affinity.mode").to_string(),
+            t!("core_steering.mode").to_string(),
             dropdown,
         )
         .into_any_element()
     }
 
-    fn render_affinity_core_selector(
+    fn render_core_steering_core_selector(
         &self,
         index: usize,
         core_mask: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let processors = affinity::logical_processors();
-        let all_mask = affinity_processors_mask(&processors);
+        let processors = core_steering::logical_processors();
+        let all_mask = core_steering_processors_mask(&processors);
         let performance_mask =
-            affinity_processors_kind_mask(&processors, LogicalProcessorKind::Performance);
+            core_steering_processors_kind_mask(&processors, LogicalProcessorKind::Performance);
         let efficiency_mask =
-            affinity_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency);
-        let no_smt_mask = affinity_processors_no_smt_mask(&processors);
+            core_steering_processors_kind_mask(&processors, LogicalProcessorKind::Efficiency);
+        let no_smt_mask = core_steering_processors_no_smt_mask(&processors);
 
         let preset_options = vec![
-            (t!("affinity.all").to_string(), all_mask, all_mask != 0),
+            (t!("core_steering.all").to_string(), all_mask, all_mask != 0),
             (
-                t!("affinity.p_cores").to_string(),
+                t!("core_steering.p_cores").to_string(),
                 performance_mask,
                 performance_mask != 0,
             ),
             (
-                t!("affinity.e_cores").to_string(),
+                t!("core_steering.e_cores").to_string(),
                 efficiency_mask,
                 efficiency_mask != 0,
             ),
             (
-                t!("affinity.no_smt").to_string(),
+                t!("core_steering.no_smt").to_string(),
                 no_smt_mask,
                 no_smt_mask != 0 && no_smt_mask != all_mask,
             ),
@@ -12210,7 +12323,8 @@ impl WinderustApp {
                     let row = if enabled {
                         row.on_click(cx.listener(move |app, _, _, cx| {
                             if mask != 0 {
-                                if let Some(rule) = app.settings.cpu_affinity.rules.get_mut(index) {
+                                if let Some(rule) = app.settings.core_steering.rules.get_mut(index)
+                                {
                                     rule.core_mask = mask;
                                 }
                                 app.active_power_plan_picker = None;
@@ -12231,7 +12345,7 @@ impl WinderustApp {
             core_mask,
             true,
             format!("affinity-core-{index}"),
-            CoreTileGridAction::CpuAffinityRule { index },
+            CoreTileGridAction::CoreSteeringRule { index },
             cx,
         );
 
@@ -12241,7 +12355,7 @@ impl WinderustApp {
             .child(
                 rule_action_row(
                     format!("affinity-core-presets-row-{index}"),
-                    t!("affinity.core_presets").to_string(),
+                    t!("core_steering.core_presets").to_string(),
                     presets_dropdown,
                 )
                 .into_any_element(),
@@ -12249,7 +12363,7 @@ impl WinderustApp {
             .child(
                 setting_group_stacked_action_row(
                     format!("affinity-core-row-{index}"),
-                    t!("affinity.allowed_cpus").to_string(),
+                    t!("core_steering.allowed_cpus").to_string(),
                     core_grid,
                     true,
                 )
@@ -12268,7 +12382,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if processors.is_empty() {
-            return text_muted(t!("affinity.no_logical_cpus").to_string()).into_any_element();
+            return text_muted(t!("core_steering.no_logical_cpus").to_string()).into_any_element();
         }
 
         let id_prefix = id_prefix.into();
@@ -12335,9 +12449,9 @@ impl WinderustApp {
                                         available_mask,
                                     );
                                 }
-                                CoreTileGridAction::CpuAffinityRule { index } => {
+                                CoreTileGridAction::CoreSteeringRule { index } => {
                                     if let Some(rule) =
-                                        app.settings.cpu_affinity.rules.get_mut(index)
+                                        app.settings.core_steering.rules.get_mut(index)
                                     {
                                         toggle_affinity_core(&mut rule.core_mask, core);
                                     }
@@ -12927,7 +13041,7 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.page_shell(Page::Settings, cx)
+        self.page_shell(Page::WinderustBehaviour, cx)
             .child(checkbox(
                 "general-enabled",
                 t!("settings.master_switch").to_string(),
@@ -13009,12 +13123,12 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_settings_appearance_page(
+    fn render_language_and_appearance_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.page_shell(Page::SettingsAppearance, cx)
+        self.page_shell(Page::LanguageAndAppearance, cx)
             .child(self.render_theme_selector(window, cx))
             .child(self.render_accent_selector(window, cx))
             .child(self.render_language_selector(window, cx))
@@ -13022,12 +13136,12 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    fn render_settings_experimental_page(
+    fn render_experimental_features_page(
         &self,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        self.page_shell(Page::SettingsExperimental, cx)
+        self.page_shell(Page::ExperimentalFeatures, cx)
             .child(setting_action_card_with_help(
                 "experimental-priority-values",
                 t!("settings.expose_all_priority_values").to_string(),
@@ -13186,8 +13300,8 @@ impl WinderustApp {
                     self.settings.advanced.show_advanced_controls,
                     cx.listener(|app, checked, _, cx| {
                         app.settings.advanced.show_advanced_controls = *checked;
-                        if !*checked && app.page.section_landing_page() == Page::AdvancedHome {
-                            app.page = Page::SettingsExperimental;
+                        if !*checked && app.page.section_landing_page() == Page::AdvancedControls {
+                            app.page = Page::ExperimentalFeatures;
                         }
                         cx.notify();
                     }),
@@ -13801,8 +13915,12 @@ impl WinderustApp {
         Ok(())
     }
 
-    fn render_core_parking_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        self.page_shell(Page::CoreParking, cx)
+    fn render_advanced_power_plan_tuning_page(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        self.page_shell(Page::AdvancedPowerPlanTuning, cx)
             .child(self.render_processor_power_card(window, cx))
             .into_any_element()
     }
@@ -14702,33 +14820,33 @@ impl WinderustApp {
     fn set_power_plan_field(&mut self, field: PowerPlanField, guid: Option<String>) {
         match field {
             PowerPlanField::ActivityKind(PowerPlanKind::Idle) => {
-                self.settings.activity_mode.power_plans.power_save_guid = guid
+                self.settings.by_activity.power_plans.power_save_guid = guid
             }
             PowerPlanField::ActivityKind(PowerPlanKind::Active) => {
-                self.settings.activity_mode.power_plans.performance_guid = guid
+                self.settings.by_activity.power_plans.performance_guid = guid
             }
-            PowerPlanField::ForegroundRule(index) => {
-                if let Some(rule) = self.settings.foreground_rules.rules.get_mut(index) {
+            PowerPlanField::ByForegroundRule(index) => {
+                if let Some(rule) = self.settings.by_foreground.rules.get_mut(index) {
                     rule.power_plan_guid = guid;
                 }
             }
-            PowerPlanField::PerformanceModeRule(index) => {
-                if let Some(rule) = self.settings.performance_mode.rules.get_mut(index) {
+            PowerPlanField::ByRunningAppRule(index) => {
+                if let Some(rule) = self.settings.by_running_app.rules.get_mut(index) {
                     rule.power_plan_guid = guid;
                 }
             }
-            PowerPlanField::ScheduleRule(index) => {
-                if let Some(rule) = self.settings.schedule_mode.rules.get_mut(index) {
+            PowerPlanField::ByTimeRule(index) => {
+                if let Some(rule) = self.settings.by_time.rules.get_mut(index) {
                     rule.power_plan_guid = guid;
                 }
             }
             PowerPlanField::CpuRule(index) => {
-                if let Some(rule) = self.settings.cpu_usage_mode.rules.get_mut(index) {
+                if let Some(rule) = self.settings.by_cpu_load.rules.get_mut(index) {
                     rule.power_plan_guid = guid;
                 }
             }
             PowerPlanField::CpuRuleElse(index) => {
-                if let Some(rule) = self.settings.cpu_usage_mode.rules.get_mut(index) {
+                if let Some(rule) = self.settings.by_cpu_load.rules.get_mut(index) {
                     rule.else_power_plan_guid = guid;
                 }
             }
@@ -14903,8 +15021,13 @@ impl WinderustApp {
             SuggestionTarget::Foreground => {
                 clear_input_to(&self.inputs.foreground_process, process, window, cx);
             }
-            SuggestionTarget::EcoQos => {
-                clear_input_to(&self.inputs.eco_qos_exclusion, process, window, cx);
+            SuggestionTarget::BackgroundEfficiency => {
+                clear_input_to(
+                    &self.inputs.background_efficiency_process,
+                    process,
+                    window,
+                    cx,
+                );
             }
             SuggestionTarget::BackgroundCpu => {
                 clear_input_to(&self.inputs.background_cpu_exclusion, process, window, cx);
@@ -14912,13 +15035,13 @@ impl WinderustApp {
             SuggestionTarget::MemoryTrim => {
                 clear_input_to(&self.inputs.memory_trim_exclusion, process, window, cx);
             }
-            SuggestionTarget::Suspension => {
-                clear_input_to(&self.inputs.suspension_process, process, window, cx);
+            SuggestionTarget::AppSuspension => {
+                clear_input_to(&self.inputs.app_suspension_process, process, window, cx);
             }
-            SuggestionTarget::CpuLimiter => {
-                clear_input_to(&self.inputs.cpu_limiter_process, process, window, cx);
+            SuggestionTarget::CoreLimiter => {
+                clear_input_to(&self.inputs.core_limiter_process, process, window, cx);
             }
-            SuggestionTarget::PerformanceMode => {
+            SuggestionTarget::ByRunningApp => {
                 clear_input_to(&self.inputs.performance_process, process, window, cx);
             }
             SuggestionTarget::WorkloadEngine => {
@@ -14930,8 +15053,13 @@ impl WinderustApp {
             SuggestionTarget::ThreadPriority => {
                 clear_input_to(&self.inputs.thread_priority_process, process, window, cx);
             }
-            SuggestionTarget::PriorityBoost => {
-                clear_input_to(&self.inputs.priority_boost_process, process, window, cx);
+            SuggestionTarget::DynamicPriorityBoost => {
+                clear_input_to(
+                    &self.inputs.dynamic_priority_boost_process,
+                    process,
+                    window,
+                    cx,
+                );
             }
             SuggestionTarget::IoPriority => {
                 clear_input_to(&self.inputs.io_priority_process, process, window, cx);
@@ -14945,8 +15073,8 @@ impl WinderustApp {
             SuggestionTarget::TimerResolution => {
                 clear_input_to(&self.inputs.timer_resolution_process, process, window, cx);
             }
-            SuggestionTarget::Affinity => {
-                clear_input_to(&self.inputs.affinity_process, process, window, cx);
+            SuggestionTarget::CoreSteering => {
+                clear_input_to(&self.inputs.core_steering_process, process, window, cx);
             }
         }
     }
@@ -14977,7 +15105,7 @@ enum ThreadPriorityDefaultTarget {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum PriorityBoostDefaultTarget {
+enum DynamicPriorityBoostDefaultTarget {
     Background,
     Foreground,
 }
@@ -14997,9 +15125,9 @@ enum MemoryPriorityDefaultTarget {
 #[derive(Debug, Clone, Copy)]
 enum PowerPlanField {
     ActivityKind(PowerPlanKind),
-    ForegroundRule(usize),
-    PerformanceModeRule(usize),
-    ScheduleRule(usize),
+    ByForegroundRule(usize),
+    ByRunningAppRule(usize),
+    ByTimeRule(usize),
     CpuRule(usize),
     CpuRuleElse(usize),
     ProcessorPowerTarget,
@@ -15521,57 +15649,57 @@ fn dropdown_option_hover_color() -> u32 {
 #[derive(Debug, Clone, Copy)]
 enum SuggestionTarget {
     Foreground,
-    EcoQos,
+    BackgroundEfficiency,
     BackgroundCpu,
     MemoryTrim,
-    Suspension,
-    CpuLimiter,
-    PerformanceMode,
+    AppSuspension,
+    CoreLimiter,
+    ByRunningApp,
     WorkloadEngine,
     ProcessPriority,
     ThreadPriority,
-    PriorityBoost,
+    DynamicPriorityBoost,
     IoPriority,
     GpuPriority,
     MemoryPriority,
     TimerResolution,
-    Affinity,
+    CoreSteering,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuleTitleTarget {
-    Schedule(usize),
-    Cpu(usize),
+    ByTime(usize),
+    ByCpuLoad(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum RuleCardTarget {
-    Cpu(usize),
-    Suspension(String),
-    CpuLimiter(String),
-    Affinity(String),
+    ByCpuLoad(usize),
+    AppSuspension(String),
+    CoreLimiter(String),
+    CoreSteering(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SettingGroupTarget {
     AccentColor,
-    SmartSaverCpuScheduling,
-    SmartSaverProcessorPolicy,
+    AdaptiveEngineCpuScheduling,
+    AdaptiveEngineProcessorPolicy,
     WorkloadEngineAffinity,
     WorkloadEngineBehaviourTuning,
     WorkloadEngineEfficiency,
     WorkloadEngineGpuPriority,
     WorkloadEngineIoPriority,
     WorkloadEngineMemoryPriority,
-    WorkloadEnginePriorityBoost,
+    WorkloadEngineDynamicPriorityBoost,
     WorkloadEngineProcessPriority,
     WorkloadEngineThreadPriority,
     ProcessPriorityMaster,
     ProcessPriorityForegroundDetection,
     ThreadPriorityMaster,
     ThreadPriorityForegroundDetection,
-    PriorityBoostMaster,
-    PriorityBoostForegroundDetection,
+    DynamicPriorityBoostMaster,
+    DynamicPriorityBoostForegroundDetection,
     IoPriorityMaster,
     IoPriorityForegroundDetection,
     EfficiencyEnable,
@@ -15661,17 +15789,17 @@ enum NumericField {
     CpuThreshold(usize),
     CpuUpperThreshold(usize),
     CpuDuration(usize),
-    CpuLimiterThreshold(usize),
-    CpuLimiterSustain(usize),
-    CpuLimiterCooldown(usize),
-    CpuLimiterMaxProcessors(usize),
+    CoreLimiterThreshold(usize),
+    CoreLimiterSustain(usize),
+    CoreLimiterCooldown(usize),
+    CoreLimiterMaxProcessors(usize),
     TimerResolutionRule(usize),
     NetworkThreshold(ThresholdField),
-    SmartSaverProcessorPolicy(SmartSaverProcessorPolicyField),
+    AdaptiveEngineProcessorPolicy(AdaptiveEngineProcessorPolicyField),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum SmartSaverProcessorPolicyField {
+enum AdaptiveEngineProcessorPolicyField {
     CoreParkingMin,
     PerformanceMin,
     PerformanceMax,
@@ -16487,7 +16615,7 @@ fn breadcrumb_separator() -> gpui::Div {
 }
 
 fn breadcrumb_trail(page: Page) -> Vec<BreadcrumbSegment> {
-    if page == Page::Dashboard {
+    if page == Page::Home {
         return vec![BreadcrumbSegment {
             page,
             label: page.label(),
@@ -16496,8 +16624,8 @@ fn breadcrumb_trail(page: Page) -> Vec<BreadcrumbSegment> {
 
     let section_page = page.section_landing_page();
     let mut trail = vec![BreadcrumbSegment {
-        page: Page::Dashboard,
-        label: Page::Dashboard.label(),
+        page: Page::Home,
+        label: Page::Home.label(),
     }];
 
     if page != section_page {
@@ -16648,9 +16776,9 @@ fn dashboard_sections_in_nav_order(show_advanced_controls: bool) -> Vec<&'static
     Page::sections()
         .iter()
         .filter(|section| {
-            section.landing_page != Page::Dashboard && !nav_section_in_footer(section.landing_page)
+            section.landing_page != Page::Home && !nav_section_in_footer(section.landing_page)
         })
-        .filter(|section| show_advanced_controls || section.landing_page != Page::AdvancedHome)
+        .filter(|section| show_advanced_controls || section.landing_page != Page::AdvancedControls)
         .chain(
             Page::sections()
                 .iter()
@@ -16672,7 +16800,7 @@ fn dashboard_search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page
         let section_matches = dashboard_page_matches_query(section.landing_page, &query);
 
         for page in section.pages.iter().copied() {
-            if page == Page::Dashboard || !seen.insert(page) {
+            if page == Page::Home || !seen.insert(page) {
                 continue;
             }
 
@@ -16694,18 +16822,18 @@ fn dashboard_page_search_text(page: Page) -> String {
     let mut text = format!("{} {}", page.label(), page.section_label());
 
     let extra = match page {
-        Page::Dashboard => vec![
-            t!("dashboard.intro_1").to_string(),
-            t!("dashboard.intro_2").to_string(),
+        Page::Home => vec![
+            t!("home.intro_1").to_string(),
+            t!("home.intro_2").to_string(),
             "overview summary current automation decision power plan cpu enabled rules".to_string(),
         ],
-        Page::PowerPlanAutomation => vec![
+        Page::PowerPlanControl => vec![
             "power plan automation foreground focused app running app performance mode cpu load activity idle schedule time battery plugged ac dc".to_string(),
         ],
         Page::WinderustFeatures => vec![
-            "winderust features background efficiency ecoqos workload engine foreground interactivity memory trim working set memory ram background restraint".to_string(),
+            "winderust features background efficiency background_efficiency workload engine foreground interactivity memory trim working set memory ram background restraint".to_string(),
         ],
-        Page::ProcessorControls => vec![
+        Page::CpuControl => vec![
             "processor cpu controls core parking limiter background restriction affinity steering power boost ac dc battery e cores p cores".to_string(),
         ],
         Page::PriorityControl => vec![
@@ -16716,37 +16844,37 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("action_log.intro_2").to_string(),
             "log action history details csv export skipped failed applied restored reason".to_string(),
         ],
-        Page::AppHome => vec![
+        Page::SettingsHome => vec![
             "settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette about".to_string(),
         ],
-        Page::AdvancedHome => vec![
+        Page::AdvancedControls => vec![
             "advanced app suspension windows scheduler win32 priority separation quantum foreground boost registry".to_string(),
         ],
-        Page::Activity => vec![
-            t!("activity.intro_1").to_string(),
-            t!("activity.intro_2").to_string(),
-            t!("activity.enable").to_string(),
+        Page::ByActivity => vec![
+            t!("by_activity.intro_1").to_string(),
+            t!("by_activity.intro_2").to_string(),
+            t!("by_activity.enable").to_string(),
             "idle active input keyboard mouse controller gamepad activity power plan battery plugged".to_string(),
         ],
-        Page::ForegroundRules => vec![
-            t!("foreground.intro_1").to_string(),
-            t!("foreground.intro_2").to_string(),
-            t!("foreground.enable").to_string(),
+        Page::ByForeground => vec![
+            t!("by_foreground.intro_1").to_string(),
+            t!("by_foreground.intro_2").to_string(),
+            t!("by_foreground.enable").to_string(),
             "foreground focused app process window power plan priority rule".to_string(),
         ],
-        Page::Schedule => vec![
-            t!("schedule.intro_1").to_string(),
-            t!("schedule.intro_2").to_string(),
-            t!("schedule.enable").to_string(),
+        Page::ByTime => vec![
+            t!("by_time.intro_1").to_string(),
+            t!("by_time.intro_2").to_string(),
+            t!("by_time.enable").to_string(),
             "time schedule clock date weekday overnight power plan".to_string(),
         ],
-        Page::CpuUsage => vec![
-            t!("cpu_rules.intro_1").to_string(),
-            t!("cpu_rules.intro_2").to_string(),
-            t!("cpu_rules.enable").to_string(),
+        Page::ByCpuLoad => vec![
+            t!("by_cpu_load.intro_1").to_string(),
+            t!("by_cpu_load.intro_2").to_string(),
+            t!("by_cpu_load.enable").to_string(),
             "cpu load usage threshold sustained power plan percent samples".to_string(),
         ],
-        Page::CoreParking => vec![
+        Page::AdvancedPowerPlanTuning => vec![
             t!("processor_power.help").to_string(),
             t!("processor_power.link_ac_dc_help").to_string(),
             t!("processor_power.performance_help").to_string(),
@@ -16754,12 +16882,12 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("processor_power.saver_help").to_string(),
             "core parking processor power boost min max ac dc battery plugged performance saver balanced".to_string(),
         ],
-        Page::CpuLimiter => vec![
-            t!("cpu_limiter.intro_1").to_string(),
-            t!("cpu_limiter.intro_2").to_string(),
-            t!("cpu_limiter.intro_3").to_string(),
-            t!("cpu_limiter.focus_detection_help").to_string(),
-            t!("cpu_limiter.rules_help").to_string(),
+        Page::CoreLimiter => vec![
+            t!("core_limiter.intro_1").to_string(),
+            t!("core_limiter.intro_2").to_string(),
+            t!("core_limiter.intro_3").to_string(),
+            t!("core_limiter.focus_detection_help").to_string(),
+            t!("core_limiter.rules_help").to_string(),
             "cpu cap limit core affinity threshold sustain cooldown background process".to_string(),
         ],
         Page::ProcessPriority => vec![
@@ -16775,9 +16903,9 @@ fn dashboard_page_search_text(page: Page) -> String {
             "thread priority time critical highest above normal normal below normal lowest idle background foreground exclusion".to_string(),
         ],
         Page::DynamicPriorityBoost => vec![
-            t!("priority_boost.intro_1").to_string(),
-            t!("priority_boost.intro_2").to_string(),
-            t!("priority_boost.exclusions_help").to_string(),
+            t!("dynamic_priority_boost.intro_1").to_string(),
+            t!("dynamic_priority_boost.intro_2").to_string(),
+            t!("dynamic_priority_boost.exclusions_help").to_string(),
             "dynamic priority boost process scheduler enabled disabled background foreground exclusion".to_string(),
         ],
         Page::BackgroundCpuRestriction => vec![
@@ -16791,33 +16919,33 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("process_list.title").to_string(),
             "running processes pid process rules priority gpu cpu affinity efficiency policy overview".to_string(),
         ],
-        Page::SmartSaverMode => vec![
-            t!("smart_saver.intro_1").to_string(),
-            t!("smart_saver.intro_2").to_string(),
-            t!("smart_saver.intro_3").to_string(),
-            t!("smart_saver.timer_requests_help").to_string(),
-            "smart saver power saving ecoqos timer resolution audio guard workload engine cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background".to_string(),
+        Page::AdaptiveEngine => vec![
+            t!("adaptive_engine.intro_1").to_string(),
+            t!("adaptive_engine.intro_2").to_string(),
+            t!("adaptive_engine.intro_3").to_string(),
+            t!("adaptive_engine.timer_requests_help").to_string(),
+            "adaptive engine power saving background_efficiency timer resolution audio guard workload engine cpu scheduling uperf powersave balanced performance speed foreground boost background priority cpu spike stutter battery background".to_string(),
         ],
-        Page::EfficiencyMode => vec![
-            t!("efficiency.intro_1").to_string(),
-            t!("efficiency.intro_2").to_string(),
-            t!("efficiency.intro_3").to_string(),
-            t!("efficiency.focus_detection_help").to_string(),
-            t!("efficiency.whitelist_help").to_string(),
-            "efficiency mode ecoqos qos throttle background priority exclusion whitelist".to_string(),
+        Page::BackgroundEfficiency => vec![
+            t!("background_efficiency.intro_1").to_string(),
+            t!("background_efficiency.intro_2").to_string(),
+            t!("background_efficiency.intro_3").to_string(),
+            t!("background_efficiency.focus_detection_help").to_string(),
+            t!("background_efficiency.custom_rules_help").to_string(),
+            "efficiency mode background_efficiency qos throttle background priority exclusion custom_rules".to_string(),
         ],
         Page::AppSuspension => vec![
-            t!("suspension.intro_1").to_string(),
-            t!("suspension.intro_2").to_string(),
-            t!("suspension.intro_3").to_string(),
-            t!("suspension.suspendable_help").to_string(),
+            t!("app_suspension.intro_1").to_string(),
+            t!("app_suspension.intro_2").to_string(),
+            t!("app_suspension.intro_3").to_string(),
+            t!("app_suspension.suspendable_help").to_string(),
             "suspend freeze thaw resume background app process job object delay network audio".to_string(),
         ],
-        Page::PerformanceMode => vec![
-            t!("performance_mode.intro_1").to_string(),
-            t!("performance_mode.intro_2").to_string(),
-            t!("performance_mode.intro_3").to_string(),
-            t!("performance_mode.rules_help").to_string(),
+        Page::ByRunningApp => vec![
+            t!("by_running_app.intro_1").to_string(),
+            t!("by_running_app.intro_2").to_string(),
+            t!("by_running_app.intro_3").to_string(),
+            t!("by_running_app.rules_help").to_string(),
             "running app performance mode power plan process game gaming active restore".to_string(),
         ],
         Page::IoPriority => vec![
@@ -16859,27 +16987,27 @@ fn dashboard_page_search_text(page: Page) -> String {
             t!("memory_trim.purge_system_file_cache_help").to_string(),
             "memory ram trim working set standby list file cache purge background exclusion".to_string(),
         ],
-        Page::CpuAffinity => vec![
-            t!("affinity.intro_1").to_string(),
-            t!("affinity.intro_2").to_string(),
-            t!("affinity.intro_3").to_string(),
-            t!("affinity.rules_help").to_string(),
-            t!("affinity.p_cores_help").to_string(),
-            t!("affinity.e_cores_help").to_string(),
-            t!("affinity.no_smt_help").to_string(),
+        Page::CoreSteering => vec![
+            t!("core_steering.intro_1").to_string(),
+            t!("core_steering.intro_2").to_string(),
+            t!("core_steering.intro_3").to_string(),
+            t!("core_steering.rules_help").to_string(),
+            t!("core_steering.p_cores_help").to_string(),
+            t!("core_steering.e_cores_help").to_string(),
+            t!("core_steering.no_smt_help").to_string(),
             "core steering affinity cpu sets p cores e cores smt logical processor background process".to_string(),
         ],
-        Page::Settings => vec![
+        Page::WinderustBehaviour => vec![
             t!("settings.intro_1").to_string(),
             t!("settings.intro_2").to_string(),
             t!("settings.action_log_mode_full_help").to_string(),
             t!("settings.failure_suppression_threshold_help").to_string(),
             "winderust behaviour startup tray automation toggle action log detail fail failure suppression export import".to_string(),
         ],
-        Page::SettingsAppearance => vec![
+        Page::LanguageAndAppearance => vec![
             "language appearance theme dark light system accent color palette localization display ui".to_string(),
         ],
-        Page::SettingsExperimental => vec![
+        Page::ExperimentalFeatures => vec![
             t!("settings.expose_all_priority_values_help").to_string(),
             "experimental features process priority realtime advanced priority values".to_string(),
         ],
@@ -16911,7 +17039,7 @@ fn dashboard_page_search_text(page: Page) -> String {
 }
 
 fn nav_section_in_footer(page: Page) -> bool {
-    matches!(page, Page::ActionLog | Page::AppHome)
+    matches!(page, Page::ActionLog | Page::SettingsHome)
 }
 
 fn page_body_shell() -> gpui::Div {
@@ -16932,7 +17060,7 @@ fn search_results_page_header(_cx: &mut Context<WinderustApp>) -> gpui::Div {
                 .line_height(px(TEXT_PAGE_TITLE_LINE_HEIGHT))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .truncate()
-                .child(t!("dashboard.search_results").to_string()),
+                .child(t!("home.search_results").to_string()),
         )
 }
 
@@ -17592,7 +17720,7 @@ fn rule_card_body_height(row_count: usize) -> f32 {
     CARD_ROW_HEIGHT * row_count.max(1) as f32
 }
 
-fn affinity_core_selector_body_height() -> f32 {
+fn core_steering_selector_body_height() -> f32 {
     rule_card_body_height(1)
         + px_spacing(3) * 2.0
         + TEXT_BODY_LINE_HEIGHT
@@ -17609,7 +17737,7 @@ fn setting_group_core_grid_body_height(fixed_row_count: usize) -> f32 {
 }
 
 fn core_tile_grid_height() -> f32 {
-    let processor_count = affinity::logical_processors().len();
+    let processor_count = core_steering::logical_processors().len();
     let grid_rows =
         processor_count.saturating_add(CORE_TILE_GRID_COLUMNS - 1) / CORE_TILE_GRID_COLUMNS;
     if grid_rows == 0 {
@@ -20890,7 +21018,7 @@ fn process_list_cell_editor_options(
     match column {
         ProcessListColumn::PowerPlanForeground => {
             let selected_guid =
-                foreground_power_plan_override_guid(&app.settings.foreground_rules, &process_name);
+                foreground_power_plan_override_guid(&app.settings.by_foreground, &process_name);
             options = options.child(process_list_power_plan_editor_option(
                 &process_name,
                 column,
@@ -20915,8 +21043,8 @@ fn process_list_cell_editor_options(
             }
         }
         ProcessListColumn::PowerPlanRunning => {
-            let selected_guid = performance_mode_power_plan_override_guid(
-                &app.settings.performance_mode,
+            let selected_guid = by_running_app_power_plan_override_guid(
+                &app.settings.by_running_app,
                 &process_name,
             );
             options = options.child(process_list_power_plan_editor_option(
@@ -20945,8 +21073,8 @@ fn process_list_cell_editor_options(
         ProcessListColumn::BackgroundEfficiency => {
             let included = !app
                 .settings
-                .eco_qos
-                .efficiency_exclusion_enabled_for(&process_name);
+                .background_efficiency
+                .custom_rule_enabled_for(&process_name);
             options = process_list_include_exclude_editor_options(
                 options,
                 &process_name,
@@ -20969,15 +21097,15 @@ fn process_list_cell_editor_options(
             );
         }
         ProcessListColumn::CoreLimiter => {
-            let selected = cpu_limiter_override_percent(&app.settings.cpu_limiter, &process_name);
-            options = options.child(process_list_cpu_limiter_editor_option(
+            let selected = core_limiter_override_percent(&app.settings.core_limiter, &process_name);
+            options = options.child(process_list_core_limiter_editor_option(
                 &process_name,
                 None,
                 selected.is_none(),
                 cx,
             ));
             for percent in [25_u8, 50, 75, 100] {
-                options = options.child(process_list_cpu_limiter_editor_option(
+                options = options.child(process_list_core_limiter_editor_option(
                     &process_name,
                     Some(percent),
                     selected == Some(percent),
@@ -21147,7 +21275,7 @@ fn process_list_include_exclude_editor_option(
         .into_any_element()
 }
 
-fn process_list_cpu_limiter_editor_option(
+fn process_list_core_limiter_editor_option(
     process_name: &str,
     percent: Option<u8>,
     selected: bool,
@@ -21166,7 +21294,7 @@ fn process_list_cpu_limiter_editor_option(
     );
     dropdown_option_row(option_id, label, selected, cx)
         .on_click(cx.listener(move |app, _, _, cx| {
-            app.set_process_list_cpu_limiter(process_name.clone(), percent, cx);
+            app.set_process_list_core_limiter(process_name.clone(), percent, cx);
             cx.stop_propagation();
         }))
         .into_any_element()
@@ -21513,14 +21641,14 @@ fn action_log_feature_label(feature: ActionLogFeature) -> String {
         ActionLogFeature::BackgroundCpuRestriction => {
             t!("nav.background_cpu_restriction").to_string()
         }
-        ActionLogFeature::CoreSteering => t!("nav.cpu_affinity").to_string(),
-        ActionLogFeature::EcoQos => t!("nav.efficiency_mode").to_string(),
-        ActionLogFeature::CpuLimiter => t!("nav.cpu_limiter").to_string(),
-        ActionLogFeature::PerformanceMode => t!("nav.performance_mode").to_string(),
+        ActionLogFeature::CoreSteering => t!("nav.core_steering").to_string(),
+        ActionLogFeature::BackgroundEfficiency => t!("nav.background_efficiency").to_string(),
+        ActionLogFeature::CoreLimiter => t!("nav.core_limiter").to_string(),
+        ActionLogFeature::ByRunningApp => t!("nav.by_running_app").to_string(),
         ActionLogFeature::WorkloadEngine => t!("nav.workload_engine").to_string(),
         ActionLogFeature::ProcessPriority => t!("nav.process_priority").to_string(),
         ActionLogFeature::ThreadPriority => t!("nav.thread_priority").to_string(),
-        ActionLogFeature::PriorityBoost => t!("nav.dynamic_priority_boost").to_string(),
+        ActionLogFeature::DynamicPriorityBoost => t!("nav.dynamic_priority_boost").to_string(),
         ActionLogFeature::IoPriority => t!("nav.io_priority").to_string(),
         ActionLogFeature::GpuPriority => t!("nav.gpu_priority").to_string(),
         ActionLogFeature::MemoryPriority => t!("nav.memory_priority").to_string(),
@@ -22289,37 +22417,37 @@ fn nav_icon(page: Page, selected: bool, cx: &mut Context<WinderustApp>) -> AnyEl
 
 fn nav_icon_name(page: Page) -> NavIcon {
     match page {
-        Page::Dashboard => NavIcon::House,
-        Page::PowerPlanAutomation => NavIcon::Zap,
+        Page::Home => NavIcon::House,
+        Page::PowerPlanControl => NavIcon::Zap,
         Page::WinderustFeatures => NavIcon::Feather,
-        Page::ProcessorControls => NavIcon::Cpu,
+        Page::CpuControl => NavIcon::Cpu,
         Page::PriorityControl => NavIcon::CircleFadingArrowUp,
-        Page::AppHome => NavIcon::Settings,
-        Page::AdvancedHome => NavIcon::Cog,
-        Page::Activity => NavIcon::SquareActivity,
-        Page::CpuUsage => NavIcon::ChartColumn,
-        Page::CoreParking => NavIcon::Drill,
+        Page::SettingsHome => NavIcon::Settings,
+        Page::AdvancedControls => NavIcon::Cog,
+        Page::ByActivity => NavIcon::SquareActivity,
+        Page::ByCpuLoad => NavIcon::ChartColumn,
+        Page::AdvancedPowerPlanTuning => NavIcon::Drill,
         Page::ProcessPriority => NavIcon::PanelsTopLeft,
         Page::ThreadPriority => NavIcon::Spline,
         Page::DynamicPriorityBoost => NavIcon::TrendingUpDown,
-        Page::CpuLimiter => NavIcon::OctagonMinus,
+        Page::CoreLimiter => NavIcon::OctagonMinus,
         Page::BackgroundCpuRestriction => NavIcon::MonitorX,
         Page::ProcessList => NavIcon::List,
-        Page::SmartSaverMode => NavIcon::Leaf,
-        Page::EfficiencyMode => NavIcon::Leaf,
+        Page::AdaptiveEngine => NavIcon::Leaf,
+        Page::BackgroundEfficiency => NavIcon::Leaf,
         Page::AppSuspension => NavIcon::MonitorPause,
-        Page::PerformanceMode => NavIcon::Footprints,
+        Page::ByRunningApp => NavIcon::Footprints,
         Page::IoPriority => NavIcon::Rotate3d,
         Page::GpuPriority => NavIcon::Gpu,
         Page::MemoryPriority => NavIcon::MemoryStick,
         Page::MemoryTrim => NavIcon::Scissors,
-        Page::CpuAffinity => NavIcon::LifeBuoy,
-        Page::ForegroundRules => NavIcon::BringToFront,
-        Page::Schedule => NavIcon::CalendarDays,
+        Page::CoreSteering => NavIcon::LifeBuoy,
+        Page::ByForeground => NavIcon::BringToFront,
+        Page::ByTime => NavIcon::CalendarDays,
         Page::ActionLog => NavIcon::Info,
-        Page::Settings => NavIcon::Settings,
-        Page::SettingsAppearance => NavIcon::Palette,
-        Page::SettingsExperimental => NavIcon::FlaskConical,
+        Page::WinderustBehaviour => NavIcon::Settings,
+        Page::LanguageAndAppearance => NavIcon::Palette,
+        Page::ExperimentalFeatures => NavIcon::FlaskConical,
         Page::TimerResolution => NavIcon::Hourglass,
         Page::Win32PrioritySeparation => NavIcon::Wrench,
         Page::About => NavIcon::Info,
@@ -22688,12 +22816,12 @@ fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::ProcessorDcPerformanceMin
         | NumericField::ProcessorDcPerformanceMax
         | NumericField::ProcessorDcBoostPolicy
-        | NumericField::SmartSaverProcessorPolicy(_)
+        | NumericField::AdaptiveEngineProcessorPolicy(_)
         | NumericField::BackgroundCpuRestrictionPercent
         | NumericField::MemoryTrimMemoryLoadThreshold
         | NumericField::MemoryTrimCpuIdleThreshold
-        | NumericField::CpuLimiterThreshold(_)
-        | NumericField::CpuLimiterMaxProcessors(_) => 76.0,
+        | NumericField::CoreLimiterThreshold(_)
+        | NumericField::CoreLimiterMaxProcessors(_) => 76.0,
         NumericField::MemoryTrimCheckIntervalMinutes
         | NumericField::MemoryTrimPurgeFreeRamThreshold
         | NumericField::TimerResolutionRule(_) => 104.0,
@@ -23508,7 +23636,7 @@ fn parse_timer_resolution_input_100ns(
 fn cpu_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
-        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+        .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
 fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
@@ -23520,19 +23648,19 @@ fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
                 format!("{frequency_mhz} MHz")
             }
         })
-        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+        .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
 fn memory_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
-        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+        .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
 fn memory_usage_value_label(snapshot: MemoryUsageSnapshot) -> String {
     match (snapshot.used_physical_bytes, snapshot.total_physical_bytes) {
         (Some(used), Some(total)) => format_memory_used_total(used, total),
-        _ => t!("dashboard.collecting").to_string(),
+        _ => t!("home.collecting").to_string(),
     }
 }
 
@@ -23540,7 +23668,7 @@ fn memory_cache_value_label(snapshot: MemoryUsageSnapshot) -> String {
     snapshot
         .cached_physical_bytes
         .map(format_memory_capacity)
-        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+        .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
 fn memory_cache_percent(snapshot: MemoryUsageSnapshot) -> Option<f32> {
@@ -23579,7 +23707,7 @@ fn memory_bytes_percent(bytes: Option<u64>, total_bytes: Option<u64>) -> Option<
 fn io_usage_label(bytes_per_second: Option<f64>) -> String {
     bytes_per_second
         .map(format_bytes_per_second)
-        .unwrap_or_else(|| t!("dashboard.collecting").to_string())
+        .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
 fn format_memory_used_total(used_bytes: u64, total_bytes: u64) -> String {
@@ -23678,48 +23806,47 @@ fn input_hook_required(settings: &Settings) -> bool {
 fn input_hook_config(settings: &Settings) -> InputHookConfig {
     let app_suspension = app_suspension_input_hook_required(settings);
     InputHookConfig {
-        keyboard: settings.activity_mode.input_detection.keyboard || app_suspension,
-        mouse: settings.activity_mode.input_detection.mouse || app_suspension,
+        keyboard: settings.by_activity.input_detection.keyboard || app_suspension,
+        mouse: settings.by_activity.input_detection.mouse || app_suspension,
     }
 }
 
 fn app_suspension_input_hook_required(settings: &Settings) -> bool {
-    settings.app_suspension.enabled && !settings.smart_saver.enabled
+    settings.app_suspension.enabled && !settings.adaptive_engine.enabled
 }
 
 fn activity_input_hook_required(settings: &Settings) -> bool {
-    settings.activity_mode.enabled
-        && settings.activity_mode.switch_to_performance_on_resume
+    settings.by_activity.enabled
+        && settings.by_activity.switch_to_performance_on_resume
         && settings
-            .activity_mode
+            .by_activity
             .input_detection
             .keyboard_or_mouse_enabled()
-        && (settings
-            .activity_mode
-            .power_plans
-            .performance_guid
-            .is_some()
-            || settings.power_plans.performance_guid.is_some())
+        && settings.by_activity.power_plans.performance_guid.is_some()
 }
 
 fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, process: &str) -> bool {
     match target {
         SuggestionTarget::Foreground => {
-            can_add_foreground_process(&settings.foreground_rules, process)
+            can_add_foreground_process(&settings.by_foreground, process)
         }
-        SuggestionTarget::EcoQos => can_add_eco_qos_process(&settings.eco_qos, process),
+        SuggestionTarget::BackgroundEfficiency => {
+            can_add_background_efficiency_process(&settings.background_efficiency, process)
+        }
         SuggestionTarget::BackgroundCpu => {
             can_add_background_cpu_exclusion(&settings.background_cpu_restriction, process)
         }
         SuggestionTarget::MemoryTrim => {
             can_add_memory_trim_exclusion(&settings.memory_trim, process)
         }
-        SuggestionTarget::Suspension => {
-            can_add_suspension_process(&settings.app_suspension, process)
+        SuggestionTarget::AppSuspension => {
+            can_add_app_suspension_process(&settings.app_suspension, process)
         }
-        SuggestionTarget::CpuLimiter => can_add_cpu_limiter_process(&settings.cpu_limiter, process),
-        SuggestionTarget::PerformanceMode => {
-            can_add_performance_mode_process(&settings.performance_mode, process)
+        SuggestionTarget::CoreLimiter => {
+            can_add_core_limiter_process(&settings.core_limiter, process)
+        }
+        SuggestionTarget::ByRunningApp => {
+            can_add_by_running_app_process(&settings.by_running_app, process)
         }
         SuggestionTarget::WorkloadEngine => {
             can_add_workload_engine_process(&settings.workload_engine, process)
@@ -23730,8 +23857,8 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::ThreadPriority => {
             can_add_thread_priority_exclusion(&settings.thread_priority, process)
         }
-        SuggestionTarget::PriorityBoost => {
-            can_add_priority_boost_exclusion(&settings.priority_boost, process)
+        SuggestionTarget::DynamicPriorityBoost => {
+            can_add_dynamic_priority_boost_exclusion(&settings.dynamic_priority_boost, process)
         }
         SuggestionTarget::IoPriority => {
             can_add_io_priority_exclusion(&settings.io_priority, process)
@@ -23745,7 +23872,9 @@ fn process_target_can_accept(target: SuggestionTarget, settings: &Settings, proc
         SuggestionTarget::TimerResolution => {
             can_add_timer_resolution_process(&settings.timer_resolution, process)
         }
-        SuggestionTarget::Affinity => can_add_affinity_process(&settings.cpu_affinity, process),
+        SuggestionTarget::CoreSteering => {
+            can_add_core_steering_process(&settings.core_steering, process)
+        }
     }
 }
 
@@ -23758,7 +23887,7 @@ fn can_add_process_candidate(
     !process.is_empty() && !contains_process(process) && !is_builtin_excluded(process)
 }
 
-fn can_add_foreground_process(settings: &ForegroundRules, process: &str) -> bool {
+fn can_add_foreground_process(settings: &ByForegroundSettings, process: &str) -> bool {
     can_add_process_candidate(
         process,
         |process| {
@@ -23772,7 +23901,7 @@ fn can_add_foreground_process(settings: &ForegroundRules, process: &str) -> bool
 }
 
 fn foreground_power_plan_override_guid(
-    settings: &ForegroundRules,
+    settings: &ByForegroundSettings,
     process_name: &str,
 ) -> Option<String> {
     settings
@@ -23783,7 +23912,7 @@ fn foreground_power_plan_override_guid(
 }
 
 fn set_foreground_power_plan_override(
-    settings: &mut ForegroundRules,
+    settings: &mut ByForegroundSettings,
     process_name: &str,
     power_plan_guid: Option<String>,
 ) {
@@ -23807,9 +23936,9 @@ fn set_foreground_power_plan_override(
     }
 }
 
-fn new_foreground_rule(process: &str, power_plan_guid: Option<String>) -> ForegroundRule {
+fn new_foreground_rule(process: &str, power_plan_guid: Option<String>) -> ByForegroundRule {
     let process_name = process.trim().to_ascii_lowercase();
-    ForegroundRule {
+    ByForegroundRule {
         enabled: true,
         name: process_name.clone(),
         process_name,
@@ -23817,11 +23946,14 @@ fn new_foreground_rule(process: &str, power_plan_guid: Option<String>) -> Foregr
     }
 }
 
-fn can_add_eco_qos_process(settings: &EcoQosSettings, process: &str) -> bool {
+fn can_add_background_efficiency_process(
+    settings: &BackgroundEfficiencySettings,
+    process: &str,
+) -> bool {
     can_add_process_candidate(
         process,
-        |process| settings.contains_efficiency_exclusion(process),
-        ecoqos::is_builtin_excluded,
+        |process| settings.contains_custom_rule(process),
+        background_efficiency::is_builtin_excluded,
     )
 }
 
@@ -23832,7 +23964,7 @@ fn can_add_background_cpu_exclusion(
     can_add_process_candidate(
         process,
         |process| settings.contains_exclusion(process),
-        affinity::is_builtin_excluded,
+        core_steering::is_builtin_excluded,
     )
 }
 
@@ -23857,33 +23989,33 @@ fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
     }
 }
 
-fn new_eco_qos_exclusion_rule(process: &str) -> EcoQosExclusionRule {
-    EcoQosExclusionRule {
+fn new_background_efficiency_rule(process: &str) -> BackgroundEfficiencyRule {
+    BackgroundEfficiencyRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
     }
 }
 
-fn set_eco_qos_efficiency_exclusion(
-    settings: &mut EcoQosSettings,
+fn set_background_efficiency_custom_rule(
+    settings: &mut BackgroundEfficiencySettings,
     process_name: &str,
     excluded: bool,
 ) {
     if excluded {
         if let Some(rule) = settings
-            .efficiency_whitelist
+            .custom_rules
             .iter_mut()
             .find(|rule| process_setting_matches(&rule.process_name, process_name))
         {
             rule.enabled = true;
         } else {
             settings
-                .efficiency_whitelist
-                .push(new_eco_qos_exclusion_rule(process_name));
+                .custom_rules
+                .push(new_background_efficiency_rule(process_name));
         }
     } else {
         settings
-            .efficiency_whitelist
+            .custom_rules
             .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
     }
 }
@@ -23951,19 +24083,19 @@ fn set_memory_priority_rule(
     rule.set_memory_priority_override(false, priority);
 }
 
-fn can_add_suspension_process(settings: &AppSuspensionSettings, process: &str) -> bool {
+fn can_add_app_suspension_process(settings: &AppSuspensionSettings, process: &str) -> bool {
     can_add_process_candidate(
         process,
         |process| settings.contains_suspendable_app(process),
-        suspension::is_builtin_excluded,
+        app_suspension::is_builtin_excluded,
     )
 }
 
-fn can_add_affinity_process(settings: &CpuAffinitySettings, process: &str) -> bool {
+fn can_add_core_steering_process(settings: &CoreSteeringSettings, process: &str) -> bool {
     can_add_process_candidate(
         process,
         |process| settings.contains_rule_for(process),
-        affinity::is_builtin_excluded,
+        core_steering::is_builtin_excluded,
     )
 }
 
@@ -23999,11 +24131,14 @@ fn can_add_thread_priority_exclusion(settings: &ThreadPrioritySettings, process:
     )
 }
 
-fn can_add_priority_boost_exclusion(settings: &PriorityBoostSettings, process: &str) -> bool {
+fn can_add_dynamic_priority_boost_exclusion(
+    settings: &DynamicPriorityBoostSettings,
+    process: &str,
+) -> bool {
     can_add_process_candidate(
         process,
         |process| settings.contains_exclusion(process),
-        priority_boost::is_builtin_excluded,
+        dynamic_priority_boost::is_builtin_excluded,
     )
 }
 
@@ -24039,7 +24174,7 @@ fn can_add_workload_engine_exclusion(settings: &WorkloadEngineSettings, process:
     )
 }
 
-fn can_add_cpu_limiter_process(settings: &CpuLimiterSettings, process: &str) -> bool {
+fn can_add_core_limiter_process(settings: &CoreLimiterSettings, process: &str) -> bool {
     can_add_process_candidate(
         process,
         |process| {
@@ -24048,11 +24183,11 @@ fn can_add_cpu_limiter_process(settings: &CpuLimiterSettings, process: &str) -> 
                 .iter()
                 .any(|rule| same_process_name(&rule.process_name, process))
         },
-        cpu_limiter::is_builtin_excluded,
+        core_limiter::is_builtin_excluded,
     )
 }
 
-fn can_add_performance_mode_process(settings: &PerformanceModeSettings, process: &str) -> bool {
+fn can_add_by_running_app_process(settings: &ByRunningAppSettings, process: &str) -> bool {
     can_add_process_candidate(
         process,
         |process| {
@@ -24061,11 +24196,11 @@ fn can_add_performance_mode_process(settings: &PerformanceModeSettings, process:
                 .iter()
                 .any(|rule| same_process_name(&rule.process_name, process))
         },
-        performance_mode::is_builtin_excluded,
+        by_running_app::is_builtin_excluded,
     )
 }
 
-fn new_suspension_rule(process: &str) -> AppSuspensionRule {
+fn new_app_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
@@ -24078,10 +24213,10 @@ fn new_suspension_rule(process: &str) -> AppSuspensionRule {
     }
 }
 
-fn new_affinity_rule(process: &str) -> CpuAffinityRule {
-    CpuAffinityRule {
+fn new_core_steering_rule(process: &str) -> CoreSteeringRule {
+    CoreSteeringRule {
         enabled: true,
-        mode: CpuAffinityMode::Soft,
+        mode: CoreSteeringMode::Soft,
         process_name: process.trim().to_ascii_lowercase(),
         core_mask: default_affinity_mask(),
     }
@@ -24120,8 +24255,8 @@ fn set_timer_resolution_override(
     }
 }
 
-fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
-    CpuLimiterRule {
+fn new_core_limiter_rule(process: &str) -> CoreLimiterRule {
+    CoreLimiterRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
         threshold_percent: 75,
@@ -24131,7 +24266,7 @@ fn new_cpu_limiter_rule(process: &str) -> CpuLimiterRule {
     }
 }
 
-fn cpu_limiter_override_percent(settings: &CpuLimiterSettings, process_name: &str) -> Option<u8> {
+fn core_limiter_override_percent(settings: &CoreLimiterSettings, process_name: &str) -> Option<u8> {
     settings
         .rules
         .iter()
@@ -24139,8 +24274,8 @@ fn cpu_limiter_override_percent(settings: &CpuLimiterSettings, process_name: &st
         .map(|rule| rule.max_logical_processors.min(100))
 }
 
-fn set_cpu_limiter_override(
-    settings: &mut CpuLimiterSettings,
+fn set_core_limiter_override(
+    settings: &mut CoreLimiterSettings,
     process_name: &str,
     max_logical_processors: Option<u8>,
 ) {
@@ -24153,7 +24288,7 @@ fn set_cpu_limiter_override(
             rule.enabled = true;
             rule.max_logical_processors = max_logical_processors.min(100);
         } else {
-            let mut rule = new_cpu_limiter_rule(process_name);
+            let mut rule = new_core_limiter_rule(process_name);
             rule.max_logical_processors = max_logical_processors.min(100);
             settings.rules.push(rule);
         }
@@ -24179,7 +24314,7 @@ fn set_app_suspension_override(
         } else {
             settings
                 .suspendable_apps
-                .push(new_suspension_rule(process_name));
+                .push(new_app_suspension_rule(process_name));
         }
     } else {
         settings
@@ -24188,8 +24323,8 @@ fn set_app_suspension_override(
     }
 }
 
-fn performance_mode_power_plan_override_guid(
-    settings: &PerformanceModeSettings,
+fn by_running_app_power_plan_override_guid(
+    settings: &ByRunningAppSettings,
     process_name: &str,
 ) -> Option<String> {
     settings
@@ -24199,8 +24334,8 @@ fn performance_mode_power_plan_override_guid(
         .and_then(|rule| rule.power_plan_guid.clone())
 }
 
-fn set_performance_mode_power_plan_override(
-    settings: &mut PerformanceModeSettings,
+fn set_by_running_app_power_plan_override(
+    settings: &mut ByRunningAppSettings,
     process_name: &str,
     power_plan_guid: Option<String>,
 ) {
@@ -24213,10 +24348,9 @@ fn set_performance_mode_power_plan_override(
             rule.enabled = true;
             rule.power_plan_guid = Some(power_plan_guid);
         } else {
-            settings.rules.push(new_performance_mode_rule(
-                process_name,
-                Some(power_plan_guid),
-            ));
+            settings
+                .rules
+                .push(new_by_running_app_rule(process_name, Some(power_plan_guid)));
         }
     } else {
         settings
@@ -24241,45 +24375,42 @@ fn process_list_timer_resolution_options(app: &WinderustApp) -> Vec<Option<u32>>
     options
 }
 
-fn cpu_limiter_indicator(status: &CpuLimiterSnapshot, process: &str) -> (String, u32, u32) {
-    if cpu_limiter::is_builtin_excluded(process) {
+fn core_limiter_indicator(status: &CoreLimiterSnapshot, process: &str) -> (String, u32, u32) {
+    if core_limiter::is_builtin_excluded(process) {
         (
-            t!("affinity.indicator.protected").to_string(),
+            t!("core_steering.indicator.protected").to_string(),
             settings_card_hover_color(),
             accent_color(),
         )
-    } else if cpu_limiter_app_contains(&status.limited_apps, process) {
+    } else if core_limiter_app_contains(&status.limited_apps, process) {
         (
-            t!("cpu_limiter.indicator_limited").to_string(),
+            t!("core_limiter.indicator_limited").to_string(),
             success_bg_color(),
             success_text_color(),
         )
     } else if status.enabled {
         (
-            t!("affinity.indicator.ready").to_string(),
+            t!("core_steering.indicator.ready").to_string(),
             panel_active_color(),
             muted_text_color(),
         )
     } else {
         (
-            t!("affinity.indicator.off").to_string(),
+            t!("core_steering.indicator.off").to_string(),
             panel_active_color(),
             dim_text_color(),
         )
     }
 }
 
-fn cpu_limiter_app_contains(apps: &[String], process: &str) -> bool {
+fn core_limiter_app_contains(apps: &[String], process: &str) -> bool {
     apps.iter()
         .any(|app| app.trim().eq_ignore_ascii_case(process.trim()))
 }
 
-fn new_performance_mode_rule(
-    process: &str,
-    power_plan_guid: Option<String>,
-) -> PerformanceModeRule {
+fn new_by_running_app_rule(process: &str, power_plan_guid: Option<String>) -> ByRunningAppRule {
     let process_name = process.trim().to_ascii_lowercase();
-    PerformanceModeRule {
+    ByRunningAppRule {
         enabled: true,
         name: process_name.clone(),
         process_name,
@@ -24288,11 +24419,11 @@ fn new_performance_mode_rule(
 }
 
 fn foreground_lookup_required(settings: &Settings) -> bool {
-    settings.foreground_rules.enabled && !settings.foreground_rules.rules.is_empty()
+    settings.by_foreground.enabled && !settings.by_foreground.rules.is_empty()
 }
 
-fn performance_mode_decision(status: &PerformanceModeSnapshot) -> Option<PerformanceModeDecision> {
-    Some(PerformanceModeDecision {
+fn by_running_app_decision(status: &ByRunningAppSnapshot) -> Option<ByRunningAppDecision> {
+    Some(ByRunningAppDecision {
         rule_name: status.active_rule.clone()?,
         process_name: status.active_process.clone()?,
         power_plan_guid: status.target_guid.clone()?,
@@ -24312,18 +24443,18 @@ fn process_policy_summary(
         summary.mark_custom(ProcessListColumn::PowerPlanForeground);
     }
     summary.power_plan_running =
-        running_app_power_plan_policy_label(&settings.performance_mode, plans, process_name);
-    if running_app_power_plan_policy_is_custom(&settings.performance_mode, process_name) {
+        running_app_power_plan_policy_label(&settings.by_running_app, plans, process_name);
+    if running_app_power_plan_policy_is_custom(&settings.by_running_app, process_name) {
         summary.mark_custom(ProcessListColumn::PowerPlanRunning);
     }
     summary.background_efficiency = process_list_include_exclude_label(
         !settings
-            .eco_qos
-            .efficiency_exclusion_enabled_for(process_name),
+            .background_efficiency
+            .custom_rule_enabled_for(process_name),
     );
     if settings
-        .eco_qos
-        .efficiency_exclusion_enabled_for(process_name)
+        .background_efficiency
+        .custom_rule_enabled_for(process_name)
     {
         summary.mark_custom(ProcessListColumn::BackgroundEfficiency);
     }
@@ -24338,7 +24469,7 @@ fn process_policy_summary(
     }
 
     for rule in
-        settings.cpu_limiter.rules.iter().filter(|rule| {
+        settings.core_limiter.rules.iter().filter(|rule| {
             rule.enabled && process_setting_matches(&rule.process_name, process_name)
         })
     {
@@ -24358,11 +24489,11 @@ fn process_policy_summary(
     }
 
     for rule in
-        settings.cpu_affinity.rules.iter().filter(|rule| {
+        settings.core_steering.rules.iter().filter(|rule| {
             rule.enabled && process_setting_matches(&rule.process_name, process_name)
         })
     {
-        summary.core_steering = cpu_affinity_rule_label(rule);
+        summary.core_steering = core_steering_rule_label(rule);
         summary.mark_custom(ProcessListColumn::CoreSteering);
     }
 
@@ -24424,7 +24555,7 @@ fn default_process_policy_summary() -> ProcessPolicySummary {
         background_efficiency: process_list_include_label(),
         core_limiter: process_list_exclude_label(),
         background_cpu_restriction: process_list_off_label(),
-        core_steering: default_cpu_affinity_label(),
+        core_steering: default_core_steering_label(),
         process_priority: process_priority_setting_label(ProcessPrioritySetting::Default),
         io_priority: process_io_priority_setting_label(ProcessIoPrioritySetting::Default),
         gpu_priority: process_gpu_priority_setting_label(ProcessGpuPrioritySetting::Default),
@@ -24449,7 +24580,7 @@ fn foreground_power_plan_policy_label(
     process_name: &str,
 ) -> String {
     if let Some(rule) = settings
-        .foreground_rules
+        .by_foreground
         .rules
         .iter()
         .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
@@ -24462,14 +24593,14 @@ fn foreground_power_plan_policy_label(
 
 fn foreground_power_plan_policy_is_custom(settings: &Settings, process_name: &str) -> bool {
     settings
-        .foreground_rules
+        .by_foreground
         .rules
         .iter()
         .any(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
 }
 
 fn running_app_power_plan_policy_label(
-    settings: &PerformanceModeSettings,
+    settings: &ByRunningAppSettings,
     plans: &[PowerPlan],
     process_name: &str,
 ) -> String {
@@ -24485,7 +24616,7 @@ fn running_app_power_plan_policy_label(
 }
 
 fn running_app_power_plan_policy_is_custom(
-    settings: &PerformanceModeSettings,
+    settings: &ByRunningAppSettings,
     process_name: &str,
 ) -> bool {
     settings
@@ -24535,23 +24666,23 @@ fn process_list_default_label() -> String {
 }
 
 fn background_cpu_restriction_policy_label(settings: &BackgroundCpuRestrictionSettings) -> String {
-    if settings.control_style == EcoQosCpuRestrictionControlStyle::CoreToggle
-        && settings.core_mask != 0
-    {
+    if settings.control_style == CpuRestrictionControlStyle::CoreToggle && settings.core_mask != 0 {
         return format_cpu_mask(settings.core_mask);
     }
 
     format!("{}%", settings.percent.min(100))
 }
 
-fn cpu_affinity_rule_label(rule: &CpuAffinityRule) -> String {
+fn core_steering_rule_label(rule: &CoreSteeringRule) -> String {
     match rule.mode {
-        CpuAffinityMode::EfficiencyOff => cpu_affinity_mode_label(CpuAffinityMode::EfficiencyOff),
-        CpuAffinityMode::Hard | CpuAffinityMode::Soft => format_cpu_mask(rule.core_mask),
+        CoreSteeringMode::EfficiencyOff => {
+            core_steering_mode_label(CoreSteeringMode::EfficiencyOff)
+        }
+        CoreSteeringMode::Hard | CoreSteeringMode::Soft => format_cpu_mask(rule.core_mask),
     }
 }
 
-fn default_cpu_affinity_label() -> String {
+fn default_core_steering_label() -> String {
     format_cpu_mask(default_affinity_mask())
 }
 
@@ -24697,12 +24828,20 @@ fn process_thread_priority_setting_label(priority: ProcessThreadPrioritySetting)
     }
 }
 
-fn process_priority_boost_setting_label(boost: ProcessPriorityBoostSetting) -> String {
+fn process_dynamic_priority_boost_setting_label(
+    boost: ProcessDynamicPriorityBoostSetting,
+) -> String {
     match boost {
-        ProcessPriorityBoostSetting::Default => t!("priority_boost.boost_default").to_string(),
-        ProcessPriorityBoostSetting::Auto => t!("workload_engine.priority_auto").to_string(),
-        ProcessPriorityBoostSetting::Enabled => t!("priority_boost.boost_enabled").to_string(),
-        ProcessPriorityBoostSetting::Disabled => t!("priority_boost.boost_disabled").to_string(),
+        ProcessDynamicPriorityBoostSetting::Default => {
+            t!("dynamic_priority_boost.boost_default").to_string()
+        }
+        ProcessDynamicPriorityBoostSetting::Auto => t!("workload_engine.priority_auto").to_string(),
+        ProcessDynamicPriorityBoostSetting::Enabled => {
+            t!("dynamic_priority_boost.boost_enabled").to_string()
+        }
+        ProcessDynamicPriorityBoostSetting::Disabled => {
+            t!("dynamic_priority_boost.boost_disabled").to_string()
+        }
     }
 }
 
@@ -24762,31 +24901,33 @@ fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
 }
 
 fn adaptive_engine_enabled(settings: &Settings) -> bool {
-    settings.smart_saver.enabled || settings.eco_qos.enabled || settings.workload_engine.enabled
+    settings.adaptive_engine.enabled
+        || settings.background_efficiency.enabled
+        || settings.workload_engine.enabled
 }
 
 fn app_tick_interval(settings: &Settings, start_minimized_applied: bool) -> Duration {
-    if start_minimized_applied && settings.smart_saver.enabled {
-        SMART_SAVER_APP_TICK_INTERVAL
+    if start_minimized_applied && settings.adaptive_engine.enabled {
+        ADAPTIVE_ENGINE_APP_TICK_INTERVAL
     } else {
         APP_TICK_INTERVAL
     }
 }
 
-fn apply_smart_saver_mode(settings: &mut Settings, enabled: bool) {
-    settings.smart_saver.enabled = enabled;
+fn apply_adaptive_engine(settings: &mut Settings, enabled: bool) {
+    settings.adaptive_engine.enabled = enabled;
     if !enabled {
-        settings.eco_qos.enabled = false;
+        settings.background_efficiency.enabled = false;
         settings.workload_engine.enabled = false;
     }
 }
 
 fn power_mode_preset_label(preset: PowerModePreset) -> String {
     match preset {
-        PowerModePreset::PowerSave => t!("smart_saver.power_mode_powersave").to_string(),
-        PowerModePreset::Balanced => t!("smart_saver.power_mode_balanced").to_string(),
-        PowerModePreset::Performance => t!("smart_saver.power_mode_performance").to_string(),
-        PowerModePreset::Speed => t!("smart_saver.power_mode_speed").to_string(),
+        PowerModePreset::PowerSave => t!("adaptive_engine.power_mode_powersave").to_string(),
+        PowerModePreset::Balanced => t!("adaptive_engine.power_mode_balanced").to_string(),
+        PowerModePreset::Performance => t!("adaptive_engine.power_mode_performance").to_string(),
+        PowerModePreset::Speed => t!("adaptive_engine.power_mode_speed").to_string(),
     }
 }
 
@@ -24805,11 +24946,12 @@ fn workload_engine_preset_label(preset: WorkloadEnginePreset) -> String {
 fn apply_power_mode_preset(settings: &mut Settings, preset: PowerModePreset) {
     match preset {
         PowerModePreset::PowerSave => {
-            apply_smart_saver_mode(settings, true);
-            settings.smart_saver.processor_policy_enabled = true;
-            settings.smart_saver.processor_policy_values = power_mode_powersave_processor_values();
-            settings.eco_qos.enabled = true;
-            settings.eco_qos.exclude_foreground_app = true;
+            apply_adaptive_engine(settings, true);
+            settings.adaptive_engine.processor_policy_enabled = true;
+            settings.adaptive_engine.processor_policy_values =
+                power_mode_powersave_processor_values();
+            settings.background_efficiency.enabled = true;
+            settings.background_efficiency.exclude_foreground_app = true;
             settings.workload_engine.enabled = true;
             settings.workload_engine.workload_engine_enabled = true;
             apply_workload_engine_preset(
@@ -24818,10 +24960,11 @@ fn apply_power_mode_preset(settings: &mut Settings, preset: PowerModePreset) {
             );
         }
         PowerModePreset::Balanced => {
-            apply_smart_saver_mode(settings, true);
-            settings.smart_saver.processor_policy_enabled = true;
-            settings.smart_saver.processor_policy_values = power_mode_balanced_processor_values();
-            settings.eco_qos.enabled = false;
+            apply_adaptive_engine(settings, true);
+            settings.adaptive_engine.processor_policy_enabled = true;
+            settings.adaptive_engine.processor_policy_values =
+                power_mode_balanced_processor_values();
+            settings.background_efficiency.enabled = false;
             settings.workload_engine.enabled = true;
             settings.workload_engine.workload_engine_enabled = true;
             apply_workload_engine_preset(
@@ -24830,9 +24973,9 @@ fn apply_power_mode_preset(settings: &mut Settings, preset: PowerModePreset) {
             );
         }
         PowerModePreset::Performance => {
-            apply_smart_saver_mode(settings, false);
-            settings.smart_saver.processor_policy_enabled = true;
-            settings.smart_saver.processor_policy_values =
+            apply_adaptive_engine(settings, false);
+            settings.adaptive_engine.processor_policy_enabled = true;
+            settings.adaptive_engine.processor_policy_values =
                 power_mode_performance_processor_values();
             settings.workload_engine.enabled = true;
             settings.workload_engine.workload_engine_enabled = true;
@@ -24842,9 +24985,9 @@ fn apply_power_mode_preset(settings: &mut Settings, preset: PowerModePreset) {
             );
         }
         PowerModePreset::Speed => {
-            apply_smart_saver_mode(settings, false);
-            settings.smart_saver.processor_policy_enabled = true;
-            settings.smart_saver.processor_policy_values = power_mode_speed_processor_values();
+            apply_adaptive_engine(settings, false);
+            settings.adaptive_engine.processor_policy_enabled = true;
+            settings.adaptive_engine.processor_policy_values = power_mode_speed_processor_values();
             settings.workload_engine.enabled = true;
             settings.workload_engine.workload_engine_enabled = true;
             apply_workload_engine_preset(
@@ -24858,11 +25001,14 @@ fn apply_power_mode_preset(settings: &mut Settings, preset: PowerModePreset) {
 fn power_mode_matches_preset(settings: &Settings, preset: PowerModePreset) -> bool {
     match preset {
         PowerModePreset::PowerSave => {
-            settings.smart_saver.enabled
-                && settings.smart_saver.processor_policy_enabled
-                && settings.smart_saver.processor_policy_values.normalized()
+            settings.adaptive_engine.enabled
+                && settings.adaptive_engine.processor_policy_enabled
+                && settings
+                    .adaptive_engine
+                    .processor_policy_values
+                    .normalized()
                     == power_mode_powersave_processor_values()
-                && settings.eco_qos.enabled
+                && settings.background_efficiency.enabled
                 && settings.workload_engine.enabled
                 && settings.workload_engine.workload_engine_enabled
                 && workload_engine_matches_preset(
@@ -24871,11 +25017,14 @@ fn power_mode_matches_preset(settings: &Settings, preset: PowerModePreset) -> bo
                 )
         }
         PowerModePreset::Balanced => {
-            settings.smart_saver.enabled
-                && settings.smart_saver.processor_policy_enabled
-                && settings.smart_saver.processor_policy_values.normalized()
+            settings.adaptive_engine.enabled
+                && settings.adaptive_engine.processor_policy_enabled
+                && settings
+                    .adaptive_engine
+                    .processor_policy_values
+                    .normalized()
                     == power_mode_balanced_processor_values()
-                && !settings.eco_qos.enabled
+                && !settings.background_efficiency.enabled
                 && settings.workload_engine.enabled
                 && settings.workload_engine.workload_engine_enabled
                 && workload_engine_matches_preset(
@@ -24884,10 +25033,13 @@ fn power_mode_matches_preset(settings: &Settings, preset: PowerModePreset) -> bo
                 )
         }
         PowerModePreset::Performance => {
-            !settings.smart_saver.enabled
-                && !settings.eco_qos.enabled
-                && settings.smart_saver.processor_policy_enabled
-                && settings.smart_saver.processor_policy_values.normalized()
+            !settings.adaptive_engine.enabled
+                && !settings.background_efficiency.enabled
+                && settings.adaptive_engine.processor_policy_enabled
+                && settings
+                    .adaptive_engine
+                    .processor_policy_values
+                    .normalized()
                     == power_mode_performance_processor_values()
                 && settings.workload_engine.enabled
                 && settings.workload_engine.workload_engine_enabled
@@ -24897,10 +25049,13 @@ fn power_mode_matches_preset(settings: &Settings, preset: PowerModePreset) -> bo
                 )
         }
         PowerModePreset::Speed => {
-            !settings.smart_saver.enabled
-                && !settings.eco_qos.enabled
-                && settings.smart_saver.processor_policy_enabled
-                && settings.smart_saver.processor_policy_values.normalized()
+            !settings.adaptive_engine.enabled
+                && !settings.background_efficiency.enabled
+                && settings.adaptive_engine.processor_policy_enabled
+                && settings
+                    .adaptive_engine
+                    .processor_policy_values
+                    .normalized()
                     == power_mode_speed_processor_values()
                 && settings.workload_engine.enabled
                 && settings.workload_engine.workload_engine_enabled
@@ -24950,11 +25105,11 @@ fn process_memory_priority_setting_label(priority: ProcessMemoryPrioritySetting)
     }
 }
 
-fn cpu_affinity_mode_label(mode: CpuAffinityMode) -> String {
+fn core_steering_mode_label(mode: CoreSteeringMode) -> String {
     match mode {
-        CpuAffinityMode::Hard => t!("affinity.mode_hard").to_string(),
-        CpuAffinityMode::Soft => t!("affinity.mode_soft").to_string(),
-        CpuAffinityMode::EfficiencyOff => t!("affinity.mode_efficiency_off").to_string(),
+        CoreSteeringMode::Hard => t!("core_steering.mode_hard").to_string(),
+        CoreSteeringMode::Soft => t!("core_steering.mode_soft").to_string(),
+        CoreSteeringMode::EfficiencyOff => t!("core_steering.mode_efficiency_off").to_string(),
     }
 }
 
@@ -24972,15 +25127,16 @@ fn apply_workload_engine_preset(
 ) {
     let values = workload_engine_preset_values(preset);
     settings.lower_background_apps = values.lower_background_apps;
-    settings.workload_engine_efficiency_mode_enabled =
-        values.workload_engine_efficiency_mode_enabled;
+    settings.workload_engine_background_efficiency_enabled =
+        values.workload_engine_background_efficiency_enabled;
     settings.workload_engine_background_priority = values.background_priority;
     settings.lower_background_io_priority_enabled = values.lower_background_io_priority_enabled;
     settings.lower_background_io_priority = values.lower_background_io_priority;
     settings.workload_engine_io_priority = workload_engine_io_priority_preset_values(values);
     settings.workload_engine_thread_priority =
         workload_engine_thread_priority_preset_values(preset);
-    settings.workload_engine_priority_boost = workload_engine_priority_boost_preset_values(preset);
+    settings.workload_engine_dynamic_priority_boost =
+        workload_engine_dynamic_priority_boost_preset_values(preset);
     settings.workload_engine_gpu_priority = workload_engine_gpu_priority_preset_values(preset);
     settings.workload_engine_memory_priority_enabled =
         values.workload_engine_memory_priority_enabled;
@@ -25022,16 +25178,16 @@ fn workload_engine_matches_preset(
     gpu_priority.preserve_foreground_priority = true;
     gpu_priority.preserve_background_priority = true;
     settings.lower_background_apps == values.lower_background_apps
-        && settings.workload_engine_efficiency_mode_enabled
-            == values.workload_engine_efficiency_mode_enabled
+        && settings.workload_engine_background_efficiency_enabled
+            == values.workload_engine_background_efficiency_enabled
         && settings.workload_engine_background_priority == values.background_priority
         && settings.lower_background_io_priority_enabled
             == values.lower_background_io_priority_enabled
         && settings.lower_background_io_priority == values.lower_background_io_priority
         && io_priority == workload_engine_io_priority_preset_values(values)
         && thread_priority == workload_engine_thread_priority_preset_values(preset)
-        && settings.workload_engine_priority_boost
-            == workload_engine_priority_boost_preset_values(preset)
+        && settings.workload_engine_dynamic_priority_boost
+            == workload_engine_dynamic_priority_boost_preset_values(preset)
         && gpu_priority == workload_engine_gpu_priority_preset_values(preset)
         && settings.workload_engine_memory_priority_enabled
             == values.workload_engine_memory_priority_enabled
@@ -25056,7 +25212,7 @@ fn workload_engine_matches_preset(
 #[derive(Clone, Copy)]
 struct WorkloadEnginePresetValues {
     lower_background_apps: bool,
-    workload_engine_efficiency_mode_enabled: bool,
+    workload_engine_background_efficiency_enabled: bool,
     background_priority: ProcessPriority,
     foreground_io_priority: ProcessIoPrioritySetting,
     lower_background_io_priority_enabled: bool,
@@ -25082,7 +25238,7 @@ fn workload_engine_preset_values(preset: WorkloadEnginePreset) -> WorkloadEngine
     match preset {
         WorkloadEnginePreset::LowImpact => WorkloadEnginePresetValues {
             lower_background_apps: true,
-            workload_engine_efficiency_mode_enabled: true,
+            workload_engine_background_efficiency_enabled: true,
             background_priority: ProcessPriority::Idle,
             foreground_io_priority: ProcessIoPrioritySetting::Normal,
             lower_background_io_priority_enabled: true,
@@ -25105,7 +25261,7 @@ fn workload_engine_preset_values(preset: WorkloadEnginePreset) -> WorkloadEngine
         },
         WorkloadEnginePreset::ForegroundFirst => WorkloadEnginePresetValues {
             lower_background_apps: true,
-            workload_engine_efficiency_mode_enabled: true,
+            workload_engine_background_efficiency_enabled: true,
             background_priority: ProcessPriority::Idle,
             foreground_io_priority: ProcessIoPrioritySetting::Normal,
             lower_background_io_priority_enabled: true,
@@ -25128,7 +25284,7 @@ fn workload_engine_preset_values(preset: WorkloadEnginePreset) -> WorkloadEngine
         },
         WorkloadEnginePreset::MaxForeground => WorkloadEnginePresetValues {
             lower_background_apps: true,
-            workload_engine_efficiency_mode_enabled: true,
+            workload_engine_background_efficiency_enabled: true,
             background_priority: ProcessPriority::Idle,
             foreground_io_priority: ProcessIoPrioritySetting::High,
             lower_background_io_priority_enabled: true,
@@ -25188,14 +25344,14 @@ fn workload_engine_thread_priority_preset_values(
     }
 }
 
-fn workload_engine_priority_boost_preset_values(
+fn workload_engine_dynamic_priority_boost_preset_values(
     _preset: WorkloadEnginePreset,
-) -> PriorityBoostSettings {
-    PriorityBoostSettings {
+) -> DynamicPriorityBoostSettings {
+    DynamicPriorityBoostSettings {
         enabled: true,
         foreground_detection_enabled: true,
-        foreground_boost: ProcessPriorityBoostSetting::Enabled,
-        background_boost: ProcessPriorityBoostSetting::Disabled,
+        foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
+        background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         exclusions: Vec::new(),
     }
 }
@@ -25230,11 +25386,19 @@ fn foreground_boost_priority_label(priority: ForegroundBoostPriority) -> String 
     }
 }
 
-fn efficiency_aggressiveness_label(aggressiveness: EcoQosAggressiveness) -> String {
+fn background_efficiency_aggressiveness_label(
+    aggressiveness: BackgroundEfficiencyAggressiveness,
+) -> String {
     match aggressiveness {
-        EcoQosAggressiveness::Safe => t!("efficiency.aggressiveness_safe").to_string(),
-        EcoQosAggressiveness::Balanced => t!("efficiency.aggressiveness_balanced").to_string(),
-        EcoQosAggressiveness::Aggressive => t!("efficiency.aggressiveness_aggressive").to_string(),
+        BackgroundEfficiencyAggressiveness::Safe => {
+            t!("background_efficiency.aggressiveness_safe").to_string()
+        }
+        BackgroundEfficiencyAggressiveness::Balanced => {
+            t!("background_efficiency.aggressiveness_balanced").to_string()
+        }
+        BackgroundEfficiencyAggressiveness::Aggressive => {
+            t!("background_efficiency.aggressiveness_aggressive").to_string()
+        }
     }
 }
 
@@ -25255,125 +25419,125 @@ struct AffinityIndicator {
 #[derive(Clone, Copy)]
 enum CoreTileGridAction {
     BackgroundCpuRestriction { available_mask: u64 },
-    CpuAffinityRule { index: usize },
+    CoreSteeringRule { index: usize },
 }
 
-fn suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> SuspensionIndicator {
+fn app_suspension_indicator(status: &AppSuspensionSnapshot, process: &str) -> SuspensionIndicator {
     let accent = accent_color();
     let accent_bg = settings_card_hover_color();
-    if suspension::is_builtin_excluded(process) {
+    if app_suspension::is_builtin_excluded(process) {
         SuspensionIndicator {
-            label: t!("suspension.indicator.protected").to_string(),
+            label: t!("app_suspension.indicator.protected").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("suspension.indicator.protected_help").to_string(),
+            hover: t!("app_suspension.indicator.protected_help").to_string(),
         }
-    } else if suspension::contains_process(&status.network_wake_apps, process) {
+    } else if app_suspension::contains_process(&status.network_wake_apps, process) {
         SuspensionIndicator {
-            label: t!("suspension.indicator.network").to_string(),
+            label: t!("app_suspension.indicator.network").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("suspension.indicator.network_help").to_string(),
+            hover: t!("app_suspension.indicator.network_help").to_string(),
         }
-    } else if suspension::contains_process(&status.audio_wake_apps, process) {
+    } else if app_suspension::contains_process(&status.audio_wake_apps, process) {
         SuspensionIndicator {
-            label: t!("suspension.indicator.audio").to_string(),
+            label: t!("app_suspension.indicator.audio").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("suspension.indicator.audio_help").to_string(),
+            hover: t!("app_suspension.indicator.audio_help").to_string(),
         }
-    } else if suspension::contains_process(&status.suspended_apps, process) {
+    } else if app_suspension::contains_process(&status.suspended_apps, process) {
         SuspensionIndicator {
-            label: t!("suspension.indicator.frozen").to_string(),
+            label: t!("app_suspension.indicator.frozen").to_string(),
             bg: success_bg_color(),
             fg: success_text_color(),
-            hover: t!("suspension.indicator.frozen_help").to_string(),
+            hover: t!("app_suspension.indicator.frozen_help").to_string(),
         }
-    } else if suspension::contains_process(&status.temporary_thawed_apps, process) {
+    } else if app_suspension::contains_process(&status.temporary_thawed_apps, process) {
         SuspensionIndicator {
-            label: t!("suspension.indicator.thawed").to_string(),
+            label: t!("app_suspension.indicator.thawed").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("suspension.indicator.thawed_help").to_string(),
+            hover: t!("app_suspension.indicator.thawed_help").to_string(),
         }
-    } else if suspension::contains_process(&status.background_grace_apps, process) {
+    } else if app_suspension::contains_process(&status.background_grace_apps, process) {
         SuspensionIndicator {
-            label: t!("suspension.indicator.waiting").to_string(),
+            label: t!("app_suspension.indicator.waiting").to_string(),
             bg: warning_bg_color(),
             fg: warning_text_color(),
-            hover: t!("suspension.indicator.waiting_help").to_string(),
+            hover: t!("app_suspension.indicator.waiting_help").to_string(),
         }
     } else if status.status_unknown {
         SuspensionIndicator {
-            label: t!("suspension.indicator.unknown").to_string(),
+            label: t!("app_suspension.indicator.unknown").to_string(),
             bg: panel_active_color(),
             fg: muted_text_color(),
-            hover: t!("suspension.indicator.unknown_help").to_string(),
+            hover: t!("app_suspension.indicator.unknown_help").to_string(),
         }
-    } else if suspension::contains_process(&status.running_apps, process) {
+    } else if app_suspension::contains_process(&status.running_apps, process) {
         SuspensionIndicator {
-            label: t!("suspension.indicator.running").to_string(),
+            label: t!("app_suspension.indicator.running").to_string(),
             bg: panel_active_color(),
             fg: muted_text_color(),
-            hover: t!("suspension.indicator.running_help").to_string(),
+            hover: t!("app_suspension.indicator.running_help").to_string(),
         }
     } else if status.enabled {
         SuspensionIndicator {
-            label: t!("suspension.indicator.not_running").to_string(),
+            label: t!("app_suspension.indicator.not_running").to_string(),
             bg: panel_active_color(),
             fg: muted_text_color(),
-            hover: t!("suspension.indicator.not_running_help").to_string(),
+            hover: t!("app_suspension.indicator.not_running_help").to_string(),
         }
     } else {
         SuspensionIndicator {
-            label: t!("suspension.indicator.off").to_string(),
+            label: t!("app_suspension.indicator.off").to_string(),
             bg: panel_active_color(),
             fg: dim_text_color(),
-            hover: t!("suspension.indicator.off_help").to_string(),
+            hover: t!("app_suspension.indicator.off_help").to_string(),
         }
     }
 }
 
-fn affinity_indicator(status: &CpuAffinitySnapshot, process: &str) -> AffinityIndicator {
+fn core_steering_indicator(status: &CoreSteeringSnapshot, process: &str) -> AffinityIndicator {
     let accent = accent_color();
     let accent_bg = settings_card_hover_color();
-    if affinity::is_builtin_excluded(process) {
+    if core_steering::is_builtin_excluded(process) {
         AffinityIndicator {
-            label: t!("affinity.indicator.protected").to_string(),
+            label: t!("core_steering.indicator.protected").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("affinity.indicator.protected_help").to_string(),
+            hover: t!("core_steering.indicator.protected_help").to_string(),
         }
-    } else if affinity::contains_process(&status.adjusted_apps, process) {
+    } else if core_steering::contains_process(&status.adjusted_apps, process) {
         AffinityIndicator {
-            label: t!("affinity.indicator.pinned").to_string(),
+            label: t!("core_steering.indicator.pinned").to_string(),
             bg: success_bg_color(),
             fg: success_text_color(),
-            hover: t!("affinity.indicator.pinned_help").to_string(),
+            hover: t!("core_steering.indicator.pinned_help").to_string(),
         }
     } else if status.enabled {
         AffinityIndicator {
-            label: t!("affinity.indicator.ready").to_string(),
+            label: t!("core_steering.indicator.ready").to_string(),
             bg: panel_active_color(),
             fg: muted_text_color(),
-            hover: t!("affinity.indicator.ready_help").to_string(),
+            hover: t!("core_steering.indicator.ready_help").to_string(),
         }
     } else {
         AffinityIndicator {
-            label: t!("affinity.indicator.off").to_string(),
+            label: t!("core_steering.indicator.off").to_string(),
             bg: panel_active_color(),
             fg: dim_text_color(),
-            hover: t!("affinity.indicator.off_help").to_string(),
+            hover: t!("core_steering.indicator.off_help").to_string(),
         }
     }
 }
 
 fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
-    status.enabled && !suspension::contains_process(&status.suspended_apps, process)
+    status.enabled && !app_suspension::contains_process(&status.suspended_apps, process)
 }
 
 fn logical_core_count() -> usize {
-    affinity::logical_processors().len().clamp(1, 64)
+    core_steering::logical_processors().len().clamp(1, 64)
 }
 
 fn action_log_mode_label(mode: ActionLogMode) -> String {
@@ -25394,42 +25558,44 @@ fn action_log_mode_help(mode: ActionLogMode) -> String {
     }
 }
 
-fn efficiency_cpu_restriction_mode_label(mode: EcoQosCpuRestrictionMode) -> String {
+fn cpu_restriction_mode_label(mode: CpuRestrictionMode) -> String {
     match mode {
-        EcoQosCpuRestrictionMode::SoftCpuSets => t!("efficiency.cpu_restriction_soft").to_string(),
-        EcoQosCpuRestrictionMode::HardAffinity => t!("efficiency.cpu_restriction_hard").to_string(),
+        CpuRestrictionMode::SoftCpuSets => {
+            t!("background_efficiency.cpu_restriction_soft").to_string()
+        }
+        CpuRestrictionMode::HardAffinity => {
+            t!("background_efficiency.cpu_restriction_hard").to_string()
+        }
     }
 }
 
-fn efficiency_cpu_restriction_strategy_label(strategy: EcoQosCpuRestrictionStrategy) -> String {
+fn cpu_restriction_strategy_label(strategy: CpuRestrictionStrategy) -> String {
     match strategy {
-        EcoQosCpuRestrictionStrategy::Off => t!("efficiency.cpu_set_off").to_string(),
-        EcoQosCpuRestrictionStrategy::Auto => t!("efficiency.cpu_set_auto").to_string(),
-        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => {
-            t!("efficiency.cpu_set_prefer_e_cores").to_string()
+        CpuRestrictionStrategy::Off => t!("background_efficiency.cpu_set_off").to_string(),
+        CpuRestrictionStrategy::Auto => t!("background_efficiency.cpu_set_auto").to_string(),
+        CpuRestrictionStrategy::PreferEfficiencyCores => {
+            t!("background_efficiency.cpu_set_prefer_e_cores").to_string()
         }
-        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => {
-            t!("efficiency.cpu_set_limit_logical").to_string()
+        CpuRestrictionStrategy::LimitLogicalCpus => {
+            t!("background_efficiency.cpu_set_limit_logical").to_string()
         }
     }
 }
 
-fn efficiency_cpu_restriction_control_style_label(
-    style: EcoQosCpuRestrictionControlStyle,
-) -> String {
+fn cpu_restriction_control_style_label(style: CpuRestrictionControlStyle) -> String {
     match style {
-        EcoQosCpuRestrictionControlStyle::Percentage => {
-            t!("efficiency.control_style_percentage").to_string()
+        CpuRestrictionControlStyle::Percentage => {
+            t!("background_efficiency.control_style_percentage").to_string()
         }
-        EcoQosCpuRestrictionControlStyle::CoreToggle => {
-            t!("efficiency.control_style_core_toggle").to_string()
+        CpuRestrictionControlStyle::CoreToggle => {
+            t!("background_efficiency.control_style_core_toggle").to_string()
         }
     }
 }
 
 fn default_affinity_mask() -> u64 {
-    let processors = affinity::logical_processors();
-    let mask = affinity_processors_mask(&processors);
+    let processors = core_steering::logical_processors();
+    let mask = core_steering_processors_mask(&processors);
     if mask == 0 {
         let core_count = logical_core_count();
         if core_count >= 64 {
@@ -25461,7 +25627,7 @@ fn toggle_affinity_core(mask: &mut u64, core: usize) {
 
 fn toggle_affinity_core_with_available_mask(mask: &mut u64, core: usize, available_mask: u64) {
     *mask &= available_mask;
-    let Some(bit) = affinity_processor_bit(core) else {
+    let Some(bit) = core_steering_processor_bit(core) else {
         return;
     };
     if (available_mask & bit) == 0 {
@@ -25475,25 +25641,25 @@ fn toggle_affinity_core_with_available_mask(mask: &mut u64, core: usize, availab
     }
 }
 
-fn affinity_processors_mask(processors: &[LogicalProcessorInfo]) -> u64 {
+fn core_steering_processors_mask(processors: &[LogicalProcessorInfo]) -> u64 {
     processors
         .iter()
-        .filter_map(|processor| affinity_processor_bit(processor.index))
+        .filter_map(|processor| core_steering_processor_bit(processor.index))
         .fold(0, |mask, bit| mask | bit)
 }
 
-fn affinity_processors_kind_mask(
+fn core_steering_processors_kind_mask(
     processors: &[LogicalProcessorInfo],
     kind: LogicalProcessorKind,
 ) -> u64 {
     processors
         .iter()
         .filter(|processor| processor.kind == kind)
-        .filter_map(|processor| affinity_processor_bit(processor.index))
+        .filter_map(|processor| core_steering_processor_bit(processor.index))
         .fold(0, |mask, bit| mask | bit)
 }
 
-fn affinity_processors_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
+fn core_steering_processors_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
     let mut seen_cores = Vec::new();
     let mut mask = 0;
 
@@ -25502,7 +25668,7 @@ fn affinity_processors_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
             continue;
         }
         seen_cores.push(processor.core_index);
-        if let Some(bit) = affinity_processor_bit(processor.index) {
+        if let Some(bit) = core_steering_processor_bit(processor.index) {
             mask |= bit;
         }
     }
@@ -25510,29 +25676,29 @@ fn affinity_processors_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
     mask
 }
 
-fn eco_qos_strategy_core_mask(
+fn background_efficiency_strategy_core_mask(
     processors: &[LogicalProcessorInfo],
-    strategy: EcoQosCpuRestrictionStrategy,
+    strategy: CpuRestrictionStrategy,
 ) -> u64 {
     match strategy {
-        EcoQosCpuRestrictionStrategy::Off => 0,
-        EcoQosCpuRestrictionStrategy::Auto => {
+        CpuRestrictionStrategy::Off => 0,
+        CpuRestrictionStrategy::Auto => {
             let efficiency_mask =
-                affinity_processors_kind_mask(processors, LogicalProcessorKind::Efficiency);
+                core_steering_processors_kind_mask(processors, LogicalProcessorKind::Efficiency);
             if efficiency_mask != 0 {
                 efficiency_mask
             } else {
-                affinity_processors_mask(processors)
+                core_steering_processors_mask(processors)
             }
         }
-        EcoQosCpuRestrictionStrategy::PreferEfficiencyCores => {
-            affinity_processors_kind_mask(processors, LogicalProcessorKind::Efficiency)
+        CpuRestrictionStrategy::PreferEfficiencyCores => {
+            core_steering_processors_kind_mask(processors, LogicalProcessorKind::Efficiency)
         }
-        EcoQosCpuRestrictionStrategy::LimitLogicalCpus => affinity_processors_mask(processors),
+        CpuRestrictionStrategy::LimitLogicalCpus => core_steering_processors_mask(processors),
     }
 }
 
-fn affinity_processor_bit(index: usize) -> Option<u64> {
+fn core_steering_processor_bit(index: usize) -> Option<u64> {
     (index < 64).then_some(1_u64 << index)
 }
 
@@ -25627,7 +25793,7 @@ mod tests {
     }
 
     #[test]
-    fn suspension_indicator_reports_network_intent_before_suspended_state() {
+    fn app_suspension_indicator_reports_network_intent_before_suspended_state() {
         let status = AppSuspensionSnapshot {
             enabled: true,
             network_wake_apps: vec!["vivaldi.exe".to_owned()],
@@ -25635,40 +25801,40 @@ mod tests {
             ..Default::default()
         };
 
-        let indicator = suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
 
         assert_eq!(
             indicator.label,
-            t!("suspension.indicator.network").to_string()
+            t!("app_suspension.indicator.network").to_string()
         );
         assert_eq!(
             indicator.hover,
-            t!("suspension.indicator.network_help").to_string()
+            t!("app_suspension.indicator.network_help").to_string()
         );
     }
 
     #[test]
-    fn suspension_indicator_reports_running_before_not_running() {
+    fn app_suspension_indicator_reports_running_before_not_running() {
         let status = AppSuspensionSnapshot {
             enabled: true,
             running_apps: vec!["vivaldi.exe".to_owned()],
             ..Default::default()
         };
 
-        let indicator = suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
 
         assert_eq!(
             indicator.label,
-            t!("suspension.indicator.running").to_string()
+            t!("app_suspension.indicator.running").to_string()
         );
         assert_eq!(
             indicator.hover,
-            t!("suspension.indicator.running_help").to_string()
+            t!("app_suspension.indicator.running_help").to_string()
         );
     }
 
     #[test]
-    fn suspension_indicator_reports_unknown_before_stale_running_state() {
+    fn app_suspension_indicator_reports_unknown_before_stale_running_state() {
         let status = AppSuspensionSnapshot {
             enabled: true,
             running_apps: vec!["vivaldi.exe".to_owned()],
@@ -25676,15 +25842,15 @@ mod tests {
             ..Default::default()
         };
 
-        let indicator = suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
 
         assert_eq!(
             indicator.label,
-            t!("suspension.indicator.unknown").to_string()
+            t!("app_suspension.indicator.unknown").to_string()
         );
         assert_eq!(
             indicator.hover,
-            t!("suspension.indicator.unknown_help").to_string()
+            t!("app_suspension.indicator.unknown_help").to_string()
         );
     }
 
@@ -25709,9 +25875,9 @@ mod tests {
         assert_eq!(low_impact.background_priority, ProcessPriority::Idle);
         assert_eq!(foreground_first.background_priority, ProcessPriority::Idle);
         assert_eq!(max_foreground.background_priority, ProcessPriority::Idle);
-        assert!(low_impact.workload_engine_efficiency_mode_enabled);
-        assert!(foreground_first.workload_engine_efficiency_mode_enabled);
-        assert!(max_foreground.workload_engine_efficiency_mode_enabled);
+        assert!(low_impact.workload_engine_background_efficiency_enabled);
+        assert!(foreground_first.workload_engine_background_efficiency_enabled);
+        assert!(max_foreground.workload_engine_background_efficiency_enabled);
         assert!(low_impact.lower_background_io_priority_enabled);
         assert!(foreground_first.lower_background_io_priority_enabled);
         assert!(max_foreground.lower_background_io_priority_enabled);
@@ -25769,7 +25935,8 @@ mod tests {
             workload_engine_thread_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
         );
         assert!(
-            workload_engine_priority_boost_preset_values(WorkloadEnginePreset::LowImpact).enabled
+            workload_engine_dynamic_priority_boost_preset_values(WorkloadEnginePreset::LowImpact)
+                .enabled
         );
         assert!(
             workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
@@ -25806,20 +25973,20 @@ mod tests {
     }
 
     #[test]
-    fn smart_saver_default_keeps_workload_engine_opt_in() {
+    fn adaptive_engine_default_keeps_workload_engine_opt_in() {
         let mut settings = Settings::default();
 
-        apply_smart_saver_mode(&mut settings, true);
+        apply_adaptive_engine(&mut settings, true);
 
-        assert!(settings.smart_saver.enabled);
-        assert!(settings.smart_saver.processor_policy_enabled);
-        assert!(!settings.eco_qos.enabled);
+        assert!(settings.adaptive_engine.enabled);
+        assert!(settings.adaptive_engine.processor_policy_enabled);
+        assert!(!settings.background_efficiency.enabled);
         assert!(!settings.workload_engine.enabled);
         assert!(!settings.workload_engine.workload_engine_enabled);
     }
 
     #[test]
-    fn power_mode_presets_combine_smart_saver_and_workload_engine() {
+    fn power_mode_presets_combine_adaptive_engine_and_workload_engine() {
         let mut settings = Settings::default();
 
         apply_power_mode_preset(&mut settings, PowerModePreset::PowerSave);
@@ -25827,9 +25994,9 @@ mod tests {
             &settings,
             PowerModePreset::PowerSave
         ));
-        assert!(settings.smart_saver.enabled);
-        assert!(settings.smart_saver.processor_policy_enabled);
-        assert!(settings.eco_qos.enabled);
+        assert!(settings.adaptive_engine.enabled);
+        assert!(settings.adaptive_engine.processor_policy_enabled);
+        assert!(settings.background_efficiency.enabled);
         assert!(settings.workload_engine.enabled);
 
         apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
@@ -25837,8 +26004,8 @@ mod tests {
             &settings,
             PowerModePreset::Balanced
         ));
-        assert!(settings.smart_saver.enabled);
-        assert!(!settings.eco_qos.enabled);
+        assert!(settings.adaptive_engine.enabled);
+        assert!(!settings.background_efficiency.enabled);
         assert!(settings.workload_engine.enabled);
         assert!(workload_engine_matches_preset(
             &settings.workload_engine,
@@ -25850,11 +26017,11 @@ mod tests {
             &settings,
             PowerModePreset::Performance
         ));
-        assert!(!settings.smart_saver.enabled);
-        assert!(!settings.eco_qos.enabled);
+        assert!(!settings.adaptive_engine.enabled);
+        assert!(!settings.background_efficiency.enabled);
         assert!(settings.workload_engine.enabled);
         assert!(settings.workload_engine.workload_engine_enabled);
-        assert!(settings.smart_saver.processor_policy_enabled);
+        assert!(settings.adaptive_engine.processor_policy_enabled);
         assert!(workload_engine_matches_preset(
             &settings.workload_engine,
             WorkloadEnginePreset::ForegroundFirst
@@ -25862,10 +26029,10 @@ mod tests {
 
         apply_power_mode_preset(&mut settings, PowerModePreset::Speed);
         assert!(power_mode_matches_preset(&settings, PowerModePreset::Speed));
-        assert!(!settings.smart_saver.enabled);
+        assert!(!settings.adaptive_engine.enabled);
         assert!(settings.workload_engine.enabled);
         assert!(settings.workload_engine.workload_engine_enabled);
-        assert!(settings.smart_saver.processor_policy_enabled);
+        assert!(settings.adaptive_engine.processor_policy_enabled);
         assert!(workload_engine_matches_preset(
             &settings.workload_engine,
             WorkloadEnginePreset::MaxForeground
@@ -25877,14 +26044,20 @@ mod tests {
         let mut settings = Settings::default();
 
         apply_power_mode_preset(&mut settings, PowerModePreset::Balanced);
-        settings.smart_saver.processor_policy_values.performance_max = 55;
+        settings
+            .adaptive_engine
+            .processor_policy_values
+            .performance_max = 55;
 
         assert!(!power_mode_matches_preset(
             &settings,
             PowerModePreset::Balanced
         ));
         assert_eq!(
-            settings.smart_saver.processor_policy_values.performance_max,
+            settings
+                .adaptive_engine
+                .processor_policy_values
+                .performance_max,
             55
         );
 
@@ -25905,15 +26078,15 @@ mod tests {
     }
 
     #[test]
-    fn smart_saver_uses_low_power_app_tick() {
+    fn adaptive_engine_uses_low_power_app_tick() {
         let mut settings = Settings::default();
 
         assert_eq!(app_tick_interval(&settings, true), APP_TICK_INTERVAL);
-        settings.smart_saver.enabled = true;
+        settings.adaptive_engine.enabled = true;
         assert_eq!(app_tick_interval(&settings, false), APP_TICK_INTERVAL);
         assert_eq!(
             app_tick_interval(&settings, true),
-            SMART_SAVER_APP_TICK_INTERVAL
+            ADAPTIVE_ENGINE_APP_TICK_INTERVAL
         );
     }
 
@@ -26041,8 +26214,8 @@ mod tests {
         saved.general.check_interval_ms = 5_678;
         current.advanced.action_log_mode = ActionLogMode::Off;
         saved.advanced.action_log_mode = ActionLogMode::Full;
-        current.power_plans.performance_guid = Some("current".to_owned());
-        saved.power_plans.performance_guid = Some("saved".to_owned());
+        current.by_activity.power_plans.performance_guid = Some("current".to_owned());
+        saved.by_activity.power_plans.performance_guid = Some("saved".to_owned());
         current.background_cpu_restriction.enabled = true;
         saved.background_cpu_restriction.enabled = false;
         current.io_priority.enabled = true;
@@ -26058,7 +26231,7 @@ mod tests {
         assert_eq!(settings.general.check_interval_ms, 1_234);
         assert_eq!(settings.advanced.action_log_mode, ActionLogMode::Off);
         assert_eq!(
-            settings.power_plans.performance_guid.as_deref(),
+            settings.by_activity.power_plans.performance_guid.as_deref(),
             Some("saved")
         );
         assert!(!settings.background_cpu_restriction.enabled);
@@ -26317,10 +26490,10 @@ mod tests {
     #[test]
     fn process_policy_summary_matches_exact_process_rule() {
         let mut settings = Settings::default();
-        settings.cpu_affinity.enabled = true;
-        settings.cpu_affinity.rules.push(CpuAffinityRule {
+        settings.core_steering.enabled = true;
+        settings.core_steering.rules.push(CoreSteeringRule {
             enabled: true,
-            mode: CpuAffinityMode::Soft,
+            mode: CoreSteeringMode::Soft,
             process_name: "Editor.EXE".to_owned(),
             core_mask: 0b1011,
         });
@@ -26338,7 +26511,7 @@ mod tests {
             non_matching.power_plan_running,
             process_list_default_label()
         );
-        assert_eq!(non_matching.core_steering, default_cpu_affinity_label());
+        assert_eq!(non_matching.core_steering, default_core_steering_label());
         assert_eq!(
             non_matching.process_priority,
             process_priority_setting_label(ProcessPrioritySetting::Default)
@@ -26372,23 +26545,22 @@ mod tests {
     #[test]
     fn process_policy_summary_reports_process_rule_columns() {
         let mut settings = Settings::default();
-        settings.power_plans.performance_guid = Some("performance-guid".to_owned());
-        settings.foreground_rules.enabled = true;
-        settings.foreground_rules.rules.push(ForegroundRule {
+        settings.by_foreground.enabled = true;
+        settings.by_foreground.rules.push(ByForegroundRule {
             enabled: true,
             name: "Editor".to_owned(),
             process_name: "editor.exe".to_owned(),
             power_plan_guid: Some("balanced-guid".to_owned()),
         });
-        settings.performance_mode.enabled = true;
-        settings.performance_mode.rules.push(PerformanceModeRule {
+        settings.by_running_app.enabled = true;
+        settings.by_running_app.rules.push(ByRunningAppRule {
             enabled: true,
             name: "Editor".to_owned(),
             process_name: "editor.exe".to_owned(),
             power_plan_guid: Some("performance-guid".to_owned()),
         });
-        settings.cpu_limiter.enabled = true;
-        settings.cpu_limiter.rules.push(CpuLimiterRule {
+        settings.core_limiter.enabled = true;
+        settings.core_limiter.rules.push(CoreLimiterRule {
             enabled: true,
             process_name: "editor.exe".to_owned(),
             threshold_percent: 80,
@@ -26450,9 +26622,9 @@ mod tests {
     fn process_policy_summary_reports_include_exclude_columns() {
         let mut settings = Settings::default();
         settings
-            .eco_qos
-            .efficiency_whitelist
-            .push(new_eco_qos_exclusion_rule("editor.exe"));
+            .background_efficiency
+            .custom_rules
+            .push(new_background_efficiency_rule("editor.exe"));
         settings
             .memory_trim
             .exclusions
@@ -26516,7 +26688,7 @@ mod tests {
         let mut settings = Settings::default();
 
         set_foreground_power_plan_override(
-            &mut settings.foreground_rules,
+            &mut settings.by_foreground,
             "Editor.EXE",
             Some("balanced-guid".to_owned()),
         );
@@ -26524,12 +26696,12 @@ mod tests {
         assert_eq!(summary.power_plan_foreground, "balanced-guid");
         assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
 
-        set_foreground_power_plan_override(&mut settings.foreground_rules, "editor.exe", None);
+        set_foreground_power_plan_override(&mut settings.by_foreground, "editor.exe", None);
         let summary = process_policy_summary(&settings, &[], "editor.exe");
         assert_eq!(summary.power_plan_foreground, process_list_default_label());
         assert!(!summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
 
-        set_cpu_limiter_override(&mut settings.cpu_limiter, "editor.exe", Some(50));
+        set_core_limiter_override(&mut settings.core_limiter, "editor.exe", Some(50));
         let summary = process_policy_summary(&settings, &[], "editor.exe");
         assert_eq!(
             summary.core_limiter,
@@ -26537,7 +26709,7 @@ mod tests {
         );
         assert!(summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
 
-        set_cpu_limiter_override(&mut settings.cpu_limiter, "editor.exe", None);
+        set_core_limiter_override(&mut settings.core_limiter, "editor.exe", None);
         let summary = process_policy_summary(&settings, &[], "editor.exe");
         assert_eq!(summary.core_limiter, process_list_exclude_label());
         assert!(!summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
@@ -26564,15 +26736,15 @@ mod tests {
     #[test]
     fn process_policy_summary_reports_default_power_plan_when_unset() {
         let mut settings = Settings::default();
-        settings.foreground_rules.enabled = true;
-        settings.foreground_rules.rules.push(ForegroundRule {
+        settings.by_foreground.enabled = true;
+        settings.by_foreground.rules.push(ByForegroundRule {
             enabled: true,
             name: "Editor".to_owned(),
             process_name: "editor.exe".to_owned(),
             power_plan_guid: None,
         });
-        settings.performance_mode.enabled = true;
-        settings.performance_mode.rules.push(PerformanceModeRule {
+        settings.by_running_app.enabled = true;
+        settings.by_running_app.rules.push(ByRunningAppRule {
             enabled: true,
             name: "Editor".to_owned(),
             process_name: "editor.exe".to_owned(),
@@ -26592,22 +26764,22 @@ mod tests {
     #[test]
     fn process_policy_summary_reports_configured_rules_when_feature_disabled() {
         let mut settings = Settings::default();
-        settings.foreground_rules.enabled = false;
-        settings.foreground_rules.rules.push(ForegroundRule {
+        settings.by_foreground.enabled = false;
+        settings.by_foreground.rules.push(ByForegroundRule {
             enabled: true,
             name: "Editor".to_owned(),
             process_name: "editor.exe".to_owned(),
             power_plan_guid: Some("balanced-guid".to_owned()),
         });
-        settings.performance_mode.enabled = false;
-        settings.performance_mode.rules.push(PerformanceModeRule {
+        settings.by_running_app.enabled = false;
+        settings.by_running_app.rules.push(ByRunningAppRule {
             enabled: true,
             name: "Editor".to_owned(),
             process_name: "editor.exe".to_owned(),
             power_plan_guid: Some("performance-guid".to_owned()),
         });
-        settings.cpu_limiter.enabled = false;
-        settings.cpu_limiter.rules.push(CpuLimiterRule {
+        settings.core_limiter.enabled = false;
+        settings.core_limiter.rules.push(CoreLimiterRule {
             enabled: true,
             process_name: "editor.exe".to_owned(),
             threshold_percent: 80,
@@ -26685,7 +26857,7 @@ mod tests {
             },
         ];
 
-        assert_eq!(affinity_processors_no_smt_mask(&processors), 0b0101);
+        assert_eq!(core_steering_processors_no_smt_mask(&processors), 0b0101);
     }
 
     #[test]
@@ -26704,9 +26876,9 @@ mod tests {
 
     #[test]
     fn new_core_steering_rules_default_to_soft_cpu_sets() {
-        let rule = new_affinity_rule("game.exe");
+        let rule = new_core_steering_rule("game.exe");
 
-        assert_eq!(rule.mode, CpuAffinityMode::Soft);
+        assert_eq!(rule.mode, CoreSteeringMode::Soft);
     }
 
     #[test]
@@ -26753,7 +26925,7 @@ mod tests {
         let entries = vec![ActionLogEntry {
             sequence: 7,
             timestamp_epoch_ms: 1_700_000_000_000,
-            feature: ActionLogFeature::CpuLimiter,
+            feature: ActionLogFeature::CoreLimiter,
             process_id: Some(42),
             process_name: "worker.exe".to_owned(),
             action: ActionLogAction::Fail,
@@ -26777,7 +26949,7 @@ mod tests {
             ActionLogEntry {
                 sequence: 1,
                 timestamp_epoch_ms: 1_700_000_000_000,
-                feature: ActionLogFeature::CpuLimiter,
+                feature: ActionLogFeature::CoreLimiter,
                 process_id: Some(42),
                 process_name: "worker.exe".to_owned(),
                 action: ActionLogAction::Fail,
@@ -26799,7 +26971,7 @@ mod tests {
         let filtered_entries = action_log_filtered_entries(
             &entries,
             ActionLogResultFilter::Failed,
-            ActionLogFeatureFilter::Feature(ActionLogFeature::CpuLimiter),
+            ActionLogFeatureFilter::Feature(ActionLogFeature::CoreLimiter),
         );
 
         assert_eq!(filtered_entries.len(), 1);
@@ -26848,33 +27020,33 @@ mod tests {
 
         assert!(!input_hook_required(&settings));
 
-        settings.power_plans.performance_guid = Some("active-guid".to_owned());
+        settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
         assert!(input_hook_required(&settings));
 
-        settings.activity_mode.enabled = false;
+        settings.by_activity.enabled = false;
         assert!(!input_hook_required(&settings));
 
-        settings.activity_mode.enabled = true;
+        settings.by_activity.enabled = true;
         settings.general.enabled = false;
         assert!(!input_hook_required(&settings));
 
         settings.general.enabled = true;
-        settings.activity_mode.switch_to_performance_on_resume = false;
+        settings.by_activity.switch_to_performance_on_resume = false;
         assert!(!input_hook_required(&settings));
 
-        settings.activity_mode.switch_to_performance_on_resume = true;
-        settings.activity_mode.input_detection.keyboard = false;
-        settings.activity_mode.input_detection.mouse = false;
-        settings.activity_mode.input_detection.controller = true;
+        settings.by_activity.switch_to_performance_on_resume = true;
+        settings.by_activity.input_detection.keyboard = false;
+        settings.by_activity.input_detection.mouse = false;
+        settings.by_activity.input_detection.controller = true;
         assert!(!input_hook_required(&settings));
 
         settings.app_suspension.enabled = true;
         assert!(input_hook_required(&settings));
 
-        settings.smart_saver.enabled = true;
+        settings.adaptive_engine.enabled = true;
         assert!(!input_hook_required(&settings));
 
-        settings.smart_saver.enabled = false;
+        settings.adaptive_engine.enabled = false;
         settings.general.enabled = false;
         assert!(!input_hook_required(&settings));
     }
@@ -26883,8 +27055,8 @@ mod tests {
     fn input_hook_config_tracks_enabled_input_devices() {
         let mut settings = Settings::default();
 
-        settings.activity_mode.input_detection.keyboard = true;
-        settings.activity_mode.input_detection.mouse = false;
+        settings.by_activity.input_detection.keyboard = true;
+        settings.by_activity.input_detection.mouse = false;
         assert_eq!(
             input_hook_config(&settings),
             InputHookConfig {
@@ -26893,8 +27065,8 @@ mod tests {
             }
         );
 
-        settings.activity_mode.input_detection.keyboard = false;
-        settings.activity_mode.input_detection.mouse = true;
+        settings.by_activity.input_detection.keyboard = false;
+        settings.by_activity.input_detection.mouse = true;
         assert_eq!(
             input_hook_config(&settings),
             InputHookConfig {
@@ -26903,9 +27075,9 @@ mod tests {
             }
         );
 
-        settings.activity_mode.input_detection.keyboard = false;
-        settings.activity_mode.input_detection.mouse = false;
-        settings.activity_mode.input_detection.controller = true;
+        settings.by_activity.input_detection.keyboard = false;
+        settings.by_activity.input_detection.mouse = false;
+        settings.by_activity.input_detection.controller = true;
         assert_eq!(
             input_hook_config(&settings),
             InputHookConfig {
@@ -26923,7 +27095,7 @@ mod tests {
             }
         );
 
-        settings.smart_saver.enabled = true;
+        settings.adaptive_engine.enabled = true;
         assert_eq!(
             input_hook_config(&settings),
             InputHookConfig {
@@ -26934,15 +27106,15 @@ mod tests {
     }
 
     #[test]
-    fn foreground_lookup_runs_only_for_configured_foreground_rules() {
+    fn foreground_lookup_runs_only_for_configured_by_foreground() {
         let mut settings = Settings::default();
 
         assert!(!foreground_lookup_required(&settings));
 
-        settings.foreground_rules.enabled = true;
+        settings.by_foreground.enabled = true;
         assert!(!foreground_lookup_required(&settings));
 
-        settings.foreground_rules.rules.push(ForegroundRule {
+        settings.by_foreground.rules.push(ByForegroundRule {
             enabled: true,
             name: "backup.exe".to_owned(),
             process_name: "backup.exe".to_owned(),

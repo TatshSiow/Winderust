@@ -14,7 +14,7 @@ use windows_sys::Win32::{
 
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
-    config::{CpuLimiterRule, CpuLimiterSettings},
+    config::{CoreLimiterRule, CoreLimiterSettings},
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
         contains_process_name, is_process_exited_message, list_processes, process_failure_key,
@@ -27,7 +27,7 @@ use crate::{
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CpuLimiterSnapshot {
+pub struct CoreLimiterSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub limited_processes: usize,
@@ -41,7 +41,7 @@ pub struct CpuLimiterSnapshot {
 }
 
 #[derive(Default)]
-pub struct CpuLimiterManager {
+pub struct CoreLimiterManager {
     tracked: BTreeMap<u32, TrackedProcess>,
     limited: BTreeMap<u32, LimitedProcess>,
     failure_suppression: ExecutionFailureTracker,
@@ -63,19 +63,19 @@ struct LimitedProcess {
     applied_affinity: usize,
 }
 
-impl CpuLimiterManager {
+impl CoreLimiterManager {
     pub fn update(
         &mut self,
-        settings: &CpuLimiterSettings,
+        settings: &CoreLimiterSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
         core_steering_process_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
-    ) -> CpuLimiterSnapshot {
+    ) -> CoreLimiterSnapshot {
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
             self.failure_suppression.clear();
-            return CpuLimiterSnapshot {
+            return CoreLimiterSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
                 message: "Automation disabled.".to_owned(),
@@ -87,7 +87,7 @@ impl CpuLimiterManager {
         if !settings.enabled {
             let failed = self.clear_all(action_log, "Core Limiter disabled");
             self.failure_suppression.clear();
-            return CpuLimiterSnapshot {
+            return CoreLimiterSnapshot {
                 enabled: false,
                 failed_processes: failed.count,
                 message: "Core Limiter disabled.".to_owned(),
@@ -98,7 +98,7 @@ impl CpuLimiterManager {
 
         if settings.exclude_foreground_app && foreground_process_id.is_none() {
             let failed = self.clear_all(action_log, "foreground app is unknown");
-            return CpuLimiterSnapshot {
+            return CoreLimiterSnapshot {
                 enabled: true,
                 failed_processes: failed.count,
                 message: "Paused: foreground app is unknown.".to_owned(),
@@ -110,7 +110,7 @@ impl CpuLimiterManager {
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
-            return CpuLimiterSnapshot {
+            return CoreLimiterSnapshot {
                 enabled: true,
                 failed_processes: failed.count,
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -123,7 +123,7 @@ impl CpuLimiterManager {
             Ok(processes) => processes,
             Err(err) => {
                 let failed = self.clear_all(action_log, "process list unavailable");
-                return CpuLimiterSnapshot {
+                return CoreLimiterSnapshot {
                     enabled: true,
                     failed_processes: failed.count,
                     message: err,
@@ -166,7 +166,7 @@ impl CpuLimiterManager {
             if core_steering_process_ids.contains(&process.id) {
                 if self.limited.contains_key(&process.id) {
                     action_log.record(
-                        ActionLogFeature::CpuLimiter,
+                        ActionLogFeature::CoreLimiter,
                         Some(process.id),
                         process.name.clone(),
                         ActionLogAction::Skip,
@@ -216,14 +216,14 @@ impl CpuLimiterManager {
                 Ok(()) => {
                     self.clear_process_failure(&failure_process_name);
                 }
-                Err(CpuLimiterError::ProcessExited) => {
+                Err(CoreLimiterError::ProcessExited) => {
                     skipped_processes += 1;
                 }
-                Err(CpuLimiterError::AccessDenied) => {
+                Err(CoreLimiterError::AccessDenied) => {
                     skipped_processes += 1;
                     self.record_process_failure(&failure_process_name);
                     action_log.record(
-                        ActionLogFeature::CpuLimiter,
+                        ActionLogFeature::CoreLimiter,
                         Some(process_id),
                         failure_process_name,
                         ActionLogAction::Skip,
@@ -231,7 +231,7 @@ impl CpuLimiterManager {
                         "Skipped because the process could not be opened.",
                     );
                 }
-                Err(CpuLimiterError::Failed(err)) => {
+                Err(CoreLimiterError::Failed(err)) => {
                     if is_process_exited_message(&err) {
                         skipped_processes += 1;
                         continue;
@@ -248,7 +248,7 @@ impl CpuLimiterManager {
             }
         }
 
-        CpuLimiterSnapshot {
+        CoreLimiterSnapshot {
             enabled: true,
             scanned_processes,
             limited_processes: self.limited.len(),
@@ -270,10 +270,10 @@ impl CpuLimiterManager {
         &mut self,
         process_id: u32,
         process_name: String,
-        rule: &CpuLimiterRule,
+        rule: &CoreLimiterRule,
         now: Instant,
         action_log: &mut ActionLog,
-    ) -> Result<(), CpuLimiterError> {
+    ) -> Result<(), CoreLimiterError> {
         let current = process_cpu_sample(process_id)?;
         let state = self
             .tracked
@@ -330,7 +330,7 @@ impl CpuLimiterManager {
         process_name: String,
         max_logical_processors: u8,
         action_log: &mut ActionLog,
-    ) -> Result<(), CpuLimiterError> {
+    ) -> Result<(), CoreLimiterError> {
         apply_cpu_limit_to_process(
             process_id,
             process_name,
@@ -346,7 +346,7 @@ impl CpuLimiterManager {
         current_process_names: &BTreeMap<u32, String>,
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> CpuLimiterFailures {
+    ) -> CoreLimiterFailures {
         let process_ids = self
             .limited
             .keys()
@@ -362,7 +362,7 @@ impl CpuLimiterManager {
         )
     }
 
-    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> CpuLimiterFailures {
+    fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> CoreLimiterFailures {
         self.tracked.clear();
         let process_ids = self.limited.keys().copied().collect::<Vec<_>>();
         self.release_processes(&process_ids, None, action_log, reason)
@@ -374,8 +374,8 @@ impl CpuLimiterManager {
         current_process_names: Option<&BTreeMap<u32, String>>,
         action_log: &mut ActionLog,
         reason: &str,
-    ) -> CpuLimiterFailures {
-        let mut failures = CpuLimiterFailures::default();
+    ) -> CoreLimiterFailures {
+        let mut failures = CoreLimiterFailures::default();
         for process_id in process_ids {
             if let Some(process) = self.limited.get(process_id).cloned() {
                 let process_name = current_process_names
@@ -383,7 +383,7 @@ impl CpuLimiterManager {
                     .cloned()
                     .unwrap_or_else(|| process.process_name.clone());
                 if let Err(err) = restore_affinity(*process_id, &process) {
-                    if matches!(err, CpuLimiterError::ProcessExited) {
+                    if matches!(err, CoreLimiterError::ProcessExited) {
                         self.limited.remove(process_id);
                     } else {
                         failures.record_error(
@@ -397,7 +397,7 @@ impl CpuLimiterManager {
                 } else {
                     self.limited.remove(process_id);
                     action_log.record(
-                        ActionLogFeature::CpuLimiter,
+                        ActionLogFeature::CoreLimiter,
                         Some(*process_id),
                         process_name,
                         ActionLogAction::Restore,
@@ -425,7 +425,7 @@ impl CpuLimiterManager {
         if suppression.newly_suppressed {
             auto_excluded_processes.insert(process_failure_key(process_name));
             action_log.record(
-                ActionLogFeature::CpuLimiter,
+                ActionLogFeature::CoreLimiter,
                 Some(process_id),
                 process_name.to_owned(),
                 ActionLogAction::Skip,
@@ -450,14 +450,14 @@ impl CpuLimiterManager {
     }
 }
 
-impl Drop for CpuLimiterManager {
+impl Drop for CoreLimiterManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
         self.clear_all(&mut action_log, "Core Limiter manager dropped");
     }
 }
 
-impl Default for CpuLimiterSnapshot {
+impl Default for CoreLimiterSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -479,9 +479,9 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 }
 
 fn matching_rule<'a>(
-    settings: &'a CpuLimiterSettings,
+    settings: &'a CoreLimiterSettings,
     process_name: &str,
-) -> Option<&'a CpuLimiterRule> {
+) -> Option<&'a CoreLimiterRule> {
     settings.rules.iter().find(|rule| {
         rule.enabled
             && !rule.process_name.trim().is_empty()
@@ -523,12 +523,12 @@ fn apply_cpu_limit_to_process(
     max_logical_processors: u8,
     limited: &mut BTreeMap<u32, LimitedProcess>,
     action_log: &mut ActionLog,
-) -> Result<(), CpuLimiterError> {
+) -> Result<(), CoreLimiterError> {
     let process = ProcessHandle::open(process_id)?;
     let creation_time = process
         .0
         .process_creation_time()
-        .ok_or(CpuLimiterError::ProcessExited)?;
+        .ok_or(CoreLimiterError::ProcessExited)?;
     let (current_affinity, system_affinity) = process.affinity_mask()?;
     let Some(target_affinity) =
         limited_affinity_mask(current_affinity, system_affinity, max_logical_processors)
@@ -555,7 +555,7 @@ fn apply_cpu_limit_to_process(
     if current_affinity != target_affinity {
         process.set_affinity_mask(target_affinity)?;
         action_log.record(
-            ActionLogFeature::CpuLimiter,
+            ActionLogFeature::CoreLimiter,
             Some(process_id),
             process_name.clone(),
             ActionLogAction::Apply,
@@ -579,44 +579,44 @@ fn apply_cpu_limit_to_process(
 fn restore_affinity(
     process_id: u32,
     process_state: &LimitedProcess,
-) -> Result<(), CpuLimiterError> {
+) -> Result<(), CoreLimiterError> {
     let process = ProcessHandle::open(process_id)?;
     if process.0.process_creation_time() != Some(process_state.creation_time) {
-        return Err(CpuLimiterError::ProcessExited);
+        return Err(CoreLimiterError::ProcessExited);
     }
     process.set_affinity_mask(process_state.previous_affinity)
 }
 
-fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, CpuLimiterError> {
+fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, CoreLimiterError> {
     let process = ProcessHandle::open_query(process_id)?;
     process.cpu_sample()
 }
 
-enum CpuLimiterError {
+enum CoreLimiterError {
     AccessDenied,
     ProcessExited,
     Failed(String),
 }
 
 #[derive(Default)]
-struct CpuLimiterFailures {
+struct CoreLimiterFailures {
     count: usize,
     last_error: Option<String>,
 }
 
-impl CpuLimiterFailures {
+impl CoreLimiterFailures {
     fn record_error(
         &mut self,
         action: &str,
         process_id: u32,
         process_name: &str,
-        error: CpuLimiterError,
+        error: CoreLimiterError,
         action_log: &mut ActionLog,
     ) {
         let message = match error {
-            CpuLimiterError::AccessDenied => "Access denied.".to_owned(),
-            CpuLimiterError::ProcessExited => return,
-            CpuLimiterError::Failed(message) => message,
+            CoreLimiterError::AccessDenied => "Access denied.".to_owned(),
+            CoreLimiterError::ProcessExited => return,
+            CoreLimiterError::Failed(message) => message,
         };
         self.record_message(action, process_id, process_name, message, action_log);
     }
@@ -642,7 +642,7 @@ impl CpuLimiterFailures {
             ));
         }
         action_log.record(
-            ActionLogFeature::CpuLimiter,
+            ActionLogFeature::CoreLimiter,
             Some(process_id),
             process_name.to_owned(),
             ActionLogAction::Fail,
@@ -651,9 +651,9 @@ impl CpuLimiterFailures {
         );
     }
 
-    fn into_result(self) -> Result<(), CpuLimiterError> {
+    fn into_result(self) -> Result<(), CoreLimiterError> {
         match self.last_error {
-            Some(error) => Err(CpuLimiterError::Failed(error)),
+            Some(error) => Err(CoreLimiterError::Failed(error)),
             None => Ok(()),
         }
     }
@@ -671,7 +671,7 @@ fn process_failure_message(
 struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, CpuLimiterError> {
+    fn open(process_id: u32) -> Result<Self, CoreLimiterError> {
         let access_masks = [
             PROCESS_QUERY_INFORMATION | PROCESS_SET_INFORMATION,
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -689,7 +689,7 @@ impl ProcessHandle {
         Err(open_process_error(process_id, last_open_error))
     }
 
-    fn open_query(process_id: u32) -> Result<Self, CpuLimiterError> {
+    fn open_query(process_id: u32) -> Result<Self, CoreLimiterError> {
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
         if !handle.is_null() {
             Ok(Self(WinHandle::new(handle)))
@@ -698,14 +698,14 @@ impl ProcessHandle {
         }
     }
 
-    fn affinity_mask(&self) -> Result<(usize, usize), CpuLimiterError> {
+    fn affinity_mask(&self) -> Result<(usize, usize), CoreLimiterError> {
         let mut process_affinity = 0;
         let mut system_affinity = 0;
         let ok = unsafe {
             GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
         };
         if ok == 0 {
-            Err(CpuLimiterError::Failed(format!(
+            Err(CoreLimiterError::Failed(format!(
                 "GetProcessAffinityMask failed with error {}.",
                 last_error()
             )))
@@ -714,10 +714,10 @@ impl ProcessHandle {
         }
     }
 
-    fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), CpuLimiterError> {
+    fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), CoreLimiterError> {
         let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
         if ok == 0 {
-            Err(CpuLimiterError::Failed(format!(
+            Err(CoreLimiterError::Failed(format!(
                 "SetProcessAffinityMask failed with error {}.",
                 last_error()
             )))
@@ -726,7 +726,7 @@ impl ProcessHandle {
         }
     }
 
-    fn cpu_sample(&self) -> Result<ProcessCpuSample, CpuLimiterError> {
+    fn cpu_sample(&self) -> Result<ProcessCpuSample, CoreLimiterError> {
         let mut creation = FILETIME::default();
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
@@ -741,7 +741,7 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(CpuLimiterError::Failed(format!(
+            Err(CoreLimiterError::Failed(format!(
                 "GetProcessTimes failed with error {}.",
                 last_error()
             )))
@@ -754,11 +754,11 @@ impl ProcessHandle {
     }
 }
 
-fn open_process_error(process_id: u32, error: u32) -> CpuLimiterError {
+fn open_process_error(process_id: u32, error: u32) -> CoreLimiterError {
     match error {
-        ERROR_ACCESS_DENIED => CpuLimiterError::AccessDenied,
-        ERROR_INVALID_PARAMETER => CpuLimiterError::ProcessExited,
-        _ => CpuLimiterError::Failed(format!(
+        ERROR_ACCESS_DENIED => CoreLimiterError::AccessDenied,
+        ERROR_INVALID_PARAMETER => CoreLimiterError::ProcessExited,
+        _ => CoreLimiterError::Failed(format!(
             "OpenProcess({process_id}) failed with error {error}."
         )),
     }
@@ -770,10 +770,10 @@ mod tests {
 
     #[test]
     fn matching_rule_is_case_insensitive() {
-        let settings = CpuLimiterSettings {
+        let settings = CoreLimiterSettings {
             enabled: true,
             exclude_foreground_app: true,
-            rules: vec![CpuLimiterRule {
+            rules: vec![CoreLimiterRule {
                 enabled: true,
                 process_name: " Worker.EXE ".to_owned(),
                 threshold_percent: 75,
@@ -796,7 +796,7 @@ mod tests {
 
     #[test]
     fn foreground_skip_matches_pid_or_name() {
-        let settings = CpuLimiterSettings {
+        let settings = CoreLimiterSettings {
             enabled: true,
             exclude_foreground_app: true,
             rules: Vec::new(),
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn repeated_failures_suppress_future_core_limiter_attempts_once() {
-        let mut manager = CpuLimiterManager::default();
+        let mut manager = CoreLimiterManager::default();
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("APP.exe");
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn release_processes_skips_restore_when_process_identity_is_unknown() {
-        let mut manager = CpuLimiterManager::default();
+        let mut manager = CoreLimiterManager::default();
         manager.limited.insert(
             0,
             LimitedProcess {

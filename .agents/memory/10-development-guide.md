@@ -38,7 +38,7 @@ cargo build --release --target-dir target-next
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
 - `src/backend/automation.rs`: background worker loop that applies runtime policies.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
-- Feature backends live in their own modules, for example `ecoqos`, `suspension`, `affinity`, `cpu_limiter`, `responsiveness`, `smart_trim`, and priority modules.
+- Feature backends use the UI names: `background_efficiency`, `workload_engine`, `memory_trim`, `app_suspension`, `core_limiter`, `core_steering`, `by_running_app`, and the priority-control modules.
 
 ## Navigation
 
@@ -46,10 +46,10 @@ Pages are grouped in `src/ui.rs`:
 
 - Overview: dashboard.
 - Process List: process table and per-process policy surface.
-- Winderust Features: Efficiency Mode, Foreground Responsiveness, Smart Trim.
-- Power Plan Automation: foreground rules, running app/performance mode, CPU usage, activity, schedule, processor power tuning.
+- Winderust Features: Adaptive Engine, Background Efficiency, Memory Trim.
+- Power Plan Control: By Foreground, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
 - Priority Control: CPU priority, thread priority, dynamic priority boost, IO priority, GPU priority, memory priority.
-- Processor Controls: CPU limiter, background CPU restriction, CPU affinity.
+- CPU Control: Core Limiter, Background CPU Restriction, Core Steering.
 - Action Log.
 - Settings.
 - Advanced: App Suspension, Timer Resolution, Win32 priority separation.
@@ -59,7 +59,7 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `W
 ## Settings
 
 - Runtime settings live in `Settings`.
-- Add new fields with `#[serde(default)]` when older config files must keep loading.
+- Use `#[serde(default)]` only when a current setting is intentionally optional; do not add pre-release migration aliases.
 - If a setting is edited through the UI, update the relevant input sync code in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/ui/app.rs`.
 ## Runtime Safety
