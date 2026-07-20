@@ -660,6 +660,29 @@ impl ProcessHandle {
     }
 }
 
+pub(crate) fn apply_once(
+    process_id: u32,
+    priority: ProcessMemoryPrioritySetting,
+) -> Result<&'static str, String> {
+    let priority = priority
+        .priority()
+        .ok_or_else(|| "This memory priority is not available as a quick action.".to_owned())?;
+    let process = ProcessHandle::open(process_id).map_err(memory_priority_error_message)?;
+    process
+        .set_memory_priority(priority)
+        .map_err(memory_priority_error_message)?;
+    let applied = process
+        .memory_priority()
+        .map_err(memory_priority_error_message)?;
+    if applied != priority {
+        return Err(format!(
+            "Memory priority remained {}.",
+            memory_priority_label(applied)
+        ));
+    }
+    Ok(memory_priority_label(applied))
+}
+
 fn restore_process(
     process_id: u32,
     process_state: &AdjustedProcess,
@@ -789,6 +812,20 @@ mod tests {
                 priority
             );
         }
+    }
+
+    #[test]
+    fn quick_apply_requires_a_concrete_memory_priority() {
+        assert_eq!(ProcessMemoryPrioritySetting::Default.priority(), None);
+        assert_eq!(ProcessMemoryPrioritySetting::Auto.priority(), None);
+        assert_eq!(
+            ProcessMemoryPrioritySetting::Low.priority(),
+            Some(ProcessMemoryPriority::Low)
+        );
+        assert_eq!(
+            ProcessMemoryPrioritySetting::Normal.priority(),
+            Some(ProcessMemoryPriority::Normal)
+        );
     }
 
     #[test]

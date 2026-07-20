@@ -601,6 +601,39 @@ fn priority_class(priority: ProcessPrioritySetting) -> Option<u32> {
     }
 }
 
+pub(crate) fn apply_once(
+    process_id: u32,
+    priority: ProcessPrioritySetting,
+) -> Result<&'static str, String> {
+    let priority_class = quick_apply_priority_class(priority)
+        .ok_or_else(|| "This priority is not available as a quick action.".to_owned())?;
+    let process = ProcessHandle::open(process_id).map_err(process_priority_error_message)?;
+    if process
+        .priority_class()
+        .map_err(process_priority_error_message)?
+        == REALTIME_PRIORITY_CLASS
+    {
+        return Err("Realtime processes are not changed by quick actions.".to_owned());
+    }
+    process
+        .set_priority_class(priority_class)
+        .map_err(process_priority_error_message)?;
+    Ok(priority_class_label(priority_class))
+}
+
+fn quick_apply_priority_class(priority: ProcessPrioritySetting) -> Option<u32> {
+    match priority {
+        ProcessPrioritySetting::Idle => Some(IDLE_PRIORITY_CLASS),
+        ProcessPrioritySetting::BelowNormal => Some(BELOW_NORMAL_PRIORITY_CLASS),
+        ProcessPrioritySetting::Normal => Some(NORMAL_PRIORITY_CLASS),
+        ProcessPrioritySetting::AboveNormal => Some(ABOVE_NORMAL_PRIORITY_CLASS),
+        ProcessPrioritySetting::Default
+        | ProcessPrioritySetting::Auto
+        | ProcessPrioritySetting::High
+        | ProcessPrioritySetting::Realtime => None,
+    }
+}
+
 fn priority_class_label(priority_class: u32) -> &'static str {
     match priority_class {
         HIGH_PRIORITY_CLASS => "High",
@@ -651,4 +684,33 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
     BUILT_IN_EXCLUSIONS
         .iter()
         .any(|excluded| same_process_name(excluded, process_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quick_apply_only_accepts_safe_concrete_priorities() {
+        assert_eq!(
+            quick_apply_priority_class(ProcessPrioritySetting::BelowNormal),
+            Some(BELOW_NORMAL_PRIORITY_CLASS)
+        );
+        assert_eq!(
+            quick_apply_priority_class(ProcessPrioritySetting::Normal),
+            Some(NORMAL_PRIORITY_CLASS)
+        );
+        assert_eq!(
+            quick_apply_priority_class(ProcessPrioritySetting::AboveNormal),
+            Some(ABOVE_NORMAL_PRIORITY_CLASS)
+        );
+        assert_eq!(
+            quick_apply_priority_class(ProcessPrioritySetting::High),
+            None
+        );
+        assert_eq!(
+            quick_apply_priority_class(ProcessPrioritySetting::Realtime),
+            None
+        );
+    }
 }

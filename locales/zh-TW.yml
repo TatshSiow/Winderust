@@ -169,6 +169,17 @@ dashboard:
   adjusted_suffix: "%{message}（%{count} 個已調整）"
 
 process_list:
+  selected_summary: "%{name} · PID %{pid} · %{count} 個自訂原則"
+  apply_once_priority: "僅套用一次：%{priority} 優先順序"
+  save_rule_priority: "儲存規則：%{priority} 優先順序"
+  applied_once: "已將 %{priority} 優先順序套用至此 %{name} 處理程序執行個體。"
+  apply_once_failed: "無法將優先順序套用至 %{name}：%{error}"
+  saved_priority_rule: "已儲存 %{name} 的 %{priority} 優先順序規則。"
+  apply_once_memory: "僅套用一次：%{priority} 記憶體優先順序"
+  save_rule_memory: "儲存規則：%{priority} 記憶體優先順序"
+  applied_memory_once: "已將 %{priority} 記憶體優先順序套用至此 %{name} 處理程序執行個體。"
+  apply_memory_once_failed: "無法將記憶體優先順序套用至 %{name}：%{error}"
+  saved_memory_rule: "已儲存 %{name} 的 %{priority} 記憶體優先順序規則。"
   column_visibility: "欄位顯示"
   default: "預設"
   title: "程序清單"

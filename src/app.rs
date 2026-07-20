@@ -515,6 +515,7 @@ pub struct WinderustApp {
     expanded_process_list_groups: HashSet<String>,
     hidden_process_list_columns: HashSet<ProcessListColumn>,
     process_list_sort: ProcessListSort,
+    selected_process_id: Option<u32>,
     breadcrumb_transition: Option<BreadcrumbTransition>,
     page_transition_generation: u64,
     admin_rights_prompt_visible: bool,
@@ -1170,6 +1171,7 @@ impl WinderustApp {
             expanded_process_list_groups: HashSet::new(),
             hidden_process_list_columns: HashSet::new(),
             process_list_sort: ProcessListSort::default(),
+            selected_process_id: None,
             breadcrumb_transition: None,
             page_transition_generation: 0,
             admin_rights_prompt_visible: !privilege::is_running_as_admin(),
@@ -3853,6 +3855,90 @@ impl WinderustApp {
         self.finish_process_list_edit(cx);
     }
 
+    fn apply_process_priority_once(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        priority: ProcessPrioritySetting,
+        cx: &mut Context<Self>,
+    ) {
+        self.status_message = match process_priority::apply_once(process_id, priority) {
+            Ok(priority) => t!(
+                "process_list.applied_once",
+                name = process_name,
+                priority = priority
+            )
+            .to_string(),
+            Err(error) => t!(
+                "process_list.apply_once_failed",
+                name = process_name,
+                error = error
+            )
+            .to_string(),
+        };
+        cx.notify();
+    }
+
+    fn save_process_priority_rule(
+        &mut self,
+        process_name: &str,
+        priority: ProcessPrioritySetting,
+        cx: &mut Context<Self>,
+    ) {
+        set_process_priority_rule(&mut self.settings.process_priority, process_name, priority);
+        if self.save_settings() {
+            self.status_message = t!(
+                "process_list.saved_priority_rule",
+                name = process_name,
+                priority = process_priority_setting_label(priority)
+            )
+            .to_string();
+        }
+        cx.notify();
+    }
+
+    fn apply_memory_priority_once(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        priority: ProcessMemoryPrioritySetting,
+        cx: &mut Context<Self>,
+    ) {
+        self.status_message = match memory_priority::apply_once(process_id, priority) {
+            Ok(priority) => t!(
+                "process_list.applied_memory_once",
+                name = process_name,
+                priority = priority
+            )
+            .to_string(),
+            Err(error) => t!(
+                "process_list.apply_memory_once_failed",
+                name = process_name,
+                error = error
+            )
+            .to_string(),
+        };
+        cx.notify();
+    }
+
+    fn save_memory_priority_rule(
+        &mut self,
+        process_name: &str,
+        priority: ProcessMemoryPrioritySetting,
+        cx: &mut Context<Self>,
+    ) {
+        set_memory_priority_rule(&mut self.settings.memory_priority, process_name, priority);
+        if self.save_settings() {
+            self.status_message = t!(
+                "process_list.saved_memory_rule",
+                name = process_name,
+                priority = process_memory_priority_setting_label(priority)
+            )
+            .to_string();
+        }
+        cx.notify();
+    }
+
     fn dropdown_placement(
         &self,
         id: &str,
@@ -5154,7 +5240,7 @@ impl WinderustApp {
                             .flex_1()
                             .min_w(px(0.0))
                             .truncate()
-                            .child(text_muted(process_list_count_label(process_count))),
+                            .child(text_muted(process_list_toolbar_label(self, process_count))),
                     )
                     .child(column_visibility_button)
                     .child(refresh_button),
@@ -20140,7 +20226,7 @@ fn process_list_rendered_row(
     layout: ProcessListRenderLayout<'_>,
     edit_context: ProcessListEditContext<'_>,
     cx: &mut Context<WinderustApp>,
-) -> gpui::Stateful<gpui::Div> {
+) -> AnyElement {
     match row {
         ProcessListRenderedRow::Entry {
             process,
@@ -20173,7 +20259,8 @@ fn process_list_rendered_row(
             layout,
             edit_context,
             cx,
-        ),
+        )
+        .into_any_element(),
     }
 }
 
@@ -20185,8 +20272,12 @@ fn process_list_entry_row(
     layout: ProcessListRenderLayout<'_>,
     edit_context: ProcessListEditContext<'_>,
     cx: &mut Context<WinderustApp>,
-) -> gpui::Stateful<gpui::Div> {
+) -> AnyElement {
     let row_id = SharedString::from(format!("process-list-entry-{}", process.id));
+    let process_id = process.id;
+    let process_name = process.name.clone();
+    let selected = edit_context.app.selected_process_id == Some(process_id);
+    let app_entity = cx.entity().clone();
     let mut row = h_flex()
         .id(row_id)
         .w_full()
@@ -20201,7 +20292,100 @@ fn process_list_entry_row(
         .when(state.divided, |row| {
             row.border_t_1().border_color(rgb(border_color()))
         })
+        .when(selected, |row| row.bg(rgb(panel_active_color())))
         .hover(|style| style.bg(rgb(settings_card_hover_color())))
+        .cursor_pointer()
+        .on_click(cx.listener(move |app, _, _, cx| {
+            app.selected_process_id = Some(process_id);
+            cx.notify();
+        }))
+        .context_menu(move |menu, _, _| {
+            let mut menu = menu;
+            for priority in [
+                ProcessPrioritySetting::BelowNormal,
+                ProcessPrioritySetting::Normal,
+                ProcessPrioritySetting::AboveNormal,
+            ] {
+                let app_entity = app_entity.clone();
+                let process_name = process_name.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(t!(
+                        "process_list.apply_once_priority",
+                        priority = process_priority_setting_label(priority)
+                    ))
+                    .on_click(move |_, _, cx| {
+                        app_entity.update(cx, |app, cx| {
+                            app.selected_process_id = Some(process_id);
+                            app.apply_process_priority_once(
+                                process_id,
+                                &process_name,
+                                priority,
+                                cx,
+                            );
+                        });
+                    }),
+                );
+            }
+            for priority in [
+                ProcessPrioritySetting::BelowNormal,
+                ProcessPrioritySetting::Normal,
+                ProcessPrioritySetting::AboveNormal,
+            ] {
+                let app_entity = app_entity.clone();
+                let process_name = process_name.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(t!(
+                        "process_list.save_rule_priority",
+                        priority = process_priority_setting_label(priority)
+                    ))
+                    .on_click(move |_, _, cx| {
+                        app_entity.update(cx, |app, cx| {
+                            app.selected_process_id = Some(process_id);
+                            app.save_process_priority_rule(&process_name, priority, cx);
+                        });
+                    }),
+                );
+            }
+            for priority in [
+                ProcessMemoryPrioritySetting::Low,
+                ProcessMemoryPrioritySetting::Normal,
+            ] {
+                let app_entity = app_entity.clone();
+                let process_name = process_name.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(t!(
+                        "process_list.apply_once_memory",
+                        priority = process_memory_priority_setting_label(priority)
+                    ))
+                    .on_click(move |_, _, cx| {
+                        app_entity.update(cx, |app, cx| {
+                            app.selected_process_id = Some(process_id);
+                            app.apply_memory_priority_once(process_id, &process_name, priority, cx);
+                        });
+                    }),
+                );
+            }
+            for priority in [
+                ProcessMemoryPrioritySetting::Low,
+                ProcessMemoryPrioritySetting::Normal,
+            ] {
+                let app_entity = app_entity.clone();
+                let process_name = process_name.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(t!(
+                        "process_list.save_rule_memory",
+                        priority = process_memory_priority_setting_label(priority)
+                    ))
+                    .on_click(move |_, _, cx| {
+                        app_entity.update(cx, |app, cx| {
+                            app.selected_process_id = Some(process_id);
+                            app.save_memory_priority_rule(&process_name, priority, cx);
+                        });
+                    }),
+                );
+            }
+            menu
+        })
         .child(process_list_name_cell(
             process.name.clone(),
             icon,
@@ -20225,6 +20409,7 @@ fn process_list_entry_row(
         edit_context,
         cx,
     ))
+    .into_any_element()
 }
 
 fn process_list_group_row(
@@ -21021,6 +21206,27 @@ fn process_list_state_enabled(value: &str) -> Option<bool> {
 
 fn process_list_count_label(count: usize) -> String {
     t!("process_list.count", count = count).to_string()
+}
+
+fn process_list_toolbar_label(app: &WinderustApp, process_count: usize) -> String {
+    let Some(process) = app.selected_process_id.and_then(|id| {
+        app.running_processes
+            .iter()
+            .find(|process| process.id == id)
+    }) else {
+        return process_list_count_label(process_count);
+    };
+    let custom_count = process_policy_summary(&app.settings, &app.plans, &process.name)
+        .custom_columns
+        .len();
+
+    t!(
+        "process_list.selected_summary",
+        name = process.name.clone(),
+        pid = process.id,
+        count = custom_count
+    )
+    .to_string()
 }
 
 fn process_list_pid_count_label(count: usize) -> String {
@@ -23668,6 +23874,50 @@ fn set_process_exclusion(
     } else {
         rules.retain(|rule| !process_setting_matches(&rule.process_name, process_name));
     }
+}
+
+fn set_process_priority_rule(
+    settings: &mut ProcessPrioritySettings,
+    process_name: &str,
+    priority: ProcessPrioritySetting,
+) {
+    let rule = settings
+        .exclusions
+        .iter_mut()
+        .find(|rule| process_setting_matches(&rule.process_name, process_name));
+    let rule = if let Some(rule) = rule {
+        rule
+    } else {
+        settings
+            .exclusions
+            .push(new_process_exclusion_rule(process_name));
+        settings.exclusions.last_mut().expect("rule was just added")
+    };
+    rule.enabled = true;
+    rule.set_process_priority_override(true, priority);
+    rule.set_process_priority_override(false, priority);
+}
+
+fn set_memory_priority_rule(
+    settings: &mut MemoryPrioritySettings,
+    process_name: &str,
+    priority: ProcessMemoryPrioritySetting,
+) {
+    let rule = settings
+        .exclusions
+        .iter_mut()
+        .find(|rule| process_setting_matches(&rule.process_name, process_name));
+    let rule = if let Some(rule) = rule {
+        rule
+    } else {
+        settings
+            .exclusions
+            .push(new_process_exclusion_rule(process_name));
+        settings.exclusions.last_mut().expect("rule was just added")
+    };
+    rule.enabled = true;
+    rule.set_memory_priority_override(true, priority);
+    rule.set_memory_priority_override(false, priority);
 }
 
 fn can_add_suspension_process(settings: &AppSuspensionSettings, process: &str) -> bool {
