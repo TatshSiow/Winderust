@@ -42,7 +42,7 @@ Winderust Background Efficiency applies Windows EcoQoS to selected background us
 
 Implementation entry point:
 
-- `src/features/ecoqos/mod.rs`
+- `src/features/winderust_features/background_efficiency.rs`
 
 User-facing behavior:
 
@@ -104,7 +104,7 @@ Winderust Core Steering can apply hard process affinity masks, soft Windows CPU 
 
 Implementation entry point:
 
-- `src/features/affinity/mod.rs`
+- `src/features/cpu_control/core_steering.rs`
 
 ### Core Steering APIs
 
@@ -126,7 +126,7 @@ Winderust App Suspension is manual Win32 Job Object freezing. It is not the same
 
 Implementation entry point:
 
-- `src/features/suspension/mod.rs`
+- `src/features/advanced_controls/app_suspension.rs`
 
 User-facing behavior:
 

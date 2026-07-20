@@ -6,11 +6,11 @@ Do not build a new `Adaptive Saver Engine`.
 
 Implement `Smart Saver Mode` by extending the systems that already exist:
 
-- `src/features/ecoqos/mod.rs`: background EcoQoS and priority restore.
-- `src/features/workload_engine.rs`: adaptive background restraint under CPU pressure.
-- `src/features/affinity/mod.rs`: soft CPU Sets and hard affinity fallback.
-- `src/features/suspension/mod.rs`: active-audio detection that can be shared.
-- `src/automation.rs`: existing feature scheduling and status fan-out.
+- `src/features/winderust_features/background_efficiency.rs`: background EcoQoS and priority restore.
+- `src/features/winderust_features/workload_engine.rs`: adaptive background restraint under CPU pressure.
+- `src/features/cpu_control/core_steering.rs`: soft CPU Sets and hard affinity fallback.
+- `src/features/advanced_controls/app_suspension.rs`: active-audio detection that can be shared.
+- `src/backend/automation.rs`: existing feature scheduling and status fan-out.
 
 The only new low-risk saver behavior for the first implementation is:
 
@@ -104,10 +104,10 @@ EcoQoS and priority lowering may still run when audio detection fails; only the 
 
 ### 1. Share Active-Audio Detection
 
-Move the active-audio PID detection from `src/features/suspension/mod.rs` into a small shared module, for example:
+Move the active-audio PID detection from `src/features/advanced_controls/app_suspension.rs` into a small shared module, for example:
 
 ```text
-src/audio_activity.rs
+src/backend/audio_activity.rs
 ```
 
 Expose only:
@@ -122,8 +122,8 @@ Keep the suspension behavior unchanged.
 
 Update the process-throttling state builders in:
 
-- `src/features/ecoqos/mod.rs`
-- `src/features/workload_engine.rs`
+- `src/features/winderust_features/background_efficiency.rs`
+- `src/features/winderust_features/workload_engine.rs`
 
 Add `PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION` beside
 `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` only when the timer guard allows it.
@@ -193,7 +193,7 @@ Hidden Smart Saver measured 5.809 W vs closed/no-app 6.612 W, a 12.1% lower pack
 
 ## Implementation Status
 
-- Added `src/audio_activity.rs` and reused it from suspension, EcoQoS, and Workload Engine.
+- Added `src/backend/audio_activity.rs` and reused it from suspension, EcoQoS, and Workload Engine.
 - Added Smart Saver self-power handling for Winderust's own EcoQoS and timer requests.
 - Added temporary active-plan processor Saver values with restore-on-disable/drop and a Smart Saver child toggle to disable that processor-policy change.
 - Tuned the Smart Saver processor shape to cap processor performance at 60% with boost disabled after package-watt benchmarking.

@@ -14,7 +14,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - The title bar is compact: app icon/name, short description, native-feeling window controls.
 - The sidebar is fixed-width, searchable, and grouped by product area through `Page::sections()`.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
-- Navigation labels and page sections live in `src/ui/mod.rs`; page rendering dispatch stays in `render_page`.
+- Navigation labels and page sections live in `src/ui.rs`; page rendering dispatch stays in `render_page`.
 
 ## Layout Rules
 
@@ -47,8 +47,8 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ## Icons
 
-- Use `Icon::new(NavIcon::...)` for Lucide icons already registered through `src/assets.rs`.
-- If adding a Lucide icon, update both `NavIcon` and `src/assets.rs`.
+- Use `Icon::new(NavIcon::...)` for Lucide icons already registered through `src/ui/assets.rs`.
+- If adding a Lucide icon, update both `NavIcon` and `src/ui/assets.rs`.
 - Do not remove `icondata_core`, `icondata_lu`, or Lucide asset generation unless every `NavIcon` and generated SVG use is traced first.
 - Keep action icons at existing sizes, usually 12-18 px depending on row density.
 

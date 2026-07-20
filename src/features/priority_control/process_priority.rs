@@ -18,7 +18,7 @@ use crate::{
     foreground::{
         is_foreground_process, is_process_exited_message, list_processes, process_failure_key,
         process_names_by_id, process_session_id, same_process_name, unique_app_names,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -602,12 +602,18 @@ fn priority_class(priority: ProcessPrioritySetting) -> Option<u32> {
 }
 
 pub(crate) fn apply_once(
-    process_id: u32,
+    target: &ProcessActionTarget,
     priority: ProcessPrioritySetting,
 ) -> Result<&'static str, String> {
     let priority_class = quick_apply_priority_class(priority)
         .ok_or_else(|| "This priority is not available as a quick action.".to_owned())?;
-    let process = ProcessHandle::open(process_id).map_err(process_priority_error_message)?;
+    if is_builtin_excluded(&target.name) {
+        return Err("Built-in Windows processes cannot be modified.".to_owned());
+    }
+    let process = ProcessHandle::open(target.id).map_err(process_priority_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time) {
+        return Err("The selected process instance has changed.".to_owned());
+    }
     if process
         .priority_class()
         .map_err(process_priority_error_message)?
@@ -618,7 +624,16 @@ pub(crate) fn apply_once(
     process
         .set_priority_class(priority_class)
         .map_err(process_priority_error_message)?;
-    Ok(priority_class_label(priority_class))
+    let applied = process
+        .priority_class()
+        .map_err(process_priority_error_message)?;
+    if applied != priority_class {
+        return Err(format!(
+            "Process priority remained {}.",
+            priority_class_label(applied)
+        ));
+    }
+    Ok(priority_class_label(applied))
 }
 
 fn quick_apply_priority_class(priority: ProcessPrioritySetting) -> Option<u32> {

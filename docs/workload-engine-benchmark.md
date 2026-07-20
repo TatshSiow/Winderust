@@ -103,7 +103,7 @@ reasoning and topology-specific unit tests.
 
 ## Current Adaptive Engine Preset Model
 
-Keep this in sync with the Adaptive Engine preset values in `src/app.rs`.
+Keep this in sync with the Adaptive Engine preset values in `src/ui/app.rs`.
 
 | Preset | Benchmark model |
 | --- | --- |

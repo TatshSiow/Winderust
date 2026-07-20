@@ -32,17 +32,17 @@ cargo build --release --target-dir target-next
 ## Source Map
 
 - `src/main.rs`: app entry, single-instance guard, GPUI startup.
-- `src/app.rs`: main GPUI state, rendering, navigation, dialogs, and page wiring. It is large; shrink by moving one complete page/helper cluster at a time.
-- `src/ui/mod.rs`: page enum, section grouping, labels, and small UI-independent helpers.
+- `src/ui/app.rs`: main GPUI state, rendering, navigation, dialogs, and page wiring. It is large; shrink by moving one complete page/helper cluster at a time.
+- `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
-- `src/automation.rs`: background worker loop that applies runtime policies.
+- `src/backend/automation.rs`: background worker loop that applies runtime policies.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
 - Feature backends live in their own modules, for example `ecoqos`, `suspension`, `affinity`, `cpu_limiter`, `responsiveness`, `smart_trim`, and priority modules.
 
 ## Navigation
 
-Pages are grouped in `src/ui/mod.rs`:
+Pages are grouped in `src/ui.rs`:
 
 - Overview: dashboard.
 - Process List: process table and per-process policy surface.
@@ -60,8 +60,8 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `W
 
 - Runtime settings live in `Settings`.
 - Add new fields with `#[serde(default)]` when older config files must keep loading.
-- If a setting is edited through the UI, update the relevant input sync code in `src/app.rs`.
-- TOML import/export uses native Windows file dialogs from `src/app.rs`.
+- If a setting is edited through the UI, update the relevant input sync code in `src/ui/app.rs`.
+- TOML import/export uses native Windows file dialogs from `src/ui/app.rs`.
 ## Runtime Safety
 
 Process-control features must keep these defaults:
@@ -79,15 +79,15 @@ Process-control features must keep these defaults:
 - Use existing GPUI/gpui-component helpers before adding new UI primitives.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
 - Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
-- For `src/app.rs` cleanup, move one complete page or repeated helper family at a time; do not start a framework rewrite.
+- For `src/ui/app.rs` cleanup, move one complete page or repeated helper family at a time; do not start a framework rewrite.
 
 ## Windows APIs
 
 - Power plan and processor tuning: `src/power/powercfg.rs`.
 - Foreground and process enumeration: `src/foreground/`.
 - Idle and input hooks: `src/activity/`.
-- Tray behavior: `src/tray.rs`.
-- Timer resolution: `src/features/timer_resolution.rs`.
-- Win32 priority separation: registry code in `src/app.rs`.
+- Tray behavior: `src/backend/tray.rs`.
+- Timer resolution: `src/features/advanced_controls/timer_resolution.rs`.
+- Win32 priority separation: registry code in `src/ui/app.rs`.
 
 Prefer native API calls already used in the repo. Do not add command spawning around `powercfg` unless the Win32 path cannot support the needed behavior.

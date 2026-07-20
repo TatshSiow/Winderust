@@ -19,7 +19,7 @@ use crate::{
     foreground::{
         contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
         process_count_label, process_failure_key, process_session_id, same_process_name,
-        unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        unique_app_names, ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -661,13 +661,19 @@ impl ProcessHandle {
 }
 
 pub(crate) fn apply_once(
-    process_id: u32,
+    target: &ProcessActionTarget,
     priority: ProcessMemoryPrioritySetting,
 ) -> Result<&'static str, String> {
     let priority = priority
         .priority()
         .ok_or_else(|| "This memory priority is not available as a quick action.".to_owned())?;
-    let process = ProcessHandle::open(process_id).map_err(memory_priority_error_message)?;
+    if is_builtin_excluded(&target.name) {
+        return Err("Built-in Windows processes cannot be modified.".to_owned());
+    }
+    let process = ProcessHandle::open(target.id).map_err(memory_priority_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time) {
+        return Err("The selected process instance has changed.".to_owned());
+    }
     process
         .set_memory_priority(priority)
         .map_err(memory_priority_error_message)?;

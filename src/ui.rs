@@ -1,5 +1,8 @@
 use rust_i18n::t;
 
+pub(crate) mod app;
+pub(crate) mod assets;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
     Dashboard,

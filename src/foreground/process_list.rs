@@ -13,7 +13,7 @@ use windows_sys::Win32::{
         },
         RemoteDesktop::ProcessIdToSessionId,
         Threading::{
-            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
             PROCESS_QUERY_LIMITED_INFORMATION,
         },
     },
@@ -76,6 +76,47 @@ pub struct ProcessInfo {
     pub id: u32,
     pub parent_id: Option<u32>,
     pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessActionTarget {
+    pub id: u32,
+    pub name: String,
+    pub creation_time: u64,
+}
+
+pub fn capture_process_action_target(
+    process_id: u32,
+    expected_name: &str,
+) -> Result<ProcessActionTarget, String> {
+    let current_process_id = unsafe { GetCurrentProcessId() };
+    if process_id == 0 || process_id == current_process_id {
+        return Err("Winderust cannot modify this process.".to_owned());
+    }
+    let current_session_id = process_session_id(current_process_id)
+        .ok_or_else(|| "Could not determine the current Windows session.".to_owned())?;
+    if process_session_id(process_id) != Some(current_session_id) {
+        return Err("Processes in another Windows session cannot be modified.".to_owned());
+    }
+    let process = list_processes()?
+        .into_iter()
+        .find(|process| process.id == process_id)
+        .ok_or_else(|| "Process exited.".to_owned())?;
+    if !same_process_name(&process.name, expected_name) {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    if handle.is_null() {
+        return Err("The selected process is no longer available.".to_owned());
+    }
+    let creation_time = WinHandle::new(handle)
+        .process_creation_time()
+        .ok_or_else(|| "Could not identify the selected process instance.".to_owned())?;
+    Ok(ProcessActionTarget {
+        id: process_id,
+        name: process.name,
+        creation_time,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

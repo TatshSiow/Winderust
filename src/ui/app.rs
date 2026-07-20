@@ -71,8 +71,8 @@ use crate::{
     ecoqos::{self, EcoQosSnapshot},
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
-        list_process_candidates, list_processes, same_process_name, ForegroundDetector,
-        ProcessCandidateInfo, ProcessInfo,
+        capture_process_action_target, list_process_candidates, list_processes, same_process_name,
+        ForegroundDetector, ProcessActionTarget, ProcessCandidateInfo, ProcessInfo,
     },
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
@@ -3857,25 +3857,26 @@ impl WinderustApp {
 
     fn apply_process_priority_once(
         &mut self,
-        process_id: u32,
+        target: Result<ProcessActionTarget, String>,
         process_name: &str,
         priority: ProcessPrioritySetting,
         cx: &mut Context<Self>,
     ) {
-        self.status_message = match process_priority::apply_once(process_id, priority) {
-            Ok(priority) => t!(
-                "process_list.applied_once",
-                name = process_name,
-                priority = priority
-            )
-            .to_string(),
-            Err(error) => t!(
-                "process_list.apply_once_failed",
-                name = process_name,
-                error = error
-            )
-            .to_string(),
-        };
+        self.status_message =
+            match target.and_then(|target| process_priority::apply_once(&target, priority)) {
+                Ok(priority) => t!(
+                    "process_list.applied_once",
+                    name = process_name,
+                    priority = priority
+                )
+                .to_string(),
+                Err(error) => t!(
+                    "process_list.apply_once_failed",
+                    name = process_name,
+                    error = error
+                )
+                .to_string(),
+            };
         cx.notify();
     }
 
@@ -3887,8 +3888,13 @@ impl WinderustApp {
     ) {
         set_process_priority_rule(&mut self.settings.process_priority, process_name, priority);
         if self.save_settings() {
+            let key = if self.settings.process_priority.enabled {
+                "process_list.saved_priority_rule"
+            } else {
+                "process_list.saved_priority_rule_disabled"
+            };
             self.status_message = t!(
-                "process_list.saved_priority_rule",
+                key,
                 name = process_name,
                 priority = process_priority_setting_label(priority)
             )
@@ -3899,25 +3905,26 @@ impl WinderustApp {
 
     fn apply_memory_priority_once(
         &mut self,
-        process_id: u32,
+        target: Result<ProcessActionTarget, String>,
         process_name: &str,
         priority: ProcessMemoryPrioritySetting,
         cx: &mut Context<Self>,
     ) {
-        self.status_message = match memory_priority::apply_once(process_id, priority) {
-            Ok(priority) => t!(
-                "process_list.applied_memory_once",
-                name = process_name,
-                priority = priority
-            )
-            .to_string(),
-            Err(error) => t!(
-                "process_list.apply_memory_once_failed",
-                name = process_name,
-                error = error
-            )
-            .to_string(),
-        };
+        self.status_message =
+            match target.and_then(|target| memory_priority::apply_once(&target, priority)) {
+                Ok(priority) => t!(
+                    "process_list.applied_memory_once",
+                    name = process_name,
+                    priority = priority
+                )
+                .to_string(),
+                Err(error) => t!(
+                    "process_list.apply_memory_once_failed",
+                    name = process_name,
+                    error = error
+                )
+                .to_string(),
+            };
         cx.notify();
     }
 
@@ -3929,8 +3936,13 @@ impl WinderustApp {
     ) {
         set_memory_priority_rule(&mut self.settings.memory_priority, process_name, priority);
         if self.save_settings() {
+            let key = if self.settings.memory_priority.enabled {
+                "process_list.saved_memory_rule"
+            } else {
+                "process_list.saved_memory_rule_disabled"
+            };
             self.status_message = t!(
-                "process_list.saved_memory_rule",
+                key,
                 name = process_name,
                 priority = process_memory_priority_setting_label(priority)
             )
@@ -20301,6 +20313,7 @@ fn process_list_entry_row(
         }))
         .context_menu(move |menu, _, _| {
             let mut menu = menu;
+            let action_target = capture_process_action_target(process_id, &process_name);
             for priority in [
                 ProcessPrioritySetting::BelowNormal,
                 ProcessPrioritySetting::Normal,
@@ -20308,6 +20321,7 @@ fn process_list_entry_row(
             ] {
                 let app_entity = app_entity.clone();
                 let process_name = process_name.clone();
+                let action_target = action_target.clone();
                 menu = menu.item(
                     PopupMenuItem::new(t!(
                         "process_list.apply_once_priority",
@@ -20317,7 +20331,7 @@ fn process_list_entry_row(
                         app_entity.update(cx, |app, cx| {
                             app.selected_process_id = Some(process_id);
                             app.apply_process_priority_once(
-                                process_id,
+                                action_target.clone(),
                                 &process_name,
                                 priority,
                                 cx,
@@ -20352,6 +20366,7 @@ fn process_list_entry_row(
             ] {
                 let app_entity = app_entity.clone();
                 let process_name = process_name.clone();
+                let action_target = action_target.clone();
                 menu = menu.item(
                     PopupMenuItem::new(t!(
                         "process_list.apply_once_memory",
@@ -20360,7 +20375,12 @@ fn process_list_entry_row(
                     .on_click(move |_, _, cx| {
                         app_entity.update(cx, |app, cx| {
                             app.selected_process_id = Some(process_id);
-                            app.apply_memory_priority_once(process_id, &process_name, priority, cx);
+                            app.apply_memory_priority_once(
+                                action_target.clone(),
+                                &process_name,
+                                priority,
+                                cx,
+                            );
                         });
                     }),
                 );
