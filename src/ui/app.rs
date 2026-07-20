@@ -17837,13 +17837,7 @@ fn page_header_with_help(
         .overflow_hidden();
 
     let current_trail = breadcrumb_trail(page);
-    let transition = transition.and_then(|transition| {
-        if transition.current == current_trail {
-            Some(transition)
-        } else {
-            None
-        }
-    });
+    let transition = transition.filter(|transition| transition.current == current_trail);
     let entering_start = transition
         .map(|transition| common_breadcrumb_prefix_len(&transition.previous, &current_trail))
         .unwrap_or(current_trail.len());
