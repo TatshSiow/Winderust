@@ -52,7 +52,7 @@ jobs:
               Set-Content -Encoding ascii dist\Winderust-${{ github.ref_name }}-windows-x64.zip.sha256
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Winderust-${{ github.ref_name }}-windows-x64
           path: |
