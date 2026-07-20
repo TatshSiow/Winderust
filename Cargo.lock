@@ -6710,7 +6710,7 @@ dependencies = [
  "rfd",
  "rust-i18n",
  "serde",
- "toml 0.8.23",
+ "toml 1.1.2+spec-1.1.0",
  "windows 0.61.3",
  "windows-sys 0.61.2",
  "winreg 0.56.0",
