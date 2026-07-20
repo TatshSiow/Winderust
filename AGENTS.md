@@ -7,7 +7,8 @@ Read `.agents/memory/README.md` first.
 - Product: **Winderust - Windows Performance & Power Manager**.
 - Treat visible UI names as the canonical names for feature modules, settings, page variants, helpers, tests, locale keys, scripts, and documentation.
 - Keep Windows terms such as EcoQoS, affinity masks, CPU Sets, and Win32 API names only where code directly describes the operating-system mechanism.
-- Winderust is unpublished. Do not add legacy config aliases, schema migrations, old product-name paths, cross-brand recovery, or hidden compatibility fallbacks unless the user explicitly requests them.
+- Winderust is public pre-release software licensed GPL-3.0-only, Copyright (C) 2026 Tatsh Siow. Do not add legacy config aliases, schema migrations, old product-name paths, cross-brand recovery, or hidden compatibility fallbacks unless the user explicitly requests them.
+- Personal tooling is local-only. Keep .codex/, .agents/skills/, and graphify-out/ ignored and out of release artifacts.
 - Power-plan ownership is local: By Activity owns its Idle/Active selections; By Foreground, By Running App, By CPU Load, and By Time rules each own their selected plan. There is no global plan fallback.
 - Only recover temporary managed plans whose name and description identify the current `Winderust Adaptive` plan.
 
@@ -16,7 +17,7 @@ Read `.agents/memory/README.md` first.
 - Trace all callers before renaming or removing a setting.
 - Keep `Page`, navigation sections, render dispatch, locale keys, settings fields, backend status, scripts, and docs aligned with the same UI term.
 - Preserve runtime safety behavior: process-state restoration, protected-process filtering, conservative defaults, and failure handling are not legacy compatibility.
-- Before handoff, run `cargo fmt -- --check`, `cargo test`, the legacy scan from the development guide, and `graphify update .` after code changes.
+- Before handoff, run `cargo fmt -- --check`, strict Clippy, locked tests, the legacy scan from the development guide, and `graphify update .` after code changes.
 
 ## graphify
 

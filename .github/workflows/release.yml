@@ -1,0 +1,68 @@
+name: Draft Release
+
+on:
+  push:
+    tags:
+      - v*
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Validate tag and package version
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw Cargo.toml
+          $version = [regex]::Match($manifest, '(?m)^version = "([^"]+)"$').Groups[1].Value
+          if ("v$version" -ne "${{ github.ref_name }}") {
+              throw "Tag ${{ github.ref_name }} does not match Cargo version $version"
+          }
+
+      - name: Verify source
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+      - name: Build release executable
+        shell: pwsh
+        run: .\scripts\build_release.cmd
+
+      - name: Package release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist\Winderust | Out-Null
+          Copy-Item target\release\winderust.exe, LICENSE, README.md, CHANGELOG.md dist\Winderust
+          Compress-Archive -Path dist\Winderust -DestinationPath dist\Winderust-${{ github.ref_name }}-windows-x64.zip
+          Get-FileHash dist\Winderust-${{ github.ref_name }}-windows-x64.zip -Algorithm SHA256 |
+              ForEach-Object { "$($_.Hash.ToLower())  Winderust-${{ github.ref_name }}-windows-x64.zip" } |
+              Set-Content -Encoding ascii dist\Winderust-${{ github.ref_name }}-windows-x64.zip.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Winderust-${{ github.ref_name }}-windows-x64
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+      - name: Create draft prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create "${{ github.ref_name }}" dist\Winderust-${{ github.ref_name }}-windows-x64.zip dist\Winderust-${{ github.ref_name }}-windows-x64.zip.sha256 --draft --prerelease --generate-notes --verify-tag --title "Winderust ${{ github.ref_name }}"

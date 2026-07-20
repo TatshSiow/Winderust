@@ -14,19 +14,20 @@ Use these checks before handoff:
 
 ```powershell
 cargo fmt -- --check
-cargo test
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
 ```
 
 For release builds:
 
 ```powershell
-cargo build --release
+.\scripts\build_release.cmd
 ```
 
 If `target\release\winderust.exe` is locked because the app is running:
 
 ```powershell
-cargo build --release --target-dir target-next
+.\scripts\build_release.cmd -TargetDir target-next
 ```
 
 ## Source Map

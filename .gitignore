@@ -2,10 +2,18 @@
 /target-next/
 /target-bench/
 /benchmark-results/
+/dist/
 
 # Local runtime/config artifacts
 *.log
 *.tmp
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
 
 # Editor and OS files
 .vscode/
@@ -16,5 +24,7 @@
 Thumbs.db
 Desktop.ini
 
-#graphify
+# Personal development and agent tooling
+/.codex/
+/.agents/skills/
 /graphify-out

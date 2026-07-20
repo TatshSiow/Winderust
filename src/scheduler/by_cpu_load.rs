@@ -89,7 +89,7 @@ fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ByCpuLoadRule, CpuUsageComparison, PowerPlanSettings};
+    use crate::config::{ByCpuLoadRule, CpuUsageComparison};
 
     #[test]
     fn by_cpu_load_returns_matching_zero_duration_rule() {

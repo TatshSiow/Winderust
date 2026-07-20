@@ -18,7 +18,8 @@
 
 - UI wording is the naming source of truth. Current feature names include Adaptive Engine, Background Efficiency, Memory Trim, By Foreground, By Running App, By CPU Load, By Activity, By Time, Core Limiter, Core Steering, and Dynamic Priority Boost.
 - Use native mechanism names only at Windows boundaries: EcoQoS, affinity masks, CPU Sets, and exact Win32 function names remain technical terms.
-- Winderust is unpublished. Settings use only the current schema; do not add serde aliases, migration code, old brand paths, or compatibility-only fallbacks.
+- Winderust is public pre-release software under GPL-3.0-only, Copyright (C) 2026 Tatsh Siow. Settings use only the current schema; do not add serde aliases, migration code, old brand paths, or compatibility-only fallbacks.
+- Keep personal tooling local-only: .codex/, .agents/skills/, and graphify-out/ must remain ignored and excluded from release artifacts.
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
 - Repeated process failure suppression uses `ExecutionFailureTracker` in `src/rules/execution_failure.rs`; the threshold comes from `settings.advanced.execution_failure_suppression_threshold`.
@@ -43,5 +44,5 @@
 
 ## Verification
 
-- Default check: `cargo test`.
-- Release build may need a longer timeout; `cargo build --release` took about 2m13s.
+- Default checks: `cargo fmt -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`.
+- Release build: `.\scripts\build_release.cmd`. It discovers fxc.exe from the installed Windows SDK.
