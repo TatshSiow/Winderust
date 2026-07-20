@@ -5,7 +5,7 @@ Notable changes to Winderust are documented here.
 The project follows Semantic Versioning after its first stable release. During
 the public alpha, minor releases may include breaking settings changes.
 
-## 0.1.0 - 2026-07-20
+## 0.1.0-alpha - 2026-07-20
 
 ### Added
 
