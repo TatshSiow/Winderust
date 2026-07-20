@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $benchmarkScript = Join-Path $PSScriptRoot 'workload_engine_benchmark.ps1'
-$env:POWERLEAF_BENCHMARK_IMPORT_ONLY = '1'
+$env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
 try {
     . $benchmarkScript `
         -Passes $Passes `
@@ -21,13 +21,13 @@ try {
         -WinderustExePath $WinderustExePath `
         -SkipPower:$SkipPower
 } finally {
-    Remove-Item Env:POWERLEAF_BENCHMARK_IMPORT_ONLY -ErrorAction SilentlyContinue
+    Remove-Item Env:WINDERUST_BENCHMARK_IMPORT_ONLY -ErrorAction SilentlyContinue
 }
 
 $balancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
 $originalGuid = Get-ActiveSchemeGuid
 $exePath = (Resolve-Path -LiteralPath $WinderustExePath).Path
-$tempAppData = Join-Path ([IO.Path]::GetTempPath()) 'powerleaf-adaptive-benchmark-appdata'
+$tempAppData = Join-Path ([IO.Path]::GetTempPath()) 'winderust-adaptive-benchmark-appdata'
 $configDir = Join-Path $tempAppData 'Winderust'
 $configPath = Join-Path $configDir 'settings.toml'
 $runtime = $null
@@ -88,7 +88,7 @@ function Start-AdaptiveRuntime {
         if ($process.HasExited) {
             throw 'Winderust exited before Adaptive Engine activated.'
         }
-        $planLine = powercfg /list | Where-Object { $_ -like '*PowerLeaf Adaptive*' } | Select-Object -First 1
+        $planLine = powercfg /list | Where-Object { $_ -like '*Winderust Adaptive*' } | Select-Object -First 1
         if ($planLine) {
             return [pscustomobject]@{
                 process = $process

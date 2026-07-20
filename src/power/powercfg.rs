@@ -30,8 +30,10 @@ use super::{
 #[derive(Debug, Default)]
 pub struct PowerPlanManager;
 
-const ADAPTIVE_PLAN_NAME: &str = "PowerLeaf Adaptive";
-const ADAPTIVE_PLAN_DESCRIPTION_PREFIX: &str = "PowerLeaf managed adaptive plan; restore=";
+const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
+const ADAPTIVE_PLAN_DESCRIPTION_PREFIX: &str = "Winderust managed adaptive plan; restore=";
+const ADAPTIVE_PLAN_NAME_SUFFIX: &str = " Adaptive";
+const ADAPTIVE_PLAN_DESCRIPTION_SUFFIX: &str = " managed adaptive plan; restore=";
 
 #[derive(Debug)]
 pub struct EffectivePowerModeMonitor {
@@ -140,12 +142,14 @@ impl PowerPlanManager {
             .map(|plan| plan.guid.to_ascii_lowercase())
             .collect::<Vec<_>>();
 
-        for plan in plans.iter().filter(|plan| plan.name == ADAPTIVE_PLAN_NAME) {
+        for plan in plans
+            .iter()
+            .filter(|plan| plan.name.ends_with(ADAPTIVE_PLAN_NAME_SUFFIX))
+        {
             let guid = parse_guid(&plan.guid)
                 .ok_or_else(|| "Invalid managed power plan GUID.".to_owned())?;
             let description = read_scheme_description(&guid)?;
-            let Some(restore_guid) = description.strip_prefix(ADAPTIVE_PLAN_DESCRIPTION_PREFIX)
-            else {
+            let Some(restore_guid) = managed_adaptive_restore_guid(&plan.name, &description) else {
                 continue;
             };
             let restore_exists = known_guids
@@ -678,6 +682,13 @@ fn active_scheme_guid() -> Result<String, String> {
     Ok(format_guid(&guid))
 }
 
+fn managed_adaptive_restore_guid<'a>(plan_name: &str, description: &'a str) -> Option<&'a str> {
+    let brand = plan_name.strip_suffix(ADAPTIVE_PLAN_NAME_SUFFIX)?;
+    let description = description.strip_prefix(brand)?;
+    let restore_guid = description.strip_prefix(ADAPTIVE_PLAN_DESCRIPTION_SUFFIX)?;
+    parse_guid(restore_guid).map(|_| restore_guid)
+}
+
 fn parse_guid(value: &str) -> Option<GUID> {
     let value = value.trim().trim_start_matches('{').trim_end_matches('}');
     let parts: Vec<_> = value.split('-').collect();
@@ -740,6 +751,26 @@ mod tests {
         let guid = parse_guid(raw).unwrap();
 
         assert_eq!(format_guid(&guid), raw);
+    }
+
+    #[test]
+    fn recognizes_managed_adaptive_plan_across_brand_changes() {
+        let restore_guid = "381b4222-f694-41f0-9685-ff5bb260df2e";
+
+        assert_eq!(
+            managed_adaptive_restore_guid(
+                "PreviousName Adaptive",
+                &format!("PreviousName managed adaptive plan; restore={restore_guid}"),
+            ),
+            Some(restore_guid)
+        );
+        assert_eq!(
+            managed_adaptive_restore_guid(
+                "Unrelated Plan",
+                &format!("PreviousName managed adaptive plan; restore={restore_guid}"),
+            ),
+            None
+        );
     }
 
     #[test]

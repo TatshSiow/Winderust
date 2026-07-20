@@ -40,7 +40,7 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName", "Tatsh Siow\0"
-            VALUE "FileDescription", "Rust-based Windows tuning controller\0"
+            VALUE "FileDescription", "Windows Performance & Power Manager\0"
             VALUE "FileVersion", "{version}\0"
             VALUE "InternalName", "winderust\0"
             VALUE "OriginalFilename", "winderust.exe\0"

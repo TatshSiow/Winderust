@@ -2,7 +2,7 @@
 name = "winderust"
 version = "0.1.0"
 edition = "2021"
-description = "Rust-based Windows tuning controller"
+description = "Windows Performance & Power Manager"
 publish = false
 build = "build.rs"
 

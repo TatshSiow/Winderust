@@ -1712,7 +1712,7 @@ $assistCoverage = [pscustomobject][ordered]@{
     foreground_detection = 'modeled by treating the benchmark process as foreground; the app automation loop is not launched'
 }
 
-if ($env:POWERLEAF_BENCHMARK_IMPORT_ONLY -eq '1') {
+if ($env:WINDERUST_BENCHMARK_IMPORT_ONLY -eq '1') {
     return
 }
 

@@ -1,6 +1,6 @@
 # Winderust
 
-Winderust is a Rust-based Windows tuning controller.
+**Windows Performance & Power Manager**
 
 Naming: **Wanderlust** + **Windows Derust**
 
@@ -14,7 +14,7 @@ Definition: Wander and explore, polish your rusty Windows and shine.
 - `Memory Trim`: trims idle high-memory background processes during memory pressure while protecting foreground and excluded apps.
 
 ### Power Automation
-- `Adaptive Engine` activates a temporary `PowerLeaf Adaptive` plan and scales core parking, processor minimum/maximum state, boost policy, and boost mode from burst, peak-core, total-load, foreground, and I/O demand. The previous plan is restored when Adaptive Engine stops.
+- `Adaptive Engine` activates a temporary `Winderust Adaptive` plan and scales core parking, processor minimum/maximum state, boost policy, and boost mode from burst, peak-core, total-load, foreground, and I/O demand. The previous plan is restored when Adaptive Engine stops.
 - Switches power plans by foreground app, running app, CPU load, user activity, and schedule.
 - Supports per-rule plans plus processor power tuning such as core parking, CPU limits, and boost mode.
 - Applies rules in foreground > running app > CPU load > activity > schedule order.

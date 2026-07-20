@@ -53,7 +53,7 @@ Score component ratios from the same run, all vs paired Stock Balanced samples:
 
 This is a real release-binary A/B. Stock used the Windows Balanced plan with no
 Winderust process. Adaptive launched Winderust with an isolated configuration,
-cloned Windows Balanced into `PowerLeaf Adaptive`, and ran the automation loop.
+cloned Windows Balanced into `Winderust Adaptive`, and ran the automation loop.
 Every adaptive pass reached the hybrid-aware Burst AC policy: 50% minimum
 unparked cores, 20% minimum processor state, 100% maximum processor state,
 100% boost policy, and Aggressive boost mode.

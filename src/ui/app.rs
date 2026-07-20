@@ -14402,7 +14402,7 @@ impl WinderustApp {
                                             .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                                     ),
                             )
-                            .child(text_muted("A Rust-based Windows tuning controller.")),
+                            .child(text_muted("Windows Performance & Power Manager")),
                     )
                     .child(
                         h_flex()

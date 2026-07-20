@@ -2,7 +2,7 @@ _version: 1
 
 app:
   name: "Winderust"
-  description: "Rust-based Windows tuning controller"
+  description: "Windows Performance & Power Manager"
 
 nav:
   overview: "首頁"
