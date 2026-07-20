@@ -18,7 +18,7 @@ icondata_core = "0.1.0"
 icondata_lu = "0.1.0"
 raw-window-handle = "0.6.2"
 rfd = { version = "0.17.2", default-features = false }
-rust-i18n = "3"
+rust-i18n = "4"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "0.8.23"
 windows = { version = "0.61.3", features = [
