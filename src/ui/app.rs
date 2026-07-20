@@ -21640,9 +21640,20 @@ fn action_log_action_label(action: ActionLogAction) -> &'static str {
 }
 
 fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
-    let header = "sequence,timestamp,feature,process_id,process_name,action,result,reason\r\n";
-    let mut csv = String::with_capacity(header.len() + entries.len() * 128);
-    csv.push_str(header);
+    let mut csv = csv::WriterBuilder::new()
+        .terminator(csv::Terminator::CRLF)
+        .from_writer(Vec::with_capacity(entries.len() * 128));
+    csv.write_record([
+        "sequence",
+        "timestamp",
+        "feature",
+        "process_id",
+        "process_name",
+        "action",
+        "result",
+        "reason",
+    ])
+    .expect("writing CSV to memory cannot fail");
     for entry in entries {
         let sequence = entry.sequence.to_string();
         let timestamp = action_log_export_time_label(entry.timestamp_epoch_ms);
@@ -21651,25 +21662,24 @@ fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
             .map(|id| id.to_string())
             .unwrap_or_default();
 
-        push_csv_field(&mut csv, &sequence);
-        csv.push(',');
-        push_csv_field(&mut csv, &timestamp);
-        csv.push(',');
         let feature = action_log_feature_label(entry.feature);
-        push_csv_field(&mut csv, &feature);
-        csv.push(',');
-        push_csv_field(&mut csv, &process_id);
-        csv.push(',');
-        push_csv_field(&mut csv, &entry.process_name);
-        csv.push(',');
-        push_csv_field(&mut csv, action_log_action_label(entry.action));
-        csv.push(',');
-        push_csv_field(&mut csv, action_log_result_text(entry.result));
-        csv.push(',');
-        push_csv_field(&mut csv, &entry.reason);
-        csv.push_str("\r\n");
+        csv.write_record([
+            sequence.as_str(),
+            timestamp.as_str(),
+            feature.as_str(),
+            process_id.as_str(),
+            entry.process_name.as_str(),
+            action_log_action_label(entry.action),
+            action_log_result_text(entry.result),
+            entry.reason.as_str(),
+        ])
+        .expect("writing CSV to memory cannot fail");
     }
-    csv
+    String::from_utf8(
+        csv.into_inner()
+            .expect("flushing CSV memory buffer cannot fail"),
+    )
+    .expect("CSV fields are valid UTF-8")
 }
 
 fn action_log_export_time_label(timestamp_epoch_ms: u128) -> String {
@@ -21690,6 +21700,7 @@ fn csv_escape(value: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn push_csv_field(csv: &mut String, value: &str) {
     if value.contains([',', '"', '\n', '\r']) {
         csv.push('"');
@@ -26700,6 +26711,9 @@ mod tests {
 
     #[test]
     fn csv_escape_quotes_fields_with_special_characters() {
+        let mut escaped = String::new();
+        push_csv_field(&mut escaped, "two,parts");
+        assert_eq!(escaped.len(), 11);
         assert_eq!(csv_escape("plain"), "plain");
         assert_eq!(csv_escape("two,parts"), "\"two,parts\"");
         assert_eq!(csv_escape("quoted \"value\""), "\"quoted \"\"value\"\"\"");

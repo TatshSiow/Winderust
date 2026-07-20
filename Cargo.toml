@@ -7,12 +7,15 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+atomic-write-file = "0.3.0"
 chrono = "0.4.44"
+csv = "1.4.0"
 gpui = "0.2.2"
 gpui-component = "0.5.1"
 icondata_core = "0.1.0"
 icondata_lu = "0.1.0"
 raw-window-handle = "0.6.2"
+rfd = { version = "0.17.2", default-features = false }
 rust-i18n = "3"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "0.8.23"
@@ -52,6 +55,7 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Input_XboxController",
     "Win32_UI_WindowsAndMessaging",
 ] }
+winreg = "0.56.0"
 
 [profile.release]
 lto = "thin"

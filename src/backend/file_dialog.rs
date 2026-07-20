@@ -1,19 +1,17 @@
 use std::{
-    ffi::OsString,
-    os::windows::ffi::{OsStrExt, OsStringExt},
+    num::NonZeroIsize,
     path::{Path, PathBuf},
 };
 
 use chrono::Local;
-use windows_sys::Win32::{
-    Foundation::HWND,
-    UI::Controls::Dialogs::{
-        CommDlgExtendedError, GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST,
-        OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
-    },
+use raw_window_handle::{
+    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawDisplayHandle,
+    RawWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
 };
+use rfd::FileDialog;
+use windows_sys::Win32::Foundation::HWND;
 
-use crate::{config, win_util::wide_null};
+use crate::config;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FileDialogMode {
@@ -21,114 +19,76 @@ pub(crate) enum FileDialogMode {
     Save,
 }
 
-struct FileDialogOptions {
-    mode: FileDialogMode,
-    default_path: PathBuf,
-    filter: &'static str,
-    default_extension: &'static str,
-    title: &'static str,
-}
-
 pub(crate) fn choose_settings_file(
     hwnd: Option<HWND>,
     mode: FileDialogMode,
 ) -> Result<Option<PathBuf>, String> {
-    choose_file(
-        hwnd,
-        FileDialogOptions {
-            mode,
-            default_path: match mode {
-                FileDialogMode::Open => config::storage::config_path(),
-                FileDialogMode::Save => config::storage::default_export_toml_path(),
-            },
-            filter: "TOML settings (*.toml)\0*.toml\0All files (*.*)\0*.*\0",
-            default_extension: "toml",
-            title: match mode {
-                FileDialogMode::Open => "Import settings",
-                FileDialogMode::Save => "Export settings",
-            },
-        },
-    )
+    let default_path = match mode {
+        FileDialogMode::Open => config::storage::config_path(),
+        FileDialogMode::Save => config::storage::default_export_toml_path(),
+    };
+    let dialog = dialog(hwnd)
+        .add_filter("TOML settings", &["toml"])
+        .set_directory(default_path.parent().unwrap_or_else(|| Path::new(".")))
+        .set_file_name(
+            default_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+        )
+        .set_title(match mode {
+            FileDialogMode::Open => "Import settings",
+            FileDialogMode::Save => "Export settings",
+        });
+    Ok(match mode {
+        FileDialogMode::Open => dialog.pick_file(),
+        FileDialogMode::Save => dialog.save_file(),
+    })
 }
 
 pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Result<Option<PathBuf>, String> {
-    choose_file(
-        hwnd,
-        FileDialogOptions {
-            mode: FileDialogMode::Save,
-            default_path: default_action_log_export_csv_path(),
-            filter: "CSV files (*.csv)\0*.csv\0All files (*.*)\0*.*\0",
-            default_extension: "csv",
-            title: "Export log",
-        },
-    )
+    let filename = format!(
+        "winderust_action_log_{}_{}.csv",
+        env!("CARGO_PKG_VERSION"),
+        Local::now().format("%Y-%m-%d")
+    );
+    Ok(dialog(hwnd)
+        .add_filter("CSV files", &["csv"])
+        .set_directory(
+            config::storage::config_path()
+                .parent()
+                .unwrap_or_else(|| Path::new(".")),
+        )
+        .set_file_name(filename)
+        .set_title("Export log")
+        .save_file())
 }
 
-fn choose_file(hwnd: Option<HWND>, options: FileDialogOptions) -> Result<Option<PathBuf>, String> {
-    const FILE_BUFFER_LEN: usize = 4096;
+fn dialog(hwnd: Option<HWND>) -> FileDialog {
+    hwnd.and_then(DialogParent::new)
+        .map_or_else(FileDialog::new, |parent| {
+            FileDialog::new().set_parent(&parent)
+        })
+}
 
-    let mut file_buffer = path_to_wide_buffer(&options.default_path, FILE_BUFFER_LEN);
-    let filter = wide_null(options.filter);
-    let default_extension = wide_null(options.default_extension);
-    let title = wide_null(options.title);
-    let mut flags = OFN_HIDEREADONLY | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST;
-    flags |= match options.mode {
-        FileDialogMode::Open => OFN_FILEMUSTEXIST,
-        FileDialogMode::Save => OFN_OVERWRITEPROMPT,
-    };
+struct DialogParent(NonZeroIsize);
 
-    let mut dialog = OPENFILENAMEW {
-        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
-        hwndOwner: hwnd.unwrap_or_default(),
-        lpstrFilter: filter.as_ptr(),
-        lpstrFile: file_buffer.as_mut_ptr(),
-        nMaxFile: file_buffer.len() as u32,
-        lpstrTitle: title.as_ptr(),
-        lpstrDefExt: default_extension.as_ptr(),
-        Flags: flags,
-        ..Default::default()
-    };
-
-    let selected = unsafe {
-        match options.mode {
-            FileDialogMode::Open => GetOpenFileNameW(&mut dialog),
-            FileDialogMode::Save => GetSaveFileNameW(&mut dialog),
-        }
-    };
-    if selected != 0 {
-        return Ok(Some(path_from_wide_buffer(&file_buffer)));
-    }
-
-    let error = unsafe { CommDlgExtendedError() };
-    if error == 0 {
-        Ok(None)
-    } else {
-        Err(format!("File dialog failed with error code {error}"))
+impl DialogParent {
+    fn new(hwnd: HWND) -> Option<Self> {
+        NonZeroIsize::new(hwnd as isize).map(Self)
     }
 }
 
-fn default_action_log_export_csv_path() -> PathBuf {
-    config::storage::config_path()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(format!(
-            "winderust_action_log_{}_{}.csv",
-            env!("CARGO_PKG_VERSION"),
-            Local::now().format("%Y-%m-%d")
-        ))
+impl HasWindowHandle for DialogParent {
+    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+        let raw = RawWindowHandle::Win32(Win32WindowHandle::new(self.0));
+        Ok(unsafe { WindowHandle::borrow_raw(raw) })
+    }
 }
 
-fn path_to_wide_buffer(path: &Path, len: usize) -> Vec<u16> {
-    let mut buffer: Vec<u16> = path.as_os_str().encode_wide().take(len - 1).collect();
-    buffer.resize(len, 0);
-    buffer
-}
-
-fn path_from_wide_buffer(buffer: &[u16]) -> PathBuf {
-    let len = buffer
-        .iter()
-        .position(|character| *character == 0)
-        .unwrap_or(buffer.len());
-    PathBuf::from(OsString::from_wide(&buffer[..len]))
+impl HasDisplayHandle for DialogParent {
+    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+        let raw = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
+        Ok(unsafe { DisplayHandle::borrow_raw(raw) })
+    }
 }

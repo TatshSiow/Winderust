@@ -1,10 +1,6 @@
 use std::path::PathBuf;
 
-use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, KEY_SET_VALUE};
-
-use crate::win_registry::{
-    create_registry_key, delete_registry_value, open_registry_key, write_registry_string,
-};
+use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const VALUE_NAME: &str = "Winderust";
@@ -20,16 +16,23 @@ pub fn set_startup_with_windows(enabled: bool) -> Result<(), String> {
 
 fn enable_startup() -> Result<(), String> {
     let command = startup_command()?;
-    let key = create_registry_key(HKEY_CURRENT_USER, RUN_KEY, KEY_SET_VALUE)?;
-    write_registry_string(&key, VALUE_NAME, &command)
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(RUN_KEY)
+        .map_err(|error| format!("Failed to create startup registry key: {error}"))?;
+    key.set_value(VALUE_NAME, &command)
+        .map_err(|error| format!("Failed to write startup registry value: {error}"))
 }
 
 fn disable_startup() -> Result<(), String> {
-    let Some(key) = open_registry_key(HKEY_CURRENT_USER, RUN_KEY, KEY_SET_VALUE)? else {
+    let key = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(key) = key.open_subkey_with_flags(RUN_KEY, winreg::enums::KEY_SET_VALUE) else {
         return Ok(());
     };
-
-    delete_registry_value(&key, VALUE_NAME)
+    match key.delete_value(VALUE_NAME) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Failed to delete startup registry value: {error}")),
+    }
 }
 
 fn startup_command() -> Result<String, String> {
