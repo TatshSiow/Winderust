@@ -2458,17 +2458,6 @@ impl ByCpuLoadRule {
     }
 }
 
-impl CpuUsageComparison {
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::AtOrAbove => ">= greater than or equal to",
-            Self::AtOrBelow => "<= less than or equal to",
-            Self::Between => "between",
-            Self::Else => "else",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

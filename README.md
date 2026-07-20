@@ -8,6 +8,16 @@ background processes and automating power plans.
 > **Public alpha:** Winderust is pre-release software. Settings and behavior may
 > change before the first stable release.
 
+## Screenshots
+
+### Home
+
+![Winderust Home dashboard](screenshots/Home.png)
+
+### Adaptive Engine
+
+![Winderust Adaptive Engine settings](<screenshots/Adaptive Engine.png>)
+
 ## Features
 
 - **Workload Engine** protects the active app by reducing hot background work.

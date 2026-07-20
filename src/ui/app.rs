@@ -760,7 +760,7 @@ impl UiInputs {
                 .by_cpu_load
                 .rules
                 .iter()
-                .map(|rule| make_input(window, cx, &rule.name, "Rule name"))
+                .map(|rule| make_input(window, cx, &rule.name, &t!("common.rule_name")))
                 .collect(),
             cpu_rule_thresholds: settings
                 .by_cpu_load
@@ -780,7 +780,7 @@ impl UiInputs {
                 .by_time
                 .rules
                 .iter()
-                .map(|rule| make_input(window, cx, &rule.name, "Rule name"))
+                .map(|rule| make_input(window, cx, &rule.name, &t!("common.rule_name")))
                 .collect(),
             schedule_start_times: settings
                 .by_time
@@ -798,7 +798,7 @@ impl UiInputs {
                 .by_foreground
                 .rules
                 .iter()
-                .map(|rule| make_input(window, cx, &rule.name, "Rule name"))
+                .map(|rule| make_input(window, cx, &rule.name, &t!("common.rule_name")))
                 .collect(),
             foreground_rule_processes: settings
                 .by_foreground
@@ -806,22 +806,32 @@ impl UiInputs {
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.process_name, "process.exe"))
                 .collect(),
-            foreground_process: make_input(window, cx, "", "Search running apps..."),
-            background_efficiency_process: make_input(window, cx, "", "Search running apps..."),
-            background_cpu_exclusion: make_input(window, cx, "", "Search running apps..."),
-            memory_trim_exclusion: make_input(window, cx, "", "Search running apps..."),
-            app_suspension_process: make_input(window, cx, "", "Search running apps..."),
-            core_limiter_process: make_input(window, cx, "", "Search running apps..."),
-            performance_process: make_input(window, cx, "", "Search running apps..."),
-            core_steering_process: make_input(window, cx, "", "Search running apps..."),
-            workload_engine_process: make_input(window, cx, "", "Search running apps..."),
-            process_priority_process: make_input(window, cx, "", "Search running apps..."),
-            thread_priority_process: make_input(window, cx, "", "Search running apps..."),
-            dynamic_priority_boost_process: make_input(window, cx, "", "Search running apps..."),
-            io_priority_process: make_input(window, cx, "", "Search running apps..."),
-            gpu_priority_process: make_input(window, cx, "", "Search running apps..."),
-            memory_priority_process: make_input(window, cx, "", "Search running apps..."),
-            timer_resolution_process: make_input(window, cx, "", "Search running apps..."),
+            foreground_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            background_efficiency_process: make_input(
+                window,
+                cx,
+                "",
+                &t!("common.search_running_apps"),
+            ),
+            background_cpu_exclusion: make_input(window, cx, "", &t!("common.search_running_apps")),
+            memory_trim_exclusion: make_input(window, cx, "", &t!("common.search_running_apps")),
+            app_suspension_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            core_limiter_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            performance_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            core_steering_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            workload_engine_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            process_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            thread_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            dynamic_priority_boost_process: make_input(
+                window,
+                cx,
+                "",
+                &t!("common.search_running_apps"),
+            ),
+            io_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            gpu_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            memory_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            timer_resolution_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             numeric_value: make_input(window, cx, "", "Value"),
             activity_idle_timeout: make_range_slider(
                 cx,
@@ -884,7 +894,7 @@ impl UiInputs {
             window,
             cx,
             |index| settings.by_cpu_load.rules[index].name.clone(),
-            "Rule name",
+            &t!("common.rule_name"),
         );
         sync_slider_vec(
             &mut self.cpu_rule_thresholds,
@@ -908,7 +918,7 @@ impl UiInputs {
             window,
             cx,
             |index| settings.by_time.rules[index].name.clone(),
-            "Rule name",
+            &t!("common.rule_name"),
         );
         sync_input_vec(
             &mut self.schedule_start_times,
@@ -932,7 +942,7 @@ impl UiInputs {
             window,
             cx,
             |index| settings.by_foreground.rules[index].name.clone(),
-            "Rule name",
+            &t!("common.rule_name"),
         );
         sync_input_vec(
             &mut self.foreground_rule_processes,
@@ -942,6 +952,43 @@ impl UiInputs {
             |index| settings.by_foreground.rules[index].process_name.clone(),
             "process.exe",
         );
+    }
+
+    fn refresh_localized_placeholders(&self, window: &mut Window, cx: &mut Context<WinderustApp>) {
+        set_input_placeholder(
+            &self.dashboard_search,
+            t!("home.search_placeholder"),
+            window,
+            cx,
+        );
+        for input in [
+            &self.foreground_process,
+            &self.background_efficiency_process,
+            &self.background_cpu_exclusion,
+            &self.memory_trim_exclusion,
+            &self.app_suspension_process,
+            &self.core_limiter_process,
+            &self.performance_process,
+            &self.core_steering_process,
+            &self.workload_engine_process,
+            &self.process_priority_process,
+            &self.thread_priority_process,
+            &self.dynamic_priority_boost_process,
+            &self.io_priority_process,
+            &self.gpu_priority_process,
+            &self.memory_priority_process,
+            &self.timer_resolution_process,
+        ] {
+            set_input_placeholder(input, t!("common.search_running_apps"), window, cx);
+        }
+        for input in self
+            .by_cpu_load_rule_names
+            .iter()
+            .chain(&self.by_time_rule_names)
+            .chain(&self.foreground_rule_names)
+        {
+            set_input_placeholder(input, t!("common.rule_name"), window, cx);
+        }
     }
 }
 
@@ -2349,8 +2396,12 @@ impl WinderustApp {
                             t!("status.exported_action_log", path = path.display()).to_string();
                     }
                     Err(err) => {
-                        self.status_message =
-                            format!("Failed to export log to {}: {err}", path.display());
+                        self.status_message = t!(
+                            "status.action_log_export_failed",
+                            path = path.display(),
+                            error = err
+                        )
+                        .to_string();
                     }
                 }
             }
@@ -4777,7 +4828,7 @@ impl WinderustApp {
             ));
 
         self.page_shell(Page::Home, cx)
-            .child(section_title_text(t!("home.overview").to_string()))
+            .child(section_title_text(t!("home.home").to_string()))
             .child(summary)
             .child(section_title_text(t!("home.main_sections").to_string()))
             .child(section_cards)
@@ -4817,7 +4868,7 @@ impl WinderustApp {
         if settings.by_activity.enabled {
             items.push((
                 t!("nav.by_activity").to_string(),
-                format!("{:?}", self.activity.state),
+                activity_state_label(self.activity.state),
             ));
         }
         if settings.by_time.enabled {
@@ -4826,44 +4877,52 @@ impl WinderustApp {
         if settings.core_limiter.enabled {
             items.push((
                 t!("nav.core_limiter").to_string(),
-                format!("{} limited", self.core_limiter_status.limited_processes),
+                t!(
+                    "home.limited_count",
+                    count = self.core_limiter_status.limited_processes
+                )
+                .to_string(),
             ));
         }
         if settings.background_cpu_restriction.enabled {
             items.push((
                 t!("nav.background_cpu_restriction").to_string(),
-                format!(
-                    "{} adjusted",
-                    self.background_cpu_restriction_status.adjusted_processes
-                ),
+                t!(
+                    "home.adjusted_count",
+                    count = self.background_cpu_restriction_status.adjusted_processes
+                )
+                .to_string(),
             ));
         }
         if settings.background_efficiency.enabled {
             items.push((
                 t!("nav.background_efficiency").to_string(),
-                format!(
-                    "{} throttled",
-                    self.background_efficiency_status.throttled_processes
-                ),
+                t!(
+                    "home.throttled_count",
+                    count = self.background_efficiency_status.throttled_processes
+                )
+                .to_string(),
             ));
         }
         if settings.app_suspension.enabled {
             items.push((
                 t!("nav.app_suspension").to_string(),
-                format!(
-                    "{} suspended",
-                    self.app_suspension_status.suspended_processes
-                ),
+                t!(
+                    "home.suspended_count",
+                    count = self.app_suspension_status.suspended_processes
+                )
+                .to_string(),
             ));
         }
         if settings.workload_engine.enabled {
             let workload_engine_status = if self.workload_engine_status.launch_boost_active {
-                "launch boost".to_owned()
+                t!("home.launch_boost").to_string()
             } else {
-                format!(
-                    "{} adjusted",
-                    self.workload_engine_status.background_adjusted_processes
+                t!(
+                    "home.adjusted_count",
+                    count = self.workload_engine_status.background_adjusted_processes
                 )
+                .to_string()
             };
             items.push((
                 t!("nav.workload_engine").to_string(),
@@ -4873,28 +4932,41 @@ impl WinderustApp {
         if settings.io_priority.enabled {
             items.push((
                 t!("nav.io_priority").to_string(),
-                format!("{} adjusted", self.io_priority_status.adjusted_processes),
+                t!(
+                    "home.adjusted_count",
+                    count = self.io_priority_status.adjusted_processes
+                )
+                .to_string(),
             ));
         }
         if settings.memory_priority.enabled {
             items.push((
                 t!("nav.memory_priority").to_string(),
-                format!(
-                    "{} adjusted",
-                    self.memory_priority_status.adjusted_processes
-                ),
+                t!(
+                    "home.adjusted_count",
+                    count = self.memory_priority_status.adjusted_processes
+                )
+                .to_string(),
             ));
         }
         if settings.memory_trim.enabled {
             items.push((
                 t!("nav.memory_trim").to_string(),
-                format!("{} trimmed", self.memory_trim_status.trimmed_processes),
+                t!(
+                    "home.trimmed_count",
+                    count = self.memory_trim_status.trimmed_processes
+                )
+                .to_string(),
             ));
         }
         if settings.core_steering.enabled {
             items.push((
                 t!("nav.core_steering").to_string(),
-                format!("{} adjusted", self.core_steering_status.adjusted_processes),
+                t!(
+                    "home.adjusted_count",
+                    count = self.core_steering_status.adjusted_processes
+                )
+                .to_string(),
             ));
         }
 
@@ -4930,7 +5002,7 @@ impl WinderustApp {
             .child(graph);
 
         dashboard_summary_card(
-            t!("home.cpu_usage").to_string(),
+            t!("home.by_cpu_load").to_string(),
             Some(
                 dashboard_summary_header_value(cpu_usage_label(self.cpu_usage.percent))
                     .into_any_element(),
@@ -5962,7 +6034,7 @@ impl WinderustApp {
                                 accent_glyph_color(accent_color()),
                                 progress,
                             ))
-                            .child(day.short_label())
+                            .child(weekday_short_label(day))
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 if let Some(rule) = app.settings.by_time.rules.get_mut(index) {
                                     let next = !rule.days.contains(&day);
@@ -6080,7 +6152,7 @@ impl WinderustApp {
         let selected_comparison = rule.comparison;
         let comparison_dropdown = self.render_dropdown_select(
             format!("cpu-comparison-{index}"),
-            selected_comparison.label(),
+            cpu_usage_comparison_label(selected_comparison),
             true,
             DropdownSelectWidth::Wide,
             comparison_options.len(),
@@ -6094,7 +6166,7 @@ impl WinderustApp {
                             SharedString::from(format!(
                                 "cpu-comparison-{index}-option-{comparison:?}"
                             )),
-                            comparison.label().to_owned(),
+                            cpu_usage_comparison_label(comparison),
                             selected_comparison == comparison,
                             cx,
                         )
@@ -6225,7 +6297,7 @@ impl WinderustApp {
                     rule.duration_seconds,
                     self.render_numeric_value(
                         NumericField::CpuDuration(index),
-                        format!("{} sec", rule.duration_seconds),
+                        ui::duration_label(rule.duration_seconds),
                         rule.duration_seconds.to_string(),
                         cx,
                     ),
@@ -6536,7 +6608,11 @@ impl WinderustApp {
                 (
                     t!("adaptive_engine.processor_policy").to_string(),
                     if let Some(profile) = &self.workload_engine_status.adaptive_power_profile {
-                        format!("Adaptive · {profile}")
+                        t!(
+                            "adaptive_engine.processor_policy_adaptive",
+                            profile = adaptive_power_profile_label(profile)
+                        )
+                        .to_string()
                     } else if matches!(
                         selected_preset,
                         Some(PowerModePreset::Performance) | Some(PowerModePreset::Speed)
@@ -6588,7 +6664,7 @@ impl WinderustApp {
                 ),
                 (
                     t!("adaptive_engine.restrained").to_string(),
-                    self.workload_engine_status.workload_engine_message.clone(),
+                    localized_runtime_status(&self.workload_engine_status.workload_engine_message),
                 ),
             ],
         )
@@ -7864,7 +7940,7 @@ impl WinderustApp {
                                 index,
                                 NumericField::CoreLimiterSustain(index),
                                 t!("core_limiter.sustain").to_string(),
-                                format!("{} sec", rule.sustain_seconds),
+                                ui::duration_label(rule.sustain_seconds),
                                 rule.sustain_seconds.to_string(),
                                 cx,
                             ),
@@ -7872,7 +7948,7 @@ impl WinderustApp {
                                 index,
                                 NumericField::CoreLimiterCooldown(index),
                                 t!("core_limiter.cooldown").to_string(),
-                                format!("{} sec", rule.cooldown_seconds),
+                                ui::duration_label(rule.cooldown_seconds),
                                 rule.cooldown_seconds.to_string(),
                                 cx,
                             ),
@@ -8629,7 +8705,7 @@ impl WinderustApp {
                         settings.workload_engine_sustain_seconds,
                         self.render_numeric_value(
                             NumericField::WorkloadEngineSustain,
-                            format!("{} sec", settings.workload_engine_sustain_seconds),
+                            ui::duration_label(settings.workload_engine_sustain_seconds),
                             settings.workload_engine_sustain_seconds.to_string(),
                             cx,
                         ),
@@ -8652,7 +8728,7 @@ impl WinderustApp {
                         settings.workload_engine_minimum_restraint_seconds,
                         self.render_numeric_value(
                             NumericField::WorkloadEngineMinimumRestraint,
-                            format!("{} sec", settings.workload_engine_minimum_restraint_seconds),
+                            ui::duration_label(settings.workload_engine_minimum_restraint_seconds),
                             settings
                                 .workload_engine_minimum_restraint_seconds
                                 .to_string(),
@@ -8680,7 +8756,7 @@ impl WinderustApp {
                         settings.workload_engine_cooldown_seconds,
                         self.render_numeric_value(
                             NumericField::WorkloadEngineCooldown,
-                            format!("{} sec", settings.workload_engine_cooldown_seconds),
+                            ui::duration_label(settings.workload_engine_cooldown_seconds),
                             settings.workload_engine_cooldown_seconds.to_string(),
                             cx,
                         ),
@@ -9998,7 +10074,7 @@ impl WinderustApp {
         let message = if status.message.is_empty() {
             t!("process_priority.not_checked").to_string()
         } else {
-            status.message.clone()
+            localized_runtime_status(&status.message)
         };
         let mut rows = vec![
             (t!("common.status").to_string(), message),
@@ -10272,7 +10348,7 @@ impl WinderustApp {
         let message = if status.message.is_empty() {
             t!("thread_priority.not_checked").to_string()
         } else {
-            status.message.clone()
+            localized_runtime_status(&status.message)
         };
         let mut rows = vec![
             (t!("common.status").to_string(), message),
@@ -10526,7 +10602,7 @@ impl WinderustApp {
         let message = if status.message.is_empty() {
             t!("dynamic_priority_boost.not_checked").to_string()
         } else {
-            status.message.clone()
+            localized_runtime_status(&status.message)
         };
         let mut rows = vec![
             (t!("common.status").to_string(), message),
@@ -11205,7 +11281,7 @@ impl WinderustApp {
         let message = if status.message.is_empty() {
             t!("gpu_priority.not_checked").to_string()
         } else {
-            status.message.clone()
+            localized_runtime_status(&status.message)
         };
         let mut rows = vec![
             (t!("common.status").to_string(), message),
@@ -11705,7 +11781,11 @@ impl WinderustApp {
                         t!("memory_trim.check_interval").to_string(),
                         self.render_numeric_value(
                             NumericField::MemoryTrimCheckIntervalMinutes,
-                            format!("{} mins", settings.check_interval_minutes),
+                            t!(
+                                "common.minutes_long",
+                                count = settings.check_interval_minutes
+                            )
+                            .to_string(),
                             settings.check_interval_minutes.to_string(),
                             cx,
                         ),
@@ -11888,7 +11968,7 @@ impl WinderustApp {
                 vec![stat_grid(vec![
                     (
                         t!("memory_trim.status").to_string(),
-                        self.memory_trim_status.message.clone(),
+                        localized_runtime_status(&self.memory_trim_status.message),
                     ),
                     (
                         t!("memory_trim.memory_load").to_string(),
@@ -12727,12 +12807,15 @@ impl WinderustApp {
                             selected == language,
                             cx,
                         )
-                        .on_click(cx.listener(move |app, _, _, cx| {
-                            app.settings.general.language = language;
-                            app.active_power_plan_picker = None;
-                            apply_language(language);
-                            cx.notify();
-                        })),
+                        .on_click(cx.listener(
+                            move |app, _, window, cx| {
+                                app.settings.general.language = language;
+                                app.active_power_plan_picker = None;
+                                apply_language(language);
+                                app.inputs.refresh_localized_placeholders(window, cx);
+                                cx.notify();
+                            },
+                        )),
                     );
                 }
                 options
@@ -13551,7 +13634,10 @@ impl WinderustApp {
                 t!("timer_resolution.maximum").to_string(),
                 format_optional_timer_resolution(status.maximum_100ns),
             ),
-            (t!("common.status").to_string(), status.message.clone()),
+            (
+                t!("common.status").to_string(),
+                localized_runtime_status(&status.message),
+            ),
         ];
         if let Some(error) = &status.last_error {
             rows.push((t!("common.last_failure").to_string(), error.clone()));
@@ -16010,6 +16096,17 @@ fn sync_slider_vec(
 
 fn clear_input(input: &Entity<InputState>, window: &mut Window, cx: &mut Context<WinderustApp>) {
     clear_input_to(input, "", window, cx);
+}
+
+fn set_input_placeholder(
+    input: &Entity<InputState>,
+    placeholder: impl Into<SharedString>,
+    window: &mut Window,
+    cx: &mut Context<WinderustApp>,
+) {
+    input.update(cx, |input, cx| {
+        input.set_placeholder(placeholder, window, cx)
+    });
 }
 
 fn clear_input_to(
@@ -19296,9 +19393,9 @@ fn dashboard_graph_sample_tooltips(
 fn dashboard_sample_age_label(index: usize) -> String {
     let age = CPU_USAGE_HISTORY_LEN.saturating_sub(index + 1);
     if age == 0 {
-        "Latest sample".to_string()
+        t!("common.latest_sample").to_string()
     } else {
-        format!("{age}s ago")
+        t!("common.seconds_ago", count = age).to_string()
     }
 }
 
@@ -21372,7 +21469,7 @@ fn process_list_toolbar_label(app: &WinderustApp, process_count: usize) -> Strin
 }
 
 fn process_list_pid_count_label(count: usize) -> String {
-    format!("{count} PIDs")
+    t!("common.pid_count", count = count).to_string()
 }
 
 const ACTION_LOG_SEQUENCE_WIDTH: f32 = 56.0;
@@ -21860,16 +21957,21 @@ fn action_log_time_label(timestamp_epoch_ms: u128) -> String {
 }
 
 fn rule_count_label(count: usize) -> String {
-    format!("{count} {}", t!("common.rules"))
+    t!("common.rule_count", count = count).to_string()
 }
 
 fn yes_no_label(value: bool) -> String {
-    if value { "Yes" } else { "No" }.to_owned()
+    if value {
+        t!("common.yes")
+    } else {
+        t!("common.no")
+    }
+    .to_string()
 }
 
 fn schedule_days_label(days: &[WeekdaySetting]) -> String {
     if days.len() == WeekdaySetting::all().len() {
-        return "All".to_owned();
+        return t!("common.all").to_string();
     }
     if days.is_empty() {
         return t!("common.none").to_string();
@@ -21877,9 +21979,95 @@ fn schedule_days_label(days: &[WeekdaySetting]) -> String {
     WeekdaySetting::all()
         .into_iter()
         .filter(|day| days.contains(day))
-        .map(WeekdaySetting::short_label)
+        .map(weekday_short_label)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn activity_state_label(state: ActivityState) -> String {
+    match state {
+        ActivityState::Active => t!("home.activity_active"),
+        ActivityState::Idle => t!("home.activity_idle"),
+        ActivityState::Unknown => t!("home.activity_unknown"),
+    }
+    .to_string()
+}
+
+fn localized_runtime_status(message: &str) -> String {
+    let key = match message {
+        "Automation disabled." => "runtime_status.automation_disabled",
+        "Paused: foreground app is unknown." => "runtime_status.foreground_unknown",
+        "Paused: current Windows session is unknown." => "runtime_status.session_unknown",
+        "Core Steering disabled." => "runtime_status.core_steering_disabled",
+        "Core Limiter disabled." => "runtime_status.core_limiter_disabled",
+        "Core Limiter active." => "runtime_status.core_limiter_active",
+        "Timer resolution query failed." => "runtime_status.timer_resolution_query_failed",
+        "App Suspension disabled." => "runtime_status.app_suspension_disabled",
+        "App Suspension unavailable: Windows Job Object freeze is not supported on this system." => {
+            "runtime_status.app_suspension_unsupported"
+        }
+        "By Running App disabled." => "runtime_status.by_running_app_disabled",
+        "By Running App waiting for a matching process." => {
+            "runtime_status.by_running_app_waiting"
+        }
+        "By Running App active." => "runtime_status.by_running_app_active",
+        "GPU priority defaults disabled." => "runtime_status.gpu_priority_disabled",
+        "I/O priority defaults disabled." => "runtime_status.io_priority_disabled",
+        "I/O priority defaults active." => "runtime_status.io_priority_active",
+        "Background Efficiency disabled." => "runtime_status.background_efficiency_disabled",
+        "Background Efficiency active." => "runtime_status.background_efficiency_active",
+        "Dynamic priority boost defaults disabled." => {
+            "runtime_status.dynamic_priority_boost_disabled"
+        }
+        "Dynamic priority boost defaults active." => {
+            "runtime_status.dynamic_priority_boost_active"
+        }
+        "Memory Trim disabled." => "runtime_status.memory_trim_disabled",
+        "Thread Priority disabled." => "runtime_status.thread_priority_disabled",
+        "Thread Priority active." => "runtime_status.thread_priority_active",
+        "Process priority defaults disabled." => "runtime_status.process_priority_disabled",
+        "Process priority defaults active." => "runtime_status.process_priority_active",
+        "Workload Engine disabled." => "runtime_status.workload_engine_disabled",
+        "Workload Engine active." => "runtime_status.workload_engine_active",
+        "No usable CPU restriction target." => "runtime_status.background_cpu_no_target",
+        "Background CPU Restriction active." => "runtime_status.background_cpu_active",
+        _ => return message.to_owned(),
+    };
+    t!(key).to_string()
+}
+
+fn adaptive_power_profile_label(profile: &str) -> String {
+    match profile {
+        "Idle" => t!("adaptive_engine.profile_idle"),
+        "Responsive" => t!("adaptive_engine.profile_responsive"),
+        "Sustained" => t!("adaptive_engine.profile_sustained"),
+        "Burst" => t!("adaptive_engine.profile_burst"),
+        _ => t!("common.unknown"),
+    }
+    .to_string()
+}
+
+fn weekday_short_label(day: WeekdaySetting) -> String {
+    match day {
+        WeekdaySetting::Mon => t!("weekday.mon"),
+        WeekdaySetting::Tue => t!("weekday.tue"),
+        WeekdaySetting::Wed => t!("weekday.wed"),
+        WeekdaySetting::Thu => t!("weekday.thu"),
+        WeekdaySetting::Fri => t!("weekday.fri"),
+        WeekdaySetting::Sat => t!("weekday.sat"),
+        WeekdaySetting::Sun => t!("weekday.sun"),
+    }
+    .to_string()
+}
+
+fn cpu_usage_comparison_label(comparison: CpuUsageComparison) -> String {
+    match comparison {
+        CpuUsageComparison::AtOrAbove => t!("by_cpu_load.comparison_at_or_above"),
+        CpuUsageComparison::AtOrBelow => t!("by_cpu_load.comparison_at_or_below"),
+        CpuUsageComparison::Between => t!("by_cpu_load.comparison_between"),
+        CpuUsageComparison::Else => t!("by_cpu_load.comparison_else"),
+    }
+    .to_string()
 }
 
 fn app_input(
@@ -21942,7 +22130,7 @@ fn app_input_hover_border_color() -> u32 {
 }
 
 fn syncing_rule_card(index: usize) -> AnyElement {
-    section_card(&format!("Rule {}", index + 1))
+    section_card(&t!("common.rule", number = index + 1))
         .child(syncing_input_message())
         .into_any_element()
 }
@@ -25771,6 +25959,15 @@ fn network_threshold_value_label(value: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_status_localizes_known_messages_and_preserves_errors() {
+        assert_eq!(
+            localized_runtime_status("Automation disabled."),
+            t!("runtime_status.automation_disabled").to_string()
+        );
+        assert_eq!(localized_runtime_status("Win32 error 5"), "Win32 error 5");
+    }
 
     #[test]
     fn windows_accent_abgr_converts_to_rgb() {

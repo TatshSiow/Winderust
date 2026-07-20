@@ -266,8 +266,13 @@ impl Page {
 
 pub fn duration_label(seconds: u64) -> String {
     if seconds < 60 {
-        format!("{seconds}s")
+        t!("common.seconds_short", count = seconds).to_string()
     } else {
-        format!("{}m {}s", seconds / 60, seconds % 60)
+        t!(
+            "common.minutes_seconds_short",
+            minutes = seconds / 60,
+            seconds = seconds % 60
+        )
+        .to_string()
     }
 }
