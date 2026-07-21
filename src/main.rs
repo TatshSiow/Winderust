@@ -17,7 +17,8 @@ mod ui;
 
 use backend::{
     audio_activity, automation, dashboard_metrics, file_dialog, power_source, privilege,
-    process_icon, self_power, startup, tray, win_registry, win_util, windows_events,
+    process_icon, self_power, startup, tray, update_checker, win_registry, win_util,
+    windows_events,
 };
 use features::{
     advanced_controls::{app_suspension, timer_resolution},

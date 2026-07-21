@@ -75,18 +75,18 @@ const WINDERUST_FEATURE_PAGES: [Page; 3] = [
     Page::MemoryTrim,
 ];
 const ACTION_LOG_PAGES: [Page; 1] = [Page::ActionLog];
-const SETTINGS_PAGES: [Page; 4] = [
+const SETTINGS_PAGES: [Page; 3] = [
     Page::WinderustBehaviour,
     Page::LanguageAndAppearance,
     Page::ExperimentalFeatures,
-    Page::About,
 ];
+const ABOUT_PAGES: [Page; 1] = [Page::About];
 const ADVANCED_CONTROLS_PAGES: [Page; 3] = [
     Page::AppSuspension,
     Page::TimerResolution,
     Page::Win32PrioritySeparation,
 ];
-const PAGE_SECTIONS: [PageSection; 9] = [
+const PAGE_SECTIONS: [PageSection; 10] = [
     PageSection {
         landing_page: Page::Home,
         pages: &OVERVIEW_PAGES,
@@ -118,6 +118,10 @@ const PAGE_SECTIONS: [PageSection; 9] = [
     PageSection {
         landing_page: Page::SettingsHome,
         pages: &SETTINGS_PAGES,
+    },
+    PageSection {
+        landing_page: Page::About,
+        pages: &ABOUT_PAGES,
     },
     PageSection {
         landing_page: Page::AdvancedControls,
@@ -195,10 +199,10 @@ impl Page {
                 t!("nav.winderust_features")
             }
             Self::ActionLog => t!("nav.action_log"),
-            Self::WinderustBehaviour
-            | Self::LanguageAndAppearance
-            | Self::ExperimentalFeatures
-            | Self::About => t!("nav.settings"),
+            Self::WinderustBehaviour | Self::LanguageAndAppearance | Self::ExperimentalFeatures => {
+                t!("nav.settings")
+            }
+            Self::About => t!("nav.about"),
             Self::AppSuspension | Self::TimerResolution | Self::Win32PrioritySeparation => {
                 t!("nav.advanced")
             }
@@ -236,8 +240,8 @@ impl Page {
             Self::SettingsHome
             | Self::WinderustBehaviour
             | Self::LanguageAndAppearance
-            | Self::ExperimentalFeatures
-            | Self::About => Self::SettingsHome,
+            | Self::ExperimentalFeatures => Self::SettingsHome,
+            Self::About => Self::About,
             Self::AdvancedControls
             | Self::AppSuspension
             | Self::TimerResolution

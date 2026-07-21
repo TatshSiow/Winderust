@@ -6696,7 +6696,7 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "winderust"
-version = "0.1.1-alpha"
+version = "0.2.0-alpha"
 dependencies = [
  "atomic-write-file",
  "chrono",
@@ -6709,6 +6709,7 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "rust-i18n",
+ "semver",
  "serde",
  "toml 0.8.23",
  "windows 0.61.3",

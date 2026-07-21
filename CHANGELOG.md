@@ -5,6 +5,24 @@ Notable changes to Winderust are documented here.
 The project follows Semantic Versioning after its first stable release. During
 the public alpha, minor releases may include breaking settings changes.
 
+## 0.2.0-alpha - 2026-07-22
+
+### Added
+
+- Add automatic update checks, also able to switch between stable/pre-release channel.
+- Add project, documentation, license, GitHub, and Discord links to About Page.
+
+### Changed
+
+- Settings file and log export now stays at the same folder with Winderust executable.
+- Home automation rules now with a master switch indicator to improve fool-proof mechanism.
+- Power-plan scheduler A/C toggle moved to Power Plan Control page.
+- Shortened the README and speed up regular CI runs.
+
+### Fixed
+
+- Adaptive Engine operating-profile text truncation.
+
 ## 0.1.1-alpha - 2026-07-21
 
 ### Added

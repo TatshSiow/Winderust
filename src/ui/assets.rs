@@ -7,6 +7,12 @@ pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == "image/icon-design.png" {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../image/icon-design.png"
+            ))));
+        }
+
         Ok(ICON_ASSET_BYTES
             .get(path)
             .map(|asset| Cow::Borrowed(asset.as_slice())))

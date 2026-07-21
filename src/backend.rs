@@ -8,6 +8,7 @@ pub(crate) mod process_icon;
 pub(crate) mod self_power;
 pub(crate) mod startup;
 pub(crate) mod tray;
+pub(crate) mod update_checker;
 pub(crate) mod win_registry;
 pub(crate) mod win_util;
 pub(crate) mod windows_events;

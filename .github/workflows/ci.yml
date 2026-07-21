@@ -22,6 +22,9 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
       - name: Check formatting
         run: cargo fmt -- --check
 
@@ -30,14 +33,3 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
-
-      - name: Build release executable
-        shell: pwsh
-        run: .\scripts\build_release.cmd
-
-      - name: Upload release executable
-        uses: actions/upload-artifact@v7
-        with:
-          name: winderust-windows
-          path: target/release/winderust.exe
-          if-no-files-found: error
