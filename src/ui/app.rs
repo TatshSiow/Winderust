@@ -4870,7 +4870,21 @@ impl WinderustApp {
             .child(dashboard_card_slot(
                 titled_status_list(
                     &t!("home.enabled_rules"),
+                    Some(if settings.general.enabled {
+                        status_pill(
+                            t!("home.master_switch_enabled").to_string(),
+                            success_bg_color(),
+                            success_text_color(),
+                        )
+                    } else {
+                        status_pill(
+                            t!("home.master_switch_disabled").to_string(),
+                            warning_bg_color(),
+                            warning_text_color(),
+                        )
+                    }),
                     self.dashboard_enabled_function_items(settings),
+                    Some(t!("home.no_enabled_rules").to_string()),
                 )
                 .into_any_element(),
             ));
@@ -4884,14 +4898,7 @@ impl WinderustApp {
     }
 
     fn dashboard_enabled_function_items(&self, settings: &Settings) -> Vec<(String, String)> {
-        let mut items = Vec::with_capacity(17);
-
-        if settings.general.enabled {
-            items.push((
-                t!("home.automation").to_string(),
-                t!("common.enabled").to_string(),
-            ));
-        }
+        let mut items = Vec::with_capacity(16);
         if settings.by_foreground.enabled {
             items.push((
                 t!("nav.by_foreground").to_string(),
@@ -5016,10 +5023,6 @@ impl WinderustApp {
                 )
                 .to_string(),
             ));
-        }
-
-        if items.is_empty() {
-            items.push((t!("common.none").to_string(), String::new()));
         }
 
         items
@@ -6651,6 +6654,7 @@ impl WinderustApp {
             .unwrap_or_else(|| t!("common.custom").to_string());
         titled_status_list(
             &t!("adaptive_engine.status"),
+            None,
             vec![
                 (t!("adaptive_engine.power_mode").to_string(), power_mode),
                 (
@@ -6715,6 +6719,7 @@ impl WinderustApp {
                     localized_runtime_status(&self.workload_engine_status.workload_engine_message),
                 ),
             ],
+            None,
         )
     }
 
@@ -19722,7 +19727,12 @@ fn dashboard_secondary_series_color() -> Hsla {
     Hsla::from(rgb(accent_color())).darken(0.18)
 }
 
-fn titled_status_list(title: &str, items: Vec<(String, String)>) -> gpui::Div {
+fn titled_status_list(
+    title: &str,
+    header_trailing: Option<AnyElement>,
+    items: Vec<(String, String)>,
+    empty_message: Option<String>,
+) -> gpui::Div {
     let mut list = v_flex()
         .w_full()
         .min_w(px(0.0))
@@ -19730,6 +19740,12 @@ fn titled_status_list(title: &str, items: Vec<(String, String)>) -> gpui::Div {
         .min_h(px(0.0))
         .gap_1()
         .overflow_y_scrollbar();
+
+    if items.is_empty() {
+        if let Some(message) = empty_message {
+            list = list.child(text_muted(message).py_1());
+        }
+    }
 
     for (label, detail) in items {
         let mut content = h_flex()
@@ -19769,7 +19785,7 @@ fn titled_status_list(title: &str, items: Vec<(String, String)>) -> gpui::Div {
         );
     }
 
-    dashboard_summary_card(title.to_owned(), None, list.into_any_element())
+    dashboard_summary_card(title.to_owned(), header_trailing, list.into_any_element())
 }
 
 const PROCESS_LIST_NAME_MIN_WIDTH: f32 = 180.0;
