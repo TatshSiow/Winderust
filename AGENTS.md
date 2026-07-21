@@ -9,7 +9,9 @@ Read `.agents/memory/README.md` first.
 - Keep Windows terms such as EcoQoS, affinity masks, CPU Sets, and Win32 API names only where code directly describes the operating-system mechanism.
 - Winderust is public pre-release software licensed GPL-3.0-only, Copyright (C) 2026 Tatsh Siow. Do not add legacy config aliases, schema migrations, old product-name paths, cross-brand recovery, or hidden compatibility fallbacks unless the user explicitly requests them.
 - Personal tooling is local-only. Keep .codex/, .agents/skills/, and graphify-out/ ignored and out of release artifacts.
+- Runtime data is portable: keep settings and logs beside the executable. Do not restore an AppData fallback or migration unless explicitly requested.
 - Power-plan ownership is local: By Activity owns its Idle/Active selections; By Foreground, By Running App, By CPU Load, and By Time rules each own their selected plan. There is no global plan fallback.
+- The global A/C scheduler pause belongs on the Power Plan Control landing page.
 - Only recover temporary managed plans whose name and description identify the current `Winderust Adaptive` plan.
 
 ## Change Checklist

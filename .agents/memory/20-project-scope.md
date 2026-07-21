@@ -12,7 +12,7 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 
 - Power-plan automation by foreground app, running app, CPU load, idle/activity, and schedule.
 - Processor power-plan tuning for core parking and processor performance values.
-- Foreground responsiveness / ProBalance-style background restraint.
+- Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
 - Core Limiter, Background CPU Restriction, and Core Steering.
 - Efficiency Mode / EcoQoS.
 - App Suspension for explicit opt-in apps.

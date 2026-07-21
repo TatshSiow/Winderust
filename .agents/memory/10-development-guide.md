@@ -51,26 +51,38 @@ tested `dev` changes to `main` for release. CI runs on pushes to `main` and
 
 ## Release Runbook
 
-1. Start from a clean, current `main`. Choose a SemVer-compatible prerelease
-   version such as `0.1.1-alpha` and tag it as `v0.1.1-alpha`.
+1. Start from a clean, current `dev`. Choose a SemVer-compatible prerelease
+   version such as `0.2.0-alpha`; do not create its tag yet. Confirm `gh` is
+   installed and authenticated before starting the GitHub publishing steps.
 2. Update the package version in `Cargo.toml`, refresh the root package entry in
    `Cargo.lock`, and add the dated release section to `CHANGELOG.md`. Verify that
-   the lockfile contains no unrelated dependency changes.
+   the lockfile contains no unrelated dependency changes. Build the changelog
+   from commits after the previous tag and do not rewrite a published section.
 3. Run the default checks, the naming scan below, and
    `.\scripts\build_release.cmd`. Complete a Windows smoke test of the resulting
-   executable for changes that affect runtime behavior or packaging.
-4. Commit and push the release preparation to `main`. Wait for CI to pass.
-5. Create and push an annotated tag on that exact commit:
+   executable. If UI automation is unavailable, obtain the user's explicit
+   smoke-test confirmation before tagging.
+4. Commit and push the release preparation to `dev`, wait for CI, then open and
+   merge a `dev` to `main` pull request without deleting `dev`. Wait for CI on
+   the final `main` commit.
+5. Create and push an annotated tag on that final `main` commit. Never create
+   the release tag on `dev`:
 
    ```powershell
-   git tag -a v0.1.1-alpha -m "Winderust v0.1.1-alpha"
-   git push origin v0.1.1-alpha
+   git tag -a v0.2.0-alpha -m "Winderust v0.2.0-alpha"
+   git push origin v0.2.0-alpha
    ```
 
 6. The `Draft Release` workflow validates the tag against Cargo metadata,
    repeats verification, builds the executable, and creates a draft prerelease
-   with a ZIP and SHA-256 file. Confirm the workflow succeeded and inspect both
-   assets before manually publishing the draft on GitHub.
+   with a ZIP and SHA-256 file. Release workflows are uncached and may take
+   significantly longer than regular CI. Confirm the workflow succeeded and
+   verify the checksum, ZIP contents, and embedded executable version. Publish
+   the draft only when the user explicitly requests publication or has already
+   approved the complete release flow.
+7. After publication, verify the release is a prerelease rather than a draft,
+   confirm both assets are available, sync local `main` with `origin/main`, and
+   keep `dev` as the integration branch for subsequent work.
 
 Never move or recreate a published tag. If a draft workflow fails, fix the
 cause on `main`; only replace an unpublished tag when no release was published
@@ -84,6 +96,8 @@ and the corrected commit must be the tagged source.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
 - `src/backend/automation.rs`: background worker loop that applies runtime policies.
+- `src/backend/file_dialog.rs`: native settings and Action Log file dialogs.
+- `src/backend/update_checker.rs`: GitHub release checks and Stable/Pre-release filtering.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
 - Feature backends use the UI names: `background_efficiency`, `workload_engine`, `memory_trim`, `app_suspension`, `core_limiter`, `core_steering`, `by_running_app`, and the priority-control modules.
 
@@ -108,7 +122,7 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `W
 - Runtime settings live in `Settings`.
 - Use `#[serde(default)]` only when a current setting is intentionally optional; do not add pre-release migration aliases.
 - If a setting is edited through the UI, update the relevant input sync code in `src/ui/app.rs`.
-- TOML import/export uses native Windows file dialogs from `src/ui/app.rs`.
+- TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
 
 ### Power Plan Ownership
 
@@ -121,7 +135,8 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `W
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
 - Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CoreLimiter`, `CoreSteering`, and `DynamicPriorityBoost`.
-- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, CPU Affinity feature names, CPU Limiter feature names, or Performance Mode settings names.
+- Workload Engine is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
+- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, CPU Affinity feature names, or CPU Limiter feature names. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
 
 Run this quick compatibility/naming check before handoff:

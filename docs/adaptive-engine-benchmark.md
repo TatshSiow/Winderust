@@ -1,7 +1,7 @@
-# Workload Engine Benchmark Guide
+# Adaptive Engine Benchmark Guide
 
-This guide is for the next agent run. It documents the synthetic benchmark used
-while tuning Workload Engine presets.
+This guide documents the synthetic benchmark used to tune Adaptive Engine
+operating profiles and its internal Workload Engine scheduling presets.
 
 ## What This Measures
 
@@ -79,7 +79,7 @@ Do not treat one local benchmark as universal. Record the CPU model, logical
 processor count, Windows power mode, and whether the machine has Intel-style
 P-cores plus E-cores or an all-P-core layout such as most AMD desktop CPUs.
 
-Workload Engine runtime masking is topology-aware:
+Adaptive Engine's internal Workload Engine masking is topology-aware:
 
 - Hybrid CPUs: background affinity candidates prefer E-cores, then choose the
   least-loaded allowed E-cores when load data is available.
@@ -122,8 +122,8 @@ restraints are deferred until after the app-start window.
 Run from the repository root:
 
 ```powershell
-rtk cargo check
-rtk cargo test workload_engine
+cargo check --locked
+cargo test --locked workload_engine
 ```
 
 For cleaner benchmark results:
@@ -392,21 +392,14 @@ app-startup improvement.
 Run:
 
 ```powershell
-rtk cargo check
-rtk cargo test workload_engine
-rtk cargo test
-rtk git diff --check
+cargo check --locked
+cargo test --locked workload_engine
+cargo test --locked
+git diff --check
 ```
 
-If `graphify-out/graph.json` exists, run:
+After source changes, run:
 
 ```powershell
 graphify update .
-```
-
-In the current workspace, `graphify-out` has been absent and `graphify update .`
-has failed with:
-
-```text
-error: uv trampoline failed to canonicalize script path
 ```
