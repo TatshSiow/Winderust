@@ -6608,7 +6608,7 @@ impl WinderustApp {
                 .map(power_mode_preset_label)
                 .unwrap_or_else(|| t!("common.custom").to_string()),
             true,
-            DropdownSelectWidth::Standard,
+            DropdownSelectWidth::Wide,
             PowerModePreset::ALL.len(),
             window,
             cx,
