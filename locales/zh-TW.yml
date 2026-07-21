@@ -271,7 +271,6 @@ settings:
   master_switch: "Winderust 主要開關"
   startup_windows: "Windows 啟動時啟動 Winderust"
   start_minimized: "啟動至系統匣"
-  pause_plugged: "使用 AC 電源時停止電源計畫排程器"
   hide_to_tray: "關閉時隱藏至系統匣"
   appearance: "外觀"
   language_and_appearance: "語言與外觀"
@@ -1086,3 +1085,5 @@ about:
 update_channel:
   stable: "穩定版"
   pre_release: "預覽版"
+power_plan_control:
+  pause_plugged: "使用 AC 電源時停止電源計畫排程器"

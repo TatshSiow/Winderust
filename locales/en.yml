@@ -271,7 +271,6 @@ settings:
   master_switch: "Winderust master switch"
   startup_windows: "Start Winderust when Windows starts"
   start_minimized: "Start in system tray"
-  pause_plugged: "Stop power plan scheduler on A/C"
   hide_to_tray: "Hide to system tray on close"
   appearance: "Appearance"
   language_and_appearance: "Language and Appearance"
@@ -1085,3 +1084,5 @@ about:
 update_channel:
   stable: "Stable"
   pre_release: "Pre-release"
+power_plan_control:
+  pause_plugged: "Stop power plan scheduler on A/C"

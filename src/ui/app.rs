@@ -4718,6 +4718,22 @@ impl WinderustApp {
         let mut cards = v_flex().w_full().min_w(px(0.0)).gap_2();
 
         if section_page == Page::PowerPlanControl {
+            cards = cards.child(setting_action_card(
+                "pause-power-plan-switching-while-plugged-in",
+                t!("power_plan_control.pause_plugged").to_string(),
+                switch_toggle_action(
+                    "pause-power-plan-switching-while-plugged-in-toggle",
+                    self.settings
+                        .general
+                        .pause_power_plan_switching_while_plugged_in,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings
+                            .general
+                            .pause_power_plan_switching_while_plugged_in = *checked;
+                        cx.notify();
+                    }),
+                ),
+            ));
             cards = cards.child(section_title_text(t!("nav.automation_group").to_string()));
             for target in [
                 Page::ByForeground,
@@ -13241,19 +13257,6 @@ impl WinderustApp {
                 self.settings.general.start_minimized,
                 cx.listener(|app, checked, _, cx| {
                     app.settings.general.start_minimized = *checked;
-                    cx.notify();
-                }),
-            ))
-            .child(checkbox(
-                "pause-plugged",
-                t!("settings.pause_plugged").to_string(),
-                self.settings
-                    .general
-                    .pause_power_plan_switching_while_plugged_in,
-                cx.listener(|app, checked, _, cx| {
-                    app.settings
-                        .general
-                        .pause_power_plan_switching_while_plugged_in = *checked;
                     cx.notify();
                 }),
             ))
