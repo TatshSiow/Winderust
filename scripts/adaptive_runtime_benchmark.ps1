@@ -26,9 +26,9 @@ try {
 
 $balancedGuid = '381b4222-f694-41f0-9685-ff5bb260df2e'
 $originalGuid = Get-ActiveSchemeGuid
-$exePath = (Resolve-Path -LiteralPath $WinderustExePath).Path
-$tempAppData = Join-Path ([IO.Path]::GetTempPath()) 'winderust-adaptive-benchmark-appdata'
-$configDir = Join-Path $tempAppData 'Winderust'
+$sourceExePath = (Resolve-Path -LiteralPath $WinderustExePath).Path
+$configDir = Join-Path ([IO.Path]::GetTempPath()) "winderust-adaptive-benchmark-$([guid]::NewGuid())"
+$exePath = Join-Path $configDir 'winderust.exe'
 $configPath = Join-Path $configDir 'settings.toml'
 $runtime = $null
 
@@ -67,18 +67,13 @@ rules = []
 
 function Write-IsolatedSettings {
     [IO.Directory]::CreateDirectory($configDir) | Out-Null
+    Copy-Item -LiteralPath $sourceExePath -Destination $exePath
     [IO.File]::WriteAllText($configPath, $settingsToml, [Text.UTF8Encoding]::new($false))
 }
 
 function Start-AdaptiveRuntime {
     powercfg /setactive $balancedGuid | Out-Null
-    $previousAppData = $env:APPDATA
-    try {
-        $env:APPDATA = $tempAppData
-        $process = Start-Process -FilePath $exePath -PassThru -WindowStyle Hidden
-    } finally {
-        $env:APPDATA = $previousAppData
-    }
+    $process = Start-Process -FilePath $exePath -PassThru -WindowStyle Hidden
 
     for ($attempt = 0; $attempt -lt 80; $attempt++) {
         Start-Sleep -Milliseconds 250
@@ -188,6 +183,7 @@ try {
 } finally {
     Stop-AdaptiveRuntime -Runtime $runtime
     powercfg /setactive $originalGuid | Out-Null
+    Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $comparisons = @($runs | ForEach-Object { $_.comparison_vs_stock })

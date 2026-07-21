@@ -10,7 +10,6 @@ use chrono::Local;
 use super::Settings;
 
 const CONFIG_FILE: &str = "settings.toml";
-const CONFIG_DIR: &str = "Winderust";
 
 pub fn config_path() -> PathBuf {
     config_dir().join(CONFIG_FILE)
@@ -33,12 +32,9 @@ fn export_date() -> String {
 }
 
 fn config_dir() -> PathBuf {
-    base_config_dir().join(CONFIG_DIR)
-}
-
-fn base_config_dir() -> PathBuf {
-    std::env::var_os("APPDATA")
-        .map(PathBuf::from)
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
 }
