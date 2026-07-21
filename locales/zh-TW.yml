@@ -1062,7 +1062,25 @@ core_limiter:
   indicator_limited: "已限制"
 
 about:
+  download_update: "更新"
+  check_for_updates: "檢查更新"
+  up_to_date: "已是最新版本"
+  update_check_failed: "無法檢查更新。"
   intro_1: "Winderust 是本機 Windows 電源自動化工具。"
   intro_2: "版本與專案資訊如下。"
   author: "建立者"
+  github: "GitHub"
+  discord: "Discord"
+  documentation: "說明文件"
+  license: "授權條款"
+  updates: "更新"
+  current_version: "目前版本"
+  latest_version: "最新版本"
+  old: "舊版"
+  automatic_check_for_updates: "自動檢查更新"
+  update_channel: "更新頻道"
   version: "版本"
+
+update_channel:
+  stable: "穩定版"
+  pre_release: "預覽版"

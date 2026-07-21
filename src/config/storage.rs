@@ -118,6 +118,8 @@ mod tests {
                 startup_with_windows: true,
                 start_minimized: true,
                 hide_to_tray: true,
+                check_for_updates: true,
+                update_channel: crate::config::UpdateChannel::PreRelease,
                 theme_mode: AppThemeMode::Dark,
                 accent: AccentSettings::default(),
                 language: AppLanguage::ZhTw,

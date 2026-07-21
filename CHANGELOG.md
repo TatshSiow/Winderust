@@ -10,9 +10,12 @@ the public alpha, minor releases may include breaking settings changes.
 ### Added
 
 - Home and Adaptive Engine screenshots in the README.
+- Automatic and manual update checks with Stable and Pre-release channels.
+- About page project, community, and release links.
 
 ### Changed
 
+- Settings and logs now stay beside the Winderust executable.
 - Completed Traditional Chinese coverage for current UI locale keys, dynamic
   dashboard values, common runtime statuses, rule controls, and search fields.
 - Search and rule-name placeholders now refresh immediately when the language

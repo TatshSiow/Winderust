@@ -62,7 +62,7 @@ use crate::{
         ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
         ProcessPriority, ProcessPrioritySetting, ProcessPrioritySettings,
         ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings, TimerResolutionRule,
-        TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
+        TimerResolutionSettings, UpdateChannel, WeekdaySetting, WorkloadEngineSettings,
     },
     core_limiter::{self, CoreLimiterSnapshot},
     core_steering::{self, CoreSteeringSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
@@ -99,6 +99,7 @@ use crate::{
     timer_resolution::{self, TimerResolutionSnapshot},
     tray::{self, TrayIcon},
     ui::{self, Page},
+    update_checker::{self, AvailableUpdate},
     win_registry::{
         read_registry_binary_root, read_registry_dword_root, write_registry_dword_create_root,
         write_registry_dword_root,
@@ -517,6 +518,10 @@ pub struct WinderustApp {
     selected_process_id: Option<u32>,
     breadcrumb_transition: Option<BreadcrumbTransition>,
     page_transition_generation: u64,
+    available_update: Option<AvailableUpdate>,
+    latest_version: Option<String>,
+    update_check_in_progress: bool,
+    update_check_message: Option<String>,
     admin_rights_prompt_visible: bool,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
@@ -1220,6 +1225,10 @@ impl WinderustApp {
             selected_process_id: None,
             breadcrumb_transition: None,
             page_transition_generation: 0,
+            available_update: None,
+            latest_version: None,
+            update_check_in_progress: false,
+            update_check_message: None,
             admin_rights_prompt_visible: !privilege::is_running_as_admin(),
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
@@ -1251,8 +1260,45 @@ impl WinderustApp {
         app.run_check(false, Instant::now());
         app.sync_processor_power_slider_states(window, cx);
         app.sync_input_hook();
+        if app.saved_settings.general.check_for_updates {
+            app.check_for_updates(false, cx);
+        }
         app.schedule_tick(window, cx);
         app
+    }
+
+    fn check_for_updates(&mut self, manual: bool, cx: &mut Context<Self>) {
+        if self.update_check_in_progress {
+            return;
+        }
+        self.update_check_in_progress = true;
+        self.update_check_message = None;
+        if manual {
+            cx.notify();
+        }
+        let channel = self.settings.general.update_channel;
+        let check = cx
+            .background_executor()
+            .spawn(async move { update_checker::check(channel) });
+        cx.spawn(async move |this, cx| {
+            let result = check.await;
+            let _ = this.update(cx, |app, cx| {
+                app.update_check_in_progress = false;
+                match result {
+                    Ok(check) => {
+                        app.latest_version = Some(check.latest_version);
+                        app.available_update = check.available_update;
+                    }
+                    Err(()) if manual => {
+                        app.update_check_message =
+                            Some(t!("about.update_check_failed").to_string());
+                    }
+                    Err(()) => {}
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn navigate_to(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -4178,6 +4224,8 @@ fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Set
         && settings.general.startup_with_windows == current.general.startup_with_windows
         && settings.general.start_minimized == current.general.start_minimized
         && settings.general.hide_to_tray == current.general.hide_to_tray
+        && settings.general.check_for_updates == current.general.check_for_updates
+        && settings.general.update_channel == current.general.update_channel
         && settings.general.theme_mode == current.general.theme_mode
         && settings.general.accent == current.general.accent
         && settings.general.language == current.general.language
@@ -4658,7 +4706,7 @@ impl WinderustApp {
             Page::ExperimentalFeatures => self.render_experimental_features_page(window, cx),
             Page::TimerResolution => self.render_timer_resolution_page(window, cx),
             Page::Win32PrioritySeparation => self.render_win32_priority_separation_page(window, cx),
-            Page::About => self.render_about_page(cx),
+            Page::About => self.render_about_page(window, cx),
         }
     }
 
@@ -12787,6 +12835,45 @@ impl WinderustApp {
             .into_any_element()
     }
 
+    fn render_update_channel_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self.settings.general.update_channel;
+        self.render_dropdown_select(
+            "update-channel",
+            update_channel_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            UpdateChannel::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for channel in UpdateChannel::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!("update-channel-option-{channel:?}")),
+                            update_channel_label(channel),
+                            selected == channel,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings.general.update_channel = channel;
+                            app.latest_version = None;
+                            app.available_update = None;
+                            app.update_check_message = None;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
     fn render_language_selector(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let selected = self.settings.general.language;
         let dropdown = self.render_dropdown_select(
@@ -14583,30 +14670,44 @@ impl WinderustApp {
         picker
     }
 
-    fn render_about_page(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_about_page(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let github_url = "https://github.com/TatshSiow/Winderust";
+        let discord_url = "https://discord.gg/M7nctFZUxX";
+        let documentation_url = "https://github.com/TatshSiow/Winderust#readme";
+        let license_url = "https://github.com/TatshSiow/Winderust/blob/main/LICENSE";
+        let latest_version = self
+            .latest_version
+            .as_deref()
+            .map(|version| format!("v{version}"))
+            .unwrap_or_else(|| "—".to_string());
+        let current_status = self.latest_version.as_ref().map(|_| {
+            if self.available_update.is_some() {
+                t!("about.old").to_string()
+            } else {
+                t!("about.up_to_date").to_string()
+            }
+        });
+
         self.page_shell(Page::About, cx)
+            .child(section_title_text(t!("nav.about").to_string()))
             .child(
                 branded_panel()
                     .p_4()
                     .gap_3()
                     .child(
-                        v_flex()
-                            .gap_1()
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap_3()
+                            .child(img("image/icon-design.png").size(px(64.0)))
                             .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .flex_wrap()
+                                v_flex()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .gap_1()
                                     .child(section_title_text(t!("app.name").to_string()))
-                                    .child(
-                                        div()
-                                            .text_size(px(TEXT_LABEL_SIZE))
-                                            .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                                            .text_color(rgb(dim_text_color()))
-                                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
-                                    ),
-                            )
-                            .child(text_muted("Windows Performance & Power Manager")),
+                                    .child(text_muted(t!("app.description").to_string())),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -14629,24 +14730,137 @@ impl WinderustApp {
                             ),
                     )
                     .child(
-                        h_flex().w_full().justify_end().child(
-                            v_flex()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_color(rgb(dim_text_color()))
-                                        .text_size(px(TEXT_LABEL_SIZE))
-                                        .line_height(px(TEXT_LABEL_LINE_HEIGHT))
-                                        .child(t!("about.author").to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(TEXT_BODY_SIZE))
-                                        .line_height(px(TEXT_BODY_LINE_HEIGHT))
-                                        .child("Tatsh Siow"),
-                                ),
-                        ),
+                        h_flex()
+                            .gap_1()
+                            .child(text_muted(t!("about.author").to_string()))
+                            .child("Tatsh Siow"),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new("about-github")
+                                    .small()
+                                    .label(t!("about.github").to_string())
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.open_url(github_url);
+                                    })),
+                            )
+                            .child(text_muted("·"))
+                            .child(
+                                Button::new("about-discord")
+                                    .small()
+                                    .label(t!("about.discord").to_string())
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.open_url(discord_url);
+                                    })),
+                            )
+                            .child(text_muted("·"))
+                            .child(
+                                Button::new("about-documentation")
+                                    .small()
+                                    .label(t!("about.documentation").to_string())
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.open_url(documentation_url);
+                                    })),
+                            )
+                            .child(text_muted("·"))
+                            .child(
+                                Button::new("about-license")
+                                    .small()
+                                    .label(t!("about.license").to_string())
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        cx.open_url(license_url);
+                                    })),
+                            ),
                     ),
+            )
+            .child(section_title_text(t!("about.updates").to_string()))
+            .child(
+                branded_panel()
+                    .p_4()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .gap_3()
+                            .child(div().flex_1().child(t!("about.update_channel").to_string()))
+                            .child(self.render_update_channel_selector(window, cx))
+                            .child(
+                                control_button(Button::new("check-for-updates-now"))
+                                    .label(t!("about.check_for_updates").to_string())
+                                    .disabled(self.update_check_in_progress)
+                                    .on_click(cx.listener(|app, _, _, cx| {
+                                        app.check_for_updates(true, cx);
+                                    })),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(t!("about.latest_version").to_string())
+                            .child(
+                                h_flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(text_muted(latest_version))
+                                    .when(self.latest_version.is_some(), |row| {
+                                        if let Some(update) = self.available_update.clone() {
+                                            let url = update.url;
+                                            row.child(
+                                                primary_control_button(
+                                                    Button::new("download-update"),
+                                                    cx,
+                                                )
+                                                .label(t!("about.download_update").to_string())
+                                                .on_click(cx.listener(move |_, _, _, cx| {
+                                                    cx.open_url(&url);
+                                                })),
+                                            )
+                                        } else {
+                                            row.child(text_muted(format!(
+                                                "({})",
+                                                t!("about.up_to_date")
+                                            )))
+                                        }
+                                    })
+                                    .when_some(
+                                        self.update_check_message.clone(),
+                                        |row, message| {
+                                            row.child(text_muted(format!("({message})")))
+                                        },
+                                    ),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .justify_between()
+                            .child(t!("about.current_version").to_string())
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(text_muted(format!("v{}", env!("CARGO_PKG_VERSION"))))
+                                    .when_some(current_status, |row, status| {
+                                        row.child(text_muted(format!("({status})")))
+                                    }),
+                            ),
+                    )
+                    .child(checkbox(
+                        "check-for-updates",
+                        t!("about.automatic_check_for_updates").to_string(),
+                        self.settings.general.check_for_updates,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings.general.check_for_updates = *checked;
+                            cx.notify();
+                        }),
+                    )),
             )
             .into_any_element()
     }
@@ -16942,7 +17156,7 @@ fn dashboard_page_search_text(page: Page) -> String {
             "log action history details csv export skipped failed applied restored reason".to_string(),
         ],
         Page::SettingsHome => vec![
-            "settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette about".to_string(),
+            "settings winderust behaviour startup tray toggles action log detail fail suppression appearance language theme accent color palette".to_string(),
         ],
         Page::AdvancedControls => vec![
             "advanced app suspension windows scheduler win32 priority separation quantum foreground boost registry".to_string(),
@@ -17123,7 +17337,8 @@ fn dashboard_page_search_text(page: Page) -> String {
         Page::About => vec![
             t!("about.intro_1").to_string(),
             t!("about.intro_2").to_string(),
-            "about version project winderust".to_string(),
+            "about version project winderust update automatic check stable pre-release channel"
+                .to_string(),
         ],
     };
 
@@ -17136,7 +17351,7 @@ fn dashboard_page_search_text(page: Page) -> String {
 }
 
 fn nav_section_in_footer(page: Page) -> bool {
-    matches!(page, Page::ActionLog | Page::SettingsHome)
+    matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
 }
 
 fn page_body_shell() -> gpui::Div {
@@ -21831,6 +22046,13 @@ fn theme_mode_label(mode: AppThemeMode) -> String {
         AppThemeMode::System => t!("theme.system").to_string(),
         AppThemeMode::Light => t!("theme.light").to_string(),
         AppThemeMode::Dark => t!("theme.dark").to_string(),
+    }
+}
+
+fn update_channel_label(channel: UpdateChannel) -> String {
+    match channel {
+        UpdateChannel::Stable => t!("update_channel.stable").to_string(),
+        UpdateChannel::PreRelease => t!("update_channel.pre_release").to_string(),
     }
 }
 

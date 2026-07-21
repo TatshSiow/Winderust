@@ -94,6 +94,10 @@ pub struct GeneralSettings {
     pub start_minimized: bool,
     #[serde(default)]
     pub hide_to_tray: bool,
+    #[serde(default = "default_true")]
+    pub check_for_updates: bool,
+    #[serde(default)]
+    pub update_channel: UpdateChannel,
     #[serde(default)]
     pub theme_mode: AppThemeMode,
     #[serde(default)]
@@ -105,6 +109,18 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    Stable,
+    #[default]
+    PreRelease,
+}
+
+impl UpdateChannel {
+    pub const ALL: [Self; 2] = [Self::Stable, Self::PreRelease];
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1403,6 +1419,8 @@ impl Default for Settings {
                 startup_with_windows: false,
                 start_minimized: false,
                 hide_to_tray: false,
+                check_for_updates: true,
+                update_channel: UpdateChannel::PreRelease,
                 theme_mode: AppThemeMode::System,
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
