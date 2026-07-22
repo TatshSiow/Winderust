@@ -13,10 +13,14 @@ This is the working guide for code changes. Product scope and future goals live 
 Use these checks before handoff:
 
 ```powershell
+git diff --check
 cargo fmt -- --check
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn
 cargo test --locked
 ```
+
+When reviewing or committing an existing index, also run
+`git diff --cached --check`.
 
 For release builds:
 
@@ -48,6 +52,22 @@ Use `main` for releasable code and `dev` as the integration branch. Create
 feature branches from `dev` and merge them back through pull requests; promote
 tested `dev` changes to `main` for release. CI runs on pushes to `main` and
 `dev`, and on every pull request. Release automation remains tag-only.
+
+## Rust Engineering Practices
+
+- Trace every caller before changing a shared helper, enum, setting, or error
+  contract. Fix a defect once at the shared boundary when all affected callers
+  route through it.
+- Keep behavior-preserving refactors mechanical. Move one coherent page or
+  helper family at a time, avoid mixing feature work into the split, and verify
+  the resulting tree before claiming behavior is unchanged.
+- Prefer existing project helpers, the standard library, and native Windows
+  facilities before adding abstractions or dependencies.
+- Use `Result` and typed errors when callers need to distinguish or report a
+  failure. Avoid `unwrap` and `expect` on live process, filesystem, network,
+  configuration, and Win32 paths.
+- Treat unsupported internal enum variants or impossible UI wiring as invariant
+  violations with a clear message; do not silently convert them into a no-op.
 
 ## Release Runbook
 
@@ -91,7 +111,11 @@ and the corrected commit must be the tagged source.
 ## Source Map
 
 - `src/main.rs`: app entry, single-instance guard, GPUI startup.
-- `src/ui/app.rs`: main GPUI state, rendering, navigation, dialogs, and page wiring. It is large; shrink by moving one complete page/helper cluster at a time.
+- `src/ui/app.rs`: shared `WinderustApp` state, lifecycle, command wiring,
+  cross-page coordination, and app-level tests.
+- `src/ui/app/`: focused page renderers and UI helper families. Page dispatch is
+  in `chrome.rs`; process add/check and rule-construction helpers are in
+  `process_policies.rs`.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
@@ -105,23 +129,28 @@ and the corrected commit must be the tagged source.
 
 Pages are grouped in `src/ui.rs`:
 
-- Overview: dashboard.
+- Home: dashboard.
 - Process List: process table and per-process policy surface.
 - Winderust Features: Adaptive Engine, Background Efficiency, Memory Trim.
 - Power Plan Control: By Foreground, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
-- Priority Control: CPU priority, thread priority, dynamic priority boost, IO priority, GPU priority, memory priority.
+- Priority Control: Process Priority, Thread Priority, Dynamic Priority Boost,
+  IO Priority, GPU Priority, Memory Priority.
 - CPU Control: Core Limiter, Background CPU Restriction, Core Steering.
 - Action Log.
-- Settings.
-- Advanced: App Suspension, Timer Resolution, Win32 priority separation.
+- Settings: Winderust Behaviour, Language and Appearance, Experimental
+  Features.
+- About.
+- Advanced: App Suspension, Timer Resolution, Win32 Priority Separation.
 
-Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `WinderustApp::render_page` together.
+Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
+`WinderustApp::render_page` in `src/ui/app/chrome.rs` together.
 
 ## Settings
 
 - Runtime settings live in `Settings`.
 - Use `#[serde(default)]` only when a current setting is intentionally optional; do not add pre-release migration aliases.
-- If a setting is edited through the UI, update the relevant input sync code in `src/ui/app.rs`.
+- If a setting is edited through the UI, update the relevant page module and
+  input synchronization in `src/ui/app.rs`.
 - TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
 
 ### Power Plan Ownership
@@ -162,7 +191,13 @@ Process-control features must keep these defaults:
 - Use existing GPUI/gpui-component helpers before adding new UI primitives.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
 - Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
-- For `src/ui/app.rs` cleanup, move one complete page or repeated helper family at a time; do not start a framework rewrite.
+- Keep `src/ui/app.rs` for shared app state and cross-page coordination. Put a
+  complete page or repeated helper family in one focused `src/ui/app/` module;
+  do not start a framework rewrite.
+- Multiple focused `impl WinderustApp` blocks are acceptable for the private UI
+  module. Keep glob imports contained there; use explicit imports when a module
+  gains independent ownership or its dependencies become unclear, not as
+  mechanical churn.
 
 ## Windows APIs
 
@@ -171,6 +206,28 @@ Process-control features must keep these defaults:
 - Idle and input hooks: `src/activity/`.
 - Tray behavior: `src/backend/tray.rs`.
 - Timer resolution: `src/features/advanced_controls/timer_resolution.rs`.
-- Win32 priority separation: registry code in `src/ui/app.rs`.
+- Win32 Priority Separation: page logic in
+  `src/ui/app/advanced_controls_pages.rs`, bit/value helpers in
+  `src/ui/app/appearance.rs`, and registry access in
+  `src/backend/win_registry.rs`.
 
 Prefer native API calls already used in the repo. Do not add command spawning around `powercfg` unless the Win32 path cannot support the needed behavior.
+
+When adding, removing, or changing a feature-defining or
+compatibility-sensitive Win32, NT, or WDK boundary, update
+`30-reference-library.md` in the same change. Link directly to official
+Microsoft documentation when it exists and explicitly mark numeric information
+classes or manually declared interfaces that are not stable public SDK
+contracts.
+
+- Keep the crate-level `clippy::undocumented_unsafe_blocks` and
+  `unsafe_op_in_unsafe_fn` warnings enabled.
+- Prefer private safe wrappers around Win32 FFI. Required `unsafe extern`
+  callbacks must still wrap unsafe operations in explicit blocks.
+- Put an immediately preceding `// SAFETY:` comment on each unsafe block that
+  states the handle, pointer, buffer, lifetime, ownership, and ABI invariants
+  relevant to that call.
+- Capture `GetLastError` immediately after the failing Win32 call, before any
+  other call can overwrite the thread-local error.
+- Put owned Windows handles in the existing RAII wrappers and release each
+  resource exactly once.

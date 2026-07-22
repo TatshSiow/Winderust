@@ -19,9 +19,11 @@ user constraints. Then read only what the task needs:
 
 ## Maintenance
 
-- Keep temporary or recent-context notes in `00-agent-start.md`.
+- Keep durable current decisions and active user constraints in
+  `00-agent-start.md`; remove them when they stop applying.
 - Move durable engineering rules into `10-development-guide.md`.
 - Put UI design rules in `15-design-spec.md`.
 - Put product boundaries in `20-project-scope.md`.
 - Put API/reference facts in `30-reference-library.md`.
-- Record only durable decisions. Do not copy temporary task notes, test output counts, or speculative future architecture into memory.
+- Record only durable decisions. Do not copy temporary task notes, test output
+  counts, one-off audit results, or speculative future architecture into memory.

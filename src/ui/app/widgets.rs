@@ -527,7 +527,7 @@ pub(super) fn rename_rule_button(
         "rename-rule-{target:?}"
     ))))
     .icon(Icon::new(NavIcon::SquarePen).with_size(px(14.0)))
-    .label("Rename")
+    .label(t!("common.rename").to_string())
     .tooltip(t!("common.rename_rule").to_string())
     .on_click(cx.listener(move |app, _, window, cx| {
         app.begin_rule_title_edit(target, window, cx);

@@ -14,7 +14,8 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - The title bar is compact: app icon/name, short description, native-feeling window controls.
 - The sidebar is fixed-width, searchable, and grouped by product area through `Page::sections()`.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
-- Navigation labels and page sections live in `src/ui.rs`; page rendering dispatch stays in `render_page`.
+- Navigation labels and page sections live in `src/ui.rs`; page rendering
+  dispatch stays in `WinderustApp::render_page` in `src/ui/app/chrome.rs`.
 
 ## Layout Rules
 
@@ -77,8 +78,10 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ## Localization
 
-- All user-facing strings should use `t!()` and locale files.
-- Do not hardcode visible English strings in UI code, except internal table abbreviations already intentionally fixed such as `FG` / `BG`.
+- All translatable user-facing strings should use `t!()` and locale files.
+- Proper names, language-neutral symbols, and intentional internal table
+  abbreviations such as `FG` / `BG` may remain literals. Do not hardcode other
+  visible English strings in UI code.
 
 ## Safety UX
 

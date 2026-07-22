@@ -74,6 +74,7 @@ common:
   rules: "Custom Rules"
   unnamed_rule: "Unnamed rule"
   syncing_rule_editor: "Syncing rule editor state..."
+  rename: "Rename"
   rename_rule: "Rename rule"
   yes: "Yes"
   no: "No"
@@ -1062,6 +1063,8 @@ core_limiter:
   indicator_limited: "Limited"
 
 about:
+  inspired_by: "Inspired by"
+  inspiration_joiner: "and"
   intro_1: "Winderust is a local Windows power automation utility."
   intro_2: "Version and project details are shown below."
   author: "Created by"

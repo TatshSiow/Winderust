@@ -51,13 +51,13 @@ impl WinderustApp {
                             .text_size(px(TEXT_BODY_SIZE))
                             .line_height(px(TEXT_BODY_LINE_HEIGHT))
                             .text_color(rgb(dim_text_color()))
-                            .child("Inspired by ")
+                            .child(t!("about.inspired_by").to_string())
                             .child(
                                 div()
                                     .font_weight(gpui::FontWeight::BOLD)
                                     .child("Wanderlust"),
                             )
-                            .child(" and ")
+                            .child(t!("about.inspiration_joiner").to_string())
                             .child(
                                 div()
                                     .font_weight(gpui::FontWeight::BOLD)
