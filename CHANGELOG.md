@@ -1,9 +1,10 @@
 # Changelog
 
-Notable changes to Winderust are documented here.
+All notable changes to this project will be documented in this file.
 
-The project follows Semantic Versioning after its first stable release. During
-the public alpha, minor releases may include breaking settings changes.
+The format is based on [Keep a Changelog](https://keepachangelog.com),
+and this project adheres to [Semantic Versioning](https://semver.org).
+
 
 ## 0.2.0-alpha - 2026-07-22
 
