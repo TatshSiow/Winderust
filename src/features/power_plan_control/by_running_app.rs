@@ -73,6 +73,7 @@ impl ByRunningAppManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             self.release(action_log, "current Windows session is unknown");

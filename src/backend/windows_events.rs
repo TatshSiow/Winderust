@@ -84,6 +84,7 @@ impl WindowsEventWatcher {
 
 impl Drop for WindowsEventWatcher {
     fn drop(&mut self) {
+        // SAFETY: thread_id identifies the live watcher thread and WM_QUIT carries no pointers.
         unsafe {
             PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
         }
@@ -94,6 +95,7 @@ impl Drop for WindowsEventWatcher {
 }
 
 fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallback) {
+    // SAFETY: GetCurrentThreadId takes no arguments and has no caller requirements.
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut msg = MSG::default();
 
@@ -101,11 +103,15 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
         *slot.borrow_mut() = Some(callback);
     });
 
+    // SAFETY: msg is writable; PM_NOREMOVE creates this thread's message queue without consuming
+    // a message.
     unsafe {
         PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
     }
 
     let window = create_event_window();
+    // SAFETY: win_event_proc has the required static ABI and the out-of-context hook retains no
+    // borrowed Rust data.
     let foreground_hook = unsafe {
         SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
@@ -117,6 +123,8 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         )
     };
+    // SAFETY: win_event_proc has the required static ABI and the out-of-context hook retains no
+    // borrowed Rust data.
     let window_hook = unsafe {
         SetWinEventHook(
             EVENT_OBJECT_CREATE,
@@ -146,12 +154,15 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
     let mut session_notifications_registered = false;
     if !window.is_null() {
         power_notifications = register_power_notifications(window);
+        // SAFETY: window is the live hidden event window owned by this thread.
         session_notifications_registered =
             unsafe { WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) } != 0;
     }
 
     let _ = sender.send(Ok(thread_id));
 
+    // SAFETY: msg and every registered handle remain live on this owning thread; registrations
+    // and the hidden window are each released exactly once after the message loop.
     unsafe {
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
@@ -185,14 +196,18 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
 
 fn create_event_window() -> HWND {
     let class_name = wide_null("WinderustAutomationEvents");
+    // SAFETY: A null module name asks Windows for the current process module.
     let module = unsafe { GetModuleHandleW(null()) };
     let window_class = WNDCLASSW {
         lpfnWndProc: Some(event_window_proc),
         hInstance: module as _,
         lpszClassName: class_name.as_ptr(),
+        // SAFETY: WNDCLASSW is a plain Win32 data structure for which zero is a valid default.
         ..unsafe { std::mem::zeroed() }
     };
 
+    // SAFETY: class_name remains alive for registration and creation, event_window_proc has the
+    // required static ABI, and all optional handles and creation data are null.
     unsafe {
         RegisterClassW(&window_class);
         CreateWindowExW(
@@ -221,6 +236,7 @@ fn register_power_notifications(window: HWND) -> PowerNotifications {
     let mut settings = Vec::new();
 
     for setting in &power_settings {
+        // SAFETY: window is live and setting points to a static GUID for the duration of the call.
         let notification = unsafe {
             RegisterPowerSettingNotification(window as _, setting, DEVICE_NOTIFY_WINDOW_HANDLE)
         };
@@ -229,6 +245,7 @@ fn register_power_notifications(window: HWND) -> PowerNotifications {
         }
     }
 
+    // SAFETY: window is live and the registration stores only the HWND value.
     let suspend_resume =
         unsafe { RegisterSuspendResumeNotification(window as _, DEVICE_NOTIFY_WINDOW_HANDLE) };
     PowerNotifications {
@@ -264,6 +281,8 @@ unsafe extern "system" fn event_window_proc(
             notify_event(WindowsAutomationEvent::AppearanceChanged);
             0
         }
+        // SAFETY: Forwarding unhandled messages with their unchanged callback arguments is the
+        // required window-procedure contract.
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
 }

@@ -2253,7 +2253,10 @@ impl HiddenAutomationRunner {
         if should_refresh_active_plan {
             self.refresh_active_plan();
         }
-        let plan = self.adaptive_power_plan.as_mut().unwrap();
+        let plan = self
+            .adaptive_power_plan
+            .as_mut()
+            .ok_or_else(|| "Adaptive power plan was not initialized.".to_owned())?;
         if self
             .current_guid
             .as_deref()

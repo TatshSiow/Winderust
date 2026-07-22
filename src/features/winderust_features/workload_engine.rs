@@ -31,9 +31,9 @@ use crate::{
     core_steering::{self, CoreSteeringManager, LogicalProcessorInfo, LogicalProcessorKind},
     cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
     foreground::{
-        contains_process_name, is_process_exited_message, list_processes, process_count_label,
-        process_failure_key, process_names_by_id, process_session_id, same_process_name,
-        unique_app_names, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_count_label, process_failure_key,
+        process_names_by_id, process_session_id, same_process_name, unique_app_names, ProcessInfo,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -284,6 +284,7 @@ impl WorkloadEngineManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
@@ -671,10 +672,6 @@ impl WorkloadEngineManager {
                 }
                 Err(error) => {
                     let err = priority_error_message(&error);
-                    if is_process_exited_message(&err) {
-                        skipped_processes += 1;
-                        continue;
-                    }
                     self.record_process_failure(&failure_process_name);
                     failures.record_message(
                         "Apply",
@@ -1153,10 +1150,6 @@ impl WorkloadEngineManager {
                     );
                 }
                 Err(PriorityError::Failed(err)) => {
-                    if is_process_exited_message(&err) {
-                        result.skipped += 1;
-                        continue;
-                    }
                     self.record_process_failure(process_name);
                     result.failures.record_message(
                         "Boost",
@@ -2308,6 +2301,7 @@ fn process_age(process_id: u32) -> Option<Duration> {
     let process = ProcessHandle::open_query(process_id).ok()?;
     let creation_time_100ns = process.creation_time_100ns().ok()?;
     let mut now = FILETIME::default();
+    // SAFETY: now is writable FILETIME storage for the duration of the call.
     unsafe {
         GetSystemTimeAsFileTime(&mut now);
     }
@@ -2430,9 +2424,6 @@ impl PriorityFailures {
         message: String,
         action_log: &mut ActionLog,
     ) {
-        if is_process_exited_message(&message) {
-            return;
-        }
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(process_failure_message(
@@ -2518,6 +2509,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, PriorityError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -2533,6 +2526,8 @@ impl ProcessHandle {
     }
 
     fn open_query(process_id: u32) -> Result<Self, PriorityError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
         if !handle.is_null() {
             Ok(Self(WinHandle::new(handle)))
@@ -2542,6 +2537,7 @@ impl ProcessHandle {
     }
 
     fn priority_class(&self) -> Result<u32, PriorityError> {
+        // SAFETY: self owns a live process handle.
         let priority = unsafe { GetPriorityClass(self.0.raw()) };
         if priority == 0 {
             Err(PriorityError::Failed(format!(
@@ -2554,6 +2550,8 @@ impl ProcessHandle {
     }
 
     fn set_priority_class(&self, priority_class: u32) -> Result<(), PriorityError> {
+        // SAFETY: self owns a live process handle and priority_class is a documented class or a
+        // previously read value.
         let ok = unsafe { SetPriorityClass(self.0.raw(), priority_class) };
         if ok == 0 {
             Err(PriorityError::Failed(format!(
@@ -2567,6 +2565,7 @@ impl ProcessHandle {
 
     fn dynamic_priority_boost_disabled(&self) -> Result<bool, PriorityError> {
         let mut disabled = 0;
+        // SAFETY: self owns a live process handle and disabled is writable for the call.
         let ok = unsafe { GetProcessPriorityBoost(self.0.raw(), &mut disabled) };
         if ok == 0 {
             Err(PriorityError::Failed(format!(
@@ -2579,6 +2578,8 @@ impl ProcessHandle {
     }
 
     fn set_dynamic_priority_boost_disabled(&self, disabled: bool) -> Result<(), PriorityError> {
+        // SAFETY: self owns a live process handle and disabled is converted to the documented BOOL
+        // representation.
         let ok = unsafe { SetProcessPriorityBoost(self.0.raw(), i32::from(disabled)) };
         if ok == 0 {
             Err(PriorityError::Failed(format!(
@@ -2592,6 +2593,8 @@ impl ProcessHandle {
 
     fn power_throttling_state(&self) -> Result<PROCESS_POWER_THROTTLING_STATE, PriorityError> {
         let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+        // SAFETY: self owns a live process handle and state is writable for exactly the supplied
+        // structure size.
         let ok = unsafe {
             GetProcessInformation(
                 self.0.raw(),
@@ -2614,6 +2617,8 @@ impl ProcessHandle {
         &self,
         state: PROCESS_POWER_THROTTLING_STATE,
     ) -> Result<(), PriorityError> {
+        // SAFETY: self owns a live process handle and state is fully initialized for exactly the
+        // supplied structure size.
         let ok = unsafe {
             SetProcessInformation(
                 self.0.raw(),
@@ -2637,6 +2642,8 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
+        // call.
         let ok = unsafe {
             GetProcessTimes(
                 self.0.raw(),
@@ -2664,6 +2671,8 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
+        // call.
         let ok = unsafe {
             GetProcessTimes(
                 self.0.raw(),

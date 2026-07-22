@@ -31,9 +31,9 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings},
     foreground::{
-        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_names_by_id, process_session_id, same_process_name,
-        should_ignore_foreground_process, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_failure_key, process_names_by_id,
+        process_session_id, same_process_name, should_ignore_foreground_process, unique_app_names,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -165,6 +165,7 @@ impl CoreSteeringManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
@@ -287,10 +288,6 @@ impl CoreSteeringManager {
                 }
                 Err(error) => {
                     let err = affinity_error_message(error);
-                    if is_process_exited_message(&err) {
-                        skipped_processes += 1;
-                        continue;
-                    }
                     failed_processes += 1;
                     if last_error.is_none() {
                         last_error = Some(err.clone());
@@ -520,11 +517,13 @@ fn core_steering_message_for_group_count(group_count: u16, has_hard_rules: bool)
 }
 
 fn active_processor_group_count() -> u16 {
+    // SAFETY: GetActiveProcessorGroupCount takes no arguments and has no caller requirements.
     unsafe { GetActiveProcessorGroupCount() }
 }
 
 fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
     let mut returned_length = 0;
+    // SAFETY: A null buffer with zero length requests the required byte count in returned_length.
     unsafe {
         GetLogicalProcessorInformationEx(RelationProcessorCore, null_mut(), &mut returned_length);
     }
@@ -535,6 +534,8 @@ fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
 
     let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
     let mut buffer = vec![0_usize; word_count];
+    // SAFETY: buffer provides at least returned_length writable bytes and returned_length remains
+    // writable for the actual result size.
     let ok = unsafe {
         GetLogicalProcessorInformationEx(
             RelationProcessorCore,
@@ -546,6 +547,7 @@ fn logical_processors_from_topology() -> Option<Vec<LogicalProcessorInfo>> {
         return None;
     }
 
+    // SAFETY: The successful topology query initialized returned_length bytes within buffer.
     let bytes =
         unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) };
 
@@ -562,6 +564,8 @@ fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalPr
     let group_mask_size = size_of::<GROUP_AFFINITY>();
 
     while offset + header_size <= buffer.len() {
+        // SAFETY: The header bounds check above guarantees enough bytes; unaligned reads are used
+        // because the Win32 records are byte-packed.
         let header = unsafe {
             read_unaligned(buffer.as_ptr().add(offset) as *const LogicalProcessorInformationHeader)
         };
@@ -573,6 +577,8 @@ fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalPr
         if header.relationship == RelationProcessorCore
             && record_size >= header_size + processor_size
         {
+            // SAFETY: record_size was validated against the buffer and includes a complete
+            // PROCESSOR_RELATIONSHIP.
             let processor = unsafe {
                 read_unaligned(
                     buffer.as_ptr().add(offset + header_size) as *const PROCESSOR_RELATIONSHIP
@@ -582,6 +588,8 @@ fn logical_processors_from_topology_bytes(buffer: &[u8]) -> Option<Vec<LogicalPr
                 record_size.saturating_sub(group_mask_offset) / group_mask_size;
             let group_count = usize::from(processor.GroupCount).min(available_group_count);
             for group_index in 0..group_count {
+                // SAFETY: group_count is capped by the number of complete GROUP_AFFINITY records
+                // inside this validated record.
                 let group_affinity = unsafe {
                     read_unaligned(
                         buffer
@@ -1030,6 +1038,7 @@ fn target_cpu_set_ids(rule_mask: u64) -> Result<Option<Vec<u32>>, AffinityError>
 
 fn system_cpu_set_ids_for_mask(rule_mask: u64) -> Result<Vec<u32>, AffinityError> {
     let mut returned_length = 0;
+    // SAFETY: A null buffer with zero length requests the required byte count in returned_length.
     unsafe {
         GetSystemCpuSetInformation(null_mut(), 0, &mut returned_length, null_mut(), 0);
     }
@@ -1040,6 +1049,8 @@ fn system_cpu_set_ids_for_mask(rule_mask: u64) -> Result<Vec<u32>, AffinityError
 
     let word_count = (returned_length as usize).div_ceil(size_of::<usize>());
     let mut buffer = vec![0_usize; word_count];
+    // SAFETY: buffer provides at least returned_length writable bytes and returned_length remains
+    // writable for the actual result size.
     let ok = unsafe {
         GetSystemCpuSetInformation(
             buffer.as_mut_ptr() as *mut SYSTEM_CPU_SET_INFORMATION,
@@ -1057,6 +1068,7 @@ fn system_cpu_set_ids_for_mask(rule_mask: u64) -> Result<Vec<u32>, AffinityError
     }
 
     Ok(cpu_set_ids_for_mask_from_bytes(
+        // SAFETY: The successful CPU-set query initialized returned_length bytes within buffer.
         unsafe { slice::from_raw_parts(buffer.as_ptr() as *const u8, returned_length as usize) },
         rule_mask,
     ))
@@ -1068,6 +1080,8 @@ fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
     let header_size = size_of::<CpuSetInformationHeader>();
 
     while offset + header_size <= buffer.len() {
+        // SAFETY: The header bounds check guarantees enough bytes and unaligned access matches the
+        // byte-packed Win32 record layout.
         let header = unsafe {
             read_unaligned(buffer.as_ptr().add(offset) as *const CpuSetInformationHeader)
         };
@@ -1077,9 +1091,12 @@ fn cpu_set_ids_for_mask_from_bytes(buffer: &[u8], rule_mask: u64) -> Vec<u32> {
         }
 
         if header.cpu_set_type == 0 && record_size >= size_of::<SYSTEM_CPU_SET_INFORMATION>() {
+            // SAFETY: record_size was validated against the buffer and covers the full CPU-set
+            // record.
             let info = unsafe {
                 read_unaligned(buffer.as_ptr().add(offset) as *const SYSTEM_CPU_SET_INFORMATION)
             };
+            // SAFETY: cpu_set_type zero selects the CpuSet member of the Win32 union.
             let cpu_set = unsafe { info.Anonymous.CpuSet };
             if cpu_set.Group == 0 && cpu_set.LogicalProcessorIndex < 64 {
                 let bit = 1_u64 << cpu_set.LogicalProcessorIndex;
@@ -1106,6 +1123,8 @@ impl ProcessHandle {
 
         let mut last_open_error = 0;
         for access in access_masks {
+            // SAFETY: process_id came from the current process snapshot, access is one of the two
+            // documented masks above, and no inherited handle is requested.
             let handle = unsafe { OpenProcess(access, 0, process_id) };
             if !handle.is_null() {
                 return Ok(Self(WinHandle::new(handle)));
@@ -1119,6 +1138,7 @@ impl ProcessHandle {
     fn affinity_mask(&self) -> Result<(usize, usize), AffinityError> {
         let mut process_affinity = 0;
         let mut system_affinity = 0;
+        // SAFETY: self owns a live process handle and both affinity outputs are writable.
         let ok = unsafe {
             GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
         };
@@ -1133,6 +1153,8 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), AffinityError> {
+        // SAFETY: self owns a live process handle and affinity_mask was normalized against the
+        // system mask read from this process.
         let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
         if ok == 0 {
             Err(AffinityError::Failed(format!(
@@ -1146,6 +1168,7 @@ impl ProcessHandle {
 
     fn default_cpu_set_ids(&self) -> Result<Vec<u32>, AffinityError> {
         let mut required_id_count = 0;
+        // SAFETY: A null id buffer with zero capacity requests the required count.
         unsafe {
             GetProcessDefaultCpuSets(self.0.raw(), null_mut(), 0, &mut required_id_count);
         }
@@ -1154,6 +1177,8 @@ impl ProcessHandle {
         }
 
         let mut ids = vec![0_u32; required_id_count as usize];
+        // SAFETY: ids provides required_id_count writable entries and the count out-parameter
+        // remains writable.
         let ok = unsafe {
             GetProcessDefaultCpuSets(
                 self.0.raw(),
@@ -1179,6 +1204,8 @@ impl ProcessHandle {
         } else {
             (ids.as_ptr() as *mut u32, ids.len() as u32)
         };
+        // SAFETY: self owns a live process handle; ptr is null for zero count or points to count
+        // initialized ids for the duration of the call.
         let ok = unsafe { SetProcessDefaultCpuSets(self.0.raw(), ptr, count) };
         if ok == 0 {
             Err(AffinityError::Failed(format!(
@@ -1192,6 +1219,8 @@ impl ProcessHandle {
 
     fn power_throttling_state(&self) -> Result<PROCESS_POWER_THROTTLING_STATE, AffinityError> {
         let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+        // SAFETY: self owns a live process handle and state is writable for exactly the supplied
+        // structure size.
         let ok = unsafe {
             GetProcessInformation(
                 self.0.raw(),
@@ -1214,6 +1243,8 @@ impl ProcessHandle {
         &self,
         state: PROCESS_POWER_THROTTLING_STATE,
     ) -> Result<(), AffinityError> {
+        // SAFETY: self owns a live process handle and state is fully initialized for exactly the
+        // supplied structure size.
         let ok = unsafe {
             SetProcessInformation(
                 self.0.raw(),
@@ -1549,6 +1580,8 @@ mod tests {
             ..Default::default()
         };
 
+        // SAFETY: buffer was allocated for the complete header and processor records, and
+        // write_unaligned matches their byte-packed representation.
         unsafe {
             std::ptr::write_unaligned(
                 buffer.as_mut_ptr().add(start) as *mut LogicalProcessorInformationHeader,

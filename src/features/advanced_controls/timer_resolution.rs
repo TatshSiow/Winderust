@@ -386,6 +386,8 @@ fn snapshot_from_query(
 
 fn query_timer_resolution() -> Result<TimerResolutionInfo, TimerResolutionError> {
     let mut caps = TimeCaps::default();
+    // SAFETY: caps is writable for exactly the supplied TimeCaps size and the FFI declaration
+    // matches timeGetDevCaps.
     let result =
         unsafe { time_get_dev_caps(&mut caps as *mut _, std::mem::size_of::<TimeCaps>() as u32) };
     mm_result("timeGetDevCaps", result)?;
@@ -401,12 +403,14 @@ fn query_timer_resolution() -> Result<TimerResolutionInfo, TimerResolutionError>
 
 fn request_timer_resolution(desired_100ns: u32) -> Result<u32, TimerResolutionError> {
     let period_ms = resolution_100ns_to_period_ms(desired_100ns);
+    // SAFETY: period_ms is normalized to a positive millisecond period accepted by winmm.
     let result = unsafe { time_begin_period(period_ms) };
     mm_result("timeBeginPeriod", result).map(|()| period_ms_to_100ns(period_ms))
 }
 
 fn release_timer_resolution(desired_100ns: u32) -> Result<(), TimerResolutionError> {
     let period_ms = resolution_100ns_to_period_ms(desired_100ns);
+    // SAFETY: period_ms is the same normalized value used for the matching begin request.
     let result = unsafe { time_end_period(period_ms) };
     mm_result("timeEndPeriod", result)
 }

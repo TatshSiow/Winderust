@@ -169,6 +169,7 @@ fn system_memory_status() -> Option<MEMORYSTATUSEX> {
         dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
         ..Default::default()
     };
+    // SAFETY: status declares its size and remains writable for the call.
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
     (ok != 0).then_some(status)
 }
@@ -178,6 +179,7 @@ fn system_cache_bytes() -> Option<u64> {
         cb: std::mem::size_of::<PERFORMANCE_INFORMATION>() as u32,
         ..Default::default()
     };
+    // SAFETY: info is writable and info.cb is exactly its initialized structure size.
     let ok = unsafe { GetPerformanceInfo(&mut info, info.cb) };
     if ok == 0 {
         return None;
@@ -221,6 +223,7 @@ fn process_io_counters(process_id: u32) -> Option<IO_COUNTERS> {
         return None;
     }
 
+    // SAFETY: process_id came from the system snapshot and no inherited handle is requested.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     if process.is_null() {
         return None;
@@ -232,18 +235,22 @@ fn process_io_counters(process_id: u32) -> Option<IO_COUNTERS> {
 
 fn process_io_counters_for_handle(process: HANDLE) -> Option<IO_COUNTERS> {
     let mut counters = IO_COUNTERS::default();
+    // SAFETY: process is held open by the caller and counters is writable for the call.
     let ok = unsafe { GetProcessIoCounters(process, &mut counters) };
     (ok != 0).then_some(counters)
 }
 
 fn read_system_network_counters() -> Option<NetworkCounterSample> {
     let mut table = std::ptr::null_mut::<MIB_IF_TABLE2>();
+    // SAFETY: table is a writable out-pointer that is either left null or populated with a
+    // Windows-owned allocation released below with FreeMibTable.
     let result = unsafe { GetIfTable2(&mut table) };
     if result != 0 || table.is_null() {
         return None;
     }
 
     let counters = network_counters_from_table(table);
+    // SAFETY: table was allocated successfully by GetIfTable2 and is released exactly once.
     unsafe {
         FreeMibTable(table.cast());
     }
@@ -251,7 +258,10 @@ fn read_system_network_counters() -> Option<NetworkCounterSample> {
 }
 
 fn network_counters_from_table(table: *const MIB_IF_TABLE2) -> Option<NetworkCounterSample> {
+    // SAFETY: The only caller passes a non-null GetIfTable2 allocation that remains live until
+    // this function returns.
     let table = unsafe { &*table };
+    // SAFETY: GetIfTable2 allocated NumEntries contiguous table rows.
     let rows =
         unsafe { std::slice::from_raw_parts(table.Table.as_ptr(), table.NumEntries as usize) };
     let mut download_bytes = 0u64;

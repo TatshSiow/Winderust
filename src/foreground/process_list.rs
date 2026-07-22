@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
+use std::{
+    collections::BTreeMap, ffi::OsString, fmt, os::windows::ffi::OsStringExt, path::PathBuf,
+};
 
 use crate::win_util::WinHandle;
 
@@ -85,33 +87,81 @@ pub struct ProcessActionTarget {
     pub creation_time: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessActionTargetError {
+    ProtectedProcess,
+    CurrentSessionUnavailable,
+    DifferentSession,
+    ProcessEnumeration(String),
+    ProcessExited,
+    ProcessChanged,
+    ProcessUnavailable(u32),
+    IdentityUnavailable,
+}
+
+impl fmt::Display for ProcessActionTargetError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProtectedProcess => formatter.write_str("Winderust cannot modify this process."),
+            Self::CurrentSessionUnavailable => {
+                formatter.write_str("Could not determine the current Windows session.")
+            }
+            Self::DifferentSession => {
+                formatter.write_str("Processes in another Windows session cannot be modified.")
+            }
+            Self::ProcessEnumeration(message) => formatter.write_str(message),
+            Self::ProcessExited => formatter.write_str("Process exited."),
+            Self::ProcessChanged => {
+                formatter.write_str("The selected process instance has changed.")
+            }
+            Self::ProcessUnavailable(error) => write!(
+                formatter,
+                "The selected process is no longer available (Win32 error {error})."
+            ),
+            Self::IdentityUnavailable => {
+                formatter.write_str("Could not identify the selected process instance.")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProcessActionTargetError {}
+
 pub fn capture_process_action_target(
     process_id: u32,
     expected_name: &str,
-) -> Result<ProcessActionTarget, String> {
+) -> Result<ProcessActionTarget, ProcessActionTargetError> {
+    // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
     let current_process_id = unsafe { GetCurrentProcessId() };
     if process_id == 0 || process_id == current_process_id {
-        return Err("Winderust cannot modify this process.".to_owned());
+        return Err(ProcessActionTargetError::ProtectedProcess);
     }
     let current_session_id = process_session_id(current_process_id)
-        .ok_or_else(|| "Could not determine the current Windows session.".to_owned())?;
+        .ok_or(ProcessActionTargetError::CurrentSessionUnavailable)?;
     if process_session_id(process_id) != Some(current_session_id) {
-        return Err("Processes in another Windows session cannot be modified.".to_owned());
+        return Err(ProcessActionTargetError::DifferentSession);
     }
-    let process = list_processes()?
+    let process = list_processes()
+        .map_err(ProcessActionTargetError::ProcessEnumeration)?
         .into_iter()
         .find(|process| process.id == process_id)
-        .ok_or_else(|| "Process exited.".to_owned())?;
+        .ok_or(ProcessActionTargetError::ProcessExited)?;
     if !same_process_name(&process.name, expected_name) {
-        return Err("The selected process instance has changed.".to_owned());
+        return Err(ProcessActionTargetError::ProcessChanged);
     }
+    // SAFETY: process_id was revalidated against the current snapshot and no inherited handle is
+    // requested.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     if handle.is_null() {
-        return Err("The selected process is no longer available.".to_owned());
+        // SAFETY: GetLastError has no caller requirements and is read immediately after the
+        // failing OpenProcess call on this thread.
+        return Err(ProcessActionTargetError::ProcessUnavailable(unsafe {
+            GetLastError()
+        }));
     }
     let creation_time = WinHandle::new(handle)
         .process_creation_time()
-        .ok_or_else(|| "Could not identify the selected process instance.".to_owned())?;
+        .ok_or(ProcessActionTargetError::IdentityUnavailable)?;
     Ok(ProcessActionTarget {
         id: process_id,
         name: process.name,
@@ -134,12 +184,14 @@ pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
     };
     let mut candidates = BTreeMap::new();
 
+    // SAFETY: snapshot is live and entry declares its size and remains writable.
     let mut has_entry = unsafe { Process32FirstW(snapshot.raw(), &mut entry) != 0 };
     while has_entry {
         if let Some(name) = process_name_from_entry(&entry) {
             candidates.entry(name).or_insert(entry.th32ProcessID);
         }
 
+        // SAFETY: snapshot remains live and entry remains writable for the next record.
         has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
     }
     ensure_process_iteration_complete()?;
@@ -162,6 +214,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     };
     let mut processes = Vec::new();
 
+    // SAFETY: snapshot is live and entry declares its size and remains writable.
     let mut has_entry = unsafe { Process32FirstW(snapshot.raw(), &mut entry) != 0 };
     while has_entry {
         if let Some(name) = process_name_from_entry(&entry) {
@@ -172,6 +225,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
             });
         }
 
+        // SAFETY: snapshot remains live and entry remains writable for the next record.
         has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
     }
     ensure_process_iteration_complete()?;
@@ -186,9 +240,11 @@ pub fn for_each_process_id(mut visit: impl FnMut(u32)) -> Result<(), String> {
         ..Default::default()
     };
 
+    // SAFETY: snapshot is live and entry declares its size and remains writable.
     let mut has_entry = unsafe { Process32FirstW(snapshot.raw(), &mut entry) != 0 };
     while has_entry {
         visit(entry.th32ProcessID);
+        // SAFETY: snapshot remains live and entry remains writable for the next record.
         has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
     }
     ensure_process_iteration_complete()?;
@@ -197,6 +253,8 @@ pub fn for_each_process_id(mut visit: impl FnMut(u32)) -> Result<(), String> {
 }
 
 fn ensure_process_iteration_complete() -> Result<(), String> {
+    // SAFETY: GetLastError takes no arguments and reads thread-local state immediately after
+    // process enumeration.
     let error = unsafe { GetLastError() };
     if error == ERROR_NO_MORE_FILES {
         Ok(())
@@ -214,6 +272,7 @@ pub fn process_names_by_id(processes: &[ProcessInfo]) -> BTreeMap<u32, String> {
 
 pub fn process_session_id(process_id: u32) -> Option<u32> {
     let mut session_id = 0;
+    // SAFETY: session_id is writable and process_id is a value, not a borrowed handle.
     let ok = unsafe { ProcessIdToSessionId(process_id, &mut session_id) };
     (ok != 0).then_some(session_id)
 }
@@ -258,13 +317,6 @@ pub fn process_failure_key(process_name: &str) -> String {
     process_name_key(process_name)
 }
 
-pub fn is_process_exited_message(message: &str) -> bool {
-    message
-        .trim()
-        .trim_end_matches('.')
-        .eq_ignore_ascii_case("Process exited")
-}
-
 pub fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     names
         .map(process_name_key)
@@ -297,6 +349,7 @@ fn process_name_from_entry(entry: &PROCESSENTRY32W) -> Option<String> {
 }
 
 fn process_snapshot() -> Result<WinHandle, String> {
+    // SAFETY: TH32CS_SNAPPROCESS ignores the process id argument and returns an owned handle.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         Err("Failed to read running process list.".to_owned())
@@ -314,6 +367,7 @@ fn process_image_path(process_id: u32) -> Option<PathBuf> {
         return None;
     }
 
+    // SAFETY: process_id came from a current snapshot and no inherited handle is requested.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     if process.is_null() {
         return None;
@@ -323,6 +377,8 @@ fn process_image_path(process_id: u32) -> Option<PathBuf> {
     let mut buffer = vec![0u16; PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN];
     loop {
         let mut len = buffer.len() as u32;
+        // SAFETY: process is live, buffer supplies its full writable capacity, and len is both the
+        // input capacity and writable output length.
         let ok = unsafe {
             QueryFullProcessImageNameW(
                 process.raw(),
@@ -336,6 +392,7 @@ fn process_image_path(process_id: u32) -> Option<PathBuf> {
             return (len != 0).then(|| PathBuf::from(OsString::from_wide(&buffer[..len as usize])));
         }
 
+        // SAFETY: GetLastError reads thread-local state immediately after the failed query.
         if unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER
             || buffer.len() >= PROCESS_IMAGE_PATH_MAX_BUFFER_LEN
         {
@@ -364,6 +421,18 @@ mod tests {
         assert_eq!(
             process_name_from_entry(&entry).as_deref(),
             Some("explorer.exe")
+        );
+    }
+
+    #[test]
+    fn process_action_target_errors_keep_typed_failures_and_win32_codes() {
+        assert_eq!(
+            ProcessActionTargetError::ProcessExited.to_string(),
+            "Process exited."
+        );
+        assert_eq!(
+            ProcessActionTargetError::ProcessUnavailable(5).to_string(),
+            "The selected process is no longer available (Win32 error 5)."
         );
     }
 

@@ -32,6 +32,9 @@ fn get_latest_release(channel: UpdateChannel) -> Option<String> {
     let path = wide(releases_path(channel));
     let get = wide("GET");
 
+    // SAFETY: All WinHTTP strings are terminated UTF-16, optional buffers are null as documented,
+    // returned handles are checked and owned by InternetHandle, and read buffers stay live for
+    // each call.
     unsafe {
         let session = InternetHandle::new(WinHttpOpen(
             agent.as_ptr(),
@@ -117,6 +120,7 @@ impl InternetHandle {
 
 impl Drop for InternetHandle {
     fn drop(&mut self) {
+        // SAFETY: self.0 is a non-null WinHTTP handle owned by this wrapper and closed once.
         unsafe { WinHttpCloseHandle(self.0) };
     }
 }

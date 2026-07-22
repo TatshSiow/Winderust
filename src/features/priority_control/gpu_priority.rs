@@ -23,9 +23,9 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{GpuPrioritySettings, ProcessGpuPriority, ProcessGpuPrioritySetting},
     foreground::{
-        contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
-        process_count_label, process_failure_key, process_names_by_id, process_session_id,
-        same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, is_foreground_process, list_processes, process_count_label,
+        process_failure_key, process_names_by_id, process_session_id, same_process_name,
+        unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::ExecutionFailureTracker,
 };
@@ -125,6 +125,7 @@ impl GpuPriorityManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(action_log, "current Windows session is unknown");
@@ -586,10 +587,10 @@ impl GpuPriorityFailures {
         error: GpuPriorityError,
         action_log: &mut ActionLog,
     ) {
-        let message = gpu_priority_error_message(error);
-        if is_process_exited_message(&message) {
+        if matches!(&error, GpuPriorityError::ProcessExited) {
             return;
         }
+        let message = gpu_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -616,6 +617,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, GpuPriorityError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -632,6 +635,7 @@ impl ProcessHandle {
 
     fn gpu_priority_raw(&self) -> Result<u32, GpuPriorityError> {
         let mut priority = 0;
+        // SAFETY: self owns a live process handle and priority is writable for the call.
         let status = unsafe {
             D3DKMTGetProcessSchedulingPriorityClass(self.0.raw(), &mut priority as *mut _)
         };
@@ -645,6 +649,7 @@ impl ProcessHandle {
     fn set_gpu_priority_raw(&self, priority: u32) -> Result<(), GpuPriorityError> {
         let priority = D3DKMT_SCHEDULINGPRIORITYCLASS::try_from(priority)
             .map_err(|_| GpuPriorityError::Failed(format!("Invalid GPU priority {priority}.")))?;
+        // SAFETY: self owns a live process handle and priority is a validated scheduling class.
         let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(self.0.raw(), priority) };
         ntstatus_result(status)
     }

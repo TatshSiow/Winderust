@@ -16,9 +16,9 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{ProcessPrioritySetting, ProcessPrioritySettings},
     foreground::{
-        is_foreground_process, is_process_exited_message, list_processes, process_failure_key,
-        process_names_by_id, process_session_id, same_process_name, unique_app_names,
-        ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, list_processes, process_failure_key, process_names_by_id,
+        process_session_id, same_process_name, unique_app_names, ProcessActionTarget,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -105,6 +105,7 @@ impl ProcessPriorityManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(action_log, "current Windows session is unknown");
@@ -494,10 +495,10 @@ impl ProcessPriorityFailures {
         error: ProcessPriorityError,
         action_log: &mut ActionLog,
     ) {
-        let message = process_priority_error_message(error);
-        if is_process_exited_message(&message) {
+        if matches!(&error, ProcessPriorityError::ProcessExited) {
             return;
         }
+        let message = process_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -517,6 +518,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, ProcessPriorityError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -532,6 +535,7 @@ impl ProcessHandle {
     }
 
     fn priority_class(&self) -> Result<u32, ProcessPriorityError> {
+        // SAFETY: self owns a live process handle.
         let priority_class = unsafe { GetPriorityClass(self.0.raw()) };
         if priority_class != 0 {
             Ok(priority_class)
@@ -544,6 +548,8 @@ impl ProcessHandle {
     }
 
     fn set_priority_class(&self, priority_class: u32) -> Result<(), ProcessPriorityError> {
+        // SAFETY: self owns a live process handle and priority_class is a documented class chosen
+        // by the validated settings mapping.
         if unsafe { SetPriorityClass(self.0.raw(), priority_class) } != 0 {
             Ok(())
         } else {

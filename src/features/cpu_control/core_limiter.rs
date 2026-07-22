@@ -17,9 +17,9 @@ use crate::{
     config::{CoreLimiterRule, CoreLimiterSettings},
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_names_by_id, process_session_id, same_process_name,
-        should_ignore_foreground_process, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_failure_key, process_names_by_id,
+        process_session_id, same_process_name, should_ignore_foreground_process, unique_app_names,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
@@ -107,6 +107,7 @@ impl CoreLimiterManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
@@ -232,10 +233,6 @@ impl CoreLimiterManager {
                     );
                 }
                 Err(CoreLimiterError::Failed(err)) => {
-                    if is_process_exited_message(&err) {
-                        skipped_processes += 1;
-                        continue;
-                    }
                     self.record_process_failure(&failure_process_name);
                     failures.record_message(
                         "Limit",
@@ -629,9 +626,6 @@ impl CoreLimiterFailures {
         message: String,
         action_log: &mut ActionLog,
     ) {
-        if is_process_exited_message(&message) {
-            return;
-        }
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(process_failure_message(
@@ -679,6 +673,8 @@ impl ProcessHandle {
 
         let mut last_open_error = 0;
         for access in access_masks {
+            // SAFETY: process_id came from the current process snapshot, access is one of the two
+            // documented masks above, and no inherited handle is requested.
             let handle = unsafe { OpenProcess(access, 0, process_id) };
             if !handle.is_null() {
                 return Ok(Self(WinHandle::new(handle)));
@@ -690,6 +686,8 @@ impl ProcessHandle {
     }
 
     fn open_query(process_id: u32) -> Result<Self, CoreLimiterError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
         if !handle.is_null() {
             Ok(Self(WinHandle::new(handle)))
@@ -701,6 +699,7 @@ impl ProcessHandle {
     fn affinity_mask(&self) -> Result<(usize, usize), CoreLimiterError> {
         let mut process_affinity = 0;
         let mut system_affinity = 0;
+        // SAFETY: self owns a live process handle and both affinity outputs are writable.
         let ok = unsafe {
             GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
         };
@@ -715,6 +714,8 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), CoreLimiterError> {
+        // SAFETY: self owns a live process handle and affinity_mask was normalized against the
+        // system mask read from this process.
         let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
         if ok == 0 {
             Err(CoreLimiterError::Failed(format!(
@@ -731,6 +732,8 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
+        // call.
         let ok = unsafe {
             GetProcessTimes(
                 self.0.raw(),

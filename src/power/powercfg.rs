@@ -78,6 +78,7 @@ impl PowerPlanManager {
 
     pub fn set_active(&self, guid: &str) -> Result<(), String> {
         let guid = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+        // SAFETY: guid is a fully parsed GUID and a null root key selects the current user.
         let result = unsafe { PowerSetActiveScheme(null_mut(), &guid) };
         if result == 0 {
             Ok(())
@@ -92,6 +93,8 @@ impl PowerPlanManager {
         let source =
             parse_guid(source_guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
         let mut duplicate_ptr: *mut GUID = null_mut();
+        // SAFETY: source is a valid GUID and duplicate_ptr is a writable out-pointer owned by
+        // LocalFree on success.
         let result = unsafe { PowerDuplicateScheme(null_mut(), &source, &mut duplicate_ptr) };
         if result != ERROR_SUCCESS {
             return Err(format!(
@@ -102,7 +105,9 @@ impl PowerPlanManager {
             return Err("PowerDuplicateScheme returned no power plan.".to_owned());
         }
 
+        // SAFETY: PowerDuplicateScheme succeeded and returned a non-null GUID allocation.
         let duplicate = unsafe { *duplicate_ptr };
+        // SAFETY: duplicate_ptr was allocated by PowerDuplicateScheme and is freed exactly once.
         unsafe {
             LocalFree(duplicate_ptr.cast());
         }
@@ -112,6 +117,8 @@ impl PowerPlanManager {
         if let Err(error) = write_scheme_name(&duplicate, ADAPTIVE_PLAN_NAME)
             .and_then(|()| write_scheme_description(&duplicate, &description))
         {
+            // SAFETY: duplicate is the valid scheme created above; deletion is best-effort cleanup
+            // after initialization failed.
             unsafe {
                 PowerDeleteScheme(null_mut(), &duplicate);
             }
@@ -123,6 +130,7 @@ impl PowerPlanManager {
 
     pub fn delete_plan(&self, guid: &str) -> Result<(), String> {
         let guid = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+        // SAFETY: guid is a fully parsed scheme GUID and a null root key selects the current user.
         let result = unsafe { PowerDeleteScheme(null_mut(), &guid) };
         if result == ERROR_SUCCESS {
             Ok(())
@@ -321,6 +329,8 @@ impl EffectivePowerModeMonitor {
     pub fn new() -> Result<Self, String> {
         let mode = Arc::new(AtomicI32::new(EFFECTIVE_POWER_MODE_UNKNOWN));
         let mut registration = null_mut();
+        // SAFETY: mode remains alive in self for the full registration lifetime, registration is
+        // writable, and the callback has the required static ABI.
         let result = unsafe {
             PowerRegisterForEffectivePowerModeNotifications(
                 EFFECTIVE_POWER_MODE_V2,
@@ -347,6 +357,8 @@ impl EffectivePowerModeMonitor {
 impl Drop for EffectivePowerModeMonitor {
     fn drop(&mut self) {
         if !self.registration.is_null() {
+            // SAFETY: registration was returned by the successful registration call and is
+            // unregistered exactly once before the context Arc is dropped.
             unsafe {
                 PowerUnregisterFromEffectivePowerModeNotifications(self.registration.cast_const());
             }
@@ -359,6 +371,8 @@ unsafe extern "system" fn effective_power_mode_callback(
     context: *const c_void,
 ) {
     if !context.is_null() {
+        // SAFETY: context is the Arc-owned AtomicI32 pointer registered by new and remains alive
+        // until after the callback is unregistered.
         unsafe {
             (*(context as *const AtomicI32)).store(mode, Ordering::Relaxed);
         }
@@ -429,6 +443,8 @@ fn write_ac_value(
     setting: &GUID,
     value: u32,
 ) -> Result<(), String> {
+    // SAFETY: scheme, subgroup, and setting are valid GUID references for the duration of the
+    // synchronous call.
     let ac_result = unsafe { PowerWriteACValueIndex(null_mut(), scheme, subgroup, setting, value) };
     if ac_result != ERROR_SUCCESS {
         return Err(format!(
@@ -446,6 +462,8 @@ fn write_dc_value(
     setting: &GUID,
     value: u32,
 ) -> Result<(), String> {
+    // SAFETY: scheme, subgroup, and setting are valid GUID references for the duration of the
+    // synchronous call.
     let dc_result = unsafe { PowerWriteDCValueIndex(null_mut(), scheme, subgroup, setting, value) };
     if dc_result != ERROR_SUCCESS {
         return Err(format!(
@@ -459,6 +477,7 @@ fn write_dc_value(
 
 fn read_ac_value(scheme: &GUID, subgroup: &GUID, setting: &GUID) -> Result<u32, String> {
     let mut value = 0;
+    // SAFETY: GUID references remain live and value is writable for the synchronous call.
     let result =
         unsafe { PowerReadACValueIndex(null_mut(), scheme, subgroup, setting, &mut value) };
     if result == ERROR_SUCCESS {
@@ -473,6 +492,7 @@ fn read_ac_value(scheme: &GUID, subgroup: &GUID, setting: &GUID) -> Result<u32, 
 
 fn read_dc_value(scheme: &GUID, subgroup: &GUID, setting: &GUID) -> Result<u32, String> {
     let mut value = 0;
+    // SAFETY: GUID references remain live and value is writable for the synchronous call.
     let result =
         unsafe { PowerReadDCValueIndex(null_mut(), scheme, subgroup, setting, &mut value) };
     if result == ERROR_SUCCESS {
@@ -488,6 +508,7 @@ fn read_dc_value(scheme: &GUID, subgroup: &GUID, setting: &GUID) -> Result<u32, 
 fn enumerate_scheme_guid(index: u32) -> Result<Option<GUID>, String> {
     let mut guid = GUID::default();
     let mut buffer_size = std::mem::size_of::<GUID>() as u32;
+    // SAFETY: guid and buffer_size are writable and the buffer is exactly one GUID in size.
     let result = unsafe {
         PowerEnumerate(
             null_mut(),
@@ -511,6 +532,7 @@ fn enumerate_scheme_guid(index: u32) -> Result<Option<GUID>, String> {
 
 fn read_scheme_name(guid: &GUID) -> Result<String, String> {
     let mut buffer_size = 0;
+    // SAFETY: guid is valid and buffer_size is writable; a null buffer requests the required size.
     let size_result = unsafe {
         PowerReadFriendlyName(
             null_mut(),
@@ -532,6 +554,7 @@ fn read_scheme_name(guid: &GUID) -> Result<String, String> {
     }
 
     let mut buffer = vec![0_u8; buffer_size as usize];
+    // SAFETY: buffer has the requested writable size and guid remains live for the call.
     let result = unsafe {
         PowerReadFriendlyName(
             null_mut(),
@@ -563,6 +586,7 @@ fn read_scheme_name(guid: &GUID) -> Result<String, String> {
 
 fn read_scheme_description(guid: &GUID) -> Result<String, String> {
     let mut buffer_size = 0;
+    // SAFETY: guid is valid and buffer_size is writable; a null buffer requests the required size.
     let size_result = unsafe {
         PowerReadDescription(
             null_mut(),
@@ -580,6 +604,7 @@ fn read_scheme_description(guid: &GUID) -> Result<String, String> {
     }
 
     let mut buffer = vec![0_u8; buffer_size as usize];
+    // SAFETY: buffer has the requested writable size and guid remains live for the call.
     let result = unsafe {
         PowerReadDescription(
             null_mut(),
@@ -601,6 +626,7 @@ fn read_scheme_description(guid: &GUID) -> Result<String, String> {
 
 fn write_scheme_name(guid: &GUID, name: &str) -> Result<(), String> {
     let buffer = encode_power_string(name);
+    // SAFETY: buffer is a terminated UTF-16 byte sequence and all GUID references remain live.
     let result = unsafe {
         PowerWriteFriendlyName(
             null_mut(),
@@ -622,6 +648,7 @@ fn write_scheme_name(guid: &GUID, name: &str) -> Result<(), String> {
 
 fn write_scheme_description(guid: &GUID, description: &str) -> Result<(), String> {
     let buffer = encode_power_string(description);
+    // SAFETY: buffer is a terminated UTF-16 byte sequence and all GUID references remain live.
     let result = unsafe {
         PowerWriteDescription(
             null_mut(),
@@ -660,6 +687,8 @@ fn decode_power_string(buffer: &[u8]) -> String {
 
 fn active_scheme_guid() -> Result<String, String> {
     let mut guid_ptr: *mut GUID = null_mut();
+    // SAFETY: guid_ptr is a writable out-pointer whose successful allocation is released with
+    // LocalFree below.
     let result = unsafe { PowerGetActiveScheme(null_mut(), &mut guid_ptr) };
     if result != 0 {
         return Err(format!(
@@ -670,7 +699,9 @@ fn active_scheme_guid() -> Result<String, String> {
         return Err("PowerGetActiveScheme returned no active plan.".to_owned());
     }
 
+    // SAFETY: PowerGetActiveScheme succeeded and returned a non-null GUID allocation.
     let guid = unsafe { *guid_ptr };
+    // SAFETY: guid_ptr was allocated by PowerGetActiveScheme and is freed exactly once.
     unsafe {
         LocalFree(guid_ptr.cast());
     }

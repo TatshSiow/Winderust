@@ -26,27 +26,27 @@ pub struct ForegroundProcess {
 
 impl ForegroundDetector {
     pub fn process(&self) -> Option<ForegroundProcess> {
-        unsafe { foreground_process() }
+        foreground_process()
     }
 
     pub fn cursor_process(&self) -> Option<ForegroundProcess> {
-        unsafe { cursor_process() }
+        cursor_process()
     }
 
     pub fn cursor_process_id(&self) -> Option<u32> {
-        unsafe { cursor_process_id() }
+        cursor_process_id()
     }
 
     pub fn shell_window_mouse_pressed(&self) -> bool {
-        unsafe { mouse_button_pressed() && cursor_is_shell_window() }
+        mouse_button_pressed() && cursor_is_shell_window()
     }
 
     pub fn cursor_is_shell_window(&self) -> bool {
-        unsafe { cursor_is_shell_window() }
+        cursor_is_shell_window()
     }
 
     pub fn process_id(&self) -> Option<u32> {
-        unsafe { foreground_process_id() }
+        foreground_process_id()
     }
 
     pub fn process_name(&self) -> Option<String> {
@@ -55,44 +55,52 @@ impl ForegroundDetector {
 }
 
 pub fn top_level_window_process_ids() -> BTreeSet<u32> {
+    let mut process_ids = BTreeSet::new();
+    // SAFETY: collect_top_level_window_process has the required callback ABI and lparam points to
+    // process_ids, which remains live and exclusively borrowed for the synchronous enumeration.
     unsafe {
-        let mut process_ids = BTreeSet::new();
         EnumWindows(
             Some(collect_top_level_window_process),
             &mut process_ids as *mut BTreeSet<u32> as LPARAM,
         );
-        process_ids
     }
+    process_ids
 }
 
-unsafe fn foreground_process() -> Option<ForegroundProcess> {
+fn foreground_process() -> Option<ForegroundProcess> {
     let process_id = foreground_process_id()?;
     process_from_id(process_id)
 }
 
-unsafe fn cursor_process() -> Option<ForegroundProcess> {
+fn cursor_process() -> Option<ForegroundProcess> {
     let process_id = cursor_process_id()?;
     process_from_id(process_id)
 }
 
-unsafe fn cursor_process_id() -> Option<u32> {
+fn cursor_process_id() -> Option<u32> {
     process_id_from_window(cursor_root_window()?)
 }
 
-unsafe fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
-    let process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, process_id);
+fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
+    // SAFETY: process_id comes from a live window and no inherited handle is requested.
+    let process =
+        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, process_id) };
     if process.is_null() {
         return None;
     }
     let process = WinHandle::new(process);
 
     let mut buffer = [0u16; MAX_PATH as usize];
-    let len = K32GetModuleFileNameExW(
-        process.raw(),
-        std::ptr::null_mut(),
-        buffer.as_mut_ptr(),
-        buffer.len() as u32,
-    );
+    // SAFETY: process is live and buffer supplies its full writable length; a null module requests
+    // the main executable.
+    let len = unsafe {
+        K32GetModuleFileNameExW(
+            process.raw(),
+            std::ptr::null_mut(),
+            buffer.as_mut_ptr(),
+            buffer.len() as u32,
+        )
+    };
 
     if len == 0 {
         return None;
@@ -109,8 +117,9 @@ unsafe fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
     })
 }
 
-unsafe fn foreground_process_id() -> Option<u32> {
-    let window = GetForegroundWindow();
+fn foreground_process_id() -> Option<u32> {
+    // SAFETY: GetForegroundWindow takes no arguments and returns a borrowed HWND.
+    let window = unsafe { GetForegroundWindow() };
     if window.is_null() {
         return None;
     }
@@ -118,13 +127,14 @@ unsafe fn foreground_process_id() -> Option<u32> {
     process_id_from_window(window)
 }
 
-unsafe fn process_id_from_window(window: windows_sys::Win32::Foundation::HWND) -> Option<u32> {
+fn process_id_from_window(window: windows_sys::Win32::Foundation::HWND) -> Option<u32> {
     let mut process_id = 0;
-    GetWindowThreadProcessId(window, &mut process_id);
+    // SAFETY: window is a borrowed HWND returned by Windows and process_id is writable.
+    unsafe { GetWindowThreadProcessId(window, &mut process_id) };
     (process_id != 0).then_some(process_id)
 }
 
-unsafe fn cursor_is_shell_window() -> bool {
+fn cursor_is_shell_window() -> bool {
     let Some(window) = cursor_root_window() else {
         return false;
     };
@@ -133,18 +143,21 @@ unsafe fn cursor_is_shell_window() -> bool {
     is_shell_window_class(&class_name)
 }
 
-unsafe fn cursor_root_window() -> Option<windows_sys::Win32::Foundation::HWND> {
+fn cursor_root_window() -> Option<windows_sys::Win32::Foundation::HWND> {
     let mut point = POINT::default();
-    if GetCursorPos(&mut point) == 0 {
+    // SAFETY: point is writable for the duration of the call.
+    if unsafe { GetCursorPos(&mut point) } == 0 {
         return None;
     }
 
-    let window = WindowFromPoint(point);
+    // SAFETY: point was initialized by GetCursorPos.
+    let window = unsafe { WindowFromPoint(point) };
     if window.is_null() {
         return None;
     }
 
-    let root_window = GetAncestor(window, GA_ROOT);
+    // SAFETY: window is a borrowed live HWND and GA_ROOT requests a borrowed ancestor.
+    let root_window = unsafe { GetAncestor(window, GA_ROOT) };
     Some(if root_window.is_null() {
         window
     } else {
@@ -152,9 +165,10 @@ unsafe fn cursor_root_window() -> Option<windows_sys::Win32::Foundation::HWND> {
     })
 }
 
-unsafe fn window_class_name(window: HWND) -> String {
+fn window_class_name(window: HWND) -> String {
     let mut buffer = [0u16; 128];
-    let len = GetClassNameW(window, buffer.as_mut_ptr(), buffer.len() as i32);
+    // SAFETY: window is borrowed from Windows and buffer supplies its full writable length.
+    let len = unsafe { GetClassNameW(window, buffer.as_mut_ptr(), buffer.len() as i32) };
     if len <= 0 {
         String::new()
     } else {
@@ -178,24 +192,31 @@ fn is_shell_window_class(class_name: &str) -> bool {
 }
 
 unsafe extern "system" fn collect_top_level_window_process(hwnd: HWND, lparam: LPARAM) -> i32 {
-    if !GetWindow(hwnd, GW_OWNER).is_null() {
+    // SAFETY: hwnd is supplied by EnumWindows and GW_OWNER returns a borrowed HWND.
+    if !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
         return 1;
     }
 
     let mut process_id = 0;
-    GetWindowThreadProcessId(hwnd, &mut process_id);
+    // SAFETY: hwnd is supplied by EnumWindows and process_id is writable.
+    unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
     if process_id != 0 {
-        let process_ids = &mut *(lparam as *mut BTreeSet<u32>);
+        // SAFETY: lparam points to the exclusively borrowed BTreeSet passed by
+        // top_level_window_process_ids for this synchronous callback.
+        let process_ids = unsafe { &mut *(lparam as *mut BTreeSet<u32>) };
         process_ids.insert(process_id);
     }
 
     1
 }
 
-unsafe fn mouse_button_pressed() -> bool {
+fn mouse_button_pressed() -> bool {
     [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
         .into_iter()
-        .any(|button| GetAsyncKeyState(i32::from(button)) < 0)
+        .any(|button| {
+            // SAFETY: button is a documented Windows virtual-key code.
+            unsafe { GetAsyncKeyState(i32::from(button)) < 0 }
+        })
 }
 
 #[cfg(test)]

@@ -153,6 +153,7 @@ impl CpuUsageMonitor {
 impl CpuFrequencyCounter {
     fn open() -> Option<Self> {
         let mut query = null_mut();
+        // SAFETY: No data source is specified and query is a writable out-pointer.
         let status = unsafe { PdhOpenQueryW(null(), 0, &mut query) };
         if status != 0 || query.is_null() {
             return None;
@@ -160,10 +161,13 @@ impl CpuFrequencyCounter {
 
         let frequency_path = wide_null(r"\Processor Information(_Total)\Processor Frequency");
         let mut frequency_counter = null_mut();
+        // SAFETY: query is live, frequency_path is terminated UTF-16, and frequency_counter is a
+        // writable out-pointer.
         let status = unsafe {
             PdhAddEnglishCounterW(query, frequency_path.as_ptr(), 0, &mut frequency_counter)
         };
         if status != 0 || frequency_counter.is_null() {
+            // SAFETY: query was opened successfully and is closed exactly once on this path.
             unsafe {
                 PdhCloseQuery(query);
             }
@@ -172,6 +176,8 @@ impl CpuFrequencyCounter {
 
         let performance_path = wide_null(r"\Processor Information(_Total)\% Processor Performance");
         let mut performance_counter = null_mut();
+        // SAFETY: query is live, performance_path is terminated UTF-16, and performance_counter
+        // is a writable out-pointer.
         let performance_counter = match unsafe {
             PdhAddEnglishCounterW(
                 query,
@@ -184,6 +190,7 @@ impl CpuFrequencyCounter {
             _ => None,
         };
 
+        // SAFETY: query is live; collection does not retain borrowed pointers.
         unsafe {
             PdhCollectQueryData(query);
         }
@@ -196,6 +203,7 @@ impl CpuFrequencyCounter {
     }
 
     fn sample(&self) -> Option<CpuFrequencySample> {
+        // SAFETY: self.query remains live for the lifetime of this counter wrapper.
         let status = unsafe { PdhCollectQueryData(self.query) };
         if status != 0 {
             return None;
@@ -222,6 +230,7 @@ impl CpuFrequencyCounter {
 impl Drop for CpuFrequencyCounter {
     fn drop(&mut self) {
         if !self.query.is_null() {
+            // SAFETY: query is owned by this wrapper and closed exactly once.
             unsafe {
                 PdhCloseQuery(self.query);
             }
@@ -272,6 +281,7 @@ fn read_system_cpu_times() -> Option<SystemCpuTimes> {
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
 
+    // SAFETY: All three FILETIME outputs are writable for the duration of the call.
     let ok = unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) };
     if ok == 0 {
         return None;
@@ -308,6 +318,8 @@ fn read_processor_cpu_times() -> Option<Vec<ProcessorCpuTimes>> {
         .len()
         .checked_mul(size_of::<SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION>())?;
     let byte_len = u32::try_from(byte_len).ok()?;
+    // SAFETY: records provides byte_len writable bytes of the requested record type and no return
+    // length is required.
     let status = unsafe {
         NtQuerySystemInformation(
             SystemProcessorPerformanceInformation,
@@ -342,6 +354,8 @@ fn read_processor_power_frequency() -> Option<ProcessorPowerFrequencySample> {
         .len()
         .checked_mul(size_of::<PROCESSOR_POWER_INFORMATION>())?;
     let byte_len = u32::try_from(byte_len).ok()?;
+    // SAFETY: records provides byte_len writable bytes for processor power records; the input
+    // buffer is intentionally null and empty.
     let status = unsafe {
         CallNtPowerInformation(
             ProcessorInformation,
@@ -361,6 +375,7 @@ fn read_processor_power_frequency() -> Option<ProcessorPowerFrequencySample> {
 fn read_pdh_counter_double(counter: PDH_HCOUNTER) -> Option<f64> {
     let mut value_type = 0;
     let mut value = PDH_FMT_COUNTERVALUE::default();
+    // SAFETY: counter is a live PDH counter and both output values are writable for the call.
     let status = unsafe {
         PdhGetFormattedCounterValue(counter, PDH_FMT_DOUBLE, &mut value_type, &mut value)
     };
@@ -368,6 +383,7 @@ fn read_pdh_counter_double(counter: PDH_HCOUNTER) -> Option<f64> {
         return None;
     }
 
+    // SAFETY: PDH_FMT_DOUBLE requests and initializes the doubleValue union member.
     Some(unsafe { value.Anonymous.doubleValue })
 }
 

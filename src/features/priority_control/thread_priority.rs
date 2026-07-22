@@ -25,9 +25,8 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{ProcessThreadPrioritySetting, ThreadPrioritySettings},
     foreground::{
-        is_foreground_process, is_process_exited_message, list_processes, process_failure_key,
-        process_names_by_id, process_session_id, same_process_name, unique_app_names,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, list_processes, process_failure_key, process_names_by_id,
+        process_session_id, same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
@@ -122,6 +121,7 @@ impl ThreadPriorityManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(action_log, "current Windows session is unknown");
@@ -476,10 +476,10 @@ impl ThreadPriorityFailures {
         error: ThreadPriorityError,
         action_log: &mut ActionLog,
     ) {
-        let message = thread_priority_error_message(error);
-        if is_process_exited_message(&message) {
+        if matches!(&error, ThreadPriorityError::ProcessExited) {
             return;
         }
+        let message = thread_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({id}): {message}"));
         }
@@ -506,6 +506,8 @@ struct ThreadHandle(WinHandle);
 
 impl ThreadHandle {
     fn open(thread_id: u32) -> Result<Self, ThreadPriorityError> {
+        // SAFETY: thread_id came from the current thread snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenThread(
                 THREAD_QUERY_INFORMATION | THREAD_SET_INFORMATION,
@@ -521,6 +523,7 @@ impl ThreadHandle {
     }
 
     fn priority(&self) -> Result<i32, ThreadPriorityError> {
+        // SAFETY: self owns a live thread handle.
         let priority = unsafe { GetThreadPriority(self.0.raw()) };
         if priority != THREAD_PRIORITY_ERROR_RETURN {
             Ok(priority)
@@ -537,6 +540,8 @@ impl ThreadHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live thread handle and every FILETIME output is writable for the
+        // duration of the call.
         if unsafe {
             GetThreadTimes(
                 self.0.raw(),
@@ -554,6 +559,8 @@ impl ThreadHandle {
     }
 
     fn set_priority(&self, priority: i32) -> Result<(), ThreadPriorityError> {
+        // SAFETY: self owns a live thread handle and priority is selected from documented Win32
+        // thread-priority constants.
         if unsafe { SetThreadPriority(self.0.raw(), priority) } != 0 {
             Ok(())
         } else {
@@ -566,6 +573,7 @@ impl ThreadHandle {
 }
 
 fn process_thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityError> {
+    // SAFETY: TH32CS_SNAPTHREAD ignores the process id argument and returns an owned handle.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Err(ThreadPriorityError::Failed(format!(
@@ -579,12 +587,14 @@ fn process_thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityError> 
         ..THREADENTRY32::default()
     };
     let mut ids = Vec::new();
+    // SAFETY: snapshot is live and entry declares its size and remains writable.
     let mut ok = unsafe { Thread32First(snapshot, &mut entry) };
     while ok != 0 {
         if entry.th32OwnerProcessID == process_id {
             ids.push(entry.th32ThreadID);
         }
         entry.dwSize = size_of::<THREADENTRY32>() as u32;
+        // SAFETY: snapshot remains live and entry remains writable for the next record.
         ok = unsafe { Thread32Next(snapshot, &mut entry) };
     }
     let error = last_error();

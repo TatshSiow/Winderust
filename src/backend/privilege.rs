@@ -25,6 +25,7 @@ pub fn enable_profile_single_process_privilege() -> bool {
 }
 
 pub fn is_running_as_admin() -> bool {
+    // SAFETY: IsUserAnAdmin takes no arguments and has no caller requirements.
     unsafe { IsUserAnAdmin() != 0 }
 }
 
@@ -35,6 +36,8 @@ pub fn relaunch_as_admin() -> bool {
 
     let operation = wide("runas");
     let file = wide_os(exe.as_os_str());
+    // SAFETY: operation and file are terminated UTF-16 strings, optional parameters are null,
+    // and no returned handle is transferred to the caller.
     let result = unsafe {
         ShellExecuteW(
             std::ptr::null_mut(),
@@ -51,6 +54,8 @@ pub fn relaunch_as_admin() -> bool {
 
 fn enable_privilege(name: windows_sys::core::PCWSTR) -> bool {
     let mut token = std::ptr::null_mut();
+    // SAFETY: token is a writable out-pointer; GetCurrentProcess returns the valid pseudo-handle
+    // for this process and the requested access mask is documented for token adjustment.
     let opened = unsafe {
         OpenProcessToken(
             GetCurrentProcess(),
@@ -71,6 +76,7 @@ fn enable_privilege_for_token(
     name: windows_sys::core::PCWSTR,
 ) -> bool {
     let mut luid = LUID::default();
+    // SAFETY: name is a Windows-provided terminated privilege string and luid is writable.
     let found = unsafe { LookupPrivilegeValueW(std::ptr::null(), name, &mut luid) };
     if found == 0 {
         return false;
@@ -84,6 +90,8 @@ fn enable_privilege_for_token(
         }],
     };
 
+    // SAFETY: token is a live token handle and privileges points to one fully initialized entry;
+    // no previous-state buffer is requested.
     let adjusted = unsafe {
         AdjustTokenPrivileges(
             token,

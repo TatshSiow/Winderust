@@ -22,8 +22,8 @@ use crate::{
     audio_activity::active_audio_process_ids,
     config::{BackgroundEfficiencyAggressiveness, BackgroundEfficiencySettings},
     foreground::{
-        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_session_id, should_ignore_foreground_process,
+        contains_process_name, list_processes, process_failure_key, process_session_id,
+        should_ignore_foreground_process,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -169,6 +169,7 @@ impl BackgroundEfficiencyManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
@@ -294,10 +295,6 @@ impl BackgroundEfficiencyManager {
                 }
                 Err(error) => {
                     let err = background_efficiency_error_message(&error);
-                    if is_process_exited_message(&err) {
-                        skipped_processes += 1;
-                        continue;
-                    }
                     failures.record_message("Apply", process_id, &name, err, action_log);
                     self.record_process_failure(&name);
                 }
@@ -523,9 +520,6 @@ impl BackgroundEfficiencyFailures {
         message: String,
         action_log: &mut ActionLog,
     ) {
-        if is_process_exited_message(&message) {
-            return;
-        }
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(process_failure_message(
@@ -754,6 +748,8 @@ impl ProcessHandle {
 
         let mut last_open_error = 0;
         for access in access_masks {
+            // SAFETY: process_id came from the current process snapshot, access is one of the two
+            // documented masks above, and no inherited handle is requested.
             let handle = unsafe { OpenProcess(access, 0, process_id) };
             if !handle.is_null() {
                 return Ok(Self(WinHandle::new(handle)));
@@ -768,6 +764,8 @@ impl ProcessHandle {
         &self,
     ) -> Result<PROCESS_POWER_THROTTLING_STATE, BackgroundEfficiencyError> {
         let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+        // SAFETY: self owns a live process handle and state is writable for exactly the supplied
+        // structure size.
         let ok = unsafe {
             GetProcessInformation(
                 self.0.raw(),
@@ -787,6 +785,7 @@ impl ProcessHandle {
     }
 
     fn priority_class(&self) -> Result<u32, BackgroundEfficiencyError> {
+        // SAFETY: self owns a live process handle.
         let priority = unsafe { GetPriorityClass(self.0.raw()) };
         if priority == 0 {
             Err(BackgroundEfficiencyError::Failed(format!(
@@ -802,6 +801,8 @@ impl ProcessHandle {
         &self,
         state: PROCESS_POWER_THROTTLING_STATE,
     ) -> Result<(), BackgroundEfficiencyError> {
+        // SAFETY: self owns a live process handle and state is fully initialized for exactly the
+        // supplied structure size.
         let ok = unsafe {
             SetProcessInformation(
                 self.0.raw(),
@@ -821,6 +822,8 @@ impl ProcessHandle {
     }
 
     fn set_priority_class(&self, priority_class: u32) -> Result<(), BackgroundEfficiencyError> {
+        // SAFETY: self owns a live process handle and priority_class is a documented class or a
+        // previously read value.
         let ok = unsafe { SetPriorityClass(self.0.raw(), priority_class) };
         if ok == 0 {
             Err(BackgroundEfficiencyError::Failed(format!(

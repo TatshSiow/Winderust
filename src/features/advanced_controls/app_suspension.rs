@@ -39,8 +39,8 @@ use crate::{
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    contains_process_name, is_process_exited_message, list_processes, process_name_key,
-    process_session_id, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+    contains_process_name, list_processes, process_name_key, process_session_id, unique_app_names,
+    EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
@@ -283,6 +283,7 @@ impl AppSuspensionManager {
             );
         };
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             return self.pause_without_clearing(
@@ -563,10 +564,6 @@ impl AppSuspensionManager {
                     break;
                 }
                 Err(SuspensionError::Failed(err)) => {
-                    if is_process_exited_message(&err) {
-                        skipped_processes += 1;
-                        continue;
-                    }
                     failed_actions += 1;
                     self.record_process_failure(&process_name);
                     action_log.record(
@@ -1678,15 +1675,19 @@ fn add_tcp_connections(
     target_ids: &BTreeSet<u32>,
     address_family: u32,
 ) -> Result<(), String> {
-    let buffer = query_ip_helper_table(|table, size| unsafe {
-        GetExtendedTcpTable(
-            table,
-            size,
-            0,
-            address_family,
-            TCP_TABLE_OWNER_PID_CONNECTIONS,
-            0,
-        )
+    let buffer = query_ip_helper_table(|table, size| {
+        // SAFETY: query_ip_helper_table passes either a null sizing buffer or writable storage of
+        // the byte count in size; address_family and table class are documented constants.
+        unsafe {
+            GetExtendedTcpTable(
+                table,
+                size,
+                0,
+                address_family,
+                TCP_TABLE_OWNER_PID_CONNECTIONS,
+                0,
+            )
+        }
     })?;
 
     if address_family == AF_INET as u32 {
@@ -1785,6 +1786,8 @@ fn enable_tcp4_data_stats(row: &MIB_TCPROW_LH) {
     let rw = TCP_ESTATS_DATA_RW_v0 {
         EnableCollection: true,
     };
+    // SAFETY: row and rw are fully initialized for the synchronous call and the supplied size
+    // matches TCP_ESTATS_DATA_RW_v0.
     unsafe {
         SetPerTcpConnectionEStats(
             row,
@@ -1801,6 +1804,8 @@ fn enable_tcp6_data_stats(row: &MIB_TCP6ROW) {
     let rw = TCP_ESTATS_DATA_RW_v0 {
         EnableCollection: true,
     };
+    // SAFETY: row and rw are fully initialized for the synchronous call and the supplied size
+    // matches TCP_ESTATS_DATA_RW_v0.
     unsafe {
         SetPerTcp6ConnectionEStats(
             row,
@@ -1815,6 +1820,8 @@ fn enable_tcp6_data_stats(row: &MIB_TCP6ROW) {
 
 fn tcp4_data_stats(row: &MIB_TCPROW_LH) -> Option<NetworkActivityCounters> {
     let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
+    // SAFETY: row is fully initialized; unused buffers are null and rod is writable for exactly
+    // the supplied output size.
     let status = unsafe {
         GetPerTcpConnectionEStats(
             row,
@@ -1839,6 +1846,8 @@ fn tcp4_data_stats(row: &MIB_TCPROW_LH) -> Option<NetworkActivityCounters> {
 
 fn tcp6_data_stats(row: &MIB_TCP6ROW) -> Option<NetworkActivityCounters> {
     let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
+    // SAFETY: row is fully initialized; unused buffers are null and rod is writable for exactly
+    // the supplied output size.
     let status = unsafe {
         GetPerTcp6ConnectionEStats(
             row,
@@ -1873,8 +1882,10 @@ fn add_udp_connections(
     target_ids: &BTreeSet<u32>,
     address_family: u32,
 ) -> Result<(), String> {
-    let buffer = query_ip_helper_table(|table, size| unsafe {
-        GetExtendedUdpTable(table, size, 0, address_family, UDP_TABLE_OWNER_PID, 0)
+    let buffer = query_ip_helper_table(|table, size| {
+        // SAFETY: query_ip_helper_table passes either a null sizing buffer or writable storage of
+        // the byte count in size; address_family and table class are documented constants.
+        unsafe { GetExtendedUdpTable(table, size, 0, address_family, UDP_TABLE_OWNER_PID, 0) }
     })?;
 
     if address_family == AF_INET as u32 {
@@ -1944,6 +1955,8 @@ fn table_rows<T: Copy>(buffer: &[u8]) -> Vec<T> {
         return Vec::new();
     }
 
+    // SAFETY: The length check above guarantees a complete u32 header; unaligned access matches
+    // the byte-packed IP Helper table.
     let count = unsafe { ptr::read_unaligned(buffer.as_ptr() as *const u32) as usize };
     if count == 0 {
         return Vec::new();
@@ -1961,9 +1974,14 @@ fn table_rows<T: Copy>(buffer: &[u8]) -> Vec<T> {
         return Vec::new();
     }
 
+    // SAFETY: required_len was checked against buffer, so rows_offset is in bounds.
     let rows_ptr = unsafe { buffer.as_ptr().add(rows_offset) as *const T };
     (0..count)
-        .map(|index| unsafe { ptr::read_unaligned(rows_ptr.add(index)) })
+        .map(|index| {
+            // SAFETY: count and row_size were checked against buffer; each indexed row is fully
+            // contained and read unaligned to match the packed table.
+            unsafe { ptr::read_unaligned(rows_ptr.add(index)) }
+        })
         .collect()
 }
 
@@ -2034,6 +2052,8 @@ impl ProcessFreezer {
     fn assign(process_id: u32) -> Result<Self, SuspensionError> {
         let (process_handle, can_wait_for_process) = open_process_for_job_assignment(process_id)?;
 
+        // SAFETY: Null security attributes and name request a private job object owned by the
+        // returned handle.
         let job_handle = unsafe { CreateJobObjectW(null(), null()) };
         if job_handle.is_null() {
             let error = last_error();
@@ -2043,6 +2063,8 @@ impl ProcessFreezer {
         }
         let job_handle = WinHandle::new(job_handle);
 
+        // SAFETY: both handles are live and owned by this function; assignment does not retain
+        // borrowed Rust pointers.
         let assigned =
             unsafe { AssignProcessToJobObject(job_handle.raw(), process_handle.raw()) != 0 };
         if !assigned {
@@ -2066,6 +2088,7 @@ impl ProcessFreezer {
             return Ok(());
         };
 
+        // SAFETY: job_handle is live and info is writable for exactly the supplied structure size.
         let ok = unsafe {
             SetInformationJobObject(
                 job_handle.raw(),
@@ -2084,12 +2107,11 @@ impl ProcessFreezer {
 
     fn is_process_alive(&self) -> bool {
         !self.can_wait_for_process
-            || self
-                .process_handle
-                .as_ref()
-                .is_some_and(|process_handle| unsafe {
-                    WaitForSingleObject(process_handle.raw(), 0) == WAIT_TIMEOUT
-                })
+            || self.process_handle.as_ref().is_some_and(|process_handle| {
+                // SAFETY: can_wait_for_process is true only when this live handle was opened
+                // with PROCESS_SYNCHRONIZE.
+                unsafe { WaitForSingleObject(process_handle.raw(), 0) == WAIT_TIMEOUT }
+            })
     }
 
     fn matches_process_id(&self, process_id: u32) -> bool {
@@ -2133,6 +2155,8 @@ fn open_process_for_job_assignment(process_id: u32) -> Result<(WinHandle, bool),
 
     let mut last_open_error = 0;
     for access in access_masks {
+        // SAFETY: process_id came from the current process snapshot, access is one of the
+        // documented masks above, and no inherited handle is requested.
         let handle = unsafe { OpenProcess(access, 0, process_id) };
         if !handle.is_null() {
             return Ok((WinHandle::new(handle), access & PROCESS_SYNCHRONIZE != 0));
@@ -2144,6 +2168,8 @@ fn open_process_for_job_assignment(process_id: u32) -> Result<(WinHandle, bool),
 }
 
 fn current_process_creation_time(process_id: u32) -> Option<u64> {
+    // SAFETY: process_id came from the current process snapshot and no inherited handle is
+    // requested.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     if handle.is_null() {
         return None;
@@ -2161,6 +2187,7 @@ fn process_creation_time(process_handle: HANDLE) -> Option<u64> {
     let mut kernel_time = creation_time;
     let mut user_time = creation_time;
 
+    // SAFETY: process_handle is live and all FILETIME outputs are writable for the call.
     let ok = unsafe {
         GetProcessTimes(
             process_handle,
@@ -2217,6 +2244,7 @@ fn assign_process_to_job_error_with_context(
 
 fn process_is_in_job(process_handle: HANDLE) -> Option<bool> {
     let mut in_job = 0;
+    // SAFETY: process_handle is live, a null job asks about any job, and in_job is writable.
     let ok = unsafe { IsProcessInJob(process_handle, null_mut_handle(), &mut in_job) };
     (ok != 0).then_some(in_job != 0)
 }
@@ -3179,6 +3207,8 @@ mod tests {
         let mut buffer = Vec::new();
         buffer.extend_from_slice(&(rows.len() as u32).to_ne_bytes());
         for row in rows {
+            // SAFETY: row is a fully initialized plain Win32 record and the slice is limited to
+            // its exact in-memory size for immediate copying.
             let bytes = unsafe {
                 std::slice::from_raw_parts(
                     &row as *const MIB_UDPROW_OWNER_PID as *const u8,

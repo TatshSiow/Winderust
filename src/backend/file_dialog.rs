@@ -82,6 +82,8 @@ impl DialogParent {
 impl HasWindowHandle for DialogParent {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let raw = RawWindowHandle::Win32(Win32WindowHandle::new(self.0));
+        // SAFETY: self stores a non-null HWND borrowed from the live GPUI window for no longer
+        // than this DialogParent value.
         Ok(unsafe { WindowHandle::borrow_raw(raw) })
     }
 }
@@ -89,6 +91,7 @@ impl HasWindowHandle for DialogParent {
 impl HasDisplayHandle for DialogParent {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         let raw = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
+        // SAFETY: Windows has a process-global display handle with no owned resource to release.
         Ok(unsafe { DisplayHandle::borrow_raw(raw) })
     }
 }

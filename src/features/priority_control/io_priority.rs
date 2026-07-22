@@ -14,9 +14,9 @@ use crate::{
     action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
     config::{IoPrioritySettings, ProcessIoPriority, ProcessIoPrioritySetting},
     foreground::{
-        contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
-        process_count_label, process_failure_key, process_names_by_id, process_session_id,
-        same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, is_foreground_process, list_processes, process_count_label,
+        process_failure_key, process_names_by_id, process_session_id, same_process_name,
+        unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -105,6 +105,7 @@ impl IoPriorityManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(action_log, "current Windows session is unknown");
@@ -482,10 +483,10 @@ impl IoPriorityFailures {
         error: IoPriorityError,
         action_log: &mut ActionLog,
     ) {
-        let message = io_priority_error_message(error);
-        if is_process_exited_message(&message) {
+        if matches!(&error, IoPriorityError::ProcessExited) {
             return;
         }
+        let message = io_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -505,6 +506,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, IoPriorityError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -521,6 +524,8 @@ impl ProcessHandle {
 
     fn io_priority(&self) -> Result<ProcessIoPriority, IoPriorityError> {
         let mut priority = 0_u32;
+        // SAFETY: self owns a live process handle, priority is writable for exactly its supplied
+        // size, and no return-length pointer is requested.
         let status = unsafe {
             NtQueryInformationProcess(
                 self.0.raw(),
@@ -535,6 +540,7 @@ impl ProcessHandle {
 
     fn set_io_priority(&self, priority: ProcessIoPriority) -> Result<(), IoPriorityError> {
         let mut raw = io_priority_raw(priority);
+        // SAFETY: self owns a live process handle and raw points to exactly the supplied u32 size.
         let status = unsafe {
             NtSetInformationProcess(
                 self.0.raw(),

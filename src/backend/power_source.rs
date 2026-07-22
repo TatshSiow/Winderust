@@ -10,6 +10,7 @@ pub fn is_plugged_in() -> Option<bool> {
         BatteryFullLifeTime: 0,
     };
 
+    // SAFETY: status is valid writable storage for the duration of the call.
     let ok = unsafe { GetSystemPowerStatus(&mut status) };
     if ok == 0 {
         return None;

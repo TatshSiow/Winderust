@@ -20,8 +20,8 @@ use crate::{
     config::MemoryTrimSettings,
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_session_id, should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_failure_key, process_session_id,
+        should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     privilege::{enable_increase_quota_privilege, enable_profile_single_process_privilege},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -178,6 +178,7 @@ impl MemoryTrimManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             self.clear_tracking();
@@ -614,10 +615,10 @@ impl MemoryTrimFailures {
         error: MemoryTrimError,
         action_log: &mut ActionLog,
     ) {
-        let message = memory_trim_error_message(error);
-        if is_process_exited_message(&message) {
+        if matches!(&error, MemoryTrimError::ProcessExited) {
             return;
         }
+        let message = memory_trim_error_message(error);
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(format!("Trim {process_name} ({process_id}): {message}"));
@@ -672,6 +673,8 @@ fn purge_standby_list() -> Result<(), String> {
     }
 
     let mut command = MEMORY_PURGE_STANDBY_LIST;
+    // SAFETY: command is the documented u32 input for this information class and remains writable
+    // for exactly the supplied size.
     nt_status_result(unsafe {
         NtSetSystemInformation(
             SYSTEM_MEMORY_LIST_INFORMATION_CLASS,
@@ -692,6 +695,8 @@ fn purge_system_file_cache() -> Result<(), String> {
         maximum_working_set: usize::MAX,
         ..Default::default()
     };
+    // SAFETY: cache_info is fully initialized for the requested information class and remains
+    // writable for exactly the supplied size.
     nt_status_result(unsafe {
         NtSetSystemInformation(
             SYSTEM_FILE_CACHE_INFORMATION_EX_CLASS,
@@ -704,6 +709,8 @@ fn purge_system_file_cache() -> Result<(), String> {
 
 fn free_ram_excluding_cache_mb() -> Result<u64, String> {
     let mut info = SystemMemoryListInformation::default();
+    // SAFETY: info is writable for exactly the supplied structure size and no return length is
+    // requested.
     nt_status_result(unsafe {
         NtQuerySystemInformation(
             SYSTEM_MEMORY_LIST_INFORMATION_CLASS,
@@ -733,6 +740,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, MemoryTrimError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA,
@@ -752,6 +761,8 @@ impl ProcessHandle {
             cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
             ..Default::default()
         };
+        // SAFETY: self owns a live process handle and counters is writable for exactly the
+        // supplied structure size.
         let ok = unsafe {
             K32GetProcessMemoryInfo(
                 self.0.raw(),
@@ -776,6 +787,8 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
+        // call.
         let ok = unsafe {
             GetProcessTimes(
                 self.0.raw(),
@@ -799,6 +812,8 @@ impl ProcessHandle {
     }
 
     fn empty_working_set(&self) -> Result<(), MemoryTrimError> {
+        // SAFETY: self owns a live process handle; both usize::MAX values are the documented
+        // request to empty the working set.
         let ok = unsafe { SetProcessWorkingSetSize(self.0.raw(), usize::MAX, usize::MAX) };
         if ok == 0 {
             Err(MemoryTrimError::Failed(format!(
@@ -816,6 +831,7 @@ fn system_memory_load_percent() -> Result<u8, String> {
         dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
         ..Default::default()
     };
+    // SAFETY: status declares its initialized size and remains writable for the call.
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
     if ok == 0 {
         Err(format!(
@@ -859,6 +875,8 @@ fn size_label(bytes: u64) -> String {
 
 fn system_page_size() -> u32 {
     let mut info = std::mem::MaybeUninit::<SYSTEM_INFO>::zeroed();
+    // SAFETY: info is writable SYSTEM_INFO storage initialized by GetSystemInfo before
+    // assume_init reads it.
     unsafe {
         GetSystemInfo(info.as_mut_ptr());
         info.assume_init().dwPageSize

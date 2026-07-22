@@ -1,4 +1,6 @@
 #![windows_subsystem = "windows"]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(unsafe_op_in_unsafe_fn)]
 
 #[cfg(not(windows))]
 compile_error!("Winderust is a Windows-only application.");
@@ -85,6 +87,8 @@ impl SingleInstanceGuard {
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
 
+        // SAFETY: name is terminated UTF-16, the mutex requests initial ownership, and the
+        // returned non-null handle is immediately placed in the owning WinHandle wrapper.
         unsafe {
             let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
             if handle.is_null() {
