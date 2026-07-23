@@ -99,24 +99,23 @@ impl TimerResolutionManager {
             normalize_desired_resolution(requested_100ns, info.minimum_100ns, info.maximum_100ns);
 
         if self.active_request_100ns != Some(desired_100ns) {
-            if let Some(previous_100ns) = self.active_request_100ns.take() {
+            if let Some(previous_100ns) = self.active_request_100ns {
                 let previous_target = self
                     .active_rule_process
-                    .take()
+                    .clone()
                     .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
-                if let Err(err) = release_timer_resolution(previous_100ns) {
-                    let message = err;
+                if let Err(message) = release_timer_resolution(previous_100ns) {
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
-                        previous_target,
+                        previous_target.clone(),
                         ActionLogResult::Failed,
                         format!("Failed to release previous timer resolution request: {message}"),
                     );
                     return snapshot_from_query(
                         true,
-                        None,
-                        None,
+                        Some(previous_100ns),
+                        Some(previous_target),
                         Some(info),
                         1,
                         Some(message),
@@ -124,6 +123,8 @@ impl TimerResolutionManager {
                     );
                 }
 
+                self.active_request_100ns = None;
+                self.active_rule_process = None;
                 action_log.record(
                     ActionLogFeature::TimerResolution,
                     None,
@@ -209,13 +210,15 @@ impl TimerResolutionManager {
     ) -> TimerResolutionSnapshot {
         let mut failures = 0;
         let mut last_error = None;
-        if let Some(previous_100ns) = self.active_request_100ns.take() {
+        if let Some(previous_100ns) = self.active_request_100ns {
             let previous_target = self
                 .active_rule_process
-                .take()
+                .clone()
                 .unwrap_or_else(|| SYSTEM_TARGET_NAME.to_owned());
             match release_timer_resolution(previous_100ns) {
                 Ok(()) => {
+                    self.active_request_100ns = None;
+                    self.active_rule_process = None;
                     action_log.record(
                         ActionLogFeature::TimerResolution,
                         None,
@@ -227,9 +230,8 @@ impl TimerResolutionManager {
                         ),
                     );
                 }
-                Err(err) => {
+                Err(message) => {
                     failures += 1;
-                    let message = err;
                     last_error = Some(message.clone());
                     action_log.record(
                         ActionLogFeature::TimerResolution,
@@ -241,9 +243,16 @@ impl TimerResolutionManager {
                 }
             }
         }
-        self.active_rule_process = None;
 
-        snapshot_from_query(enabled, None, None, info, failures, last_error, message)
+        snapshot_from_query(
+            enabled,
+            self.active_request_100ns,
+            self.active_rule_process.clone(),
+            info,
+            failures,
+            last_error,
+            message,
+        )
     }
 }
 
