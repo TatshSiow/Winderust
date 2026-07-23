@@ -34,8 +34,6 @@ const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
 const STATUS_INVALID_PARAMETER: u32 = 0xC000000D;
 const GPU_PRIORITY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
 
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GpuPrioritySnapshot {
     pub enabled: bool,
@@ -155,12 +153,7 @@ impl GpuPriorityManager {
         let scanned_processes = processes.len();
         let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
-            })
+            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
         } else {
             None
         };
@@ -582,9 +575,6 @@ impl GpuPriorityFailures {
         error: GpuPriorityError,
         action_log: &mut ActionLog,
     ) {
-        if matches!(&error, GpuPriorityError::ProcessExited) {
-            return;
-        }
         let message = gpu_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
@@ -754,11 +744,7 @@ fn gpu_priority_error_message(error: GpuPriorityError) -> String {
 }
 
 fn gpu_priority_apply_summary_message(count: usize) -> String {
-    if count == 1 {
-        "Applied GPU priority to 1 process.".to_owned()
-    } else {
-        format!("Applied GPU priority to {count} processes.")
-    }
+    format!("Applied GPU priority to {}.", process_count_label(count))
 }
 
 fn gpu_priority_skip_summary_message(
@@ -808,7 +794,7 @@ fn gpu_priority_status_message(
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
+    contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, process_name)
 }
 
 #[cfg(test)]
