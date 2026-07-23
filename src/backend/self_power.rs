@@ -39,7 +39,7 @@ fn set_hidden_mode(enabled: bool) -> Result<(), String> {
     let mut state = SELF_POWER_STATE
         .lock()
         .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
-    ensure_state(&mut state)?.hidden_mode = enabled;
+    ensure_state(&mut state).hidden_mode = enabled;
     apply_self_power_state(&mut state)
 }
 
@@ -47,27 +47,22 @@ fn set_adaptive_engine(enabled: bool) -> Result<(), String> {
     let mut state = SELF_POWER_STATE
         .lock()
         .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
-    ensure_state(&mut state)?.adaptive_engine = enabled;
+    ensure_state(&mut state).adaptive_engine = enabled;
     apply_self_power_state(&mut state)
 }
 
-fn ensure_state(state: &mut Option<SelfPowerState>) -> Result<&mut SelfPowerState, String> {
-    if state.is_none() {
+fn ensure_state(state: &mut Option<SelfPowerState>) -> &mut SelfPowerState {
+    state.get_or_insert_with(|| {
         // SAFETY: GetCurrentProcess takes no arguments and returns a valid pseudo-handle.
         let process = unsafe { GetCurrentProcess() };
-        *state = Some(SelfPowerState {
+        SelfPowerState {
             previous_power_throttling: power_throttling_state(process).ok(),
             previous_priority: priority_class(process).ok(),
             hidden_mode: false,
             adaptive_engine: false,
-        });
-    }
-
-    state
-        .as_mut()
-        .ok_or_else(|| "Winderust self power state is unavailable.".to_owned())
+        }
+    })
 }
-
 fn apply_self_power_state(state: &mut Option<SelfPowerState>) -> Result<(), String> {
     let Some(current) = *state else {
         return Ok(());
