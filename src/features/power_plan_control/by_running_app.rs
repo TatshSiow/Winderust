@@ -90,7 +90,7 @@ impl ByRunningAppManager {
             matched.process_name.clone(),
             ActionLogResult::Applied,
             format!(
-                "Rule '{}' requested performance plan {}.",
+                "Rule '{}' requested power plan {}.",
                 matched.rule_name, matched.target_guid
             ),
         );
@@ -121,7 +121,8 @@ impl ByRunningAppManager {
 
     fn active_matches(&self, matched: &ActiveByRunningApp) -> bool {
         self.active.as_ref().is_some_and(|active| {
-            active.process_id == matched.process_id
+            active.rule_name == matched.rule_name
+                && active.process_id == matched.process_id
                 && same_process_name(&active.process_name, &matched.process_name)
                 && active
                     .target_guid
@@ -153,13 +154,6 @@ impl ByRunningAppManager {
                     target_guid: Some(active.target_guid.clone()),
                 }
             })
-    }
-}
-
-impl Drop for ByRunningAppManager {
-    fn drop(&mut self) {
-        let mut action_log = ActionLog::new(1);
-        self.release(&mut action_log, "By Running App manager dropped");
     }
 }
 
@@ -291,6 +285,24 @@ mod tests {
         assert_eq!(matched.target_guid, "game-guid");
     }
 
+    #[test]
+    fn active_match_includes_rule_name() {
+        let active = ActiveByRunningApp {
+            rule_name: "Old name".to_owned(),
+            process_id: 42,
+            process_name: "game.exe".to_owned(),
+            target_guid: "gaming-guid".to_owned(),
+        };
+        let manager = ByRunningAppManager {
+            active: Some(active.clone()),
+        };
+        let renamed = ActiveByRunningApp {
+            rule_name: "New name".to_owned(),
+            ..active
+        };
+
+        assert!(!manager.active_matches(&renamed));
+    }
     #[test]
     fn builtin_exclusions_cover_sensitive_windows_processes() {
         assert!(is_builtin_excluded("csrss.exe"));
