@@ -658,10 +658,6 @@ pub(in crate::ui::app) fn new_by_running_app_rule(
     }
 }
 
-pub(in crate::ui::app) fn foreground_lookup_required(settings: &Settings) -> bool {
-    settings.by_foreground.enabled && !settings.by_foreground.rules.is_empty()
-}
-
 pub(in crate::ui::app) fn by_running_app_decision(
     status: &ByRunningAppSnapshot,
 ) -> Option<ByRunningAppDecision> {

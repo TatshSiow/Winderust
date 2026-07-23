@@ -64,6 +64,7 @@ mod runner;
 mod status;
 mod wake;
 
+pub(crate) use requirements::foreground_lookup_required;
 use requirements::*;
 use runner::*;
 use status::*;
@@ -619,7 +620,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let gpu_priority_refresh_required = settings_changed
             || feature_refresh_required(&settings, gpu_priority_required(&settings));
         let memory_priority_refresh_required = settings_changed
-            || feature_refresh_required(&settings, memory_priority_required(&settings));
+            || feature_refresh_required(&settings, settings.memory_priority.enabled);
         let memory_trim_refresh_required = settings_changed
             || memory_trim_now_requested
             || feature_refresh_required(&settings, settings.memory_trim.enabled);

@@ -218,14 +218,6 @@ fn workload_engine_fast_refresh_requires_enabled_feature() {
 }
 
 #[test]
-fn launch_boost_does_not_force_background_io_assist() {
-    let settings = Settings::default();
-    let io_priority = effective_io_priority_settings(&settings, true, false);
-
-    assert!(!io_priority.enabled);
-}
-
-#[test]
 fn workload_engine_io_assist_waits_for_pressure() {
     let mut settings = Settings::default();
     settings.workload_engine.enabled = true;
@@ -234,9 +226,9 @@ fn workload_engine_io_assist_waits_for_pressure() {
         .lower_background_io_priority_enabled = true;
     settings.workload_engine.lower_background_io_priority = ProcessIoPriority::Low;
 
-    assert!(!effective_io_priority_settings(&settings, false, false).enabled);
+    assert!(!effective_io_priority_settings(&settings, false).enabled);
 
-    let io_priority = effective_io_priority_settings(&settings, false, true);
+    let io_priority = effective_io_priority_settings(&settings, true);
 
     assert!(io_priority.enabled);
     assert!(io_priority.foreground_detection_enabled);
@@ -337,7 +329,7 @@ fn workload_engine_pressure_feeds_priority_defaults() {
     );
     assert!(dynamic_priority_boost.contains_exclusion("game.exe"));
 
-    let io_priority = effective_io_priority_settings(&settings, false, true);
+    let io_priority = effective_io_priority_settings(&settings, true);
     assert_eq!(
         io_priority.background_priority.priority(),
         Some(ProcessIoPriority::Low)

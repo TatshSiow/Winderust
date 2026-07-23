@@ -111,17 +111,8 @@ pub(super) fn gpu_priority_required(settings: &Settings) -> bool {
                 .enabled)
 }
 
-pub(super) fn memory_priority_required(settings: &Settings) -> bool {
-    settings.memory_priority.enabled
-}
-
-pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
-    settings.timer_resolution.enabled
-}
-
 pub(super) fn effective_io_priority_settings(
     settings: &Settings,
-    _launch_boost_active: bool,
     workload_engine_active: bool,
 ) -> crate::config::IoPrioritySettings {
     let mut io_priority = settings.io_priority.clone();
@@ -233,12 +224,6 @@ pub(super) fn effective_gpu_priority_settings(
     gpu_priority
 }
 
-pub(super) fn effective_memory_priority_settings(
-    settings: &Settings,
-) -> crate::config::MemoryPrioritySettings {
-    settings.memory_priority.clone()
-}
-
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (settings.background_efficiency.enabled
@@ -252,7 +237,7 @@ pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
             || dynamic_priority_boost_required(settings)
             || io_priority_required(settings)
             || gpu_priority_required(settings)
-            || memory_priority_required(settings)
+            || settings.memory_priority.enabled
             || settings.memory_trim.enabled)
 }
 
@@ -281,9 +266,9 @@ pub(super) fn automation_worker_required(settings: &Settings) -> bool {
             || dynamic_priority_boost_required(settings)
             || io_priority_required(settings)
             || gpu_priority_required(settings)
-            || memory_priority_required(settings)
+            || settings.memory_priority.enabled
             || settings.memory_trim.enabled
-            || timer_resolution_required(settings))
+            || settings.timer_resolution.enabled)
 }
 
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
@@ -355,7 +340,7 @@ pub(super) fn by_foreground_required(settings: &Settings) -> bool {
             .any(|rule| rule.enabled && rule.power_plan_guid.is_some()))
 }
 
-pub(super) fn foreground_lookup_required(settings: &Settings) -> bool {
+pub(crate) fn foreground_lookup_required(settings: &Settings) -> bool {
     settings.by_foreground.enabled && !settings.by_foreground.rules.is_empty()
 }
 

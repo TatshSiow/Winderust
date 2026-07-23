@@ -45,7 +45,7 @@ use crate::{
         IdleDetector, InputHook, InputHookConfig,
     },
     app_suspension::{self, AppSuspensionSnapshot},
-    automation::BackgroundAutomation,
+    automation::{foreground_lookup_required, BackgroundAutomation},
     background_efficiency::{self, BackgroundEfficiencySnapshot},
     config::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
@@ -1712,23 +1712,5 @@ mod tests {
                 mouse: false,
             }
         );
-    }
-
-    #[test]
-    fn foreground_lookup_runs_only_for_configured_by_foreground() {
-        let mut settings = Settings::default();
-
-        assert!(!foreground_lookup_required(&settings));
-
-        settings.by_foreground.enabled = true;
-        assert!(!foreground_lookup_required(&settings));
-
-        settings.by_foreground.rules.push(ByForegroundRule {
-            enabled: true,
-            name: "backup.exe".to_owned(),
-            process_name: "backup.exe".to_owned(),
-            power_plan_guid: Some("idle-guid".to_owned()),
-        });
-        assert!(foreground_lookup_required(&settings));
     }
 }

@@ -552,11 +552,8 @@ impl HiddenAutomationRunner {
     }
 
     pub(super) fn run_io_priority_update(&mut self, settings: &Settings) -> IoPrioritySnapshot {
-        let io_priority_settings = effective_io_priority_settings(
-            settings,
-            self.launch_boost_active,
-            self.workload_engine_active,
-        );
+        let io_priority_settings =
+            effective_io_priority_settings(settings, self.workload_engine_active);
         self.io_priority_manager.update(
             &io_priority_settings,
             settings.general.enabled,
@@ -622,9 +619,8 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
     ) -> MemoryPrioritySnapshot {
-        let memory_priority_settings = effective_memory_priority_settings(settings);
         self.memory_priority_manager.update_rules(
-            &memory_priority_settings,
+            &settings.memory_priority,
             settings.general.enabled,
             foreground_process_id(),
             &mut self.action_log,
