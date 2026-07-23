@@ -8,9 +8,9 @@ use windows_sys::Win32::{
     System::Threading::{
         GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess,
         ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS,
-        NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
-        PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
         PROCESS_SET_LIMITED_INFORMATION,
     },
 };
@@ -116,7 +116,7 @@ pub struct BackgroundEfficiencyManager {
 struct ThrottledProcess {
     process_name: String,
     creation_time: u64,
-    previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
+    previous_state: PROCESS_POWER_THROTTLING_STATE,
     previous_priority: Option<u32>,
     applied_ignore_timer_resolution: bool,
 }
@@ -262,11 +262,7 @@ impl BackgroundEfficiencyManager {
                 &mut self.throttled,
                 action_log,
             ) {
-                Ok(enabled_new_process) => {
-                    if enabled_new_process {
-                        self.clear_process_failure(&name);
-                    }
-                }
+                Ok(()) => self.clear_process_failure(&name),
                 Err(BackgroundEfficiencyError::ProcessExited) => skipped_processes += 1,
                 Err(BackgroundEfficiencyError::AccessDenied) => {
                     skipped_processes += 1;
@@ -292,8 +288,7 @@ impl BackgroundEfficiencyManager {
                     );
                 }
                 Err(error) => {
-                    let err = background_efficiency_error_message(&error);
-                    failures.record_message("Apply", process_id, &name, err, action_log);
+                    failures.record_error("Apply", process_id, &name, error, action_log);
                     self.record_process_failure(&name);
                 }
             }
@@ -350,23 +345,12 @@ impl BackgroundEfficiencyManager {
     ) -> BackgroundEfficiencyFailures {
         let mut failures = BackgroundEfficiencyFailures::default();
         for process_id in process_ids {
-            if let Some(process) = self.throttled.get(process_id).cloned() {
-                let process_name = process.process_name.clone();
-                if let Err(err) = restore_background_efficiency(*process_id, &process) {
-                    let process_exited = matches!(&err, BackgroundEfficiencyError::ProcessExited);
-                    if process_exited {
-                        self.throttled.remove(process_id);
-                    }
-                    if !process_exited {
-                        failures.record_error(
-                            "Restore",
-                            *process_id,
-                            &process_name,
-                            err,
-                            action_log,
-                        );
-                    }
-                } else {
+            let Some(process) = self.throttled.get(process_id).cloned() else {
+                continue;
+            };
+            let process_name = process.process_name.clone();
+            match restore_background_efficiency(*process_id, &process) {
+                Ok(()) => {
                     self.throttled.remove(process_id);
                     action_log.record(
                         ActionLogFeature::BackgroundEfficiency,
@@ -375,6 +359,12 @@ impl BackgroundEfficiencyManager {
                         ActionLogResult::Restored,
                         reason.to_owned(),
                     );
+                }
+                Err(BackgroundEfficiencyError::ProcessExited) => {
+                    self.throttled.remove(process_id);
+                }
+                Err(error) => {
+                    failures.record_error("Restore", *process_id, &process_name, error, action_log);
                 }
             }
         }
@@ -386,7 +376,7 @@ impl BackgroundEfficiencyManager {
         process_id: u32,
         process_name: &str,
         action_log: &mut ActionLog,
-    ) -> ProcessSuppression {
+    ) -> ExecutionSuppression {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if suppression.newly_suppressed {
             action_log.record(
@@ -425,12 +415,10 @@ impl BackgroundEfficiencyManager {
     }
 }
 
-type ProcessSuppression = ExecutionSuppression;
-
 impl Drop for BackgroundEfficiencyManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
-        self.clear_all(&mut action_log, "EcoQoS manager dropped");
+        self.clear_all(&mut action_log, "Background Efficiency manager dropped");
     }
 }
 
@@ -542,7 +530,7 @@ fn apply_background_efficiency_to_process(
     manage_process_priority: bool,
     throttled: &mut BTreeMap<u32, ThrottledProcess>,
     action_log: &mut ActionLog,
-) -> Result<bool, BackgroundEfficiencyError> {
+) -> Result<(), BackgroundEfficiencyError> {
     if let Some(process) = throttled.get_mut(&process_id) {
         let update = update_background_efficiency(
             process_id,
@@ -551,7 +539,7 @@ fn apply_background_efficiency_to_process(
             manage_process_priority,
         );
         match update {
-            Ok(()) => return Ok(false),
+            Ok(()) => return Ok(()),
             Err(BackgroundEfficiencyError::ProcessExited) => {
                 throttled.remove(&process_id);
             }
@@ -573,7 +561,7 @@ fn apply_background_efficiency_to_process(
         ActionLogResult::Applied,
         "Applied Background Efficiency: enabled EcoQoS and lowered priority.".to_owned(),
     );
-    Ok(true)
+    Ok(())
 }
 
 fn update_background_efficiency(
@@ -610,15 +598,6 @@ fn update_background_efficiency(
     Ok(())
 }
 
-fn background_efficiency_error_message(error: &BackgroundEfficiencyError) -> String {
-    match error {
-        BackgroundEfficiencyError::AccessDenied => "Access denied.".to_owned(),
-        BackgroundEfficiencyError::ProcessExited => "Process exited.".to_owned(),
-        BackgroundEfficiencyError::Unsupported => "Operation unsupported.".to_owned(),
-        BackgroundEfficiencyError::Failed(message) => message.clone(),
-    }
-}
-
 fn process_failure_message(
     action: &str,
     process_id: u32,
@@ -639,7 +618,7 @@ fn enable_background_efficiency(
         .0
         .process_creation_time()
         .ok_or(BackgroundEfficiencyError::ProcessExited)?;
-    let previous_state = process.power_throttling_state().ok();
+    let previous_state = process.power_throttling_state()?;
     let previous_priority = manage_process_priority
         .then(|| process.priority_class())
         .transpose()?;
@@ -648,9 +627,7 @@ fn enable_background_efficiency(
     process.set_power_throttling_state(next_state)?;
     if manage_process_priority {
         if let Err(err) = process.set_priority_class(IDLE_PRIORITY_CLASS) {
-            let _ = process.set_power_throttling_state(
-                previous_state.unwrap_or_else(power_throttling_disabled_state),
-            );
+            let _ = process.set_power_throttling_state(previous_state);
             return Err(err);
         }
     }
@@ -674,20 +651,14 @@ fn restore_background_efficiency(
     }
     let mut last_error = None;
 
-    if let Err(err) = process.set_power_throttling_state(
-        process_state
-            .previous_state
-            .unwrap_or_else(power_throttling_disabled_state),
-    ) {
+    if let Err(err) = process.set_power_throttling_state(process_state.previous_state) {
         last_error = Some(err);
     }
 
-    if let Err(err) = process.set_priority_class(
-        process_state
-            .previous_priority
-            .unwrap_or(NORMAL_PRIORITY_CLASS),
-    ) {
-        last_error = Some(err);
+    if let Some(previous_priority) = process_state.previous_priority {
+        if let Err(err) = process.set_priority_class(previous_priority) {
+            last_error = Some(err);
+        }
     }
 
     match last_error {
@@ -696,6 +667,7 @@ fn restore_background_efficiency(
     }
 }
 
+#[cfg(test)]
 fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
     PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
@@ -705,13 +677,11 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
 }
 
 fn power_throttling_enabled_state(
-    previous: Option<PROCESS_POWER_THROTTLING_STATE>,
+    mut state: PROCESS_POWER_THROTTLING_STATE,
     ignore_timer_resolution: bool,
 ) -> PROCESS_POWER_THROTTLING_STATE {
-    let previous_ignore_timer_resolution = previous.is_some_and(|state| {
-        (state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION) != 0
-    });
-    let mut state = previous.unwrap_or_else(power_throttling_disabled_state);
+    let previous_ignore_timer_resolution =
+        (state.StateMask & PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION) != 0;
     state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
     state.ControlMask |=
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
@@ -985,7 +955,7 @@ mod tests {
 
     #[test]
     fn enabled_state_sets_timer_ignore_only_when_allowed() {
-        let allowed = power_throttling_enabled_state(None, true);
+        let allowed = power_throttling_enabled_state(power_throttling_disabled_state(), true);
         assert_ne!(
             allowed.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
             0
@@ -995,7 +965,7 @@ mod tests {
             0
         );
 
-        let blocked = power_throttling_enabled_state(None, false);
+        let blocked = power_throttling_enabled_state(power_throttling_disabled_state(), false);
         assert_ne!(
             blocked.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
             0
@@ -1063,7 +1033,7 @@ mod tests {
             ThrottledProcess {
                 process_name: "exited.exe".to_owned(),
                 creation_time: 0,
-                previous_state: None,
+                previous_state: power_throttling_disabled_state(),
                 previous_priority: None,
                 applied_ignore_timer_resolution: false,
             },
