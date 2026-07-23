@@ -69,7 +69,7 @@ fn active_rule(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<&ByTim
 }
 
 fn rule_applies(rule: &ByTimeRule, now: DateTime<Local>) -> bool {
-    if !rule.enabled {
+    if !rule.enabled || rule.power_plan_guid.is_none() {
         return false;
     }
 
@@ -199,7 +199,9 @@ fn next_rule_end_after(rule: &ByTimeRule, now: DateTime<Local>) -> Option<DateTi
 }
 
 fn enabled_rule_times(rule: &ByTimeRule) -> Option<(NaiveTime, NaiveTime)> {
-    rule.enabled.then(|| rule.parsed_times()).flatten()
+    (rule.enabled && rule.power_plan_guid.is_some())
+        .then(|| rule.parsed_times())
+        .flatten()
 }
 
 fn update_next_datetime(
@@ -262,7 +264,7 @@ mod tests {
             days: vec![WeekdaySetting::Fri],
             start_time: "22:00".to_owned(),
             end_time: "08:00".to_owned(),
-            power_plan_guid: None,
+            power_plan_guid: Some("plan-guid".to_owned()),
         };
         let now = Local.with_ymd_and_hms(2026, 5, 30, 2, 0, 0).unwrap();
 
@@ -277,13 +279,32 @@ mod tests {
             days: vec![WeekdaySetting::Fri],
             start_time: "22:00".to_owned(),
             end_time: "08:00".to_owned(),
-            power_plan_guid: None,
+            power_plan_guid: Some("plan-guid".to_owned()),
         };
         let now = Local.with_ymd_and_hms(2026, 5, 30, 2, 0, 0).unwrap();
 
         assert!(!rule_applies(&rule, now));
     }
 
+    #[test]
+    fn rule_without_selected_plan_does_not_apply_or_schedule() {
+        let rule = ByTimeRule {
+            enabled: true,
+            name: "Unconfigured".to_owned(),
+            days: vec![WeekdaySetting::Fri],
+            start_time: "00:00".to_owned(),
+            end_time: "23:59".to_owned(),
+            power_plan_guid: None,
+        };
+        let settings = ByTimeSettings {
+            enabled: true,
+            rules: vec![rule.clone()],
+        };
+        let now = Local.with_ymd_and_hms(2026, 5, 29, 12, 0, 0).unwrap();
+
+        assert!(!rule_applies(&rule, now));
+        assert!(next_change_at(&settings, now).is_none());
+    }
     #[test]
     fn next_change_wakes_at_overnight_rule_end() {
         let settings = ByTimeSettings {
@@ -294,7 +315,7 @@ mod tests {
                 days: vec![WeekdaySetting::Fri],
                 start_time: "22:00".to_owned(),
                 end_time: "08:00".to_owned(),
-                power_plan_guid: None,
+                power_plan_guid: Some("plan-guid".to_owned()),
             }],
         };
         let now = Local.with_ymd_and_hms(2026, 5, 30, 2, 0, 0).unwrap();
@@ -315,7 +336,7 @@ mod tests {
                 days: vec![WeekdaySetting::Mon],
                 start_time: "09:00".to_owned(),
                 end_time: "17:00".to_owned(),
-                power_plan_guid: None,
+                power_plan_guid: Some("plan-guid".to_owned()),
             }],
         };
         let now = Local.with_ymd_and_hms(2026, 5, 31, 12, 0, 0).unwrap();
