@@ -99,15 +99,11 @@ impl WinderustApp {
         self.foreground_app = foreground_lookup_required(decision_settings)
             .then(foreground_process_name)
             .flatten();
-        let by_time = self
-            .by_time_scheduler
-            .current_decision(&decision_settings.by_time);
+        let by_time = current_by_time_decision(&decision_settings.by_time);
         let by_cpu_load = self
             .by_cpu_load_scheduler
             .current_decision(&decision_settings.by_cpu_load, self.cpu_usage.percent);
-        self.next_schedule = self
-            .by_time_scheduler
-            .next_switch_label(&decision_settings.by_time);
+        self.next_schedule = next_by_time_switch_label(&decision_settings.by_time);
 
         self.decision = decide(
             decision_settings,

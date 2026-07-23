@@ -29,7 +29,9 @@ use crate::{
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
-    features::power_plan_control::{ByCpuLoadScheduler, ByTimeScheduler},
+    features::power_plan_control::{
+        current_by_time_decision, next_by_time_change_delay, ByCpuLoadScheduler,
+    },
     foreground::{
         cursor_is_shell_window, cursor_process, cursor_process_id, foreground_process,
         foreground_process_id, foreground_process_name, list_processes, process_name_key,

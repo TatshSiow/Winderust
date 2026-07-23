@@ -72,7 +72,9 @@ use crate::{
     },
     dynamic_priority_boost::{self, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::ByRunningAppSnapshot,
-    features::power_plan_control::{ByCpuLoadScheduler, ByTimeScheduler},
+    features::power_plan_control::{
+        current_by_time_decision, next_by_time_switch_label, ByCpuLoadScheduler,
+    },
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
         capture_process_action_target, foreground_process_name, list_process_candidates,
@@ -419,7 +421,6 @@ pub struct WinderustApp {
     controller_activity_detector: ControllerActivityDetector,
     input_hook: Option<InputHook>,
     tray_hide_on_close: bool,
-    by_time_scheduler: ByTimeScheduler,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
     hwnd: Option<HWND>,
     tray_icon: Option<TrayIcon>,
@@ -868,7 +869,6 @@ impl WinderustApp {
             controller_activity_detector: ControllerActivityDetector::default(),
             input_hook: None,
             tray_hide_on_close: false,
-            by_time_scheduler: ByTimeScheduler,
             by_cpu_load_scheduler: ByCpuLoadScheduler::default(),
             hwnd,
             tray_icon: None,

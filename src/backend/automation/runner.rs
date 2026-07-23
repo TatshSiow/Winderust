@@ -103,7 +103,6 @@ pub(super) struct HiddenAutomationRunner {
     static_processor_policy: Option<AppliedStaticProcessorPolicy>,
     idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
-    by_time_scheduler: ByTimeScheduler,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
     background_efficiency_manager: BackgroundEfficiencyManager,
     pub(super) app_suspension_manager: AppSuspensionManager,
@@ -682,7 +681,7 @@ impl HiddenAutomationRunner {
         let foreground_process_name = foreground_lookup_required(settings)
             .then(foreground_process_name)
             .flatten();
-        let by_time_decision = self.by_time_scheduler.current_decision(&settings.by_time);
+        let by_time_decision = current_by_time_decision(&settings.by_time);
         let by_cpu_load_decision = self
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);

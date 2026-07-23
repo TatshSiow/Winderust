@@ -16,57 +16,52 @@ pub struct ByTimeDecision {
     pub power_plan_guid: Option<String>,
 }
 
-#[derive(Debug, Default)]
-pub struct ByTimeScheduler;
-
-impl ByTimeScheduler {
-    pub fn current_decision(&self, settings: &ByTimeSettings) -> Option<ByTimeDecision> {
-        if !settings.enabled {
-            return None;
-        }
-
-        let now = Local::now();
-        active_rule(settings, now).map(|rule| ByTimeDecision {
-            rule_name: rule.name.clone(),
-            power_plan_guid: rule.power_plan_guid.clone(),
-        })
+pub fn current_decision(settings: &ByTimeSettings) -> Option<ByTimeDecision> {
+    if !settings.enabled {
+        return None;
     }
 
-    pub fn next_change_delay(&self, settings: &ByTimeSettings) -> Option<Duration> {
-        let now = Local::now();
-        next_change_at(settings, now)
-            .and_then(|next| next.signed_duration_since(now).to_std().ok())
-            .map(|delay| delay.max(MIN_BY_TIME_DELAY))
+    let now = Local::now();
+    active_rule(settings, now).map(|rule| ByTimeDecision {
+        rule_name: rule.name.clone(),
+        power_plan_guid: rule.power_plan_guid.clone(),
+    })
+}
+
+pub fn next_change_delay(settings: &ByTimeSettings) -> Option<Duration> {
+    let now = Local::now();
+    next_change_at(settings, now)
+        .and_then(|next| next.signed_duration_since(now).to_std().ok())
+        .map(|delay| delay.max(MIN_BY_TIME_DELAY))
+}
+
+pub fn next_switch_label(settings: &ByTimeSettings) -> String {
+    if !settings.enabled || settings.rules.is_empty() {
+        return "No active By Time rules".to_owned();
     }
 
-    pub fn next_switch_label(&self, settings: &ByTimeSettings) -> String {
-        if !settings.enabled || settings.rules.is_empty() {
-            return "No active By Time rules".to_owned();
-        }
-
-        let now = Local::now();
-        if let Some(rule) = active_rule(settings, now) {
-            if let Some(ends_at) = next_rule_end_after(rule, now) {
-                return format!(
-                    "By Time '{}' active until {}.",
-                    rule_display_name(rule),
-                    switch_time_label(ends_at, now)
-                );
-            }
-
-            return format!("By Time '{}' active.", rule_display_name(rule));
-        }
-
-        if let Some((rule_name, starts_at)) = next_rule_start_after(settings, now) {
+    let now = Local::now();
+    if let Some(rule) = active_rule(settings, now) {
+        if let Some(ends_at) = next_rule_end_after(rule, now) {
             return format!(
-                "Next By Time rule '{}' at {}.",
-                rule_name,
-                switch_time_label(starts_at, now)
+                "By Time '{}' active until {}.",
+                rule_display_name(rule),
+                switch_time_label(ends_at, now)
             );
         }
 
-        "No upcoming By Time rules".to_owned()
+        return format!("By Time '{}' active.", rule_display_name(rule));
     }
+
+    if let Some((rule_name, starts_at)) = next_rule_start_after(settings, now) {
+        return format!(
+            "Next By Time rule '{}' at {}.",
+            rule_name,
+            switch_time_label(starts_at, now)
+        );
+    }
+
+    "No upcoming By Time rules".to_owned()
 }
 
 fn active_rule(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<&ByTimeRule> {
@@ -86,16 +81,12 @@ fn rule_applies(rule: &ByTimeRule, now: DateTime<Local>) -> bool {
     let now_time = now.time();
 
     if start <= end {
-        rule.days.contains(&today) && time_in_range(now_time, start, end)
+        rule.days.contains(&today) && now_time >= start && now_time < end
     } else {
         let yesterday = WeekdaySetting::from_chrono(now.weekday().pred());
         (rule.days.contains(&today) && now_time >= start)
             || (rule.days.contains(&yesterday) && now_time < end)
     }
-}
-
-fn time_in_range(now: NaiveTime, start: NaiveTime, end: NaiveTime) -> bool {
-    now >= start && now < end
 }
 
 fn next_change_at(settings: &ByTimeSettings, now: DateTime<Local>) -> Option<DateTime<Local>> {

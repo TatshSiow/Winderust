@@ -13,18 +13,11 @@ use crate::{
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ByRunningAppSnapshot {
-    pub enabled: bool,
-    pub active: bool,
-    pub scanned_processes: usize,
-    pub matched_processes: usize,
     pub active_rule: Option<String>,
     pub active_process: Option<String>,
     pub target_guid: Option<String>,
-    pub previous_guid: Option<String>,
-    pub message: String,
-    pub last_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -40,14 +33,6 @@ struct ActiveByRunningApp {
     target_guid: String,
 }
 
-#[derive(Debug, Clone)]
-struct ByRunningAppMatch {
-    rule_name: String,
-    process_id: u32,
-    process_name: String,
-    target_guid: String,
-}
-
 impl ByRunningAppManager {
     pub fn update(
         &mut self,
@@ -57,46 +42,28 @@ impl ByRunningAppManager {
     ) -> ByRunningAppSnapshot {
         if !automation_enabled {
             self.release(action_log, "automation disabled");
-            return ByRunningAppSnapshot {
-                enabled: false,
-                message: "Automation disabled.".to_owned(),
-                ..Default::default()
-            };
+            return ByRunningAppSnapshot::default();
         }
 
         if !settings.enabled {
             self.release(action_log, "By Running App disabled");
-            return ByRunningAppSnapshot {
-                enabled: false,
-                message: "By Running App disabled.".to_owned(),
-                ..Default::default()
-            };
+            return ByRunningAppSnapshot::default();
         }
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             self.release(action_log, "current Windows session is unknown");
-            return ByRunningAppSnapshot {
-                enabled: true,
-                message: "Paused: current Windows session is unknown.".to_owned(),
-                ..Default::default()
-            };
+            return ByRunningAppSnapshot::default();
         };
 
         let processes = match list_processes() {
             Ok(processes) => processes,
-            Err(err) => {
+            Err(_) => {
                 self.release(action_log, "process list unavailable");
-                return ByRunningAppSnapshot {
-                    enabled: true,
-                    message: err,
-                    ..Default::default()
-                };
+                return ByRunningAppSnapshot::default();
             }
         };
-
-        let scanned_processes = processes.len();
         let eligible_processes = processes
             .into_iter()
             .filter(|process| {
@@ -106,22 +73,15 @@ impl ByRunningAppManager {
                     && process_session_id(process.id) == Some(current_session_id)
             })
             .collect::<Vec<_>>();
-        let matched_processes = matching_process_names(settings, &eligible_processes).len();
         let matched = matching_rule_process(settings, &eligible_processes);
 
         let Some(matched) = matched else {
             self.release(action_log, "no By Running App process is running");
-            return ByRunningAppSnapshot {
-                enabled: true,
-                scanned_processes,
-                matched_processes,
-                message: "By Running App waiting for a matching process.".to_owned(),
-                ..Default::default()
-            };
+            return ByRunningAppSnapshot::default();
         };
 
         if self.active_matches(&matched) {
-            return self.snapshot(true, scanned_processes, matched_processes, None);
+            return self.snapshot();
         }
 
         action_log.record(
@@ -134,13 +94,8 @@ impl ByRunningAppManager {
                 matched.rule_name, matched.target_guid
             ),
         );
-        self.active = Some(ActiveByRunningApp {
-            rule_name: matched.rule_name,
-            process_id: matched.process_id,
-            process_name: matched.process_name,
-            target_guid: matched.target_guid,
-        });
-        self.snapshot(true, scanned_processes, matched_processes, None)
+        self.active = Some(matched);
+        self.snapshot()
     }
 
     pub fn is_active(&self) -> bool {
@@ -164,7 +119,7 @@ impl ByRunningAppManager {
         })
     }
 
-    fn active_matches(&self, matched: &ByRunningAppMatch) -> bool {
+    fn active_matches(&self, matched: &ActiveByRunningApp) -> bool {
         self.active.as_ref().is_some_and(|active| {
             active.process_id == matched.process_id
                 && same_process_name(&active.process_name, &matched.process_name)
@@ -188,40 +143,16 @@ impl ByRunningAppManager {
         );
     }
 
-    fn snapshot(
-        &self,
-        enabled: bool,
-        scanned_processes: usize,
-        matched_processes: usize,
-        last_error: Option<String>,
-    ) -> ByRunningAppSnapshot {
-        let Some(active) = self.active.as_ref() else {
-            return ByRunningAppSnapshot {
-                enabled,
-                scanned_processes,
-                matched_processes,
-                message: if enabled {
-                    "By Running App waiting for a matching process.".to_owned()
-                } else {
-                    "By Running App disabled.".to_owned()
-                },
-                last_error,
-                ..Default::default()
-            };
-        };
-
-        ByRunningAppSnapshot {
-            enabled,
-            active: true,
-            scanned_processes,
-            matched_processes,
-            active_rule: Some(active.rule_name.clone()),
-            active_process: Some(active.process_name.clone()),
-            target_guid: Some(active.target_guid.clone()),
-            previous_guid: None,
-            message: "By Running App active.".to_owned(),
-            last_error,
-        }
+    fn snapshot(&self) -> ByRunningAppSnapshot {
+        self.active
+            .as_ref()
+            .map_or_else(ByRunningAppSnapshot::default, |active| {
+                ByRunningAppSnapshot {
+                    active_rule: Some(active.rule_name.clone()),
+                    active_process: Some(active.process_name.clone()),
+                    target_guid: Some(active.target_guid.clone()),
+                }
+            })
     }
 }
 
@@ -232,23 +163,6 @@ impl Drop for ByRunningAppManager {
     }
 }
 
-impl Default for ByRunningAppSnapshot {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            active: false,
-            scanned_processes: 0,
-            matched_processes: 0,
-            active_rule: None,
-            active_process: None,
-            target_guid: None,
-            previous_guid: None,
-            message: "By Running App disabled.".to_owned(),
-            last_error: None,
-        }
-    }
-}
-
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
@@ -256,7 +170,7 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 fn matching_rule_process(
     settings: &ByRunningAppSettings,
     processes: &[ProcessInfo],
-) -> Option<ByRunningAppMatch> {
+) -> Option<ActiveByRunningApp> {
     for rule in &settings.rules {
         if !rule.enabled || rule.process_name.trim().is_empty() {
             continue;
@@ -271,7 +185,7 @@ fn matching_rule_process(
             continue;
         };
 
-        return Some(ByRunningAppMatch {
+        return Some(ActiveByRunningApp {
             rule_name: performance_rule_name(rule),
             process_id: process.id,
             process_name: process.name.clone(),
@@ -280,23 +194,6 @@ fn matching_rule_process(
     }
 
     None
-}
-
-fn matching_process_names(
-    settings: &ByRunningAppSettings,
-    processes: &[ProcessInfo],
-) -> BTreeSet<String> {
-    processes
-        .iter()
-        .filter(|process| {
-            settings.rules.iter().any(|rule| {
-                rule.enabled
-                    && !rule.process_name.trim().is_empty()
-                    && same_process_name(&process.name, &rule.process_name)
-            })
-        })
-        .map(|process| process.name.clone())
-        .collect()
 }
 
 fn performance_rule_name(rule: &ByRunningAppRule) -> String {

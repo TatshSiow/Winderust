@@ -411,8 +411,7 @@ pub(super) fn hidden_power_plan_check_delay(
         delay = Some(min_worker_wait(delay, CPU_USAGE_REFRESH_INTERVAL));
     }
     if by_time_rules_required(settings) {
-        let schedule_delay = ByTimeScheduler
-            .next_change_delay(&settings.by_time)
+        let schedule_delay = next_by_time_change_delay(&settings.by_time)
             .map(|delay| delay.min(SCHEDULE_RULE_MAX_SLEEP))
             .unwrap_or_else(|| configured_check_interval(settings));
         delay = Some(min_worker_wait(delay, schedule_delay));
