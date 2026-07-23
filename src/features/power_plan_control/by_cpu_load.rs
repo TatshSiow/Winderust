@@ -65,34 +65,36 @@ impl ByCpuLoadScheduler {
             if matched_since.elapsed().as_secs() >= rule.duration_seconds
                 && matching_decision.is_none()
             {
-                matching_decision = Some(ByCpuLoadDecision {
-                    rule_name: rule.name.clone(),
-                    power_plan_guid: rule.power_plan_guid.clone(),
-                    usage_percent,
-                });
+                if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
+                    matching_decision = Some(ByCpuLoadDecision {
+                        rule_name: rule.name.clone(),
+                        power_plan_guid: Some(power_plan_guid),
+                        usage_percent,
+                    });
+                }
             }
         }
 
         matching_decision.or_else(|| {
             else_decision.map(|(rule_name, power_plan_guid)| ByCpuLoadDecision {
                 rule_name,
-                power_plan_guid,
+                power_plan_guid: Some(power_plan_guid),
                 usage_percent,
             })
         })
     }
 }
 
-fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String, Option<String>)> {
+fn else_decision_for_rule(rule: &crate::config::ByCpuLoadRule) -> Option<(String, String)> {
     if rule.else_enabled {
         return Some((
             format!("{} else", rule.name),
-            rule.else_power_plan_guid.clone(),
+            rule.else_power_plan_guid.clone()?,
         ));
     }
 
     if rule.is_else() {
-        return Some((rule.name.clone(), rule.power_plan_guid.clone()));
+        return Some((rule.name.clone(), rule.power_plan_guid.clone()?));
     }
 
     None
@@ -146,6 +148,27 @@ mod tests {
         };
 
         assert!(scheduler.current_decision(&settings, Some(45.0)).is_none());
+    }
+
+    #[test]
+    fn matching_rule_without_selected_plan_does_not_decide() {
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let settings = ByCpuLoadSettings {
+            enabled: true,
+            rules: vec![ByCpuLoadRule {
+                enabled: true,
+                name: "High CPU".to_owned(),
+                comparison: CpuUsageComparison::AtOrAbove,
+                threshold_percent: 75,
+                upper_threshold_percent: None,
+                duration_seconds: 0,
+                power_plan_guid: None,
+                else_enabled: false,
+                else_power_plan_guid: None,
+            }],
+        };
+
+        assert!(scheduler.current_decision(&settings, Some(80.0)).is_none());
     }
 
     #[test]
