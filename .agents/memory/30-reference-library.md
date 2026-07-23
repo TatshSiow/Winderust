@@ -192,9 +192,8 @@ Winderust Core Steering can apply hard process affinity masks, soft Windows CPU 
 
 Implementation paths:
 
-- `src/features/advanced_controls/app_suspension.rs`: policy coordinator.
-- `src/features/advanced_controls/app_suspension/process_freezer.rs`: Job Object and process-handle boundary.
-- `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
+- `src/features/cpu_control/core_steering.rs`: shared affinity, CPU Set, and Efficiency Mode state manager.
+- `src/features/cpu_control/background_cpu_restriction.rs`: reuses the Core Steering manager with generated restriction rules.
 
 ### Core Steering APIs
 
@@ -209,6 +208,8 @@ Implementation paths:
 | `GetActiveProcessorGroupCount` | Detects multi-group systems where single-mask affinity APIs are group-relative. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount |
 | Processor Groups | Explains why hard affinity masks are group-relative and why multi-group systems need special handling. | https://learn.microsoft.com/en-us/windows/win32/procthread/processor-groups |
 | CPU Sets | Explains soft processor preference while remaining more compatible with OS power management. | https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets |
+
+Efficiency Mode Off is applied only after the complete current power-throttling state is read successfully. Winderust retains that exact state and restores it when ownership ends.
 
 ## App Suspension
 

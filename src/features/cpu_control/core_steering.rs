@@ -109,7 +109,7 @@ enum AffinityAdjustment {
         applied_cpu_set_ids: Vec<u32>,
     },
     EfficiencyOff {
-        previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
+        previous_state: PROCESS_POWER_THROTTLING_STATE,
     },
 }
 
@@ -271,6 +271,8 @@ impl CoreSteeringManager {
                         self.adjusted.insert(process_id, adjusted);
                     } else {
                         skipped_processes += 1;
+                        self.clear_process_failure(&failure_process_name);
+                        self.adjusted.remove(&process_id);
                     }
                 }
                 Err(AffinityError::ProcessExited) => skipped_processes += 1,
@@ -286,13 +288,14 @@ impl CoreSteeringManager {
                     );
                 }
                 Err(error) => {
+                    self.record_process_failure(&failure_process_name);
                     let err = affinity_error_message(error);
                     failed_processes += 1;
                     if last_error.is_none() {
                         last_error = Some(err.clone());
                     }
                     action_log.record(
-                        ActionLogFeature::CoreSteering,
+                        self.action_log_feature,
                         Some(process_id),
                         failure_process_name,
                         ActionLogResult::Failed,
@@ -394,7 +397,7 @@ impl CoreSteeringManager {
         process_id: u32,
         process_name: &str,
         action_log: &mut ActionLog,
-    ) -> ProcessSuppression {
+    ) -> ExecutionSuppression {
         let suppression = self.failure_suppression.process_suppression(process_name);
         if suppression.newly_suppressed {
             action_log.record(
@@ -440,8 +443,6 @@ impl CoreSteeringManager {
         }
     }
 }
-
-type ProcessSuppression = ExecutionSuppression;
 
 impl Drop for CoreSteeringManager {
     fn drop(&mut self) {
@@ -742,7 +743,8 @@ fn apply_affinity(
         }
     }
 
-    match mode {
+    let restored_process_name = process_name.clone();
+    let adjusted = match mode {
         CoreSteeringMode::Hard => apply_hard_affinity(
             AffinityTarget {
                 process_id,
@@ -778,7 +780,25 @@ fn apply_affinity(
             action_log_feature,
             action_log,
         ),
+    }?;
+
+    if adjusted.is_none() {
+        if let Some(existing) = reusable_existing {
+            restore_adjustment(&process, &existing.adjustment)?;
+            action_log.record(
+                action_log_feature,
+                Some(process_id),
+                restored_process_name,
+                ActionLogResult::Restored,
+                format!(
+                    "Rule has no usable CPU target: restored previous {}.",
+                    adjustment_label(&existing.adjustment)
+                ),
+            );
+        }
     }
+
+    Ok(adjusted)
 }
 
 fn restore_affinity(process_id: u32, process_state: &AdjustedProcess) -> Result<(), AffinityError> {
@@ -918,18 +938,18 @@ fn apply_background_efficiency_off(
         process_name,
         creation_time,
     } = target;
-    let current_state = process.power_throttling_state().ok();
+    let current_state = process.power_throttling_state()?;
 
     if existing.is_some_and(|adjusted| {
         matches!(
             adjusted.adjustment,
             AffinityAdjustment::EfficiencyOff { .. }
-        ) && current_state.is_some_and(|state| !power_throttling_execution_enabled(state))
+        ) && !power_throttling_execution_enabled(current_state)
     }) {
         return Ok(existing.cloned());
     }
 
-    let mut next_state = current_state.unwrap_or_else(power_throttling_disabled_state);
+    let mut next_state = current_state;
     next_state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
     next_state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
     next_state.StateMask &= !PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
@@ -944,10 +964,10 @@ fn apply_background_efficiency_off(
 
     let previous_state = existing
         .and_then(|adjusted| match adjusted.adjustment {
-            AffinityAdjustment::EfficiencyOff { previous_state } => previous_state,
+            AffinityAdjustment::EfficiencyOff { previous_state } => Some(previous_state),
             AffinityAdjustment::Hard { .. } | AffinityAdjustment::Soft { .. } => None,
         })
-        .or(current_state);
+        .unwrap_or(current_state);
 
     Ok(Some(AdjustedProcess {
         process_name,
@@ -968,9 +988,9 @@ fn restore_adjustment(
             previous_cpu_set_ids,
             ..
         } => process.set_default_cpu_set_ids(previous_cpu_set_ids),
-        AffinityAdjustment::EfficiencyOff { previous_state } => process.set_power_throttling_state(
-            previous_state.unwrap_or_else(power_throttling_disabled_state),
-        ),
+        AffinityAdjustment::EfficiencyOff { previous_state } => {
+            process.set_power_throttling_state(*previous_state)
+        }
     }
 }
 
@@ -997,14 +1017,6 @@ fn affinity_error_message(error: AffinityError) -> String {
         AffinityError::AccessDenied => "Access denied.".to_owned(),
         AffinityError::ProcessExited => "Process exited.".to_owned(),
         AffinityError::Failed(message) => message,
-    }
-}
-
-fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
-    PROCESS_POWER_THROTTLING_STATE {
-        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        StateMask: 0,
     }
 }
 
@@ -1422,7 +1434,11 @@ mod tests {
 
     #[test]
     fn power_throttling_execution_flag_detection() {
-        let mut state = power_throttling_disabled_state();
+        let mut state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask: 0,
+        };
         assert!(!power_throttling_execution_enabled(state));
 
         state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
