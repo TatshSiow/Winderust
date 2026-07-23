@@ -557,15 +557,11 @@ fn read_scheme_name(guid: &GUID) -> Result<String, String> {
         ));
     }
 
-    let utf16: Vec<u16> = buffer
-        .chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-        .take_while(|code| *code != 0)
-        .collect();
-    if utf16.is_empty() {
+    let name = decode_power_string(&buffer);
+    if name.is_empty() {
         Err("PowerReadFriendlyName returned an empty name.".to_owned())
     } else {
-        Ok(String::from_utf16_lossy(&utf16))
+        Ok(name)
     }
 }
 
@@ -586,6 +582,9 @@ fn read_scheme_description(guid: &GUID) -> Result<String, String> {
         return Err(format!(
             "PowerReadDescription failed to read buffer size with error code {size_result}."
         ));
+    }
+    if buffer_size == 0 {
+        return Ok(String::new());
     }
 
     let mut buffer = vec![0_u8; buffer_size as usize];
@@ -763,6 +762,13 @@ mod tests {
         let guid = parse_guid(raw).unwrap();
 
         assert_eq!(format_guid(&guid), raw);
+    }
+
+    #[test]
+    fn power_strings_round_trip() {
+        let encoded = encode_power_string("Winderust 電源");
+
+        assert_eq!(decode_power_string(&encoded), "Winderust 電源");
     }
 
     #[test]

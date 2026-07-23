@@ -755,7 +755,7 @@ impl WinderustApp {
                     app.refresh_after_tray_restore(window, cx);
                 }
             });
-        let _ = restore_stale_adaptive_plans();
+        let adaptive_plan_recovery_error = restore_stale_adaptive_plans().err();
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
@@ -764,7 +764,11 @@ impl WinderustApp {
             .as_ref()
             .map(EffectivePowerModeMonitor::snapshot)
             .unwrap_or(EffectivePowerMode::Unknown);
-        let initial_processor_power = load_initial_processor_power_state();
+        let mut initial_processor_power = load_initial_processor_power_state();
+        if let Some(error) = adaptive_plan_recovery_error {
+            initial_processor_power.status_message =
+                format!("Adaptive power-plan recovery failed: {error}");
+        }
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
         let (win32_priority_separation_value, win32_priority_separation_status) =
             read_win32_priority_separation_with_status();
