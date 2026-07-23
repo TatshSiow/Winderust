@@ -118,7 +118,7 @@ and the corrected commit must be the tagged source.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
-- `src/backend/automation.rs`: background worker lifecycle, scheduling, and wake coordination. Runtime feature execution and adaptive/static power-plan ownership live in `src/backend/automation/runner.rs`; status fan-out lives in `status.rs`; activation predicates and refresh timing live in `requirements.rs`.
+- `src/backend/automation.rs`: background service lifecycle and worker scheduling loop. Runtime feature execution and adaptive/static power-plan ownership live in `src/backend/automation/runner.rs`; wake/event decisions live in `wake.rs`; status fan-out lives in `status.rs`; activation predicates and refresh timing live in `requirements.rs`.
 - `src/backend/file_dialog.rs`: native settings and Action Log file dialogs.
 - `src/backend/update_checker.rs`: GitHub release checks and Stable/Pre-release filtering.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
