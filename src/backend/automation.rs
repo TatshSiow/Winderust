@@ -417,7 +417,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let memory_trim_now_requested = snapshot.memory_trim_now_requested;
         if snapshot.action_log_clear_requested {
             runner.action_log.clear();
-            runner.publish_action_log_if_changed(&shared);
         }
         let wake_events = snapshot.wake_events;
         let windows_event_watcher_active = snapshot.windows_event_watcher_active;
@@ -583,7 +582,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 };
                 if let Some(app_suspension_status) = app_suspension_status {
                     update_app_suspension_status(&shared, app_suspension_status);
-                    runner.publish_action_log_if_changed(&shared);
                 }
             }
         }
@@ -665,7 +663,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         {
             if let Some(app_suspension_status) = runner.run_app_suspension_foreground_release() {
                 update_app_suspension_status(&shared, app_suspension_status);
-                runner.publish_action_log_if_changed(&shared);
             }
             next_app_suspension_foreground_release =
                 now + app_suspension_foreground_release_interval;
@@ -674,7 +671,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         if background_efficiency_refresh_required && now >= next_background_efficiency_refresh {
             let background_efficiency_status = runner.run_background_efficiency_update(&settings);
             update_background_efficiency_status(&shared, background_efficiency_status);
-            runner.publish_action_log_if_changed(&shared);
             next_background_efficiency_refresh = now + background_efficiency_refresh_interval;
         }
         if workload_engine_refresh_required && now >= next_workload_engine_refresh {
@@ -685,50 +681,42 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 workload_engine_fast_until = workload_engine_fast_refresh_deadline(&settings, now);
             }
             update_workload_engine_status(&shared, workload_engine_status);
-            runner.publish_action_log_if_changed(&shared);
             next_workload_engine_refresh = now + workload_engine_refresh_interval;
         }
         if io_priority_refresh_required && now >= next_io_priority_refresh {
             let io_priority_status = runner.run_io_priority_update(&settings);
             update_io_priority_status(&shared, io_priority_status);
-            runner.publish_action_log_if_changed(&shared);
             next_io_priority_refresh = now + io_priority_refresh_interval;
         }
         if process_priority_refresh_required && now >= next_process_priority_refresh {
             let process_priority_status = runner.run_process_priority_update(&settings);
             update_process_priority_status(&shared, process_priority_status);
-            runner.publish_action_log_if_changed(&shared);
             next_process_priority_refresh = now + process_priority_refresh_interval;
         }
         if thread_priority_refresh_required && now >= next_thread_priority_refresh {
             let thread_priority_status = runner.run_thread_priority_update(&settings);
             update_thread_priority_status(&shared, thread_priority_status);
-            runner.publish_action_log_if_changed(&shared);
             next_thread_priority_refresh = now + thread_priority_refresh_interval;
         }
         if dynamic_priority_boost_refresh_required && now >= next_dynamic_priority_boost_refresh {
             let dynamic_priority_boost_status = runner.run_dynamic_priority_boost_update(&settings);
             update_dynamic_priority_boost_status(&shared, dynamic_priority_boost_status);
-            runner.publish_action_log_if_changed(&shared);
             next_dynamic_priority_boost_refresh = now + dynamic_priority_boost_refresh_interval;
         }
         if gpu_priority_refresh_required && now >= next_gpu_priority_refresh {
             let gpu_priority_status = runner.run_gpu_priority_update(&settings);
             update_gpu_priority_status(&shared, gpu_priority_status);
-            runner.publish_action_log_if_changed(&shared);
             next_gpu_priority_refresh = now + gpu_priority_refresh_interval;
         }
         if memory_priority_refresh_required && now >= next_memory_priority_refresh {
             let memory_priority_status = runner.run_memory_priority_update(&settings);
             update_memory_priority_status(&shared, memory_priority_status);
-            runner.publish_action_log_if_changed(&shared);
             next_memory_priority_refresh = now + memory_priority_refresh_interval;
         }
         if app_suspension_refresh_required && now >= next_app_suspension_refresh {
             let app_suspension_status =
                 runner.run_app_suspension_update(&settings, &app_suspension_freeze_requests);
             update_app_suspension_status(&shared, app_suspension_status);
-            runner.publish_action_log_if_changed(&shared);
             next_app_suspension_refresh = now + app_suspension_refresh_interval;
             if runner.app_suspension_manager.has_suspended_processes() {
                 next_app_suspension_foreground_release = now;
@@ -737,7 +725,6 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         if core_steering_refresh_required && now >= next_core_steering_refresh {
             let core_steering_status = runner.run_core_steering_update(&settings);
             update_core_steering_status(&shared, core_steering_status);
-            runner.publish_action_log_if_changed(&shared);
             next_core_steering_refresh = now + core_steering_refresh_interval;
         }
         if background_cpu_restriction_refresh_required
@@ -745,20 +732,17 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         {
             let status = runner.run_background_cpu_restriction_update(&settings);
             update_background_cpu_restriction_status(&shared, status);
-            runner.publish_action_log_if_changed(&shared);
             next_background_cpu_restriction_refresh =
                 now + background_cpu_restriction_refresh_interval;
         }
         if core_limiter_refresh_required && now >= next_core_limiter_refresh {
             let core_limiter_status = runner.run_core_limiter_update(&settings);
             update_core_limiter_status(&shared, core_limiter_status);
-            runner.publish_action_log_if_changed(&shared);
             next_core_limiter_refresh = now + core_limiter_refresh_interval;
         }
         if by_running_app_refresh_required && now >= next_by_running_app_refresh {
             let by_running_app_status = runner.run_by_running_app_update(&settings);
             update_by_running_app_status(&shared, by_running_app_status);
-            runner.publish_action_log_if_changed(&shared);
             next_by_running_app_refresh = now + by_running_app_refresh_interval;
         }
         if memory_trim_refresh_required && now >= next_memory_trim_refresh {
@@ -768,15 +752,15 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 runner.run_memory_trim_update(&settings)
             };
             update_memory_trim_status(&shared, memory_trim_status);
-            runner.publish_action_log_if_changed(&shared);
             next_memory_trim_refresh = now + memory_trim_refresh_interval;
         }
         if timer_resolution_refresh_required && now >= next_timer_resolution_refresh {
             let timer_resolution_status = runner.run_timer_resolution_update(&settings);
             update_timer_resolution_status(&shared, timer_resolution_status);
-            runner.publish_action_log_if_changed(&shared);
             next_timer_resolution_refresh = now + timer_resolution_refresh_interval;
         }
+
+        runner.publish_action_log_if_changed(&shared);
 
         let wait_now = Instant::now();
         let mut wait_for = if hidden_to_tray {
