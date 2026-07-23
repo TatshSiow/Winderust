@@ -114,7 +114,8 @@ and the corrected commit must be the tagged source.
 - `src/ui/app.rs`: `WinderustApp` state, construction, rendering, teardown, and app-level tests. Operational method groups live in `src/ui/app/*.rs` (`runtime`, `settings_io`, `process_refresh`, `tray_state`, navigation, removal, and update checks).
 - `src/ui/app/pages/`: page and shell renderers. `src/ui/app/shared/`: reusable UI components, state helpers, formatting, policies, and shared feature logic. Page dispatch is
   in `app_shell.rs`; process add/check and rule-construction helpers are in
-  `process_policies.rs`.
+  `process_policies.rs`. Process List table grouping, sorting, and layout live in
+  `pages/process_list_page/table_model.rs`; edit actions live in `editing.rs`.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
