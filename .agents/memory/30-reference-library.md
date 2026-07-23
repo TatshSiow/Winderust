@@ -25,7 +25,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Memory Trim | `src/features/winderust_features/memory_trim.rs` | Working-set trimming, memory status, and compatibility-sensitive NT system information |
 | CPU Control | `src/features/cpu_control/` | Process affinity masks and CPU Sets |
 | Priority Control | `src/features/priority_control/` | Process/thread priorities, Dynamic Priority Boost, Memory Priority, NT I/O priority, and WDK GPU priority |
-| App Suspension | `src/features/advanced_controls/app_suspension.rs` | Job Objects and a compatibility-sensitive freeze information class |
+| App Suspension | `src/features/advanced_controls/app_suspension.rs`, `app_suspension/process_freezer.rs`, and `app_suspension/wake_activity.rs` | Job Objects, a compatibility-sensitive freeze information class, and audio/network wake detection |
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs` | WinMM timer capability, request, and release calls |
 | Win32 Priority Separation | `src/ui/app/pages/win32_priority_separation_page.rs`, `src/ui/app/shared/appearance.rs`, and `src/backend/win_registry.rs` | Windows registry access and the `Win32PrioritySeparation` value |
 
@@ -33,9 +33,11 @@ window rendering and infrastructure calls are not duplicated here.
 
 Winderust switches Windows power plans through the native Win32 power management APIs. It does not call the `powercfg` command-line tool.
 
-Implementation entry point:
+Implementation paths:
 
-- `src/power/powercfg.rs`
+- `src/features/advanced_controls/app_suspension.rs`: policy coordinator.
+- `src/features/advanced_controls/app_suspension/process_freezer.rs`: Job Object and process-handle boundary.
+- `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 
 User-facing behavior:
 
@@ -72,9 +74,11 @@ user-session processes. It also manages idle process priority when Process
 Priority is disabled; when Process Priority is enabled, that feature remains
 the sole owner of process-priority changes.
 
-Implementation entry point:
+Implementation paths:
 
-- `src/features/winderust_features/background_efficiency.rs`
+- `src/features/advanced_controls/app_suspension.rs`: policy coordinator.
+- `src/features/advanced_controls/app_suspension/process_freezer.rs`: Job Object and process-handle boundary.
+- `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 
 User-facing behavior:
 
@@ -121,9 +125,11 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 
 Winderust can apply separate AC and battery processor-power percentages and processor boost modes to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process Core Steering.
 
-Implementation entry point:
+Implementation paths:
 
-- `src/power/powercfg.rs`
+- `src/features/advanced_controls/app_suspension.rs`: policy coordinator.
+- `src/features/advanced_controls/app_suspension/process_freezer.rs`: Job Object and process-handle boundary.
+- `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 
 | API / Setting | Used for | Reference |
 | --- | --- | --- |
@@ -192,9 +198,11 @@ general system-information abstraction.
 
 Winderust Core Steering can apply hard process affinity masks, soft Windows CPU Sets, or Efficiency Mode OFF to selected current-session processes. On systems with more than one processor group, the status message warns that hard affinity uses the process primary processor group.
 
-Implementation entry point:
+Implementation paths:
 
-- `src/features/cpu_control/core_steering.rs`
+- `src/features/advanced_controls/app_suspension.rs`: policy coordinator.
+- `src/features/advanced_controls/app_suspension/process_freezer.rs`: Job Object and process-handle boundary.
+- `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 
 ### Core Steering APIs
 
@@ -214,9 +222,11 @@ Implementation entry point:
 
 Winderust App Suspension is manual Win32 Job Object freezing. It is not the same as Windows-managed UWP app suspension shown by Task Manager for some Store apps.
 
-Implementation entry point:
+Implementation paths:
 
-- `src/features/advanced_controls/app_suspension.rs`
+- `src/features/advanced_controls/app_suspension.rs`: policy coordinator.
+- `src/features/advanced_controls/app_suspension/process_freezer.rs`: Job Object and process-handle boundary.
+- `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 
 User-facing behavior:
 
@@ -240,7 +250,7 @@ Compatibility note: `SetInformationJobObject` is public, but Microsoft does
 not document information class 18 or Winderust's
 `JobObjectFreezeInformation` layout as a public SDK contract. Keep the class
 constant, structure, call site, thaw-on-drop behavior, and layout test together
-in `app_suspension.rs`; revalidate this boundary against supported Windows
+in `app_suspension/process_freezer.rs`; revalidate this boundary against supported Windows
 versions when it changes.
 
 Winderust keeps App Suspension opt-in and limited to explicitly selected apps because freezing a process is disruptive by design. Built-in exclusions also block Windows shell/input/UWP lifecycle processes such as `SearchApp.exe`, `SearchHost.exe`, and `SystemSettings.exe`, even if they are added to Suspendable Apps.
@@ -273,9 +283,11 @@ contracts or substitutes for Microsoft documentation.
 
 ## Timer Resolution
 
-Implementation entry point:
+Implementation paths:
 
-- `src/features/advanced_controls/timer_resolution.rs`
+- `src/features/advanced_controls/app_suspension.rs`: policy coordinator.
+- `src/features/advanced_controls/app_suspension/process_freezer.rs`: Job Object and process-handle boundary.
+- `src/features/advanced_controls/app_suspension/wake_activity.rs`: audio and IP Helper wake detection.
 
 | API | Used for | Reference |
 | --- | --- | --- |
