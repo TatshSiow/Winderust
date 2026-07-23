@@ -376,7 +376,7 @@ impl AppSuspensionManager {
         let mut last_error = None;
         let mut unsupported = false;
         let (network_snapshot, network_event_names) = if settings.network_wake_enabled
-            && network_wake_scan_needed(&network_target_process_names)
+            && !network_target_process_names.is_empty()
             && !self.is_action_suppressed(
                 NETWORK_DETECTION_FAILURE_KEY,
                 "network activity detection",
@@ -384,7 +384,8 @@ impl AppSuspensionManager {
             ) {
             match network_connection_snapshot(&network_target_processes) {
                 Ok(snapshot) => {
-                    self.clear_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+                    self.action_failure_suppression
+                        .clear_key_failure(NETWORK_DETECTION_FAILURE_KEY);
                     let wake_names = network_process_names_with_activity(
                         &self.network_snapshot,
                         &snapshot,
@@ -397,7 +398,8 @@ impl AppSuspensionManager {
                 }
                 Err(err) => {
                     failed_actions += 1;
-                    self.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+                    self.action_failure_suppression
+                        .record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         None,
@@ -424,12 +426,14 @@ impl AppSuspensionManager {
         {
             match audio_process_names_with_activity(&audio_target_processes) {
                 Ok(audio_event_names) => {
-                    self.clear_action_failure(AUDIO_DETECTION_FAILURE_KEY);
+                    self.action_failure_suppression
+                        .clear_key_failure(AUDIO_DETECTION_FAILURE_KEY);
                     self.extend_audio_wake_windows(settings, &audio_event_names, now);
                 }
                 Err(err) => {
                     failed_actions += 1;
-                    self.record_action_failure(AUDIO_DETECTION_FAILURE_KEY);
+                    self.action_failure_suppression
+                        .record_key_failure(AUDIO_DETECTION_FAILURE_KEY);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         None,
@@ -493,7 +497,8 @@ impl AppSuspensionManager {
 
             match self.apply_suspend_action(process_id, process_name.clone(), now) {
                 Ok(()) => {
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
@@ -536,7 +541,8 @@ impl AppSuspensionManager {
                 }
                 Err(SuspensionError::Failed(err)) => {
                     failed_actions += 1;
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
@@ -823,7 +829,10 @@ impl AppSuspensionManager {
         process_name: Option<&str>,
     ) -> BTreeSet<u32> {
         let mut process_ids = BTreeSet::new();
-        if self.is_controlled_process_id(process_id) {
+        if self.suspended.contains_key(&process_id)
+            || self.temporary_thawed.contains_key(&process_id)
+            || self.freezers.contains_key(&process_id)
+        {
             process_ids.insert(process_id);
         }
 
@@ -837,12 +846,6 @@ impl AppSuspensionManager {
 
         process_ids.extend(self.controlled_process_ids_by_name(&process_name));
         process_ids
-    }
-
-    fn is_controlled_process_id(&self, process_id: u32) -> bool {
-        self.suspended.contains_key(&process_id)
-            || self.temporary_thawed.contains_key(&process_id)
-            || self.freezers.contains_key(&process_id)
     }
 
     fn controlled_process_name(&self, process_id: u32) -> Option<&str> {
@@ -1201,20 +1204,6 @@ impl AppSuspensionManager {
         (now < window.wake_until).then_some(window.wake_until)
     }
 
-    fn network_wake_process_count(&self) -> usize {
-        self.temporary_thawed
-            .values()
-            .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
-            .count()
-    }
-
-    fn audio_wake_process_count(&self) -> usize {
-        self.temporary_thawed
-            .values()
-            .filter(|process| process.reason == TemporaryThawReason::AudioWake)
-            .count()
-    }
-
     fn temporary_thaw_state(
         &mut self,
         process_id: u32,
@@ -1337,8 +1326,16 @@ impl AppSuspensionManager {
             grace_apps: self.tracked.len(),
             suspended_processes: self.suspended.len(),
             temporary_thawed_processes: self.temporary_thawed.len(),
-            network_wake_processes: self.network_wake_process_count(),
-            audio_wake_processes: self.audio_wake_process_count(),
+            network_wake_processes: self
+                .temporary_thawed
+                .values()
+                .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
+                .count(),
+            audio_wake_processes: self
+                .temporary_thawed
+                .values()
+                .filter(|process| process.reason == TemporaryThawReason::AudioWake)
+                .count(),
             background_grace_apps: unique_app_names(
                 self.tracked
                     .values()
@@ -1405,15 +1402,6 @@ impl AppSuspensionManager {
         true
     }
 
-    fn record_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .record_process_failure(process_name);
-    }
-
-    fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression.clear_process_failure(process_name);
-    }
-
     fn is_action_suppressed(
         &mut self,
         key: &str,
@@ -1439,14 +1427,6 @@ impl AppSuspensionManager {
         }
 
         true
-    }
-
-    fn record_action_failure(&mut self, key: &str) {
-        self.action_failure_suppression.record_key_failure(key);
-    }
-
-    fn clear_action_failure(&mut self, key: &str) {
-        self.action_failure_suppression.clear_key_failure(key);
     }
 }
 
@@ -1600,12 +1580,18 @@ mod tests {
         let mut manager = AppSuspensionManager::default();
         let mut log = ActionLog::new(8);
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
+        manager
+            .failure_suppression
+            .record_process_failure("APP.exe");
+        manager
+            .failure_suppression
+            .record_process_failure("app.exe");
         assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
         assert!(log.entries().is_empty());
 
-        manager.record_process_failure("app.exe");
+        manager
+            .failure_suppression
+            .record_process_failure("app.exe");
         assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
         assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
 
@@ -1620,8 +1606,12 @@ mod tests {
         let mut manager = AppSuspensionManager::default();
         let mut log = ActionLog::new(8);
 
-        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
-        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+        manager
+            .action_failure_suppression
+            .record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
+        manager
+            .action_failure_suppression
+            .record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
         assert!(!manager.is_action_suppressed(
             NETWORK_DETECTION_FAILURE_KEY,
             "network activity detection",
@@ -1629,7 +1619,9 @@ mod tests {
         ));
         assert!(log.entries().is_empty());
 
-        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+        manager
+            .action_failure_suppression
+            .record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
         assert!(manager.is_action_suppressed(
             NETWORK_DETECTION_FAILURE_KEY,
             "network activity detection",
@@ -2309,15 +2301,6 @@ mod tests {
             names,
             BTreeSet::from(["chat.exe".to_owned(), "mail.exe".to_owned()])
         );
-    }
-
-    #[test]
-    fn network_wake_scan_is_needed_only_for_network_wake_targets() {
-        let empty = BTreeSet::new();
-        let target = BTreeSet::from(["chat.exe".to_owned()]);
-
-        assert!(!network_wake_scan_needed(&empty));
-        assert!(network_wake_scan_needed(&target));
     }
 
     #[test]

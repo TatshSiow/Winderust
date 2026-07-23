@@ -135,14 +135,9 @@ pub(super) fn eligible_network_wake_names(
     network_target_process_names: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     network_process_names
-        .iter()
-        .filter(|process_name| network_target_process_names.contains(*process_name))
+        .intersection(network_target_process_names)
         .cloned()
         .collect()
-}
-
-pub(super) fn network_wake_scan_needed(network_target_process_names: &BTreeSet<String>) -> bool {
-    !network_target_process_names.is_empty()
 }
 
 pub(super) fn manual_freeze_app_names(process_names: &[String]) -> BTreeSet<String> {
