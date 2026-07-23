@@ -69,6 +69,29 @@ tested `dev` changes to `main` for release. CI runs on pushes to `main` and
 - Treat unsupported internal enum variants or impossible UI wiring as invariant
   violations with a clear message; do not silently convert them into a no-op.
 
+### Maintainability Review Workflow
+
+Use this order for simplification and over-engineering reviews:
+
+1. Query Graphify, then read the complete module and trace every caller and
+   lifecycle path before proposing a change.
+2. Ask whether each type, helper, field, scan, or abstraction needs to exist.
+   Reuse an existing project helper, the standard library, or Win32 directly
+   before adding code.
+3. Separate genuine state ownership from namespacing. Keep stateful managers
+   that own timers, resources, restoration, or shutdown; replace stateless
+   structs with functions when that makes callers simpler.
+4. Remove parallel representations, duplicate scans, unused status fields, and
+   one-use wrappers when one source of truth is sufficient.
+5. Prefer the smallest coherent deletion-first change. Do not perform renames,
+   file moves, or abstraction swaps that merely reshuffle working code.
+6. Review the exact diff for changed behavior and damaged tests, especially
+   after mechanical edits. Preserve runtime safety, failure handling, cleanup,
+   and process-state restoration.
+7. Compile all targets, run the required checks and tests, then update Graphify.
+   If no change clearly reduces maintenance cost, leave the code alone and say
+   why.
+
 ## Release Runbook
 
 1. Start from a clean, current `dev`. Choose a SemVer-compatible prerelease
