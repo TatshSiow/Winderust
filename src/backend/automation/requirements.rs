@@ -336,7 +336,7 @@ pub(super) fn by_foreground_required(settings: &Settings) -> bool {
 }
 
 pub(crate) fn foreground_lookup_required(settings: &Settings) -> bool {
-    settings.by_foreground.enabled && !settings.by_foreground.rules.is_empty()
+    by_foreground_required(settings)
 }
 
 pub(super) fn by_time_rules_required(settings: &Settings) -> bool {

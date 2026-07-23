@@ -74,9 +74,15 @@ fn foreground_lookup_runs_only_for_configured_by_foreground() {
         enabled: true,
         name: "editor.exe".to_owned(),
         process_name: "editor.exe".to_owned(),
-        power_plan_guid: Some("active-guid".to_owned()),
+        power_plan_guid: None,
     });
+    assert!(!foreground_lookup_required(&settings));
+
+    settings.by_foreground.rules[0].power_plan_guid = Some("active-guid".to_owned());
     assert!(foreground_lookup_required(&settings));
+
+    settings.by_foreground.rules[0].enabled = false;
+    assert!(!foreground_lookup_required(&settings));
 }
 
 #[test]
