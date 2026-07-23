@@ -122,7 +122,7 @@ and the corrected commit must be the tagged source.
 - `src/backend/file_dialog.rs`: native settings and Action Log file dialogs.
 - `src/backend/update_checker.rs`: GitHub release checks and Stable/Pre-release filtering.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
-- Feature backends use the UI names: `background_efficiency`, `workload_engine`, `memory_trim`, `app_suspension`, `core_limiter`, `core_steering`, `by_running_app`, and the priority-control modules.
+- Feature backends use the UI names: `background_efficiency`, `workload_engine`, `memory_trim`, `app_suspension`, `core_limiter`, `core_steering`, `by_running_app`, and the priority-control modules. Workload Engine Win32 process control lives in `workload_engine/process_control.rs`; pure workload decisions and core-selection calculations live in `workload_engine/policy.rs`; stateful manager lifecycle remains in `workload_engine.rs`.
 
 ## Navigation
 

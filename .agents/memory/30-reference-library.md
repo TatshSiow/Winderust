@@ -20,7 +20,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Product surface | Implementation | Windows boundary |
 | --- | --- | --- |
 | Power Plan Control and Advanced Power Plan Tuning | `src/power/powercfg.rs` | Power scheme enumeration, activation, duplication, deletion, and processor setting values |
-| Adaptive Engine | `src/features/winderust_features/workload_engine.rs` | Process QoS, process priority, Dynamic Priority Boost, affinity masks, CPU Sets, and Memory Priority |
+| Adaptive Engine | `src/features/winderust_features/workload_engine.rs` and `workload_engine/process_control.rs` | Workload decisions plus the process QoS, process priority, and Dynamic Priority Boost boundary; affinity masks, CPU Sets, and Memory Priority use their feature managers |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` | Process power throttling and optional process-priority management |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs` | Working-set trimming, memory status, and compatibility-sensitive NT system information |
 | CPU Control | `src/features/cpu_control/` | Process affinity masks and CPU Sets |
