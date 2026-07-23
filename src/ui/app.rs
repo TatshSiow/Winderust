@@ -84,9 +84,10 @@ use crate::{
     memory_priority::{self, MemoryPrioritySnapshot},
     memory_trim::{self, MemoryTrimSnapshot},
     power::{
-        EffectivePowerMode, EffectivePowerModeMonitor, PowerPlan, PowerPlanManager,
-        PowerPlanPersonality, ProcessorBoostMode, ProcessorPowerAcDcValues, ProcessorPowerPreset,
-        ProcessorPowerValues,
+        active_plan, apply_processor_power_values, list_plans, read_plan_personality,
+        read_processor_power_values, restore_stale_adaptive_plans, set_active, EffectivePowerMode,
+        EffectivePowerModeMonitor, PowerPlan, PowerPlanPersonality, ProcessorBoostMode,
+        ProcessorPowerAcDcValues, ProcessorPowerPreset, ProcessorPowerValues,
     },
     power_source, privilege,
     process_icon::load_process_icon,
@@ -407,7 +408,6 @@ pub struct WinderustApp {
     next_timer_resolution_status_refresh: Instant,
     next_process_refresh: Instant,
     last_switch_attempt: Option<(String, Instant)>,
-    power: PowerPlanManager,
     effective_power_mode_monitor: Option<EffectivePowerModeMonitor>,
     effective_power_mode: EffectivePowerMode,
     background_automation: BackgroundAutomation,
@@ -699,20 +699,20 @@ fn default_processor_power_values() -> ProcessorPowerAcDcValues {
     .normalized()
 }
 
-fn load_initial_processor_power_state(power: &PowerPlanManager) -> InitialProcessorPowerState {
+fn load_initial_processor_power_state() -> InitialProcessorPowerState {
     let fallback_values = default_processor_power_values();
 
-    match power.list_plans() {
+    match list_plans() {
         Ok(plans) => {
             let current_plan = plans.iter().find(|plan| plan.active).cloned();
             let target_plan = current_plan.as_ref().or_else(|| plans.first()).cloned();
             let status_loaded = t!("status.loaded_power_plans", count = plans.len()).to_string();
             let target_plan_personality = target_plan
                 .as_ref()
-                .and_then(|plan| power.read_plan_personality(&plan.guid).ok());
+                .and_then(|plan| read_plan_personality(&plan.guid).ok());
 
             let (values, loaded_plan_guid, status_message) = match target_plan.as_ref() {
-                Some(plan) => match power.read_processor_power_values(&plan.guid) {
+                Some(plan) => match read_processor_power_values(&plan.guid) {
                     Ok(values) => (values.normalized(), Some(plan.guid.clone()), status_loaded),
                     Err(err) => (fallback_values, None, err),
                 },
@@ -754,8 +754,7 @@ impl WinderustApp {
                     app.refresh_after_tray_restore(window, cx);
                 }
             });
-        let power = PowerPlanManager;
-        let _ = power.restore_stale_adaptive_plans();
+        let _ = restore_stale_adaptive_plans();
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
@@ -764,7 +763,7 @@ impl WinderustApp {
             .as_ref()
             .map(EffectivePowerModeMonitor::snapshot)
             .unwrap_or(EffectivePowerMode::Unknown);
-        let initial_processor_power = load_initial_processor_power_state(&power);
+        let initial_processor_power = load_initial_processor_power_state();
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
         let (win32_priority_separation_value, win32_priority_separation_status) =
             read_win32_priority_separation_with_status();
@@ -858,7 +857,6 @@ impl WinderustApp {
             next_timer_resolution_status_refresh: Instant::now(),
             next_process_refresh: Instant::now(),
             last_switch_attempt: None,
-            power,
             effective_power_mode_monitor,
             effective_power_mode,
             background_automation,

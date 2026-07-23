@@ -26,7 +26,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn refresh_power_plans(&mut self) {
-        match self.power.list_plans() {
+        match list_plans() {
             Ok(plans) => {
                 self.plans = plans;
                 self.current_plan = self.plans.iter().find(|plan| plan.active).cloned();
@@ -43,22 +43,20 @@ impl WinderustApp {
     pub(in crate::ui::app) fn refresh_active_plan(&mut self) {
         self.next_active_plan_refresh = Instant::now() + ACTIVE_PLAN_REFRESH_INTERVAL;
 
-        match self.power.active_plan() {
+        match active_plan() {
             Ok(active) => {
-                if let Some(active) = active {
-                    let active_guid = active.guid.clone();
-                    for plan in &mut self.plans {
-                        plan.active = plan.guid.eq_ignore_ascii_case(&active_guid);
-                    }
-                    self.current_plan = self
-                        .plans
-                        .iter()
-                        .find(|plan| plan.guid.eq_ignore_ascii_case(&active_guid))
-                        .cloned()
-                        .or(Some(active));
-                    self.ensure_processor_power_target_plan();
-                    self.sync_processor_power_values_from_target_plan(false);
+                let active_guid = active.guid.clone();
+                for plan in &mut self.plans {
+                    plan.active = plan.guid.eq_ignore_ascii_case(&active_guid);
                 }
+                self.current_plan = self
+                    .plans
+                    .iter()
+                    .find(|plan| plan.guid.eq_ignore_ascii_case(&active_guid))
+                    .cloned()
+                    .or(Some(active));
+                self.ensure_processor_power_target_plan();
+                self.sync_processor_power_values_from_target_plan(false);
             }
             Err(err) => self.status_message = err,
         }
@@ -353,7 +351,7 @@ impl WinderustApp {
 
         self.last_switch_attempt = Some((target_guid.to_owned(), Instant::now()));
 
-        match self.power.set_active(target_guid) {
+        match set_active(target_guid) {
             Ok(()) => {
                 self.status_message =
                     t!("status.switched_power_plan", reason = self.decision.reason).to_string();

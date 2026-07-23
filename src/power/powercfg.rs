@@ -27,9 +27,6 @@ use super::{
     ProcessorPowerAcDcValues, ProcessorPowerValues,
 };
 
-#[derive(Debug, Default)]
-pub struct PowerPlanManager;
-
 const ADAPTIVE_PLAN_NAME: &str = "Winderust Adaptive";
 const ADAPTIVE_PLAN_DESCRIPTION_PREFIX: &str = "Winderust managed adaptive plan; restore=";
 
@@ -39,290 +36,278 @@ pub struct EffectivePowerModeMonitor {
     registration: *mut c_void,
 }
 
-impl PowerPlanManager {
-    pub fn list_plans(&self) -> Result<Vec<PowerPlan>, String> {
-        let active_guid = active_scheme_guid().ok();
-        let mut plans = Vec::new();
-        let mut index = 0;
+pub fn list_plans() -> Result<Vec<PowerPlan>, String> {
+    let active_guid = active_scheme_guid().ok();
+    let mut plans = Vec::new();
+    let mut index = 0;
 
-        while let Some(guid) = enumerate_scheme_guid(index)? {
-            let guid_text = format_guid(&guid);
-            let name = read_scheme_name(&guid).unwrap_or_else(|_| guid_text.clone());
-            let active = active_guid
-                .as_deref()
-                .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(&guid_text));
+    while let Some(guid) = enumerate_scheme_guid(index)? {
+        let guid_text = format_guid(&guid);
+        let name = read_scheme_name(&guid).unwrap_or_else(|_| guid_text.clone());
+        let active = active_guid
+            .as_deref()
+            .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(&guid_text));
 
-            plans.push(PowerPlan {
-                guid: guid_text,
-                name,
-                active,
-            });
-            index += 1;
-        }
-
-        if plans.is_empty() {
-            Err("No Windows power plans were detected.".to_owned())
-        } else {
-            Ok(plans)
-        }
+        plans.push(PowerPlan {
+            guid: guid_text,
+            name,
+            active,
+        });
+        index += 1;
     }
 
-    pub fn active_plan(&self) -> Result<Option<PowerPlan>, String> {
-        let active_guid = active_scheme_guid()?;
-        Ok(Some(PowerPlan {
-            guid: active_guid,
-            name: "Active power plan".to_owned(),
-            active: true,
-        }))
+    if plans.is_empty() {
+        Err("No Windows power plans were detected.".to_owned())
+    } else {
+        Ok(plans)
     }
+}
 
-    pub fn set_active(&self, guid: &str) -> Result<(), String> {
-        let guid = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
-        // SAFETY: guid is a fully parsed GUID and a null root key selects the current user.
-        let result = unsafe { PowerSetActiveScheme(null_mut(), &guid) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(format!(
-                "PowerSetActiveScheme failed with error code {result}."
-            ))
-        }
-    }
+pub fn active_plan() -> Result<PowerPlan, String> {
+    let active_guid = active_scheme_guid()?;
+    Ok(PowerPlan {
+        guid: active_guid,
+        name: "Active power plan".to_owned(),
+        active: true,
+    })
+}
 
-    pub fn create_adaptive_plan(&self, source_guid: &str) -> Result<String, String> {
-        let source =
-            parse_guid(source_guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
-        let mut duplicate_ptr: *mut GUID = null_mut();
-        // SAFETY: source is a valid GUID and duplicate_ptr is a writable out-pointer owned by
-        // LocalFree on success.
-        let result = unsafe { PowerDuplicateScheme(null_mut(), &source, &mut duplicate_ptr) };
-        if result != ERROR_SUCCESS {
-            return Err(format!(
-                "PowerDuplicateScheme failed with error code {result}."
-            ));
-        }
-        if duplicate_ptr.is_null() {
-            return Err("PowerDuplicateScheme returned no power plan.".to_owned());
-        }
-
-        // SAFETY: PowerDuplicateScheme succeeded and returned a non-null GUID allocation.
-        let duplicate = unsafe { *duplicate_ptr };
-        // SAFETY: duplicate_ptr was allocated by PowerDuplicateScheme and is freed exactly once.
-        unsafe {
-            LocalFree(duplicate_ptr.cast());
-        }
-        let duplicate_guid = format_guid(&duplicate);
-        let description = format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{source_guid}");
-
-        if let Err(error) = write_scheme_name(&duplicate, ADAPTIVE_PLAN_NAME)
-            .and_then(|()| write_scheme_description(&duplicate, &description))
-        {
-            // SAFETY: duplicate is the valid scheme created above; deletion is best-effort cleanup
-            // after initialization failed.
-            unsafe {
-                PowerDeleteScheme(null_mut(), &duplicate);
-            }
-            return Err(error);
-        }
-
-        Ok(duplicate_guid)
-    }
-
-    pub fn delete_plan(&self, guid: &str) -> Result<(), String> {
-        let guid = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
-        // SAFETY: guid is a fully parsed scheme GUID and a null root key selects the current user.
-        let result = unsafe { PowerDeleteScheme(null_mut(), &guid) };
-        if result == ERROR_SUCCESS {
-            Ok(())
-        } else {
-            Err(format!(
-                "PowerDeleteScheme failed with error code {result}."
-            ))
-        }
-    }
-
-    pub fn restore_stale_adaptive_plans(&self) -> Result<(), String> {
-        let plans = self.list_plans()?;
-        let known_guids = plans
-            .iter()
-            .map(|plan| plan.guid.to_ascii_lowercase())
-            .collect::<Vec<_>>();
-
-        for plan in plans.iter().filter(|plan| plan.name == ADAPTIVE_PLAN_NAME) {
-            let guid = parse_guid(&plan.guid)
-                .ok_or_else(|| "Invalid managed power plan GUID.".to_owned())?;
-            let description = read_scheme_description(&guid)?;
-            let Some(restore_guid) = managed_adaptive_restore_guid(&plan.name, &description) else {
-                continue;
-            };
-            let restore_exists = known_guids
-                .iter()
-                .any(|guid| guid.eq_ignore_ascii_case(restore_guid));
-
-            if plan.active {
-                if !restore_exists {
-                    continue;
-                }
-                self.set_active(restore_guid)?;
-            }
-            self.delete_plan(&plan.guid)?;
-        }
-
+pub fn set_active(guid: &str) -> Result<(), String> {
+    let guid = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+    // SAFETY: guid is a fully parsed GUID and a null root key selects the current user.
+    let result = unsafe { PowerSetActiveScheme(null_mut(), &guid) };
+    if result == 0 {
         Ok(())
-    }
-
-    pub fn read_plan_personality(&self, guid: &str) -> Result<PowerPlanPersonality, String> {
-        let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
-        Ok(PowerPlanPersonality::from_power_value(read_ac_value(
-            &scheme,
-            &GUID_NO_SUBGROUP,
-            &GUID_POWERSCHEME_PERSONALITY,
-        )?))
-    }
-
-    pub fn apply_processor_power_values(
-        &self,
-        guid: &str,
-        values: ProcessorPowerAcDcValues,
-    ) -> Result<(), String> {
-        let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
-        let values = values.normalized();
-
-        write_ac_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_CORE_PARKING_MIN_CORES,
-            values.ac.core_parking_min,
-        )?;
-        write_dc_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_CORE_PARKING_MIN_CORES,
-            values.dc.core_parking_min,
-        )?;
-        write_ac_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_PROCESSOR_PERFORMANCE_MIN,
-            values.ac.performance_min,
-        )?;
-        write_dc_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_PROCESSOR_PERFORMANCE_MIN,
-            values.dc.performance_min,
-        )?;
-        write_ac_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_PROCESSOR_PERFORMANCE_MAX,
-            values.ac.performance_max,
-        )?;
-        write_dc_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_PROCESSOR_PERFORMANCE_MAX,
-            values.dc.performance_max,
-        )?;
-        write_ac_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
-            values.ac.boost_policy,
-        )?;
-        write_dc_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
-            values.dc.boost_policy,
-        )?;
-        write_ac_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
-            values.ac.boost_mode.power_value(),
-        )?;
-        write_dc_value(
-            &scheme,
-            &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-            &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
-            values.dc.boost_mode.power_value(),
-        )?;
-
-        if active_scheme_guid()
-            .ok()
-            .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(guid))
-        {
-            self.set_active(guid)?;
-        }
-
-        Ok(())
-    }
-
-    pub fn read_processor_power_values(
-        &self,
-        guid: &str,
-    ) -> Result<ProcessorPowerAcDcValues, String> {
-        let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
-        Ok(ProcessorPowerAcDcValues::new(
-            ProcessorPowerValues::new_with_boost_mode(
-                read_ac_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_CORE_PARKING_MIN_CORES,
-                )?,
-                read_ac_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_PROCESSOR_PERFORMANCE_MIN,
-                )?,
-                read_ac_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_PROCESSOR_PERFORMANCE_MAX,
-                )?,
-                read_ac_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
-                )?,
-                ProcessorBoostMode::from_power_value(read_ac_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
-                )?),
-            )
-            .normalized(),
-            ProcessorPowerValues::new_with_boost_mode(
-                read_dc_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_CORE_PARKING_MIN_CORES,
-                )?,
-                read_dc_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_PROCESSOR_PERFORMANCE_MIN,
-                )?,
-                read_dc_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_PROCESSOR_PERFORMANCE_MAX,
-                )?,
-                read_dc_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
-                )?,
-                ProcessorBoostMode::from_power_value(read_dc_value(
-                    &scheme,
-                    &GUID_PROCESSOR_SETTINGS_SUBGROUP,
-                    &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
-                )?),
-            )
-            .normalized(),
+    } else {
+        Err(format!(
+            "PowerSetActiveScheme failed with error code {result}."
         ))
     }
+}
+
+pub fn create_adaptive_plan(source_guid: &str) -> Result<String, String> {
+    let source = parse_guid(source_guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+    let mut duplicate_ptr: *mut GUID = null_mut();
+    // SAFETY: source is a valid GUID and duplicate_ptr is a writable out-pointer owned by
+    // LocalFree on success.
+    let result = unsafe { PowerDuplicateScheme(null_mut(), &source, &mut duplicate_ptr) };
+    if result != ERROR_SUCCESS {
+        return Err(format!(
+            "PowerDuplicateScheme failed with error code {result}."
+        ));
+    }
+    if duplicate_ptr.is_null() {
+        return Err("PowerDuplicateScheme returned no power plan.".to_owned());
+    }
+
+    // SAFETY: PowerDuplicateScheme succeeded and returned a non-null GUID allocation.
+    let duplicate = unsafe { *duplicate_ptr };
+    // SAFETY: duplicate_ptr was allocated by PowerDuplicateScheme and is freed exactly once.
+    unsafe {
+        LocalFree(duplicate_ptr.cast());
+    }
+    let duplicate_guid = format_guid(&duplicate);
+    let description = format!("{ADAPTIVE_PLAN_DESCRIPTION_PREFIX}{source_guid}");
+
+    if let Err(error) = write_scheme_name(&duplicate, ADAPTIVE_PLAN_NAME)
+        .and_then(|()| write_scheme_description(&duplicate, &description))
+    {
+        // SAFETY: duplicate is the valid scheme created above; deletion is best-effort cleanup
+        // after initialization failed.
+        unsafe {
+            PowerDeleteScheme(null_mut(), &duplicate);
+        }
+        return Err(error);
+    }
+
+    Ok(duplicate_guid)
+}
+
+pub fn delete_plan(guid: &str) -> Result<(), String> {
+    let guid = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+    // SAFETY: guid is a fully parsed scheme GUID and a null root key selects the current user.
+    let result = unsafe { PowerDeleteScheme(null_mut(), &guid) };
+    if result == ERROR_SUCCESS {
+        Ok(())
+    } else {
+        Err(format!(
+            "PowerDeleteScheme failed with error code {result}."
+        ))
+    }
+}
+
+pub fn restore_stale_adaptive_plans() -> Result<(), String> {
+    let plans = list_plans()?;
+    for plan in plans.iter().filter(|plan| plan.name == ADAPTIVE_PLAN_NAME) {
+        let guid =
+            parse_guid(&plan.guid).ok_or_else(|| "Invalid managed power plan GUID.".to_owned())?;
+        let description = read_scheme_description(&guid)?;
+        let Some(restore_guid) = managed_adaptive_restore_guid(&plan.name, &description) else {
+            continue;
+        };
+        let restore_exists = plans
+            .iter()
+            .any(|candidate| candidate.guid.eq_ignore_ascii_case(restore_guid));
+
+        if plan.active {
+            if !restore_exists {
+                continue;
+            }
+            set_active(restore_guid)?;
+        }
+        delete_plan(&plan.guid)?;
+    }
+
+    Ok(())
+}
+
+pub fn read_plan_personality(guid: &str) -> Result<PowerPlanPersonality, String> {
+    let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+    Ok(PowerPlanPersonality::from_power_value(read_ac_value(
+        &scheme,
+        &GUID_NO_SUBGROUP,
+        &GUID_POWERSCHEME_PERSONALITY,
+    )?))
+}
+
+pub fn apply_processor_power_values(
+    guid: &str,
+    values: ProcessorPowerAcDcValues,
+) -> Result<(), String> {
+    let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+    let values = values.normalized();
+
+    write_ac_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_CORE_PARKING_MIN_CORES,
+        values.ac.core_parking_min,
+    )?;
+    write_dc_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_CORE_PARKING_MIN_CORES,
+        values.dc.core_parking_min,
+    )?;
+    write_ac_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_PROCESSOR_PERFORMANCE_MIN,
+        values.ac.performance_min,
+    )?;
+    write_dc_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_PROCESSOR_PERFORMANCE_MIN,
+        values.dc.performance_min,
+    )?;
+    write_ac_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_PROCESSOR_PERFORMANCE_MAX,
+        values.ac.performance_max,
+    )?;
+    write_dc_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_PROCESSOR_PERFORMANCE_MAX,
+        values.dc.performance_max,
+    )?;
+    write_ac_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
+        values.ac.boost_policy,
+    )?;
+    write_dc_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
+        values.dc.boost_policy,
+    )?;
+    write_ac_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+        values.ac.boost_mode.power_value(),
+    )?;
+    write_dc_value(
+        &scheme,
+        &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+        &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+        values.dc.boost_mode.power_value(),
+    )?;
+
+    if active_scheme_guid()
+        .ok()
+        .is_some_and(|active_guid| active_guid.eq_ignore_ascii_case(guid))
+    {
+        set_active(guid)?;
+    }
+
+    Ok(())
+}
+
+pub fn read_processor_power_values(guid: &str) -> Result<ProcessorPowerAcDcValues, String> {
+    let scheme = parse_guid(guid).ok_or_else(|| "Invalid power plan GUID.".to_owned())?;
+    Ok(ProcessorPowerAcDcValues::new(
+        ProcessorPowerValues::new_with_boost_mode(
+            read_ac_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_CORE_PARKING_MIN_CORES,
+            )?,
+            read_ac_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_PROCESSOR_PERFORMANCE_MIN,
+            )?,
+            read_ac_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_PROCESSOR_PERFORMANCE_MAX,
+            )?,
+            read_ac_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
+            )?,
+            ProcessorBoostMode::from_power_value(read_ac_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+            )?),
+        )
+        .normalized(),
+        ProcessorPowerValues::new_with_boost_mode(
+            read_dc_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_CORE_PARKING_MIN_CORES,
+            )?,
+            read_dc_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_PROCESSOR_PERFORMANCE_MIN,
+            )?,
+            read_dc_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_PROCESSOR_PERFORMANCE_MAX,
+            )?,
+            read_dc_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_PROCESSOR_PERFORMANCE_BOOST_POLICY,
+            )?,
+            ProcessorBoostMode::from_power_value(read_dc_value(
+                &scheme,
+                &GUID_PROCESSOR_SETTINGS_SUBGROUP,
+                &GUID_PROCESSOR_PERFORMANCE_BOOST_MODE,
+            )?),
+        )
+        .normalized(),
+    ))
 }
 
 impl EffectivePowerModeMonitor {

@@ -90,7 +90,6 @@ pub(super) struct HiddenAutomationRunner {
     next_active_plan_refresh: Option<Instant>,
     last_switch_attempt: Option<(String, Instant)>,
     switch_failure_suppression: ExecutionFailureTracker,
-    power: PowerPlanManager,
     cpu_usage: CpuUsageSnapshot,
     next_cpu_usage_refresh: Option<Instant>,
     cpu_monitor: CpuUsageMonitor,
@@ -438,21 +437,15 @@ impl HiddenAutomationRunner {
             .any(|processor| processor.kind == LogicalProcessorKind::Efficiency);
 
         if self.adaptive_power_plan.is_none() {
-            let original_guid = self
-                .power
-                .active_plan()?
-                .ok_or_else(|| "Windows has no active power plan.".to_owned())?
-                .guid;
-            let plan_guid = self.power.create_adaptive_plan(&original_guid)?;
-            if let Err(error) = self
-                .power
-                .apply_processor_power_values(
-                    &plan_guid,
-                    desired_profile.calibrated_power_values(baseline, has_efficiency_cores),
-                )
-                .and_then(|()| self.power.set_active(&plan_guid))
+            let original_guid = active_plan()?.guid;
+            let plan_guid = create_adaptive_plan(&original_guid)?;
+            if let Err(error) = apply_processor_power_values(
+                &plan_guid,
+                desired_profile.calibrated_power_values(baseline, has_efficiency_cores),
+            )
+            .and_then(|()| set_active(&plan_guid))
             {
-                let _ = self.power.delete_plan(&plan_guid);
+                let _ = delete_plan(&plan_guid);
                 return Err(error);
             }
             self.current_guid = Some(plan_guid.clone());
@@ -481,7 +474,7 @@ impl HiddenAutomationRunner {
             .as_deref()
             .is_none_or(|guid| !guid.eq_ignore_ascii_case(&plan.plan_guid))
         {
-            self.power.set_active(&plan.plan_guid)?;
+            set_active(&plan.plan_guid)?;
             self.current_guid = Some(plan.plan_guid.clone());
         }
 
@@ -494,7 +487,7 @@ impl HiddenAutomationRunner {
         let next_profile =
             adaptive_power_profile_transition(plan.profile, desired_profile, lower_demand_elapsed);
         if next_profile != plan.profile || baseline != plan.baseline {
-            self.power.apply_processor_power_values(
+            apply_processor_power_values(
                 &plan.plan_guid,
                 next_profile.calibrated_power_values(baseline, plan.has_efficiency_cores),
             )?;
@@ -511,13 +504,13 @@ impl HiddenAutomationRunner {
         let Some(plan) = self.adaptive_power_plan.take() else {
             return Ok(());
         };
-        if let Err(error) = self.power.set_active(&plan.original_guid) {
+        if let Err(error) = set_active(&plan.original_guid) {
             self.adaptive_power_plan = Some(plan);
             return Err(error);
         }
 
         self.current_guid = Some(plan.original_guid);
-        self.power.delete_plan(&plan.plan_guid)
+        delete_plan(&plan.plan_guid)
     }
 
     pub(super) fn sync_static_processor_policy(
@@ -537,14 +530,9 @@ impl HiddenAutomationRunner {
         let Some(values) = desired_values else {
             return Ok(());
         };
-        let plan_guid = self
-            .power
-            .active_plan()?
-            .ok_or_else(|| "Windows has no active power plan.".to_owned())?
-            .guid;
-        let restore_values = self.power.read_processor_power_values(&plan_guid)?;
-        self.power
-            .apply_processor_power_values(&plan_guid, ProcessorPowerAcDcValues::same(values))?;
+        let plan_guid = active_plan()?.guid;
+        let restore_values = read_processor_power_values(&plan_guid)?;
+        apply_processor_power_values(&plan_guid, ProcessorPowerAcDcValues::same(values))?;
         self.static_processor_policy = Some(AppliedStaticProcessorPolicy {
             plan_guid,
             restore_values,
@@ -557,10 +545,7 @@ impl HiddenAutomationRunner {
         let Some(policy) = self.static_processor_policy.take() else {
             return Ok(());
         };
-        if let Err(error) = self
-            .power
-            .apply_processor_power_values(&policy.plan_guid, policy.restore_values)
-        {
+        if let Err(error) = apply_processor_power_values(&policy.plan_guid, policy.restore_values) {
             self.static_processor_policy = Some(policy);
             return Err(error);
         }
@@ -722,7 +707,7 @@ impl HiddenAutomationRunner {
     pub(super) fn refresh_active_plan(&mut self) {
         self.next_active_plan_refresh = Some(Instant::now() + ACTIVE_PLAN_REFRESH_INTERVAL);
 
-        if let Ok(Some(active)) = self.power.active_plan() {
+        if let Ok(active) = active_plan() {
             self.current_guid = Some(active.guid);
         }
     }
@@ -765,7 +750,7 @@ impl HiddenAutomationRunner {
 
         self.last_switch_attempt = Some((plan_guid.to_owned(), Instant::now()));
 
-        match self.power.set_active(plan_guid) {
+        match set_active(plan_guid) {
             Ok(()) => {
                 self.current_guid = Some(plan_guid.to_owned());
                 self.clear_switch_failure(plan_guid);

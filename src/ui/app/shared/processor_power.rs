@@ -4,7 +4,7 @@ impl WinderustApp {
     fn refresh_processor_power_target_plan_personality(&mut self) -> bool {
         let personality = self
             .processor_power_target_plan()
-            .and_then(|plan| self.power.read_plan_personality(&plan.guid).ok());
+            .and_then(|plan| read_plan_personality(&plan.guid).ok());
         if self.processor_power_target_plan_personality == personality {
             return false;
         }
@@ -79,7 +79,7 @@ impl WinderustApp {
             return true;
         }
 
-        match self.power.read_processor_power_values(&plan.guid) {
+        match read_processor_power_values(&plan.guid) {
             Ok(values) => {
                 self.set_processor_power_values(values.normalized());
                 self.processor_power_loaded_plan_guid = Some(plan.guid);
@@ -321,10 +321,7 @@ impl WinderustApp {
         let values = self.processor_power_values();
         self.set_processor_power_values(values);
 
-        match self
-            .power
-            .apply_processor_power_values(&plan.guid, values.normalized())
-        {
+        match apply_processor_power_values(&plan.guid, values.normalized()) {
             Ok(()) => {
                 self.processor_power_loaded_plan_guid = Some(plan.guid.clone());
                 self.processor_power_dirty = false;
