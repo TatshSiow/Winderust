@@ -99,7 +99,7 @@ impl WinderustApp {
             self.refresh_cpu_usage_sample(now);
         }
         self.foreground_app = foreground_lookup_required(decision_settings)
-            .then(|| self.foreground_detector.process_name())
+            .then(foreground_process_name)
             .flatten();
         let by_time = self
             .by_time_scheduler

@@ -104,7 +104,6 @@ pub(super) struct HiddenAutomationRunner {
     static_processor_policy: Option<AppliedStaticProcessorPolicy>,
     idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
-    foreground_detector: ForegroundDetector,
     by_time_scheduler: ByTimeScheduler,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
     background_efficiency_manager: BackgroundEfficiencyManager,
@@ -196,7 +195,7 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
     ) -> BackgroundEfficiencySnapshot {
-        let foreground_process_id = self.foreground_detector.process_id();
+        let foreground_process_id = foreground_process_id();
         self.background_efficiency_manager.update(
             &settings.background_efficiency,
             settings.general.enabled,
@@ -211,7 +210,7 @@ impl HiddenAutomationRunner {
         settings: &Settings,
         manual_freeze_processes: &[String],
     ) -> AppSuspensionSnapshot {
-        let foreground_process_id = self.foreground_detector.process_id();
+        let foreground_process_id = foreground_process_id();
         self.app_suspension_manager.update(
             &settings.app_suspension,
             settings.general.enabled,
@@ -225,9 +224,7 @@ impl HiddenAutomationRunner {
         &mut self,
     ) -> Option<AppSuspensionSnapshot> {
         let now = Instant::now();
-        if self.foreground_detector.shell_window_mouse_pressed()
-            && self.app_suspension_shell_user_intent_due(now)
-        {
+        if shell_window_mouse_pressed() && self.app_suspension_shell_user_intent_due(now) {
             self.last_app_suspension_shell_user_intent = Some(now);
             if let Some(status) = self
                 .app_suspension_manager
@@ -240,8 +237,8 @@ impl HiddenAutomationRunner {
             }
         }
 
-        let foreground_process_id = self.foreground_detector.process_id();
-        let foreground_process = self.foreground_detector.process();
+        let foreground_process_id = foreground_process_id();
+        let foreground_process = foreground_process();
         if let Some(status) = foreground_process_id.and_then(|process_id| {
             self.app_suspension_manager.release_interactive_process(
                 process_id,
@@ -255,11 +252,11 @@ impl HiddenAutomationRunner {
             return Some(status);
         }
 
-        let cursor_process_id = self.foreground_detector.cursor_process_id()?;
+        let cursor_process_id = cursor_process_id()?;
         if foreground_process_id == Some(cursor_process_id) {
             return None;
         }
-        let cursor_process = self.foreground_detector.cursor_process();
+        let cursor_process = cursor_process();
         self.app_suspension_manager.release_interactive_process(
             cursor_process_id,
             cursor_process
@@ -283,7 +280,7 @@ impl HiddenAutomationRunner {
     pub(super) fn run_app_suspension_shell_click_release(
         &mut self,
     ) -> Option<AppSuspensionSnapshot> {
-        if !self.foreground_detector.cursor_is_shell_window() {
+        if !cursor_is_shell_window() {
             return None;
         }
 
@@ -298,7 +295,7 @@ impl HiddenAutomationRunner {
     }
 
     pub(super) fn run_core_steering_update(&mut self, settings: &Settings) -> CoreSteeringSnapshot {
-        let foreground_process_id = self.foreground_detector.process_id();
+        let foreground_process_id = foreground_process_id();
         self.core_steering_manager.update(
             &settings.core_steering,
             settings.general.enabled,
@@ -314,13 +311,13 @@ impl HiddenAutomationRunner {
         self.background_cpu_restriction_manager.update(
             &settings.background_cpu_restriction,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             &mut self.action_log,
         )
     }
 
     pub(super) fn run_core_limiter_update(&mut self, settings: &Settings) -> CoreLimiterSnapshot {
-        let foreground_process_id = self.foreground_detector.process_id();
+        let foreground_process_id = foreground_process_id();
         let core_steering_process_ids = self.core_steering_manager.adjusted_process_ids();
         self.core_limiter_manager.update(
             &settings.core_limiter,
@@ -347,7 +344,7 @@ impl HiddenAutomationRunner {
         settings: &Settings,
     ) -> WorkloadEngineSnapshot {
         self.refresh_cpu_usage();
-        let foreground_process_id = self.foreground_detector.process_id();
+        let foreground_process_id = foreground_process_id();
         let mut excluded_process_ids = self.background_efficiency_manager.throttled_process_ids();
         excluded_process_ids.extend(self.by_running_app_manager.active_process_ids());
         let mut snapshot = self.workload_engine_manager.update(
@@ -579,7 +576,7 @@ impl HiddenAutomationRunner {
         self.io_priority_manager.update(
             &io_priority_settings,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             &mut self.action_log,
         )
     }
@@ -592,7 +589,7 @@ impl HiddenAutomationRunner {
         self.process_priority_manager.update(
             &settings.process_priority,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             &excluded_process_ids,
             &mut self.action_log,
         )
@@ -607,7 +604,7 @@ impl HiddenAutomationRunner {
         self.thread_priority_manager.update(
             &thread_priority_settings,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             &mut self.action_log,
         )
     }
@@ -621,7 +618,7 @@ impl HiddenAutomationRunner {
         self.dynamic_priority_boost_manager.update(
             &dynamic_priority_boost_settings,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             &mut self.action_log,
         )
     }
@@ -632,7 +629,7 @@ impl HiddenAutomationRunner {
         self.gpu_priority_manager.update(
             &gpu_priority_settings,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             &mut self.action_log,
         )
     }
@@ -645,7 +642,7 @@ impl HiddenAutomationRunner {
         self.memory_priority_manager.update_rules(
             &memory_priority_settings,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             &mut self.action_log,
         )
     }
@@ -654,7 +651,7 @@ impl HiddenAutomationRunner {
         self.memory_trim_manager.update(
             &settings.memory_trim,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             self.by_running_app_manager.is_active(),
             &mut self.action_log,
         )
@@ -664,7 +661,7 @@ impl HiddenAutomationRunner {
         self.memory_trim_manager.trim_now(
             &settings.memory_trim,
             settings.general.enabled,
-            self.foreground_detector.process_id(),
+            foreground_process_id(),
             self.by_running_app_manager.is_active(),
             &mut self.action_log,
         )
@@ -674,7 +671,7 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
     ) -> TimerResolutionSnapshot {
-        let foreground_process_name = self.foreground_detector.process_name();
+        let foreground_process_name = foreground_process_name();
         self.timer_resolution_manager.update(
             &settings.timer_resolution,
             settings.general.enabled,
@@ -698,7 +695,7 @@ impl HiddenAutomationRunner {
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
         let foreground_process_name = foreground_lookup_required(settings)
-            .then(|| self.foreground_detector.process_name())
+            .then(foreground_process_name)
             .flatten();
         let by_time_decision = self.by_time_scheduler.current_decision(&settings.by_time);
         let by_cpu_load_decision = self

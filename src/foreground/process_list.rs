@@ -296,8 +296,12 @@ pub fn should_ignore_foreground_process(
     foreground_process_name: Option<&str>,
 ) -> bool {
     exclude_foreground_app
-        && (foreground_process_id.is_some_and(|id| id == process_id)
-            || foreground_process_name.is_some_and(|name| same_process_name(name, process_name)))
+        && is_foreground_process(
+            process_id,
+            process_name,
+            foreground_process_id,
+            foreground_process_name,
+        )
 }
 
 pub fn process_name_key(process_name: &str) -> String {
@@ -362,7 +366,7 @@ fn is_system_process_name(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("[system process]")
 }
 
-fn process_image_path(process_id: u32) -> Option<PathBuf> {
+pub(super) fn process_image_path(process_id: u32) -> Option<PathBuf> {
     if process_id == 0 {
         return None;
     }

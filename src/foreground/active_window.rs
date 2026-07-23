@@ -1,13 +1,9 @@
-use std::{collections::BTreeSet, path::Path};
+use std::collections::BTreeSet;
 
-use crate::win_util::WinHandle;
+use super::process_list::process_image_path;
 
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, MAX_PATH, POINT},
-    System::{
-        ProcessStatus::K32GetModuleFileNameExW,
-        Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ},
-    },
+    Foundation::{HWND, LPARAM, POINT},
     UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
     UI::WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow,
@@ -15,43 +11,18 @@ use windows_sys::Win32::{
     },
 };
 
-#[derive(Debug, Default)]
-pub struct ForegroundDetector;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundProcess {
     pub id: u32,
     pub name: String,
 }
 
-impl ForegroundDetector {
-    pub fn process(&self) -> Option<ForegroundProcess> {
-        foreground_process()
-    }
+pub fn foreground_process_name() -> Option<String> {
+    foreground_process().map(|process| process.name)
+}
 
-    pub fn cursor_process(&self) -> Option<ForegroundProcess> {
-        cursor_process()
-    }
-
-    pub fn cursor_process_id(&self) -> Option<u32> {
-        cursor_process_id()
-    }
-
-    pub fn shell_window_mouse_pressed(&self) -> bool {
-        mouse_button_pressed() && cursor_is_shell_window()
-    }
-
-    pub fn cursor_is_shell_window(&self) -> bool {
-        cursor_is_shell_window()
-    }
-
-    pub fn process_id(&self) -> Option<u32> {
-        foreground_process_id()
-    }
-
-    pub fn process_name(&self) -> Option<String> {
-        self.process().map(|process| process.name)
-    }
+pub fn shell_window_mouse_pressed() -> bool {
+    mouse_button_pressed() && cursor_is_shell_window()
 }
 
 pub fn top_level_window_process_ids() -> BTreeSet<u32> {
@@ -67,49 +38,25 @@ pub fn top_level_window_process_ids() -> BTreeSet<u32> {
     process_ids
 }
 
-fn foreground_process() -> Option<ForegroundProcess> {
+pub fn foreground_process() -> Option<ForegroundProcess> {
     let process_id = foreground_process_id()?;
     process_from_id(process_id)
 }
 
-fn cursor_process() -> Option<ForegroundProcess> {
+pub fn cursor_process() -> Option<ForegroundProcess> {
     let process_id = cursor_process_id()?;
     process_from_id(process_id)
 }
 
-fn cursor_process_id() -> Option<u32> {
+pub fn cursor_process_id() -> Option<u32> {
     process_id_from_window(cursor_root_window()?)
 }
 
 fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
-    // SAFETY: process_id comes from a live window and no inherited handle is requested.
-    let process =
-        unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, process_id) };
-    if process.is_null() {
-        return None;
-    }
-    let process = WinHandle::new(process);
-
-    let mut buffer = [0u16; MAX_PATH as usize];
-    // SAFETY: process is live and buffer supplies its full writable length; a null module requests
-    // the main executable.
-    let len = unsafe {
-        K32GetModuleFileNameExW(
-            process.raw(),
-            std::ptr::null_mut(),
-            buffer.as_mut_ptr(),
-            buffer.len() as u32,
-        )
-    };
-
-    if len == 0 {
-        return None;
-    }
-
-    let path = String::from_utf16_lossy(&buffer[..len as usize]);
-    let name = Path::new(&path)
-        .file_name()
-        .map(|name| name.to_string_lossy().to_ascii_lowercase())?;
+    let name = process_image_path(process_id)?
+        .file_name()?
+        .to_string_lossy()
+        .to_ascii_lowercase();
 
     Some(ForegroundProcess {
         id: process_id,
@@ -117,7 +64,7 @@ fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
     })
 }
 
-fn foreground_process_id() -> Option<u32> {
+pub fn foreground_process_id() -> Option<u32> {
     // SAFETY: GetForegroundWindow takes no arguments and returns a borrowed HWND.
     let window = unsafe { GetForegroundWindow() };
     if window.is_null() {
@@ -134,7 +81,7 @@ fn process_id_from_window(window: windows_sys::Win32::Foundation::HWND) -> Optio
     (process_id != 0).then_some(process_id)
 }
 
-fn cursor_is_shell_window() -> bool {
+pub fn cursor_is_shell_window() -> bool {
     let Some(window) = cursor_root_window() else {
         return false;
     };

@@ -31,7 +31,9 @@ use crate::{
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
     features::power_plan_control::{ByCpuLoadScheduler, ByTimeScheduler},
     foreground::{
-        list_processes, process_name_key, top_level_window_process_ids, ForegroundDetector,
+        cursor_is_shell_window, cursor_process, cursor_process_id, foreground_process,
+        foreground_process_id, foreground_process_name, list_processes, process_name_key,
+        shell_window_mouse_pressed, top_level_window_process_ids,
     },
     gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
     io_priority::{IoPriorityManager, IoPrioritySnapshot},
