@@ -72,6 +72,7 @@ use crate::{
     },
     dynamic_priority_boost::{self, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::ByRunningAppSnapshot,
+    features::power_plan_control::{ByCpuLoadScheduler, ByTimeScheduler},
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
         capture_process_action_target, list_process_candidates, list_processes, same_process_name,
@@ -94,7 +95,6 @@ use crate::{
         ByRunningAppDecision, DecisionEngine, DecisionInput, DecisionOutcome, DecisionState,
         MAX_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD, MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
     },
-    scheduler::{ByCpuLoadScheduler, ByTimeScheduler},
     self_power, startup,
     thread_priority::{self, ThreadPrioritySnapshot},
     timer_resolution::{self, TimerResolutionSnapshot},

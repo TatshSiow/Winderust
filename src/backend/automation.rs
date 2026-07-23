@@ -29,6 +29,7 @@ use crate::{
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
+    features::power_plan_control::{ByCpuLoadScheduler, ByTimeScheduler},
     foreground::{
         list_processes, process_name_key, top_level_window_process_ids, ForegroundDetector,
     },
@@ -46,7 +47,6 @@ use crate::{
         set_execution_failure_suppression_threshold, ByRunningAppDecision, DecisionEngine,
         DecisionInput, ExecutionFailureTracker,
     },
-    scheduler::{ByCpuLoadScheduler, ByTimeScheduler},
     thread_priority::{ThreadPriorityManager, ThreadPrioritySnapshot},
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},
     tray,

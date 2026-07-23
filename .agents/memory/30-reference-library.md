@@ -27,7 +27,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Priority Control | `src/features/priority_control/` | Process/thread priorities, Dynamic Priority Boost, Memory Priority, NT I/O priority, and WDK GPU priority |
 | App Suspension | `src/features/advanced_controls/app_suspension.rs` | Job Objects and a compatibility-sensitive freeze information class |
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs` | WinMM timer capability, request, and release calls |
-| Win32 Priority Separation | `src/ui/app/pages/advanced_controls_pages.rs`, `src/ui/app/shared/appearance.rs`, and `src/backend/win_registry.rs` | Windows registry access and the `Win32PrioritySeparation` value |
+| Win32 Priority Separation | `src/ui/app/pages/win32_priority_separation_page.rs`, `src/ui/app/shared/appearance.rs`, and `src/backend/win_registry.rs` | Windows registry access and the `Win32PrioritySeparation` value |
 
 ## Power Plan Switching
 
@@ -296,7 +296,7 @@ WinMM here because this feature is explicit timer-resolution control.
 
 Implementation entry points:
 
-- `src/ui/app/pages/advanced_controls_pages.rs`
+- `src/ui/app/pages/win32_priority_separation_page.rs`
 - `src/ui/app/shared/appearance.rs`
 - `src/backend/win_registry.rs`
 

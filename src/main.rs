@@ -14,7 +14,6 @@ mod features;
 mod foreground;
 mod power;
 mod rules;
-mod scheduler;
 mod ui;
 
 use backend::{

@@ -1,8 +1,8 @@
 use crate::{
     activity::ActivityState,
     config::{PowerPlanSettings, Settings},
+    features::power_plan_control::{ByCpuLoadDecision, ByTimeDecision},
     foreground::same_process_name,
-    scheduler::{ByCpuLoadDecision, ByTimeDecision},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,7 +200,7 @@ mod tests {
     use crate::{
         activity::ActivityState,
         config::{ByForegroundRule, ByForegroundSettings, PowerPlanSettings, Settings},
-        scheduler::{ByCpuLoadDecision, ByTimeDecision},
+        features::power_plan_control::{ByCpuLoadDecision, ByTimeDecision},
     };
 
     fn test_settings() -> Settings {
