@@ -217,7 +217,7 @@ impl WinderustApp {
         );
 
         self.cpu_usage = self.cpu_monitor.sample();
-        self.memory_usage = self.memory_monitor.sample();
+        self.memory_usage = sample_memory_usage();
 
         let mut changed =
             self.cpu_usage != previous_cpu_usage || self.memory_usage != previous_memory_usage;

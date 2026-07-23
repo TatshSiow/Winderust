@@ -2,7 +2,6 @@ use std::time::Instant;
 
 use crate::{foreground::for_each_process_id, win_util::WinHandle};
 use windows_sys::Win32::{
-    Foundation::HANDLE,
     NetworkManagement::{
         IpHelper::{FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2},
         Ndis::{IfOperStatusUp, MediaConnectStateConnected},
@@ -39,9 +38,6 @@ pub struct NetworkUsageSnapshot {
 }
 
 #[derive(Debug, Default)]
-pub struct MemoryUsageMonitor;
-
-#[derive(Debug, Default)]
 pub struct IoUsageMonitor {
     previous: Option<IoCounterSample>,
 }
@@ -65,21 +61,19 @@ struct NetworkCounterSample {
     sampled_at: Instant,
 }
 
-impl MemoryUsageMonitor {
-    pub fn sample(&mut self) -> MemoryUsageSnapshot {
-        let Some(status) = system_memory_status() else {
-            return MemoryUsageSnapshot::default();
-        };
-        let total_physical_bytes = status.ullTotalPhys;
-        let available_physical_bytes = status.ullAvailPhys;
-        let used_physical_bytes = total_physical_bytes.saturating_sub(available_physical_bytes);
+pub fn sample_memory_usage() -> MemoryUsageSnapshot {
+    let Some(status) = system_memory_status() else {
+        return MemoryUsageSnapshot::default();
+    };
+    let total_physical_bytes = status.ullTotalPhys;
+    let available_physical_bytes = status.ullAvailPhys;
+    let used_physical_bytes = total_physical_bytes.saturating_sub(available_physical_bytes);
 
-        MemoryUsageSnapshot {
-            percent: Some(status.dwMemoryLoad.min(100) as f32),
-            used_physical_bytes: Some(used_physical_bytes),
-            total_physical_bytes: Some(total_physical_bytes),
-            cached_physical_bytes: system_cache_bytes(),
-        }
+    MemoryUsageSnapshot {
+        percent: Some(status.dwMemoryLoad.min(100) as f32),
+        used_physical_bytes: Some(used_physical_bytes),
+        total_physical_bytes: Some(total_physical_bytes),
+        cached_physical_bytes: system_cache_bytes(),
     }
 }
 
@@ -230,13 +224,9 @@ fn process_io_counters(process_id: u32) -> Option<IO_COUNTERS> {
     }
 
     let process = WinHandle::new(process);
-    process_io_counters_for_handle(process.raw())
-}
-
-fn process_io_counters_for_handle(process: HANDLE) -> Option<IO_COUNTERS> {
     let mut counters = IO_COUNTERS::default();
-    // SAFETY: process is held open by the caller and counters is writable for the call.
-    let ok = unsafe { GetProcessIoCounters(process, &mut counters) };
+    // SAFETY: process remains open through its owned handle and counters is writable for the call.
+    let ok = unsafe { GetProcessIoCounters(process.raw(), &mut counters) };
     (ok != 0).then_some(counters)
 }
 
