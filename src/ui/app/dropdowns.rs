@@ -571,3 +571,91 @@ pub(super) fn dropdown_selected_color() -> u32 {
 pub(super) fn dropdown_option_hover_color() -> u32 {
     settings_card_hover_color()
 }
+
+impl WinderustApp {
+    pub(super) fn dropdown_placement(
+        &self,
+        id: &str,
+        full_list_height: Pixels,
+        window: &Window,
+    ) -> DropdownPlacement {
+        let margin = px(DROPDOWN_VIEWPORT_MARGIN);
+        let offset = px(DROPDOWN_MENU_OFFSET);
+        let fallback_max_height =
+            (window.viewport_size().height - offset - margin).max(Pixels::ZERO);
+        let Some(bounds) = self.dropdown_anchor_bounds.borrow().get(id).copied() else {
+            return DropdownPlacement {
+                open_up: false,
+                max_height: fallback_max_height,
+            };
+        };
+
+        let below =
+            (window.viewport_size().height - bounds.top() - offset - margin).max(Pixels::ZERO);
+        let above = (bounds.bottom() - offset - margin).max(Pixels::ZERO);
+        let open_up = full_list_height > below && above > below;
+        let available_height = if open_up { above } else { below };
+
+        DropdownPlacement {
+            open_up,
+            max_height: available_height,
+        }
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "dropdown metadata plus the options builder is clearer at each UI call site"
+    )]
+    pub(super) fn render_dropdown_select(
+        &self,
+        id: impl Into<String>,
+        selected_label: impl Into<SharedString>,
+        enabled: bool,
+        width: DropdownSelectWidth,
+        option_count: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        build_options: impl FnOnce(Pixels, &mut Context<Self>) -> Scrollable<gpui::Div>,
+    ) -> AnyElement {
+        let id = id.into();
+        let is_open = enabled && self.active_power_plan_picker.as_deref() == Some(id.as_str());
+        let placement = self.dropdown_placement(&id, dropdown_list_height(option_count), window);
+        let options = build_options(placement.max_height, cx);
+        let phase = dropdown_popup_phase(id.as_str(), is_open, cx);
+        let control_id = SharedString::from(format!("{id}-control"));
+        let toggle_id = id.clone();
+
+        dropdown_select_container(width)
+            .child(
+                dropdown_select_control(control_id, selected_label, enabled, is_open, phase, cx)
+                    .when(enabled, |control| {
+                        control.on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
+                            app.active_power_plan_picker =
+                                (app.active_power_plan_picker.as_deref()
+                                    != Some(toggle_id.as_str()))
+                                .then_some(toggle_id.clone());
+                            cx.stop_propagation();
+                            cx.notify();
+                        }))
+                    }),
+            )
+            .child(dropdown_anchor_sensor(
+                id.clone(),
+                Rc::clone(&self.dropdown_anchor_bounds),
+            ))
+            .child(dropdown_popup_or_empty(
+                SharedString::from(id),
+                phase,
+                placement,
+                options,
+                cx,
+            ))
+            .into_any_element()
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct DropdownPlacement {
+    pub(super) open_up: bool,
+    pub(super) max_height: Pixels,
+}

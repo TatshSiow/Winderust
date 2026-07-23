@@ -1950,3 +1950,36 @@ pub(super) fn activity_input_hook_required(settings: &Settings) -> bool {
             .keyboard_or_mouse_enabled()
         && settings.by_activity.power_plans.performance_guid.is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timer_resolution_input_accepts_decimal_milliseconds() {
+        assert_eq!(
+            parse_timer_resolution_input_100ns("1", 10_000, 160_000),
+            Some(10_000)
+        );
+        assert_eq!(
+            parse_timer_resolution_input_100ns("0.5 ms", 10_000, 160_000),
+            Some(10_000)
+        );
+        assert_eq!(
+            parse_timer_resolution_input_100ns("15.625 MS", 10_000, 160_000),
+            Some(160_000)
+        );
+    }
+
+    #[test]
+    fn timer_resolution_input_clamps_to_supported_range() {
+        assert_eq!(
+            parse_timer_resolution_input_100ns("0.1", 10_000, 160_000),
+            Some(10_000)
+        );
+        assert_eq!(
+            parse_timer_resolution_input_100ns("1000", 10_000, 160_000),
+            Some(160_000)
+        );
+    }
+}

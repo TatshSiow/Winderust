@@ -535,3 +535,116 @@ pub(super) fn action_log_pagination_label(
         .to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_log_filtering_matches_result_and_feature() {
+        let entries = vec![
+            ActionLogEntry {
+                sequence: 1,
+                timestamp_epoch_ms: 1_700_000_000_000,
+                feature: ActionLogFeature::CoreLimiter,
+                process_id: Some(42),
+                process_name: "worker.exe".to_owned(),
+                action: ActionLogAction::Fail,
+                result: ActionLogResult::Failed,
+                reason: "restart failed".to_owned(),
+            },
+            ActionLogEntry {
+                sequence: 2,
+                timestamp_epoch_ms: 1_700_000_000_100,
+                feature: ActionLogFeature::GpuPriority,
+                process_id: Some(43),
+                process_name: "game.exe".to_owned(),
+                action: ActionLogAction::Apply,
+                result: ActionLogResult::Applied,
+                reason: "priority applied".to_owned(),
+            },
+        ];
+
+        let filtered_entries = action_log_filtered_entries(
+            &entries,
+            ActionLogResultFilter::Failed,
+            ActionLogFeatureFilter::Feature(ActionLogFeature::CoreLimiter),
+        );
+
+        assert_eq!(filtered_entries.len(), 1);
+        assert_eq!(filtered_entries[0].sequence, 1);
+    }
+
+    #[test]
+    fn action_log_page_count_rounds_up() {
+        assert_eq!(action_log_page_count(0), 0);
+        assert_eq!(action_log_page_count(1), 1);
+        assert_eq!(action_log_page_count(ACTION_LOG_PAGE_SIZE), 1);
+        assert_eq!(action_log_page_count(ACTION_LOG_PAGE_SIZE + 1), 2);
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ActionLogResultFilter {
+    All,
+    Applied,
+    Restored,
+    Skipped,
+    Failed,
+}
+
+impl ActionLogResultFilter {
+    const ALL: [Self; 5] = [
+        Self::All,
+        Self::Applied,
+        Self::Restored,
+        Self::Skipped,
+        Self::Failed,
+    ];
+
+    fn matches(self, result: ActionLogResult) -> bool {
+        match self {
+            Self::All => true,
+            Self::Applied => result == ActionLogResult::Applied,
+            Self::Restored => result == ActionLogResult::Restored,
+            Self::Skipped => result == ActionLogResult::Skipped,
+            Self::Failed => result == ActionLogResult::Failed,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ActionLogFeatureFilter {
+    All,
+    Feature(ActionLogFeature),
+}
+
+impl ActionLogFeatureFilter {
+    const ALL: [Self; 16] = [
+        Self::All,
+        Self::Feature(ActionLogFeature::AppSuspension),
+        Self::Feature(ActionLogFeature::BackgroundCpuRestriction),
+        Self::Feature(ActionLogFeature::CoreSteering),
+        Self::Feature(ActionLogFeature::BackgroundEfficiency),
+        Self::Feature(ActionLogFeature::CoreLimiter),
+        Self::Feature(ActionLogFeature::ByRunningApp),
+        Self::Feature(ActionLogFeature::WorkloadEngine),
+        Self::Feature(ActionLogFeature::ProcessPriority),
+        Self::Feature(ActionLogFeature::ThreadPriority),
+        Self::Feature(ActionLogFeature::DynamicPriorityBoost),
+        Self::Feature(ActionLogFeature::IoPriority),
+        Self::Feature(ActionLogFeature::GpuPriority),
+        Self::Feature(ActionLogFeature::MemoryPriority),
+        Self::Feature(ActionLogFeature::MemoryTrim),
+        Self::Feature(ActionLogFeature::TimerResolution),
+    ];
+
+    fn matches(self, feature: ActionLogFeature) -> bool {
+        match self {
+            Self::All => true,
+            Self::Feature(filter_feature) => filter_feature == feature,
+        }
+    }
+}
+
+const ACTION_LOG_PAGE_SIZE: usize = 15;

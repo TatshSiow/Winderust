@@ -250,3 +250,42 @@ pub(super) fn cpu_usage_comparison_label(comparison: CpuUsageComparison) -> Stri
     }
     .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_escape_quotes_fields_with_special_characters() {
+        let mut escaped = String::new();
+        push_csv_field(&mut escaped, "two,parts");
+        assert_eq!(escaped.len(), 11);
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("two,parts"), "\"two,parts\"");
+        assert_eq!(csv_escape("quoted \"value\""), "\"quoted \"\"value\"\"\"");
+        assert_eq!(csv_escape("line\r\nbreak"), "\"line\r\nbreak\"");
+    }
+
+    #[test]
+    fn action_log_entries_export_as_csv() {
+        let entries = vec![ActionLogEntry {
+            sequence: 7,
+            timestamp_epoch_ms: 1_700_000_000_000,
+            feature: ActionLogFeature::CoreLimiter,
+            process_id: Some(42),
+            process_name: "worker.exe".to_owned(),
+            action: ActionLogAction::Fail,
+            result: ActionLogResult::Failed,
+            reason: "Restart failed, access denied".to_owned(),
+        }];
+
+        let csv = action_log_entries_to_csv(&entries);
+
+        assert!(csv.starts_with(
+            "sequence,timestamp,feature,process_id,process_name,action,result,reason\r\n"
+        ));
+        assert!(csv.contains(
+            ",Core Limiter,42,worker.exe,Fail,Failed,\"Restart failed, access denied\"\r\n"
+        ));
+    }
+}
