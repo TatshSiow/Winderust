@@ -45,7 +45,8 @@ pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: Window
         }
 
         if event == WindowsAutomationEvent::AppearanceChanged {
-            state.appearance_change_generation = state.appearance_change_generation.wrapping_add(1);
+            state.status.appearance_change_generation =
+                state.status.appearance_change_generation.wrapping_add(1);
             bump_status_generation(shared, &mut state);
         }
         state.pending_events.insert_windows_event(event);
@@ -83,7 +84,7 @@ pub(super) fn update_background_efficiency_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.background_efficiency,
-        |state| &mut state.background_efficiency_status,
+        |state| &mut state.status.background_efficiency,
     );
 }
 
@@ -96,7 +97,7 @@ pub(super) fn update_app_suspension_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.app_suspension,
-        |state| &mut state.app_suspension_status,
+        |state| &mut state.status.app_suspension,
     );
 }
 
@@ -109,7 +110,7 @@ pub(super) fn update_core_steering_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.core_steering,
-        |state| &mut state.core_steering_status,
+        |state| &mut state.status.core_steering,
     );
 }
 
@@ -122,7 +123,7 @@ pub(super) fn update_background_cpu_restriction_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.background_cpu_restriction,
-        |state| &mut state.background_cpu_restriction_status,
+        |state| &mut state.status.background_cpu_restriction,
     );
 }
 
@@ -150,7 +151,7 @@ pub(super) fn update_core_limiter_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.core_limiter,
-        |state| &mut state.core_limiter_status,
+        |state| &mut state.status.core_limiter,
     );
 }
 
@@ -158,7 +159,7 @@ pub(super) fn update_by_running_app_status(
     shared: &SharedAutomationState,
     status: ByRunningAppSnapshot,
 ) {
-    update_status(shared, status, |state| &mut state.by_running_app_status);
+    update_status(shared, status, |state| &mut state.status.by_running_app);
 }
 
 pub(super) fn update_workload_engine_status(
@@ -170,7 +171,7 @@ pub(super) fn update_workload_engine_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.workload_engine,
-        |state| &mut state.workload_engine_status,
+        |state| &mut state.status.workload_engine,
     );
 }
 
@@ -183,7 +184,7 @@ pub(super) fn update_io_priority_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.io_priority,
-        |state| &mut state.io_priority_status,
+        |state| &mut state.status.io_priority,
     );
 }
 
@@ -196,7 +197,7 @@ pub(super) fn update_process_priority_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.process_priority,
-        |state| &mut state.process_priority_status,
+        |state| &mut state.status.process_priority,
     );
 }
 
@@ -209,7 +210,7 @@ pub(super) fn update_thread_priority_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.thread_priority,
-        |state| &mut state.thread_priority_status,
+        |state| &mut state.status.thread_priority,
     );
 }
 
@@ -222,7 +223,7 @@ pub(super) fn update_dynamic_priority_boost_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.dynamic_priority_boost,
-        |state| &mut state.dynamic_priority_boost_status,
+        |state| &mut state.status.dynamic_priority_boost,
     );
 }
 
@@ -235,7 +236,7 @@ pub(super) fn update_gpu_priority_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.gpu_priority,
-        |state| &mut state.gpu_priority_status,
+        |state| &mut state.status.gpu_priority,
     );
 }
 
@@ -248,7 +249,7 @@ pub(super) fn update_memory_priority_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.memory_priority,
-        |state| &mut state.memory_priority_status,
+        |state| &mut state.status.memory_priority,
     );
 }
 
@@ -261,7 +262,7 @@ pub(super) fn update_memory_trim_status(
         status.clone(),
         &status.auto_excluded_processes,
         |pending| &mut pending.memory_trim,
-        |state| &mut state.memory_trim_status,
+        |state| &mut state.status.memory_trim,
     );
 }
 
@@ -269,7 +270,7 @@ pub(super) fn update_timer_resolution_status(
     shared: &SharedAutomationState,
     status: TimerResolutionSnapshot,
 ) {
-    update_status(shared, status, |state| &mut state.timer_resolution_status);
+    update_status(shared, status, |state| &mut state.status.timer_resolution);
 }
 
 pub(super) fn update_status<T: PartialEq>(
@@ -312,8 +313,8 @@ pub(super) fn update_action_log_entries(
 ) {
     if let Ok(mut state) = shared.state.lock() {
         let entries = Arc::new(entries);
-        if state.action_log_entries != entries {
-            state.action_log_entries = entries;
+        if state.status.action_log_entries != entries {
+            state.status.action_log_entries = entries;
             bump_status_generation(shared, &mut state);
         }
     }
@@ -332,8 +333,8 @@ pub(super) fn bump_status_generation(
     shared: &SharedAutomationState,
     state: &mut AutomationWorkerState,
 ) {
-    state.status_generation = state.status_generation.wrapping_add(1);
+    state.status.generation = state.status.generation.wrapping_add(1);
     shared
         .status_generation
-        .store(state.status_generation, Ordering::Release);
+        .store(state.status.generation, Ordering::Release);
 }

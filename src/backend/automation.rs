@@ -135,24 +135,8 @@ struct SharedAutomationState {
 struct AutomationWorkerState {
     settings: Arc<Settings>,
     change_generation: u64,
-    status_generation: u64,
-    background_efficiency_status: BackgroundEfficiencySnapshot,
-    app_suspension_status: AppSuspensionSnapshot,
-    core_steering_status: CoreSteeringSnapshot,
-    background_cpu_restriction_status: CoreSteeringSnapshot,
-    core_limiter_status: CoreLimiterSnapshot,
-    by_running_app_status: ByRunningAppSnapshot,
-    workload_engine_status: WorkloadEngineSnapshot,
-    process_priority_status: ProcessPrioritySnapshot,
-    thread_priority_status: ThreadPrioritySnapshot,
-    dynamic_priority_boost_status: DynamicPriorityBoostSnapshot,
-    io_priority_status: IoPrioritySnapshot,
-    gpu_priority_status: GpuPrioritySnapshot,
-    memory_priority_status: MemoryPrioritySnapshot,
-    memory_trim_status: MemoryTrimSnapshot,
-    timer_resolution_status: TimerResolutionSnapshot,
-    action_log_entries: Arc<Vec<ActionLogEntry>>,
-    appearance_change_generation: u64,
+    status: AutomationStatusSnapshot,
+
     pending_auto_exclusions: PendingAutoExclusions,
     app_suspension_freeze_requests: Vec<String>,
     memory_trim_now_requested: bool,
@@ -210,24 +194,11 @@ impl BackgroundAutomation {
             state: Mutex::new(AutomationWorkerState {
                 settings: Arc::new(settings.clone()),
                 change_generation: 0,
-                status_generation: 1,
-                background_efficiency_status: BackgroundEfficiencySnapshot::default(),
-                app_suspension_status: AppSuspensionSnapshot::default(),
-                core_steering_status: CoreSteeringSnapshot::default(),
-                background_cpu_restriction_status: CoreSteeringSnapshot::default(),
-                core_limiter_status: CoreLimiterSnapshot::default(),
-                by_running_app_status: ByRunningAppSnapshot::default(),
-                workload_engine_status: WorkloadEngineSnapshot::default(),
-                process_priority_status: ProcessPrioritySnapshot::default(),
-                thread_priority_status: ThreadPrioritySnapshot::default(),
-                dynamic_priority_boost_status: DynamicPriorityBoostSnapshot::default(),
-                io_priority_status: IoPrioritySnapshot::default(),
-                gpu_priority_status: GpuPrioritySnapshot::default(),
-                memory_priority_status: MemoryPrioritySnapshot::default(),
-                memory_trim_status: MemoryTrimSnapshot::default(),
-                timer_resolution_status: TimerResolutionSnapshot::default(),
-                action_log_entries: Arc::new(Vec::new()),
-                appearance_change_generation: 0,
+                status: AutomationStatusSnapshot {
+                    generation: 1,
+                    ..Default::default()
+                },
+
                 pending_auto_exclusions: PendingAutoExclusions::default(),
                 app_suspension_freeze_requests: Vec::new(),
                 memory_trim_now_requested: false,
@@ -278,32 +249,13 @@ impl BackgroundAutomation {
         }
 
         self.shared.state.lock().ok().and_then(|state| {
-            (state.status_generation != observed_generation).then(|| AutomationStatusSnapshot {
-                generation: state.status_generation,
-                background_efficiency: state.background_efficiency_status.clone(),
-                app_suspension: state.app_suspension_status.clone(),
-                core_steering: state.core_steering_status.clone(),
-                background_cpu_restriction: state.background_cpu_restriction_status.clone(),
-                core_limiter: state.core_limiter_status.clone(),
-                by_running_app: state.by_running_app_status.clone(),
-                workload_engine: state.workload_engine_status.clone(),
-                process_priority: state.process_priority_status.clone(),
-                thread_priority: state.thread_priority_status.clone(),
-                dynamic_priority_boost: state.dynamic_priority_boost_status.clone(),
-                io_priority: state.io_priority_status.clone(),
-                gpu_priority: state.gpu_priority_status.clone(),
-                memory_priority: state.memory_priority_status.clone(),
-                memory_trim: state.memory_trim_status.clone(),
-                timer_resolution: state.timer_resolution_status.clone(),
-                action_log_entries: state.action_log_entries.clone(),
-                appearance_change_generation: state.appearance_change_generation,
-            })
+            (state.status.generation != observed_generation).then(|| state.status.clone())
         })
     }
 
     pub fn clear_action_log(&self) {
         if let Ok(mut state) = self.shared.state.lock() {
-            state.action_log_entries = Arc::new(Vec::new());
+            state.status.action_log_entries = Arc::new(Vec::new());
             state.action_log_clear_requested = true;
             state.change_generation = state.change_generation.wrapping_add(1);
             self.shared.changed.notify_one();
