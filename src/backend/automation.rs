@@ -44,8 +44,8 @@ use crate::{
     power_source,
     process_priority::{ProcessPriorityManager, ProcessPrioritySnapshot},
     rules::{
-        set_execution_failure_suppression_threshold, ByRunningAppDecision, DecisionEngine,
-        DecisionInput, ExecutionFailureTracker,
+        decide, set_execution_failure_suppression_threshold, ByRunningAppDecision, DecisionInput,
+        ExecutionFailureTracker,
     },
     thread_priority::{ThreadPriorityManager, ThreadPrioritySnapshot},
     timer_resolution::{TimerResolutionManager, TimerResolutionSnapshot},

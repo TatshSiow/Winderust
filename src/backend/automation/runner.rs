@@ -697,16 +697,16 @@ impl HiddenAutomationRunner {
 
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
-        let foreground_app = foreground_lookup_required(settings)
+        let foreground_process_name = foreground_lookup_required(settings)
             .then(|| self.foreground_detector.process_name())
             .flatten();
-        let schedule = self.by_time_scheduler.current_decision(&settings.by_time);
-        let cpu_usage_decision = self
+        let by_time_decision = self.by_time_scheduler.current_decision(&settings.by_time);
+        let by_cpu_load_decision = self
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
         let decision_input = DecisionInput {
             activity_state: activity.state,
-            foreground_app,
+            foreground_process_name,
             plugged_in: power_source::is_plugged_in(),
             by_running_app: self.by_running_app_manager.active_decision().map(
                 |(rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
@@ -715,11 +715,11 @@ impl HiddenAutomationRunner {
                     power_plan_guid,
                 },
             ),
-            by_time: schedule,
-            by_cpu_load: cpu_usage_decision,
+            by_time: by_time_decision,
+            by_cpu_load: by_cpu_load_decision,
         };
-        let decision = DecisionEngine.decide(settings, decision_input);
-        self.apply_power_plan_guid(decision.target_guid.as_deref());
+        let decision = decide(settings, decision_input);
+        self.apply_power_plan_guid(decision.power_plan_guid.as_deref());
     }
 
     pub(super) fn refresh_active_plan(&mut self) {

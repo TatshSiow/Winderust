@@ -111,11 +111,11 @@ impl WinderustApp {
             .by_time_scheduler
             .next_switch_label(&decision_settings.by_time);
 
-        self.decision = self.decision_engine.decide(
+        self.decision = decide(
             decision_settings,
             DecisionInput {
                 activity_state: self.activity.state,
-                foreground_app: self.foreground_app.clone(),
+                foreground_process_name: self.foreground_app.clone(),
                 plugged_in: power_source::is_plugged_in(),
                 by_running_app: by_running_app_decision(&self.by_running_app_status),
                 by_time,
@@ -138,7 +138,7 @@ impl WinderustApp {
         let memory_usage = self.memory_usage;
         let io_usage = self.io_usage;
         let network_usage = self.network_usage;
-        let decision_target_guid = self.decision.target_guid.take();
+        let decision_power_plan_guid = self.decision.power_plan_guid.take();
         let decision_state = self.decision.state;
         let decision_reason = std::mem::take(&mut self.decision.reason);
         let next_schedule = std::mem::take(&mut self.next_schedule);
@@ -159,7 +159,7 @@ impl WinderustApp {
         self.activity.state != activity_state
             || self.activity.idle_for != activity_idle_for
             || (resource_samples_visible && resource_samples_changed)
-            || self.decision.target_guid != decision_target_guid
+            || self.decision.power_plan_guid != decision_power_plan_guid
             || self.decision.state != decision_state
             || self.decision.reason != decision_reason
             || self.next_schedule != next_schedule
@@ -331,7 +331,7 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn apply_decision(&mut self) {
-        let Some(target_guid) = self.decision.target_guid.as_deref() else {
+        let Some(target_guid) = self.decision.power_plan_guid.as_deref() else {
             return;
         };
 

@@ -720,7 +720,7 @@ fn decision_engine_returns_default_active_power_plan() {
     settings.by_activity.power_plans.performance_guid = Some("target-guid".to_owned());
     let input = DecisionInput {
         activity_state: crate::activity::ActivityState::Active,
-        foreground_app: None,
+        foreground_process_name: None,
         plugged_in: None,
         by_running_app: None,
         by_time: None,
@@ -728,10 +728,7 @@ fn decision_engine_returns_default_active_power_plan() {
     };
 
     assert_eq!(
-        DecisionEngine
-            .decide(&settings, input)
-            .target_guid
-            .as_deref(),
+        decide(&settings, input).power_plan_guid.as_deref(),
         Some("target-guid")
     );
 }

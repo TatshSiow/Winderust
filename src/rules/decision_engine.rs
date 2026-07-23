@@ -1,6 +1,6 @@
 use crate::{
     activity::ActivityState,
-    config::{PowerPlanSettings, Settings},
+    config::Settings,
     features::power_plan_control::{ByCpuLoadDecision, ByTimeDecision},
     foreground::same_process_name,
 };
@@ -8,20 +8,20 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionState {
     Disabled,
-    PluggedInPause,
-    ByForegroundRule,
+    PausedWhilePluggedIn,
+    ByForeground,
     ByRunningApp,
-    ScheduledRule,
-    CpuLoadRule,
-    IdlePowerSave,
-    ActivePerformance,
-    NoTargetPlan,
+    ByTime,
+    ByCpuLoad,
+    ByActivityIdle,
+    ByActivityActive,
+    NoPowerPlanSelected,
 }
 
 #[derive(Debug, Clone)]
 pub struct DecisionInput {
     pub activity_state: ActivityState,
-    pub foreground_app: Option<String>,
+    pub foreground_process_name: Option<String>,
     pub plugged_in: Option<bool>,
     pub by_running_app: Option<ByRunningAppDecision>,
     pub by_time: Option<ByTimeDecision>,
@@ -37,161 +37,150 @@ pub struct ByRunningAppDecision {
 
 #[derive(Debug, Clone)]
 pub struct DecisionOutcome {
-    pub target_guid: Option<String>,
+    pub power_plan_guid: Option<String>,
     pub state: DecisionState,
     pub reason: String,
 }
 
-#[derive(Debug, Default)]
-pub struct DecisionEngine;
+pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
+    if !settings.general.enabled {
+        return DecisionOutcome::without_power_plan(
+            DecisionState::Disabled,
+            "Automation is disabled.",
+        );
+    }
 
-impl DecisionEngine {
-    pub fn decide(&self, settings: &Settings, input: DecisionInput) -> DecisionOutcome {
-        if !settings.general.enabled {
-            return DecisionOutcome::without_target(
-                DecisionState::Disabled,
-                "Automation is disabled.",
-            );
-        }
+    if settings.general.pause_power_plan_switching_while_plugged_in
+        && input.plugged_in == Some(true)
+    {
+        return DecisionOutcome::without_power_plan(
+            DecisionState::PausedWhilePluggedIn,
+            "Power-plan switching is paused while plugged in.",
+        );
+    }
 
-        if settings.general.pause_power_plan_switching_while_plugged_in
-            && input.plugged_in == Some(true)
-        {
-            return DecisionOutcome::without_target(
-                DecisionState::PluggedInPause,
-                "Power-plan switching is paused while plugged in.",
-            );
-        }
+    let foreground_process_name = input.foreground_process_name.as_deref();
 
-        let foreground = input.foreground_app.as_deref().map(str::to_ascii_lowercase);
-
-        if let Some(app) = foreground
-            .as_deref()
-            .filter(|_| settings.by_foreground.enabled)
-        {
-            for rule in &settings.by_foreground.rules {
-                if rule.enabled && same_process_name(&rule.process_name, app) {
-                    if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
-                        return DecisionOutcome::with_target(
-                            Some(power_plan_guid),
-                            DecisionState::ByForegroundRule,
-                            format!("{app} matched foreground rule '{}'.", rule.name),
-                        );
-                    }
-                    break;
+    if let Some(foreground_process_name) =
+        foreground_process_name.filter(|_| settings.by_foreground.enabled)
+    {
+        for rule in &settings.by_foreground.rules {
+            if rule.enabled && same_process_name(&rule.process_name, foreground_process_name) {
+                if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
+                    return DecisionOutcome::with_power_plan(
+                        Some(power_plan_guid),
+                        DecisionState::ByForeground,
+                        format!(
+                            "{foreground_process_name} matched foreground rule '{}'.",
+                            rule.name
+                        ),
+                    );
                 }
+                break;
             }
         }
-
-        if let Some(by_running_app) = input.by_running_app {
-            return DecisionOutcome::with_target(
-                Some(by_running_app.power_plan_guid),
-                DecisionState::ByRunningApp,
-                format!(
-                    "{} is running and matched By Running App rule '{}'.",
-                    by_running_app.process_name, by_running_app.rule_name
-                ),
-            );
-        }
-
-        if let Some(cpu_usage) = input.by_cpu_load {
-            return DecisionOutcome::with_target(
-                cpu_usage.power_plan_guid,
-                DecisionState::CpuLoadRule,
-                format!(
-                    "CPU load is {:.1}% and matched rule '{}'.",
-                    cpu_usage.usage_percent, cpu_usage.rule_name
-                ),
-            );
-        }
-
-        if settings.by_activity.enabled {
-            return match input.activity_state {
-                ActivityState::Idle => DecisionOutcome::with_target(
-                    idle_plan(&settings.by_activity.power_plans),
-                    DecisionState::IdlePowerSave,
-                    "User input has been idle past the configured timeout.",
-                ),
-                ActivityState::Active
-                    if settings.by_activity.switch_to_performance_on_resume
-                        && settings.by_activity.input_detection.any_enabled() =>
-                {
-                    DecisionOutcome::with_target(
-                        active_plan(&settings.by_activity.power_plans),
-                        DecisionState::ActivePerformance,
-                        "Recent user input detected; using the Active plan.",
-                    )
-                }
-                ActivityState::Active if settings.by_activity.switch_to_performance_on_resume => {
-                    DecisionOutcome::without_target(
-                        DecisionState::ActivePerformance,
-                        "Recent user input detected, but no input detection types are enabled.",
-                    )
-                }
-                ActivityState::Active => DecisionOutcome::without_target(
-                    DecisionState::ActivePerformance,
-                    "Recent user input detected; Active plan switching is disabled.",
-                ),
-                ActivityState::Unknown => DecisionOutcome::without_target(
-                    DecisionState::NoTargetPlan,
-                    "Input activity could not be detected.",
-                ),
-            };
-        }
-
-        if let Some(schedule) = input.by_time {
-            return DecisionOutcome::with_target(
-                schedule.power_plan_guid,
-                DecisionState::ScheduledRule,
-                format!("By Time rule '{}' is active.", schedule.rule_name),
-            );
-        }
-
-        DecisionOutcome::with_target(
-            active_plan(&settings.by_activity.power_plans),
-            DecisionState::ActivePerformance,
-            "Using the configured default Active plan.",
-        )
     }
+
+    if let Some(by_running_app) = input.by_running_app {
+        return DecisionOutcome::with_power_plan(
+            Some(by_running_app.power_plan_guid),
+            DecisionState::ByRunningApp,
+            format!(
+                "{} is running and matched By Running App rule '{}'.",
+                by_running_app.process_name, by_running_app.rule_name
+            ),
+        );
+    }
+
+    if let Some(by_cpu_load_decision) = input.by_cpu_load {
+        return DecisionOutcome::with_power_plan(
+            by_cpu_load_decision.power_plan_guid,
+            DecisionState::ByCpuLoad,
+            format!(
+                "CPU load is {:.1}% and matched rule '{}'.",
+                by_cpu_load_decision.usage_percent, by_cpu_load_decision.rule_name
+            ),
+        );
+    }
+
+    if settings.by_activity.enabled {
+        return match input.activity_state {
+            ActivityState::Idle => DecisionOutcome::with_power_plan(
+                settings.by_activity.power_plans.power_save_guid.clone(),
+                DecisionState::ByActivityIdle,
+                "User input has been idle past the configured timeout.",
+            ),
+            ActivityState::Active
+                if settings.by_activity.switch_to_performance_on_resume
+                    && settings.by_activity.input_detection.any_enabled() =>
+            {
+                DecisionOutcome::with_power_plan(
+                    settings.by_activity.power_plans.performance_guid.clone(),
+                    DecisionState::ByActivityActive,
+                    "Recent user input detected; using the Active plan.",
+                )
+            }
+            ActivityState::Active if settings.by_activity.switch_to_performance_on_resume => {
+                DecisionOutcome::without_power_plan(
+                    DecisionState::ByActivityActive,
+                    "Recent user input detected, but no input detection types are enabled.",
+                )
+            }
+            ActivityState::Active => DecisionOutcome::without_power_plan(
+                DecisionState::ByActivityActive,
+                "Recent user input detected; Active plan switching is disabled.",
+            ),
+            ActivityState::Unknown => DecisionOutcome::without_power_plan(
+                DecisionState::NoPowerPlanSelected,
+                "Input activity could not be detected.",
+            ),
+        };
+    }
+
+    if let Some(by_time_decision) = input.by_time {
+        return DecisionOutcome::with_power_plan(
+            by_time_decision.power_plan_guid,
+            DecisionState::ByTime,
+            format!("By Time rule '{}' is active.", by_time_decision.rule_name),
+        );
+    }
+
+    DecisionOutcome::with_power_plan(
+        settings.by_activity.power_plans.performance_guid.clone(),
+        DecisionState::ByActivityActive,
+        "Using the configured default Active plan.",
+    )
 }
 
 impl DecisionOutcome {
-    fn with_target(
-        target_guid: Option<String>,
+    fn with_power_plan(
+        power_plan_guid: Option<String>,
         state: DecisionState,
         reason: impl Into<String>,
     ) -> Self {
         let reason = reason.into();
-        if target_guid.is_some() {
+        if power_plan_guid.is_some() {
             Self {
-                target_guid,
+                power_plan_guid,
                 state,
                 reason,
             }
         } else {
             Self {
-                target_guid: None,
-                state: DecisionState::NoTargetPlan,
+                power_plan_guid: None,
+                state: DecisionState::NoPowerPlanSelected,
                 reason: format!("{reason} Select the required power plan first."),
             }
         }
     }
 
-    fn without_target(state: DecisionState, reason: impl Into<String>) -> Self {
+    fn without_power_plan(state: DecisionState, reason: impl Into<String>) -> Self {
         Self {
-            target_guid: None,
+            power_plan_guid: None,
             state,
             reason: reason.into(),
         }
     }
-}
-
-fn idle_plan(power_plans: &PowerPlanSettings) -> Option<String> {
-    power_plans.power_save_guid.clone()
-}
-
-fn active_plan(power_plans: &PowerPlanSettings) -> Option<String> {
-    power_plans.performance_guid.clone()
 }
 
 #[cfg(test)]
@@ -218,11 +207,11 @@ mod tests {
 
     #[test]
     fn cpu_usage_overrides_activity_and_schedule() {
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &test_settings(),
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -237,17 +226,17 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::CpuLoadRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("cpu-low-guid"));
+        assert_eq!(outcome.state, DecisionState::ByCpuLoad);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("cpu-low-guid"));
     }
 
     #[test]
     fn activity_overrides_schedule_when_cpu_does_not_match() {
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &test_settings(),
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -258,8 +247,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::IdlePowerSave);
-        assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
+        assert_eq!(outcome.state, DecisionState::ByActivityIdle);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("idle-guid"));
     }
 
     #[test]
@@ -267,11 +256,11 @@ mod tests {
         let mut settings = test_settings();
         settings.by_activity.enabled = false;
 
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -282,17 +271,17 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::ScheduledRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("schedule-custom"));
+        assert_eq!(outcome.state, DecisionState::ByTime);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("schedule-custom"));
     }
 
     #[test]
     fn activity_applies_without_foreground_or_schedule() {
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &test_settings(),
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -300,8 +289,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::IdlePowerSave);
-        assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
+        assert_eq!(outcome.state, DecisionState::ByActivityIdle);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("idle-guid"));
     }
 
     #[test]
@@ -309,11 +298,11 @@ mod tests {
         let mut settings = test_settings();
         settings.by_foreground.enabled = false;
 
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: Some("backup.exe".to_owned()),
+                foreground_process_name: Some("backup.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -321,8 +310,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::IdlePowerSave);
-        assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
+        assert_eq!(outcome.state, DecisionState::ByActivityIdle);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("idle-guid"));
     }
 
     #[test]
@@ -330,11 +319,11 @@ mod tests {
         let mut settings = test_settings();
         settings.general.pause_power_plan_switching_while_plugged_in = true;
 
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: Some(true),
                 by_running_app: None,
                 by_time: None,
@@ -342,8 +331,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::PluggedInPause);
-        assert_eq!(outcome.target_guid, None);
+        assert_eq!(outcome.state, DecisionState::PausedWhilePluggedIn);
+        assert_eq!(outcome.power_plan_guid, None);
     }
 
     #[test]
@@ -360,25 +349,28 @@ mod tests {
             power_plan_guid: Some("foreground-custom".to_owned()),
         }];
 
-        let foreground = DecisionEngine.decide(
+        let foreground = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
-                foreground_app: Some("game.exe".to_owned()),
+                foreground_process_name: Some("game.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: None,
             },
         );
-        assert_eq!(foreground.target_guid.as_deref(), Some("foreground-custom"));
+        assert_eq!(
+            foreground.power_plan_guid.as_deref(),
+            Some("foreground-custom")
+        );
 
         settings.by_activity.enabled = false;
-        let schedule = DecisionEngine.decide(
+        let by_time_decision = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -388,14 +380,17 @@ mod tests {
                 by_cpu_load: None,
             },
         );
-        assert_eq!(schedule.target_guid.as_deref(), Some("schedule-custom"));
+        assert_eq!(
+            by_time_decision.power_plan_guid.as_deref(),
+            Some("schedule-custom")
+        );
 
         settings.by_activity.enabled = false;
-        let cpu = DecisionEngine.decide(
+        let cpu = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -406,21 +401,21 @@ mod tests {
                 }),
             },
         );
-        assert_eq!(cpu.target_guid.as_deref(), Some("cpu-custom"));
+        assert_eq!(cpu.power_plan_guid.as_deref(), Some("cpu-custom"));
 
         settings.by_activity.enabled = true;
-        let activity = DecisionEngine.decide(
+        let activity = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
                 by_cpu_load: None,
             },
         );
-        assert_eq!(activity.target_guid.as_deref(), Some("activity-idle"));
+        assert_eq!(activity.power_plan_guid.as_deref(), Some("activity-idle"));
     }
 
     #[test]
@@ -433,11 +428,11 @@ mod tests {
             power_plan_guid: Some("balanced-guid".to_owned()),
         }];
 
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: Some("editor.exe".to_owned()),
+                foreground_process_name: Some("editor.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -445,8 +440,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::ByForegroundRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("balanced-guid"));
+        assert_eq!(outcome.state, DecisionState::ByForeground);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("balanced-guid"));
     }
 
     #[test]
@@ -459,11 +454,11 @@ mod tests {
             power_plan_guid: None,
         }];
 
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: Some("editor.exe".to_owned()),
+                foreground_process_name: Some("editor.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -478,8 +473,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::CpuLoadRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("cpu-high-guid"));
+        assert_eq!(outcome.state, DecisionState::ByCpuLoad);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("cpu-high-guid"));
     }
 
     #[test]
@@ -492,11 +487,11 @@ mod tests {
             power_plan_guid: None,
         }];
 
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: Some("render.exe".to_owned()),
+                foreground_process_name: Some("render.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -508,17 +503,17 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::CpuLoadRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("cpu-high-guid"));
+        assert_eq!(outcome.state, DecisionState::ByCpuLoad);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("cpu-high-guid"));
     }
 
     #[test]
     fn by_running_app_overrides_cpu_activity_and_schedule() {
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &test_settings(),
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: None,
+                foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: Some(ByRunningAppDecision {
                     rule_name: "Game".to_owned(),
@@ -538,7 +533,10 @@ mod tests {
         );
 
         assert_eq!(outcome.state, DecisionState::ByRunningApp);
-        assert_eq!(outcome.target_guid.as_deref(), Some("by-running-app-guid"));
+        assert_eq!(
+            outcome.power_plan_guid.as_deref(),
+            Some("by-running-app-guid")
+        );
     }
 
     #[test]
@@ -551,11 +549,11 @@ mod tests {
             power_plan_guid: Some("foreground-guid".to_owned()),
         }];
 
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: Some("game.exe".to_owned()),
+                foreground_process_name: Some("game.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: Some(ByRunningAppDecision {
                     rule_name: "Game running".to_owned(),
@@ -567,8 +565,8 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::ByForegroundRule);
-        assert_eq!(outcome.target_guid.as_deref(), Some("foreground-guid"));
+        assert_eq!(outcome.state, DecisionState::ByForeground);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("foreground-guid"));
     }
 
     #[test]
@@ -581,11 +579,11 @@ mod tests {
             power_plan_guid: Some("balanced-guid".to_owned()),
         }];
 
-        let outcome = DecisionEngine.decide(
+        let outcome = decide(
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_app: Some("editor.exe".to_owned()),
+                foreground_process_name: Some("editor.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -593,7 +591,7 @@ mod tests {
             },
         );
 
-        assert_eq!(outcome.state, DecisionState::IdlePowerSave);
-        assert_eq!(outcome.target_guid.as_deref(), Some("idle-guid"));
+        assert_eq!(outcome.state, DecisionState::ByActivityIdle);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("idle-guid"));
     }
 }
