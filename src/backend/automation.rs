@@ -507,43 +507,51 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let event_now = Instant::now();
         let settings_changed = wake_events.settings_changed || runner.note_settings(&settings);
         if settings_changed {
-            next_check = event_now;
-            next_background_efficiency_refresh = event_now;
-            next_app_suspension_refresh = event_now;
-            next_app_suspension_foreground_release = event_now;
-            next_core_steering_refresh = event_now;
-            next_background_cpu_restriction_refresh = event_now;
-            next_core_limiter_refresh = event_now;
-            next_by_running_app_refresh = event_now;
-            next_workload_engine_refresh = event_now;
-            next_process_priority_refresh = event_now;
-            next_thread_priority_refresh = event_now;
-            next_dynamic_priority_boost_refresh = event_now;
-            next_io_priority_refresh = event_now;
-            next_gpu_priority_refresh = event_now;
-            next_memory_priority_refresh = event_now;
-            next_memory_trim_refresh = event_now;
-            next_timer_resolution_refresh = event_now;
-            next_process_appearance_scan = event_now;
-            next_controller_activity_poll = event_now;
+            for refresh_at in [
+                &mut next_check,
+                &mut next_background_efficiency_refresh,
+                &mut next_app_suspension_refresh,
+                &mut next_app_suspension_foreground_release,
+                &mut next_core_steering_refresh,
+                &mut next_background_cpu_restriction_refresh,
+                &mut next_core_limiter_refresh,
+                &mut next_by_running_app_refresh,
+                &mut next_workload_engine_refresh,
+                &mut next_process_priority_refresh,
+                &mut next_thread_priority_refresh,
+                &mut next_dynamic_priority_boost_refresh,
+                &mut next_io_priority_refresh,
+                &mut next_gpu_priority_refresh,
+                &mut next_memory_priority_refresh,
+                &mut next_memory_trim_refresh,
+                &mut next_timer_resolution_refresh,
+                &mut next_process_appearance_scan,
+                &mut next_controller_activity_poll,
+            ] {
+                *refresh_at = event_now;
+            }
             workload_engine_fast_until = None;
         }
         if wake_events.foreground_changed || wake_events.session_changed {
-            next_check = event_now;
-            next_background_efficiency_refresh = event_now;
-            next_core_steering_refresh = event_now;
-            next_background_cpu_restriction_refresh = event_now;
-            next_core_limiter_refresh = event_now;
-            next_workload_engine_refresh = event_now;
-            next_process_priority_refresh = event_now;
-            next_thread_priority_refresh = event_now;
-            next_dynamic_priority_boost_refresh = event_now;
-            next_io_priority_refresh = event_now;
-            next_gpu_priority_refresh = event_now;
-            next_memory_priority_refresh = event_now;
-            next_memory_trim_refresh = event_now;
-            next_timer_resolution_refresh = event_now;
-            next_app_suspension_foreground_release = event_now;
+            for refresh_at in [
+                &mut next_check,
+                &mut next_background_efficiency_refresh,
+                &mut next_core_steering_refresh,
+                &mut next_background_cpu_restriction_refresh,
+                &mut next_core_limiter_refresh,
+                &mut next_workload_engine_refresh,
+                &mut next_process_priority_refresh,
+                &mut next_thread_priority_refresh,
+                &mut next_dynamic_priority_boost_refresh,
+                &mut next_io_priority_refresh,
+                &mut next_gpu_priority_refresh,
+                &mut next_memory_priority_refresh,
+                &mut next_memory_trim_refresh,
+                &mut next_timer_resolution_refresh,
+                &mut next_app_suspension_foreground_release,
+            ] {
+                *refresh_at = event_now;
+            }
             workload_engine_fast_until =
                 workload_engine_fast_refresh_deadline(&settings, event_now);
         }
@@ -637,19 +645,23 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
 
         if scan_process_appearance && now >= next_process_appearance_scan {
             if runner.detect_process_appearance() {
-                next_background_efficiency_refresh = now;
-                next_core_steering_refresh = now;
-                next_background_cpu_restriction_refresh = now;
-                next_core_limiter_refresh = now;
-                next_by_running_app_refresh = now;
-                next_workload_engine_refresh = now;
-                next_process_priority_refresh = now;
-                next_thread_priority_refresh = now;
-                next_dynamic_priority_boost_refresh = now;
-                next_io_priority_refresh = now;
-                next_gpu_priority_refresh = now;
-                next_memory_priority_refresh = now;
-                next_memory_trim_refresh = now;
+                for refresh_at in [
+                    &mut next_background_efficiency_refresh,
+                    &mut next_core_steering_refresh,
+                    &mut next_background_cpu_restriction_refresh,
+                    &mut next_core_limiter_refresh,
+                    &mut next_by_running_app_refresh,
+                    &mut next_workload_engine_refresh,
+                    &mut next_process_priority_refresh,
+                    &mut next_thread_priority_refresh,
+                    &mut next_dynamic_priority_boost_refresh,
+                    &mut next_io_priority_refresh,
+                    &mut next_gpu_priority_refresh,
+                    &mut next_memory_priority_refresh,
+                    &mut next_memory_trim_refresh,
+                ] {
+                    *refresh_at = now;
+                }
                 workload_engine_fast_until = workload_engine_fast_refresh_deadline(&settings, now);
             }
             next_process_appearance_scan = now + process_appearance_scan_interval;
@@ -792,127 +804,105 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             None
         };
 
-        if background_efficiency_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_background_efficiency_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(background_efficiency_refresh_interval),
-            ));
+        for (required, refresh_at, interval) in [
+            (
+                background_efficiency_refresh_required,
+                next_background_efficiency_refresh,
+                background_efficiency_refresh_interval,
+            ),
+            (
+                app_suspension_refresh_required,
+                next_app_suspension_refresh,
+                app_suspension_refresh_interval,
+            ),
+            (
+                core_steering_refresh_required,
+                next_core_steering_refresh,
+                core_steering_refresh_interval,
+            ),
+            (
+                background_cpu_restriction_refresh_required,
+                next_background_cpu_restriction_refresh,
+                background_cpu_restriction_refresh_interval,
+            ),
+            (
+                core_limiter_refresh_required,
+                next_core_limiter_refresh,
+                core_limiter_refresh_interval,
+            ),
+            (
+                by_running_app_refresh_required,
+                next_by_running_app_refresh,
+                by_running_app_refresh_interval,
+            ),
+            (
+                workload_engine_refresh_required,
+                next_workload_engine_refresh,
+                workload_engine_refresh_interval,
+            ),
+            (
+                process_priority_refresh_required,
+                next_process_priority_refresh,
+                process_priority_refresh_interval,
+            ),
+            (
+                thread_priority_refresh_required,
+                next_thread_priority_refresh,
+                thread_priority_refresh_interval,
+            ),
+            (
+                dynamic_priority_boost_refresh_required,
+                next_dynamic_priority_boost_refresh,
+                dynamic_priority_boost_refresh_interval,
+            ),
+            (
+                io_priority_refresh_required,
+                next_io_priority_refresh,
+                io_priority_refresh_interval,
+            ),
+            (
+                gpu_priority_refresh_required,
+                next_gpu_priority_refresh,
+                gpu_priority_refresh_interval,
+            ),
+            (
+                memory_priority_refresh_required,
+                next_memory_priority_refresh,
+                memory_priority_refresh_interval,
+            ),
+            (
+                memory_trim_refresh_required,
+                next_memory_trim_refresh,
+                memory_trim_refresh_interval,
+            ),
+            (
+                timer_resolution_refresh_required,
+                next_timer_resolution_refresh,
+                timer_resolution_refresh_interval,
+            ),
+            (
+                scan_process_appearance,
+                next_process_appearance_scan,
+                process_appearance_scan_interval,
+            ),
+            (
+                controller_poll_required,
+                next_controller_activity_poll,
+                CONTROLLER_ACTIVITY_POLL_INTERVAL,
+            ),
+            (
+                runner.app_suspension_manager.has_suspended_processes(),
+                next_app_suspension_foreground_release,
+                app_suspension_foreground_release_interval,
+            ),
+        ] {
+            if required {
+                wait_for = Some(min_worker_wait(
+                    wait_for,
+                    refresh_at.saturating_duration_since(wait_now).min(interval),
+                ));
+            }
         }
-        if app_suspension_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_app_suspension_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(app_suspension_refresh_interval),
-            ));
-        }
-        if core_steering_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_core_steering_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(core_steering_refresh_interval),
-            ));
-        }
-        if background_cpu_restriction_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_background_cpu_restriction_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(background_cpu_restriction_refresh_interval),
-            ));
-        }
-        if core_limiter_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_core_limiter_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(core_limiter_refresh_interval),
-            ));
-        }
-        if by_running_app_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_by_running_app_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(by_running_app_refresh_interval),
-            ));
-        }
-        if workload_engine_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_workload_engine_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(workload_engine_refresh_interval),
-            ));
-        }
-        if io_priority_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_io_priority_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(io_priority_refresh_interval),
-            ));
-        }
-        if gpu_priority_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_gpu_priority_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(gpu_priority_refresh_interval),
-            ));
-        }
-        if memory_priority_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_memory_priority_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(memory_priority_refresh_interval),
-            ));
-        }
-        if memory_trim_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_memory_trim_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(memory_trim_refresh_interval),
-            ));
-        }
-        if timer_resolution_refresh_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_timer_resolution_refresh
-                    .saturating_duration_since(wait_now)
-                    .min(timer_resolution_refresh_interval),
-            ));
-        }
-        if scan_process_appearance {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_process_appearance_scan
-                    .saturating_duration_since(wait_now)
-                    .min(process_appearance_scan_interval),
-            ));
-        }
-        if controller_poll_required {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_controller_activity_poll
-                    .saturating_duration_since(wait_now)
-                    .min(CONTROLLER_ACTIVITY_POLL_INTERVAL),
-            ));
-        }
-        if runner.app_suspension_manager.has_suspended_processes() {
-            wait_for = Some(min_worker_wait(
-                wait_for,
-                next_app_suspension_foreground_release
-                    .saturating_duration_since(wait_now)
-                    .min(app_suspension_foreground_release_interval),
-            ));
-        }
-
         if wait_for.is_none() && !automation_worker_required(&settings) {
             break;
         }

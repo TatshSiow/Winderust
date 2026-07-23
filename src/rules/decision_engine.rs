@@ -594,4 +594,25 @@ mod tests {
         assert_eq!(outcome.state, DecisionState::ByActivityIdle);
         assert_eq!(outcome.power_plan_guid.as_deref(), Some("idle-guid"));
     }
+
+    #[test]
+    fn falls_back_to_the_active_plan() {
+        let mut settings = test_settings();
+        settings.by_activity.enabled = false;
+
+        let outcome = decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Active,
+                foreground_process_name: None,
+                plugged_in: None,
+                by_running_app: None,
+                by_time: None,
+                by_cpu_load: None,
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::ByActivityActive);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("active-guid"));
+    }
 }

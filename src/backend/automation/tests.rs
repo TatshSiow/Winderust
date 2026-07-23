@@ -704,23 +704,3 @@ fn power_plan_checks_sleep_when_decision_features_are_off() {
 
     assert!(!power_plan_checks_required(&settings));
 }
-
-#[test]
-fn decision_engine_returns_default_active_power_plan() {
-    let mut settings = Settings::default();
-    settings.by_activity.enabled = false;
-    settings.by_activity.power_plans.performance_guid = Some("target-guid".to_owned());
-    let input = DecisionInput {
-        activity_state: crate::activity::ActivityState::Active,
-        foreground_process_name: None,
-        plugged_in: None,
-        by_running_app: None,
-        by_time: None,
-        by_cpu_load: None,
-    };
-
-    assert_eq!(
-        decide(&settings, input).power_plan_guid.as_deref(),
-        Some("target-guid")
-    );
-}
