@@ -90,6 +90,14 @@ fn hicon_to_bmp(icon: HICON) -> Option<Vec<u8>> {
 
     // SAFETY: hdc and bitmap are live GDI objects owned by this function.
     let old_object = unsafe { SelectObject(hdc, bitmap as HGDIOBJ) };
+    if old_object.is_null() {
+        // SAFETY: bitmap and hdc are live, owned by this function, and released exactly once.
+        unsafe {
+            DeleteObject(bitmap as HGDIOBJ);
+            DeleteDC(hdc);
+        }
+        return None;
+    }
     // SAFETY: hdc has the bitmap selected, icon is live for the call, and dimensions are positive.
     let drawn = unsafe { DrawIconEx(hdc, 0, 0, icon, width, height, 0, null_mut(), DI_NORMAL) };
 
@@ -103,9 +111,7 @@ fn hicon_to_bmp(icon: HICON) -> Option<Vec<u8>> {
     // SAFETY: The selected object is restored before the bitmap, then bitmap and hdc are each
     // released exactly once.
     unsafe {
-        if !old_object.is_null() {
-            SelectObject(hdc, old_object);
-        }
+        SelectObject(hdc, old_object);
         DeleteObject(bitmap as HGDIOBJ);
         DeleteDC(hdc);
     }
@@ -136,4 +142,21 @@ fn bmp_from_bgra_pixels(width: i32, height: i32, pixels: Vec<u8>) -> Vec<u8> {
     bytes.extend_from_slice(&pixels);
 
     bytes
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bmp_header_describes_the_supplied_pixels() {
+        let pixels = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let bytes = bmp_from_bgra_pixels(2, 1, pixels.clone());
+
+        assert_eq!(&bytes[..2], b"BM");
+        assert_eq!(u32::from_le_bytes(bytes[2..6].try_into().unwrap()), 62);
+        assert_eq!(u32::from_le_bytes(bytes[10..14].try_into().unwrap()), 54);
+        assert_eq!(i32::from_le_bytes(bytes[18..22].try_into().unwrap()), 2);
+        assert_eq!(i32::from_le_bytes(bytes[22..26].try_into().unwrap()), -1);
+        assert_eq!(&bytes[54..], pixels);
+    }
 }
