@@ -508,8 +508,12 @@ impl HiddenAutomationRunner {
             return Err(error);
         }
 
-        self.current_guid = Some(plan.original_guid);
-        delete_plan(&plan.plan_guid)
+        self.current_guid = Some(plan.original_guid.clone());
+        if let Err(error) = delete_plan(&plan.plan_guid) {
+            self.adaptive_power_plan = Some(plan);
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub(super) fn sync_static_processor_policy(
