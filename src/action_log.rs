@@ -116,7 +116,6 @@ impl ActionLog {
 
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.entries.shrink_to_fit();
     }
 
     #[cfg(test)]
