@@ -9,7 +9,7 @@
 ## Repo Shape
 
 - Rust/GPUI Windows desktop app for power/process automation.
-- Shared UI state and cross-page wiring: `src/ui/app.rs`.
+- Shared UI state and construction: `src/ui/app.rs`; operational `WinderustApp` method groups: `src/ui/app/*.rs`.
 - Page and shell renderers: `src/ui/app/pages/`; reusable UI helpers: `src/ui/app/shared/`.
 - Background worker and status fan-out: `src/backend/automation.rs`.
 - Process add/check helpers: `src/ui/app/shared/process_policies.rs` (`can_add_*`,

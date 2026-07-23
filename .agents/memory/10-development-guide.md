@@ -111,8 +111,7 @@ and the corrected commit must be the tagged source.
 ## Source Map
 
 - `src/main.rs`: app entry, single-instance guard, GPUI startup.
-- `src/ui/app.rs`: shared `WinderustApp` state, lifecycle, command wiring,
-  cross-page coordination, and app-level tests.
+- `src/ui/app.rs`: `WinderustApp` state, construction, rendering, teardown, and app-level tests. Operational method groups live in `src/ui/app/*.rs` (`runtime`, `settings_io`, `process_refresh`, `tray_state`, navigation, removal, and update checks).
 - `src/ui/app/pages/`: page and shell renderers. `src/ui/app/shared/`: reusable UI components, state helpers, formatting, policies, and shared feature logic. Page dispatch is
   in `app_shell.rs`; process add/check and rule-construction helpers are in
   `process_policies.rs`.
@@ -191,7 +190,7 @@ Process-control features must keep these defaults:
 - Use existing GPUI/gpui-component helpers before adding new UI primitives.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
 - Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
-- Keep `src/ui/app.rs` for shared app state and cross-page coordination. Put a
+- Keep `src/ui/app.rs` for shared app state, construction, rendering, and teardown; keep operational method groups in `src/ui/app/*.rs`. Put a
   complete page in `src/ui/app/pages/` and repeated helper families in `src/ui/app/shared/`;
   do not start a framework rewrite.
 - Multiple focused `impl WinderustApp` blocks are acceptable for the private UI
