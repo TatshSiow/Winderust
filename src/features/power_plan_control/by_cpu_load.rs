@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use crate::config::ByCpuLoadSettings;
+use crate::config::{ByCpuLoadRule, ByCpuLoadSettings};
 
 #[derive(Debug, Clone)]
 pub struct ByCpuLoadDecision {
@@ -12,6 +12,7 @@ pub struct ByCpuLoadDecision {
 #[derive(Debug, Default)]
 pub struct ByCpuLoadScheduler {
     matched_since: Vec<Option<Instant>>,
+    last_rules: Vec<ByCpuLoadRule>,
 }
 
 impl ByCpuLoadScheduler {
@@ -22,16 +23,23 @@ impl ByCpuLoadScheduler {
     ) -> Option<ByCpuLoadDecision> {
         if !settings.enabled || settings.rules.is_empty() {
             self.matched_since.clear();
+            self.last_rules.clear();
             return None;
         }
 
         let Some(usage_percent) = usage_percent else {
             self.matched_since.clear();
+            self.last_rules.clear();
             return None;
         };
+        if self.last_rules != settings.rules {
+            self.matched_since.clear();
+            self.last_rules.clone_from(&settings.rules);
+        }
         self.matched_since.resize(settings.rules.len(), None);
         let now = Instant::now();
         let mut else_decision = None;
+        let mut matching_decision = None;
 
         for (index, rule) in settings.rules.iter().enumerate() {
             if !rule.enabled {
@@ -54,8 +62,10 @@ impl ByCpuLoadScheduler {
             }
 
             let matched_since = self.matched_since[index].get_or_insert(now);
-            if matched_since.elapsed().as_secs() >= rule.duration_seconds {
-                return Some(ByCpuLoadDecision {
+            if matched_since.elapsed().as_secs() >= rule.duration_seconds
+                && matching_decision.is_none()
+            {
+                matching_decision = Some(ByCpuLoadDecision {
                     rule_name: rule.name.clone(),
                     power_plan_guid: rule.power_plan_guid.clone(),
                     usage_percent,
@@ -63,10 +73,12 @@ impl ByCpuLoadScheduler {
             }
         }
 
-        else_decision.map(|(rule_name, power_plan_guid)| ByCpuLoadDecision {
-            rule_name,
-            power_plan_guid,
-            usage_percent,
+        matching_decision.or_else(|| {
+            else_decision.map(|(rule_name, power_plan_guid)| ByCpuLoadDecision {
+                rule_name,
+                power_plan_guid,
+                usage_percent,
+            })
         })
     }
 }
@@ -190,6 +202,72 @@ mod tests {
         assert_eq!(decision.power_plan_guid.as_deref(), Some("else-guid"));
     }
 
+    #[test]
+    fn editing_a_rule_resets_its_duration_timer() {
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let mut settings = ByCpuLoadSettings {
+            enabled: true,
+            rules: vec![ByCpuLoadRule {
+                enabled: true,
+                name: "High CPU".to_owned(),
+                comparison: CpuUsageComparison::AtOrAbove,
+                threshold_percent: 75,
+                upper_threshold_percent: None,
+                duration_seconds: 30,
+                power_plan_guid: Some("high-cpu-guid".to_owned()),
+                else_enabled: false,
+                else_power_plan_guid: None,
+            }],
+        };
+        scheduler.last_rules.clone_from(&settings.rules);
+        scheduler.matched_since = vec![Some(Instant::now() - std::time::Duration::from_secs(30))];
+
+        settings.rules[0].name = "Edited High CPU".to_owned();
+
+        assert!(scheduler.current_decision(&settings, Some(80.0)).is_none());
+    }
+
+    #[test]
+    fn selected_rule_does_not_leave_later_rule_timers_stale() {
+        let mut scheduler = ByCpuLoadScheduler::default();
+        let settings = ByCpuLoadSettings {
+            enabled: true,
+            rules: vec![
+                ByCpuLoadRule {
+                    enabled: true,
+                    name: "High CPU".to_owned(),
+                    comparison: CpuUsageComparison::AtOrAbove,
+                    threshold_percent: 75,
+                    upper_threshold_percent: None,
+                    duration_seconds: 0,
+                    power_plan_guid: Some("high-cpu-guid".to_owned()),
+                    else_enabled: false,
+                    else_power_plan_guid: None,
+                },
+                ByCpuLoadRule {
+                    enabled: true,
+                    name: "Low CPU".to_owned(),
+                    comparison: CpuUsageComparison::AtOrBelow,
+                    threshold_percent: 20,
+                    upper_threshold_percent: None,
+                    duration_seconds: 30,
+                    power_plan_guid: Some("low-cpu-guid".to_owned()),
+                    else_enabled: false,
+                    else_power_plan_guid: None,
+                },
+            ],
+        };
+        scheduler.last_rules.clone_from(&settings.rules);
+        scheduler.matched_since = vec![
+            Some(Instant::now()),
+            Some(Instant::now() - std::time::Duration::from_secs(30)),
+        ];
+
+        let decision = scheduler.current_decision(&settings, Some(90.0)).unwrap();
+
+        assert_eq!(decision.rule_name, "High CPU");
+        assert!(scheduler.matched_since[1].is_none());
+    }
     #[test]
     fn disabled_rule_is_ignored() {
         let mut scheduler = ByCpuLoadScheduler::default();
