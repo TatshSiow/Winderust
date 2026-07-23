@@ -103,8 +103,8 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
         );
     }
 
-    if settings.by_activity.enabled {
-        return match input.activity_state {
+    let deferred_activity_outcome = if settings.by_activity.enabled {
+        let outcome = match input.activity_state {
             ActivityState::Idle => DecisionOutcome::with_power_plan(
                 settings.by_activity.power_plans.power_save_guid.clone(),
                 DecisionState::ByActivityIdle,
@@ -135,7 +135,13 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
                 "Input activity could not be detected.",
             ),
         };
-    }
+        if outcome.power_plan_guid.is_some() {
+            return outcome;
+        }
+        Some(outcome)
+    } else {
+        None
+    };
 
     if let Some(by_time_decision) = input.by_time {
         return DecisionOutcome::with_power_plan(
@@ -145,6 +151,9 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
         );
     }
 
+    if let Some(outcome) = deferred_activity_outcome {
+        return outcome;
+    }
     DecisionOutcome::with_power_plan(
         settings.by_activity.power_plans.performance_guid.clone(),
         DecisionState::ByActivityActive,
@@ -260,6 +269,30 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
+                foreground_process_name: None,
+                plugged_in: None,
+                by_running_app: None,
+                by_time: Some(ByTimeDecision {
+                    rule_name: "Work hours".to_owned(),
+                    power_plan_guid: Some("schedule-custom".to_owned()),
+                }),
+                by_cpu_load: None,
+            },
+        );
+
+        assert_eq!(outcome.state, DecisionState::ByTime);
+        assert_eq!(outcome.power_plan_guid.as_deref(), Some("schedule-custom"));
+    }
+
+    #[test]
+    fn schedule_applies_when_activity_has_no_plan_for_current_state() {
+        let mut settings = test_settings();
+        settings.by_activity.power_plans.power_save_guid = None;
+
+        let outcome = decide(
+            &settings,
+            DecisionInput {
+                activity_state: ActivityState::Idle,
                 foreground_process_name: None,
                 plugged_in: None,
                 by_running_app: None,

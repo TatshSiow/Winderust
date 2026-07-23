@@ -597,6 +597,20 @@ fn by_activity_polls_when_it_can_target_a_power_plan() {
 }
 
 #[test]
+fn controller_activity_poll_requires_a_usable_plan() {
+    let mut settings = Settings::default();
+    settings.by_activity.power_plans.power_save_guid = None;
+    settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
+    settings.by_activity.switch_to_performance_on_resume = false;
+
+    assert!(!controller_activity_poll_required(&settings));
+
+    settings.by_activity.switch_to_performance_on_resume = true;
+
+    assert!(controller_activity_poll_required(&settings));
+}
+
+#[test]
 fn process_appearance_scan_runs_for_enabled_process_features() {
     let mut settings = Settings::default();
     settings.background_efficiency.enabled = true;

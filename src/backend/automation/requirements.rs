@@ -322,7 +322,8 @@ pub(super) fn controller_activity_poll_required(settings: &Settings) -> bool {
         && settings.by_activity.enabled
         && settings.by_activity.input_detection.controller
         && (has_idle_plan(&settings.by_activity.power_plans)
-            || has_active_plan(&settings.by_activity.power_plans))
+            || (settings.by_activity.switch_to_performance_on_resume
+                && has_active_plan(&settings.by_activity.power_plans)))
 }
 
 pub(super) fn by_foreground_required(settings: &Settings) -> bool {
