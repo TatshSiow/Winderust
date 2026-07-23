@@ -10,11 +10,11 @@ pub use idle_detector::{ActivitySnapshot, ActivityState, IdleDetector};
 pub use input_hook::{InputHook, InputHookConfig, InputHookEvents};
 
 pub fn merge_activity_snapshot(
-    snapshot: ActivitySnapshot,
-    additional_idle_for: Option<Duration>,
+    input_snapshot: ActivitySnapshot,
+    controller_idle_for: Option<Duration>,
     idle_timeout: Duration,
 ) -> ActivitySnapshot {
-    let idle_for = min_duration_option(snapshot.idle_for, additional_idle_for);
+    let idle_for = min_duration_option(input_snapshot.idle_for, controller_idle_for);
     match idle_for {
         Some(idle_for) => ActivitySnapshot {
             state: if idle_for >= idle_timeout {
@@ -24,7 +24,7 @@ pub fn merge_activity_snapshot(
             },
             idle_for: Some(idle_for),
         },
-        None => snapshot,
+        None => input_snapshot,
     }
 }
 
