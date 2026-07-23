@@ -23,12 +23,8 @@ fn default_export_toml_filename() -> String {
     format!(
         "winderust_{}_{}.toml",
         env!("CARGO_PKG_VERSION"),
-        export_date()
+        Local::now().format("%Y-%m-%d")
     )
-}
-
-fn export_date() -> String {
-    Local::now().format("%Y-%m-%d").to_string()
 }
 
 fn config_dir() -> PathBuf {
@@ -66,7 +62,7 @@ pub fn import_toml_from(path: &Path) -> Result<Settings, String> {
 fn read_toml_settings(path: &Path) -> Result<Settings, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {err}", path.display()))?;
-    toml_to_settings(&raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
+    toml::from_str(&raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
 }
 
 fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
@@ -74,19 +70,11 @@ fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let raw = settings_to_toml(settings)
+    let raw = toml::to_string_pretty(settings)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     let mut file = AtomicWriteFile::open(path)?;
     file.write_all(raw.as_bytes())?;
     file.commit()
-}
-
-fn settings_to_toml(settings: &Settings) -> Result<String, toml::ser::Error> {
-    toml::to_string_pretty(settings)
-}
-
-fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
-    toml::from_str(raw)
 }
 
 #[cfg(test)]
@@ -432,8 +420,8 @@ mod tests {
             },
         };
 
-        let raw = settings_to_toml(&settings).expect("settings should serialize");
-        let parsed = toml_to_settings(&raw).expect("TOML should parse");
+        let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
+        let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
 
         assert_eq!(parsed, settings);
     }
@@ -448,11 +436,11 @@ mod tests {
         settings.memory_priority.enabled = true;
         settings.memory_priority.foreground_priority = ProcessMemoryPrioritySetting::Default;
 
-        let raw = settings_to_toml(&settings).expect("settings should serialize");
+        let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
         assert!(raw.contains("background_priority = \"default\""));
         assert!(raw.contains("foreground_priority = \"default\""));
 
-        let parsed = toml_to_settings(&raw).expect("TOML should parse");
+        let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
 
         assert_eq!(
             parsed.io_priority.background_priority,

@@ -389,7 +389,7 @@ pub(in crate::ui::app) fn can_add_workload_engine_exclusion(
 ) -> bool {
     can_add_process_candidate(
         process,
-        |process| settings.contains_workload_engine_exclusion(process),
+        |process| settings.contains_exclusion(process),
         |_| false,
     )
 }

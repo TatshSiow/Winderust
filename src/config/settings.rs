@@ -2228,10 +2228,7 @@ impl TimerResolutionSettings {
             .find(|rule| {
                 rule.enabled
                     && !rule.process_name.trim().is_empty()
-                    && wildcard_match(
-                        &rule.process_name.trim().to_ascii_lowercase(),
-                        &process_name.trim().to_ascii_lowercase(),
-                    )
+                    && process_name_matches_pattern(&rule.process_name, process_name)
             })
             .map(|rule| (rule.process_name.clone(), rule.desired_100ns))
     }
@@ -2339,7 +2336,7 @@ impl WorkloadEngineSettings {
             .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
-    pub fn contains_workload_engine_exclusion(&self, process_name: &str) -> bool {
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.workload_engine_exclusions
             .iter()
             .any(|rule| same_process_name(&rule.process_name, process_name))
