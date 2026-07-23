@@ -932,10 +932,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             break;
         }
 
-        match wait_for_wake(&shared, wait_for, change_generation) {
-            WorkerWake::Stop => break,
-            WorkerWake::Changed => {}
-            WorkerWake::Timeout => {}
+        if wait_for_wake(&shared, wait_for, change_generation) {
+            break;
         }
     }
 }

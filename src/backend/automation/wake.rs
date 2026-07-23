@@ -1,45 +1,32 @@
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WorkerWake {
-    Stop,
-    Changed,
-    Timeout,
-}
-
 pub(super) fn wait_for_wake(
     shared: &SharedAutomationState,
     wait_for: Option<Duration>,
     observed_generation: u64,
-) -> WorkerWake {
+) -> bool {
     let Ok(state) = shared.state.lock() else {
-        return WorkerWake::Stop;
+        return true;
     };
     if state.stop_requested {
-        return WorkerWake::Stop;
+        return true;
     }
     if state.change_generation != observed_generation {
-        return WorkerWake::Changed;
+        return false;
     }
 
     if let Some(wait_for) = wait_for {
-        match shared.changed.wait_timeout(state, wait_for) {
-            Ok((state, _)) if state.stop_requested => WorkerWake::Stop,
-            Ok((state, _)) if state.change_generation != observed_generation => WorkerWake::Changed,
-            Ok((_state, timeout)) if timeout.timed_out() => WorkerWake::Timeout,
-            Ok((_state, _)) => WorkerWake::Changed,
-            Err(_) => WorkerWake::Stop,
-        }
+        shared
+            .changed
+            .wait_timeout(state, wait_for)
+            .map_or(true, |(state, _)| state.stop_requested)
     } else {
-        match shared.changed.wait(state) {
-            Ok(state) if state.stop_requested => WorkerWake::Stop,
-            Ok(state) if state.change_generation != observed_generation => WorkerWake::Changed,
-            Ok(_) => WorkerWake::Changed,
-            Err(_) => WorkerWake::Stop,
-        }
+        shared
+            .changed
+            .wait(state)
+            .map_or(true, |state| state.stop_requested)
     }
 }
-
 pub(super) fn input_hook_should_check(settings: &Settings, events: InputHookEvents) -> bool {
     input_hook_should_check_activity(settings, events)
         || input_hook_should_check_app_switch(settings, events)
