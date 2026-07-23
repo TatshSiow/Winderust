@@ -9,7 +9,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{
         ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
-        ERROR_NOT_SUPPORTED, FILETIME, HANDLE, NO_ERROR, WAIT_TIMEOUT,
+        ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
     },
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, GetPerTcp6ConnectionEStats,
@@ -25,7 +25,7 @@ use windows_sys::Win32::{
             AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, SetInformationJobObject,
         },
         Threading::{
-            GetCurrentProcessId, GetProcessTimes, OpenProcess, WaitForSingleObject,
+            GetCurrentProcessId, OpenProcess, WaitForSingleObject,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE,
             PROCESS_TERMINATE,
         },
@@ -34,7 +34,7 @@ use windows_sys::Win32::{
 
 use crate::{
     audio_activity::active_audio_process_ids,
-    win_util::{filetime_to_u64, last_error, WinHandle},
+    win_util::{last_error, WinHandle},
 };
 
 use crate::config::AppSuspensionSettings;

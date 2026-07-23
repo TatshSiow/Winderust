@@ -80,7 +80,7 @@ impl ProcessFreezer {
 
         Ok(Self {
             job_handle: Some(job_handle),
-            process_creation_time: process_creation_time(process_handle.raw()),
+            process_creation_time: process_handle.process_creation_time(),
             process_handle: Some(process_handle),
             can_wait_for_process,
         })
@@ -180,32 +180,8 @@ pub(super) fn current_process_creation_time(process_id: u32) -> Option<u64> {
     if handle.is_null() {
         return None;
     }
-    let handle = WinHandle::new(handle);
-    process_creation_time(handle.raw())
+    WinHandle::new(handle).process_creation_time()
 }
-
-pub(super) fn process_creation_time(process_handle: HANDLE) -> Option<u64> {
-    let mut creation_time = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let mut exit_time = creation_time;
-    let mut kernel_time = creation_time;
-    let mut user_time = creation_time;
-
-    // SAFETY: process_handle is live and all FILETIME outputs are writable for the call.
-    let ok = unsafe {
-        GetProcessTimes(
-            process_handle,
-            &mut creation_time,
-            &mut exit_time,
-            &mut kernel_time,
-            &mut user_time,
-        )
-    };
-    (ok != 0).then(|| filetime_to_u64(creation_time))
-}
-
 pub(super) fn process_creation_time_matches(recorded: Option<u64>, current: Option<u64>) -> bool {
     match recorded {
         Some(recorded) => current == Some(recorded),
