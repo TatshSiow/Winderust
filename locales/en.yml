@@ -1058,4 +1058,4 @@ update_channel:
   stable: "Stable"
   pre_release: "Pre-release"
 power_plan_control:
-  pause_plugged: "Stop power plan scheduler on A/C"
+  pause_plugged: "Pause power plan switching on A/C"

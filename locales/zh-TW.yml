@@ -1059,4 +1059,4 @@ update_channel:
   stable: "穩定版"
   pre_release: "預覽版"
 power_plan_control:
-  pause_plugged: "使用 AC 電源時停止電源計畫排程器"
+  pause_plugged: "使用 AC 電源時暫停切換電源計畫"
