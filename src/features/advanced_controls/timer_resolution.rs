@@ -1,5 +1,5 @@
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::TimerResolutionSettings,
 };
 
@@ -60,7 +60,6 @@ impl TimerResolutionManager {
                     ActionLogFeature::TimerResolution,
                     None,
                     SYSTEM_TARGET_NAME,
-                    ActionLogAction::Fail,
                     ActionLogResult::Failed,
                     message.clone(),
                 );
@@ -118,7 +117,6 @@ impl TimerResolutionManager {
                         ActionLogFeature::TimerResolution,
                         None,
                         previous_target,
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         format!("Failed to release previous timer resolution request: {message}"),
                     );
@@ -137,7 +135,6 @@ impl TimerResolutionManager {
                     ActionLogFeature::TimerResolution,
                     None,
                     previous_target,
-                    ActionLogAction::Restore,
                     ActionLogResult::Restored,
                     format!(
                         "Released previous timer resolution request {}.",
@@ -153,7 +150,6 @@ impl TimerResolutionManager {
                         ActionLogFeature::TimerResolution,
                         None,
                         rule_process_name.clone(),
-                        ActionLogAction::Apply,
                         ActionLogResult::Applied,
                         format!(
                             "Requested timer resolution {} while {} is foreground.",
@@ -169,7 +165,6 @@ impl TimerResolutionManager {
                         ActionLogFeature::TimerResolution,
                         None,
                         rule_process_name,
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         message.clone(),
                     );
@@ -216,7 +211,6 @@ impl TimerResolutionManager {
                         ActionLogFeature::TimerResolution,
                         None,
                         previous_target,
-                        ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         format!(
                             "Released timer resolution request {}: {reason}.",
@@ -232,7 +226,6 @@ impl TimerResolutionManager {
                         ActionLogFeature::TimerResolution,
                         None,
                         previous_target,
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         message,
                     );
@@ -274,7 +267,6 @@ impl TimerResolutionManager {
                         ActionLogFeature::TimerResolution,
                         None,
                         previous_target,
-                        ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         format!(
                             "Released timer resolution request {}: {reason}.",
@@ -290,7 +282,6 @@ impl TimerResolutionManager {
                         ActionLogFeature::TimerResolution,
                         None,
                         previous_target,
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         message,
                     );

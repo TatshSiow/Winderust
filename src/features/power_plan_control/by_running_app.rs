@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ByRunningAppRule, ByRunningAppSettings},
     foreground::{
         contains_process_name, list_processes, process_session_id, same_process_name, ProcessInfo,
@@ -128,7 +128,6 @@ impl ByRunningAppManager {
             ActionLogFeature::ByRunningApp,
             Some(matched.process_id),
             matched.process_name.clone(),
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             format!(
                 "Rule '{}' requested performance plan {}.",
@@ -184,7 +183,6 @@ impl ByRunningAppManager {
             ActionLogFeature::ByRunningApp,
             Some(active.process_id),
             active.process_name,
-            ActionLogAction::Restore,
             ActionLogResult::Restored,
             format!("{reason}; released By Running App decision."),
         );

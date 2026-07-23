@@ -30,12 +30,12 @@ pub(in crate::ui::app) fn accent_source_label(source: AccentColorSource) -> Stri
     }
 }
 
-pub(in crate::ui::app) fn action_log_action_label(action: ActionLogAction) -> &'static str {
-    match action {
-        ActionLogAction::Apply => "Apply",
-        ActionLogAction::Restore => "Restore",
-        ActionLogAction::Skip => "Skip",
-        ActionLogAction::Fail => "Fail",
+pub(in crate::ui::app) fn action_log_action_label(result: ActionLogResult) -> &'static str {
+    match result {
+        ActionLogResult::Applied => "Apply",
+        ActionLogResult::Restored => "Restore",
+        ActionLogResult::Skipped => "Skip",
+        ActionLogResult::Failed => "Fail",
     }
 }
 
@@ -69,7 +69,7 @@ pub(in crate::ui::app) fn action_log_entries_to_csv(entries: &[ActionLogEntry]) 
             feature.as_str(),
             process_id.as_str(),
             entry.process_name.as_str(),
-            action_log_action_label(entry.action),
+            action_log_action_label(entry.result),
             action_log_result_text(entry.result),
             entry.reason.as_str(),
         ])
@@ -274,7 +274,6 @@ mod tests {
             feature: ActionLogFeature::CoreLimiter,
             process_id: Some(42),
             process_name: "worker.exe".to_owned(),
-            action: ActionLogAction::Fail,
             result: ActionLogResult::Failed,
             reason: "Restart failed, access denied".to_owned(),
         }];

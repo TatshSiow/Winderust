@@ -14,7 +14,7 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{MemoryPrioritySettings, ProcessMemoryPriority, ProcessMemoryPrioritySetting},
     foreground::{
         contains_process_name, is_foreground_process, list_processes, process_count_label,
@@ -298,7 +298,6 @@ impl MemoryPriorityManager {
                         action_log_feature,
                         Some(target.process_id),
                         target.process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because Windows denied memory priority access to the process.",
                     );
@@ -321,7 +320,6 @@ impl MemoryPriorityManager {
                 action_log_feature,
                 None,
                 memory_priority_summary_process_name(action_log_feature),
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 memory_priority_apply_summary_message(applied_processes),
             );
@@ -477,7 +475,6 @@ impl MemoryPriorityManager {
                         action_log_feature,
                         Some(*process_id),
                         log_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         format!(
                             "Skipped restoring previous memory priority because Windows denied access: {reason}."
@@ -502,7 +499,6 @@ impl MemoryPriorityManager {
                 action_log_feature,
                 None,
                 memory_priority_summary_process_name(action_log_feature),
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 memory_priority_restore_summary_message(restored_processes, reason),
             );
@@ -529,7 +525,6 @@ impl MemoryPriorityManager {
                 action_log_feature,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying memory priority after {} failed attempts.",
@@ -585,7 +580,6 @@ impl MemoryPriorityFailures {
             action_log_feature,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -875,7 +869,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].feature, ActionLogFeature::WorkloadEngine);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0]
             .reason

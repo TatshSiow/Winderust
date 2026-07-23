@@ -38,7 +38,6 @@ pub(super) fn apply_priority(
                 ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 adjusted.process_name.clone(),
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 "PID now belongs to a different process: restored previous priority.",
             );
@@ -63,7 +62,6 @@ pub(super) fn apply_priority(
                     ActionLogFeature::WorkloadEngine,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogAction::Apply,
                     ActionLogResult::Applied,
                     "Disabled Windows dynamic priority boost for Workload Engine.",
                 );
@@ -107,7 +105,6 @@ pub(super) fn apply_priority(
                     ActionLogFeature::WorkloadEngine,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogAction::Apply,
                     ActionLogResult::Applied,
                     "Applied Background Efficiency: enabled EcoQoS.",
                 );
@@ -162,7 +159,6 @@ pub(super) fn apply_priority(
                 ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 process_name.clone(),
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 format!(
                     "{} set background priority to {}.",
@@ -393,7 +389,6 @@ impl PriorityFailures {
             ActionLogFeature::WorkloadEngine,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );

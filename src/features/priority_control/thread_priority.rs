@@ -22,7 +22,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ProcessThreadPrioritySetting, ThreadPrioritySettings},
     foreground::{
         is_foreground_process, list_processes, process_failure_key, process_names_by_id,
@@ -243,7 +243,6 @@ impl ThreadPriorityManager {
                         ActionLogFeature::ThreadPriority,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because one or more threads could not be opened.",
                     );
@@ -259,7 +258,6 @@ impl ThreadPriorityManager {
                 ActionLogFeature::ThreadPriority,
                 None,
                 "Thread Priority",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 format!("Applied thread priority to {applied_threads} thread(s)."),
             );
@@ -413,7 +411,6 @@ impl ThreadPriorityManager {
                 ActionLogFeature::ThreadPriority,
                 None,
                 "Thread Priority",
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 format!("Restored thread priority for {restored_threads} thread(s): {reason}."),
             );
@@ -439,7 +436,6 @@ impl ThreadPriorityManager {
                 ActionLogFeature::ThreadPriority,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Thread Priority after {} failed attempts.",
@@ -488,7 +484,6 @@ impl ThreadPriorityFailures {
             ActionLogFeature::ThreadPriority,
             Some(id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );

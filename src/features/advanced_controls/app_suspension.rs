@@ -43,7 +43,7 @@ use crate::foreground::{
     EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
@@ -238,7 +238,6 @@ impl AppSuspensionManager {
                 ActionLogFeature::AppSuspension,
                 None,
                 "",
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 "Skipped because Windows Job Object freeze is unsupported.",
             );
@@ -403,7 +402,6 @@ impl AppSuspensionManager {
                         ActionLogFeature::AppSuspension,
                         None,
                         "",
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         err.clone(),
                     );
@@ -436,7 +434,6 @@ impl AppSuspensionManager {
                         ActionLogFeature::AppSuspension,
                         None,
                         "",
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         err.clone(),
                     );
@@ -485,7 +482,6 @@ impl AppSuspensionManager {
                     ActionLogFeature::AppSuspension,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogAction::Apply,
                     ActionLogResult::Applied,
                     "Manual freeze requested.",
                 );
@@ -502,7 +498,6 @@ impl AppSuspensionManager {
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
                         process_name.clone(),
-                        ActionLogAction::Apply,
                         ActionLogResult::Applied,
                         if lifecycle.is_manual_freeze() {
                             "Manually froze background process."
@@ -521,7 +516,6 @@ impl AppSuspensionManager {
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process cannot be frozen.",
                     );
@@ -534,7 +528,6 @@ impl AppSuspensionManager {
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because Windows Job Object freeze is unsupported.",
                     );
@@ -548,7 +541,6 @@ impl AppSuspensionManager {
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         err.clone(),
                     );
@@ -646,7 +638,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(*process_id),
                             process_name,
-                            ActionLogAction::Restore,
                             ActionLogResult::Restored,
                             reason.to_owned(),
                         );
@@ -660,7 +651,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(*process_id),
                             process_name,
-                            ActionLogAction::Fail,
                             ActionLogResult::Failed,
                             suspension_error_message(err),
                         );
@@ -700,7 +690,6 @@ impl AppSuspensionManager {
                                 ActionLogFeature::AppSuspension,
                                 Some(*process_id),
                                 process_name,
-                                ActionLogAction::Restore,
                                 ActionLogResult::Restored,
                                 reason.to_owned(),
                             );
@@ -715,7 +704,6 @@ impl AppSuspensionManager {
                                 ActionLogFeature::AppSuspension,
                                 Some(*process_id),
                                 process_name,
-                                ActionLogAction::Fail,
                                 ActionLogResult::Failed,
                                 suspension_error_message(err),
                             );
@@ -778,7 +766,6 @@ impl AppSuspensionManager {
                                 ActionLogFeature::AppSuspension,
                                 Some(*process_id),
                                 process_name.clone(),
-                                ActionLogAction::Restore,
                                 ActionLogResult::Restored,
                                 "Thawed because the user interacted with the window.",
                             );
@@ -793,7 +780,6 @@ impl AppSuspensionManager {
                                 ActionLogFeature::AppSuspension,
                                 Some(*process_id),
                                 process_name,
-                                ActionLogAction::Fail,
                                 ActionLogResult::Failed,
                                 suspension_error_message(err),
                             );
@@ -936,7 +922,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(process_id),
                             process_name.clone(),
-                            ActionLogAction::Restore,
                             ActionLogResult::Restored,
                             "Temporary thaw interval elapsed.",
                         );
@@ -997,7 +982,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(process_id),
                             process_name,
-                            ActionLogAction::Fail,
                             ActionLogResult::Failed,
                             suspension_error_message(err),
                         );
@@ -1013,7 +997,6 @@ impl AppSuspensionManager {
                     ActionLogFeature::AppSuspension,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogAction::Restore,
                     ActionLogResult::Restored,
                     "Network activity woke the suspended process.",
                 );
@@ -1064,7 +1047,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(process_id),
                             process_name,
-                            ActionLogAction::Fail,
                             ActionLogResult::Failed,
                             suspension_error_message(err),
                         );
@@ -1080,7 +1062,6 @@ impl AppSuspensionManager {
                     ActionLogFeature::AppSuspension,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogAction::Restore,
                     ActionLogResult::Restored,
                     "Audio activity woke the suspended process.",
                 );
@@ -1413,7 +1394,6 @@ impl AppSuspensionManager {
                 ActionLogFeature::AppSuspension,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying App Suspension after {} failed attempts.",
@@ -1450,7 +1430,6 @@ impl AppSuspensionManager {
                 ActionLogFeature::AppSuspension,
                 None,
                 "",
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying App Suspension {action_label} after {} failed attempts.",
@@ -1633,7 +1612,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].process_name, "app.exe");
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 
@@ -1665,7 +1643,6 @@ mod tests {
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 

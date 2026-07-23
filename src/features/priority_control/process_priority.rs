@@ -13,7 +13,7 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ProcessPrioritySetting, ProcessPrioritySettings},
     foreground::{
         is_foreground_process, list_processes, process_failure_key, process_names_by_id,
@@ -241,7 +241,6 @@ impl ProcessPriorityManager {
                         ActionLogFeature::ProcessPriority,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -257,7 +256,6 @@ impl ProcessPriorityManager {
                 ActionLogFeature::ProcessPriority,
                 None,
                 "Process Priority",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 format!("Applied process priority defaults to {applied_processes} process(es)."),
             );
@@ -417,7 +415,6 @@ impl ProcessPriorityManager {
                 ActionLogFeature::ProcessPriority,
                 None,
                 "Process Priority",
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 format!(
                     "Restored process priority for {restored_processes} process(es): {reason}."
@@ -445,7 +442,6 @@ impl ProcessPriorityManager {
                 ActionLogFeature::ProcessPriority,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Process Priority after {} failed attempts.",
@@ -507,7 +503,6 @@ impl ProcessPriorityFailures {
             ActionLogFeature::ProcessPriority,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );

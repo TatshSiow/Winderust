@@ -39,7 +39,7 @@ use gpui_component::{
 };
 
 use crate::{
-    action_log::{ActionLogAction, ActionLogEntry, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLogEntry, ActionLogFeature, ActionLogResult},
     activity::{
         merge_activity_snapshot, ActivitySnapshot, ActivityState, ControllerActivityDetector,
         IdleDetector, InputHook, InputHookConfig,

@@ -28,7 +28,7 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings},
     foreground::{
         contains_process_name, list_processes, process_failure_key, process_names_by_id,
@@ -281,7 +281,6 @@ impl CoreSteeringManager {
                         self.action_log_feature,
                         Some(process_id),
                         failure_process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -296,7 +295,6 @@ impl CoreSteeringManager {
                         ActionLogFeature::CoreSteering,
                         Some(process_id),
                         failure_process_name,
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         err,
                     );
@@ -373,7 +371,6 @@ impl CoreSteeringManager {
                         self.action_log_feature,
                         Some(*process_id),
                         process_name,
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         affinity_error_message(err),
                     );
@@ -383,7 +380,6 @@ impl CoreSteeringManager {
                         self.action_log_feature,
                         Some(*process_id),
                         process_name,
-                        ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         format!("{reason}: restored {}.", adjustment_label(&adjustment)),
                     );
@@ -405,7 +401,6 @@ impl CoreSteeringManager {
                 self.action_log_feature,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying {} after {} failed attempts.",
@@ -738,7 +733,6 @@ fn apply_affinity(
                 action_log_feature,
                 Some(process_id),
                 process_name.clone(),
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 format!(
                     "Rule changed: restored previous {}.",
@@ -839,7 +833,6 @@ fn apply_hard_affinity(
         action_log_feature,
         Some(process_id),
         process_name.clone(),
-        ActionLogAction::Apply,
         ActionLogResult::Applied,
         format!("Applied hard affinity mask {target_affinity:#x}."),
     );
@@ -899,7 +892,6 @@ fn apply_soft_affinity(
         action_log_feature,
         Some(process_id),
         process_name.clone(),
-        ActionLogAction::Apply,
         ActionLogResult::Applied,
         format!("Applied CPU Sets: {}.", target_cpu_set_ids.len()),
     );
@@ -946,7 +938,6 @@ fn apply_background_efficiency_off(
         action_log_feature,
         Some(process_id),
         process_name.clone(),
-        ActionLogAction::Apply,
         ActionLogResult::Applied,
         "Disabled Efficiency Mode execution-speed throttling.",
     );
@@ -1358,7 +1349,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].process_name, "app.exe");
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 

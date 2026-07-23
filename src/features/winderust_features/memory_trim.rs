@@ -16,7 +16,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::MemoryTrimSettings,
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
@@ -283,7 +283,6 @@ impl MemoryTrimManager {
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Apply,
                         ActionLogResult::Applied,
                         trim_reason(mode, freed_bytes),
                     );
@@ -300,7 +299,6 @@ impl MemoryTrimManager {
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -336,7 +334,6 @@ impl MemoryTrimManager {
                             ActionLogFeature::MemoryTrim,
                             None,
                             "System".to_owned(),
-                            ActionLogAction::Apply,
                             ActionLogResult::Applied,
                             "Purged standby list.",
                         );
@@ -365,7 +362,6 @@ impl MemoryTrimManager {
                             ActionLogFeature::MemoryTrim,
                             None,
                             "System".to_owned(),
-                            ActionLogAction::Apply,
                             ActionLogResult::Applied,
                             "Purged system file cache.",
                         );
@@ -518,7 +514,6 @@ impl MemoryTrimManager {
                 ActionLogFeature::MemoryTrim,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Memory Trim after {} failed attempts.",
@@ -555,7 +550,6 @@ impl MemoryTrimManager {
                 ActionLogFeature::MemoryTrim,
                 None,
                 "System".to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Memory Trim {label} after {} failed attempts.",
@@ -627,7 +621,6 @@ impl MemoryTrimFailures {
             ActionLogFeature::MemoryTrim,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -642,7 +635,6 @@ impl MemoryTrimFailures {
             ActionLogFeature::MemoryTrim,
             None,
             "System".to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             format!("{operation}: {message}"),
         );
@@ -993,7 +985,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].feature, ActionLogFeature::MemoryTrim);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0].reason.contains("Stopped retrying Memory Trim"));
     }
@@ -1040,7 +1031,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].feature, ActionLogFeature::MemoryTrim);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0]
             .reason

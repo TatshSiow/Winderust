@@ -18,7 +18,6 @@ fn repeated_failures_suppress_future_workload_engine_attempts_once() {
     let entries = log.entries();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].process_name, "app.exe");
-    assert_eq!(entries[0].action, ActionLogAction::Skip);
     assert_eq!(entries[0].result, ActionLogResult::Skipped);
 }
 

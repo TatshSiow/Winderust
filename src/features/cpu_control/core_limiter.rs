@@ -13,7 +13,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{CoreLimiterRule, CoreLimiterSettings},
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
@@ -170,7 +170,6 @@ impl CoreLimiterManager {
                         ActionLogFeature::CoreLimiter,
                         Some(process.id),
                         process.name.clone(),
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because Core Steering is already managing this process.",
                     );
@@ -227,7 +226,6 @@ impl CoreLimiterManager {
                         ActionLogFeature::CoreLimiter,
                         Some(process_id),
                         failure_process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -397,7 +395,6 @@ impl CoreLimiterManager {
                         ActionLogFeature::CoreLimiter,
                         Some(*process_id),
                         process_name,
-                        ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         reason.to_owned(),
                     );
@@ -425,7 +422,6 @@ impl CoreLimiterManager {
                 ActionLogFeature::CoreLimiter,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Core Limiter after {} failed attempts.",
@@ -555,7 +551,6 @@ fn apply_cpu_limit_to_process(
             ActionLogFeature::CoreLimiter,
             Some(process_id),
             process_name.clone(),
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             format!("Constrained affinity from {previous_affinity:#x} to {target_affinity:#x}."),
         );
@@ -639,7 +634,6 @@ impl CoreLimiterFailures {
             ActionLogFeature::CoreLimiter,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -845,7 +839,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].process_name, "app.exe");
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 

@@ -11,7 +11,7 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{IoPrioritySettings, ProcessIoPriority, ProcessIoPrioritySetting},
     foreground::{
         contains_process_name, is_foreground_process, list_processes, process_count_label,
@@ -236,7 +236,6 @@ impl IoPriorityManager {
                         ActionLogFeature::IoPriority,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -252,7 +251,6 @@ impl IoPriorityManager {
                 ActionLogFeature::IoPriority,
                 None,
                 "I/O Priority",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 io_priority_apply_summary_message(applied_processes),
             );
@@ -407,7 +405,6 @@ impl IoPriorityManager {
                 ActionLogFeature::IoPriority,
                 None,
                 "I/O Priority",
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 io_priority_restore_summary_message(restored_processes, reason),
             );
@@ -433,7 +430,6 @@ impl IoPriorityManager {
                 ActionLogFeature::IoPriority,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying I/O Priority after {} failed attempts.",
@@ -495,7 +491,6 @@ impl IoPriorityFailures {
             ActionLogFeature::IoPriority,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -701,7 +696,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].feature, ActionLogFeature::IoPriority);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0].reason.contains("Stopped retrying I/O Priority"));
     }

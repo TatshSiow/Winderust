@@ -18,7 +18,7 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     audio_activity::active_audio_process_ids,
     config::{BackgroundEfficiencyAggressiveness, BackgroundEfficiencySettings},
     foreground::{
@@ -275,7 +275,6 @@ impl BackgroundEfficiencyManager {
                         ActionLogFeature::BackgroundEfficiency,
                         Some(process_id),
                         name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -288,7 +287,6 @@ impl BackgroundEfficiencyManager {
                         ActionLogFeature::BackgroundEfficiency,
                         Some(process_id),
                         name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because Windows process power throttling is unsupported.",
                     );
@@ -374,7 +372,6 @@ impl BackgroundEfficiencyManager {
                         ActionLogFeature::BackgroundEfficiency,
                         Some(*process_id),
                         process_name,
-                        ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         reason.to_owned(),
                     );
@@ -396,7 +393,6 @@ impl BackgroundEfficiencyManager {
                 ActionLogFeature::BackgroundEfficiency,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Background Efficiency after {} failed attempts.",
@@ -533,7 +529,6 @@ impl BackgroundEfficiencyFailures {
             ActionLogFeature::BackgroundEfficiency,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -575,7 +570,6 @@ fn apply_background_efficiency_to_process(
         ActionLogFeature::BackgroundEfficiency,
         Some(process_id),
         process_name,
-        ActionLogAction::Apply,
         ActionLogResult::Applied,
         "Applied Background Efficiency: enabled EcoQoS and lowered priority.".to_owned(),
     );
@@ -959,7 +953,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].process_name, "app.exe");
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 

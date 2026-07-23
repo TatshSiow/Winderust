@@ -22,7 +22,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     audio_activity::active_audio_process_ids,
     config::{
         CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings, CpuRestrictionMode,
@@ -673,7 +673,6 @@ impl WorkloadEngineManager {
                         ActionLogFeature::WorkloadEngine,
                         Some(process_id),
                         failure_process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -700,7 +699,6 @@ impl WorkloadEngineManager {
                 ActionLogFeature::WorkloadEngine,
                 None,
                 "Workload Engine",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 background_apply_summary_message(summarized_background_applies),
             );
@@ -919,7 +917,6 @@ impl WorkloadEngineManager {
                 ActionLogFeature::WorkloadEngine,
                 None,
                 "Workload Engine",
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 foreground_boost_restore_summary_message(restored_processes, reason),
             );
@@ -945,7 +942,6 @@ impl WorkloadEngineManager {
                 ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 process_name.trim().to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Workload Engine after {} failed attempts.",
@@ -1038,7 +1034,6 @@ impl WorkloadEngineManager {
                 ActionLogFeature::WorkloadEngine,
                 None,
                 "Workload Engine",
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 background_priority_restore_summary_message(restored_processes, reason),
             );
@@ -1152,7 +1147,6 @@ impl WorkloadEngineManager {
                         ActionLogFeature::WorkloadEngine,
                         Some(*process_id),
                         process_name.clone(),
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped foreground boost because the process could not be opened.",
                     );
@@ -1196,7 +1190,6 @@ impl WorkloadEngineManager {
                 ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 boosted_process_name,
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 "Foreground focus changed: restored previous foreground boost.",
             );
@@ -1237,7 +1230,6 @@ impl WorkloadEngineManager {
                 ActionLogFeature::WorkloadEngine,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 format!(
                     "Boosted foreground priority to {}.",

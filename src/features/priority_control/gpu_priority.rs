@@ -20,7 +20,7 @@ use windows_sys::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{GpuPrioritySettings, ProcessGpuPriority, ProcessGpuPrioritySetting},
     foreground::{
         contains_process_name, is_foreground_process, list_processes, process_count_label,
@@ -439,7 +439,6 @@ impl GpuPriorityManager {
                         ActionLogFeature::GpuPriority,
                         Some(*process_id),
                         log_name,
-                        ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         format!("Restored previous GPU priority: {reason}."),
                     );
@@ -453,7 +452,6 @@ impl GpuPriorityManager {
                         ActionLogFeature::GpuPriority,
                         Some(*process_id),
                         log_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         format!(
                             "Skipped restoring previous GPU priority because Windows denied access: {reason}."
@@ -466,7 +464,6 @@ impl GpuPriorityManager {
                         ActionLogFeature::GpuPriority,
                         Some(*process_id),
                         log_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         format!(
                             "Skipped restoring previous GPU priority because GPU scheduling priority is unavailable: {reason}."
@@ -529,7 +526,6 @@ impl GpuPriorityManager {
                 ActionLogFeature::GpuPriority,
                 None,
                 "GPU Priority",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 gpu_priority_apply_summary_message(count),
             );
@@ -545,7 +541,6 @@ impl GpuPriorityManager {
                 ActionLogFeature::GpuPriority,
                 None,
                 "GPU Priority",
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 gpu_priority_skip_summary_message(pending_context_count, access_denied_count),
             );
@@ -599,7 +594,6 @@ impl GpuPriorityFailures {
             ActionLogFeature::GpuPriority,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );

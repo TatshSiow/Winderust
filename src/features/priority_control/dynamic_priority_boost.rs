@@ -11,7 +11,7 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{DynamicPriorityBoostSettings, ProcessDynamicPriorityBoostSetting},
     foreground::{
         is_foreground_process, list_processes, process_failure_key, process_names_by_id,
@@ -219,7 +219,6 @@ impl DynamicPriorityBoostManager {
                         ActionLogFeature::DynamicPriorityBoost,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -235,7 +234,6 @@ impl DynamicPriorityBoostManager {
                 ActionLogFeature::DynamicPriorityBoost,
                 None,
                 "Dynamic Priority Boost",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 format!(
                     "Applied dynamic priority boost defaults to {applied_processes} process(es)."
@@ -377,7 +375,6 @@ impl DynamicPriorityBoostManager {
                 ActionLogFeature::DynamicPriorityBoost,
                 None,
                 "Dynamic Priority Boost",
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 format!("Restored dynamic priority boost for {restored_processes} process(es): {reason}."),
             );
@@ -403,7 +400,6 @@ impl DynamicPriorityBoostManager {
                 ActionLogFeature::DynamicPriorityBoost,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Dynamic Priority Boost after {} failed attempts.",
@@ -464,7 +460,6 @@ impl DynamicPriorityBoostFailures {
             ActionLogFeature::DynamicPriorityBoost,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
