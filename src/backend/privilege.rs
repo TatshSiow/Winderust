@@ -4,6 +4,9 @@ use windows_sys::Win32::UI::{
     Shell::{IsUserAnAdmin, ShellExecuteW},
     WindowsAndMessaging::SW_SHOWNORMAL,
 };
+
+use crate::win_util::wide_null;
+
 pub fn is_running_as_admin() -> bool {
     // SAFETY: IsUserAnAdmin takes no arguments and has no caller requirements.
     unsafe { IsUserAnAdmin() != 0 }
@@ -14,8 +17,8 @@ pub fn relaunch_as_admin() -> bool {
         return false;
     };
 
-    let operation = wide("runas");
-    let file = wide_os(exe.as_os_str());
+    let operation = wide_null("runas");
+    let file = wide_os_null(exe.as_os_str());
     // SAFETY: operation and file are terminated UTF-16 strings, optional parameters are null,
     // and no returned handle is transferred to the caller.
     let result = unsafe {
@@ -31,10 +34,6 @@ pub fn relaunch_as_admin() -> bool {
 
     result as isize > 32
 }
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-fn wide_os(value: &OsStr) -> Vec<u16> {
+fn wide_os_null(value: &OsStr) -> Vec<u16> {
     value.encode_wide().chain(std::iter::once(0)).collect()
 }
