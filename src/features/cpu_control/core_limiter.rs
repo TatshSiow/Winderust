@@ -296,10 +296,11 @@ impl CoreLimiterManager {
             if self.limited.contains_key(&process_id)
                 || now.duration_since(high_since) >= Duration::from_secs(rule.sustain_seconds)
             {
-                self.apply_limit(
+                apply_cpu_limit_to_process(
                     process_id,
                     process_name,
                     rule.max_logical_processors,
+                    &mut self.limited,
                     action_log,
                 )?;
             }
@@ -317,22 +318,6 @@ impl CoreLimiterManager {
         }
 
         Ok(())
-    }
-
-    fn apply_limit(
-        &mut self,
-        process_id: u32,
-        process_name: String,
-        max_logical_processors: u8,
-        action_log: &mut ActionLog,
-    ) -> Result<(), CoreLimiterError> {
-        apply_cpu_limit_to_process(
-            process_id,
-            process_name,
-            max_logical_processors,
-            &mut self.limited,
-            action_log,
-        )
     }
 
     fn release_non_targets(
@@ -523,27 +508,39 @@ fn apply_cpu_limit_to_process(
         .process_creation_time()
         .ok_or(CoreLimiterError::ProcessExited)?;
     let (current_affinity, system_affinity) = process.affinity_mask()?;
-    let Some(target_affinity) =
-        limited_affinity_mask(current_affinity, system_affinity, max_logical_processors)
-    else {
-        return Ok(());
-    };
-
-    if limited.get(&process_id).is_some_and(|limited| {
-        limited.creation_time == creation_time
-            && same_process_name(&limited.process_name, &process_name)
-            && limited.applied_affinity == target_affinity
-            && current_affinity == target_affinity
-    }) {
-        return Ok(());
-    }
-
-    let previous_affinity = limited
+    let existing = limited
         .get(&process_id)
         .filter(|limited| limited.creation_time == creation_time)
         .filter(|limited| same_process_name(&limited.process_name, &process_name))
-        .map(|limited| limited.previous_affinity)
-        .unwrap_or(current_affinity);
+        .cloned();
+    let original_affinity = existing
+        .as_ref()
+        .map_or(current_affinity, |limited| limited.previous_affinity);
+
+    let Some(target_affinity) =
+        limited_affinity_mask(original_affinity, system_affinity, max_logical_processors)
+    else {
+        if let Some(existing) = existing {
+            if current_affinity != existing.previous_affinity {
+                process.set_affinity_mask(existing.previous_affinity)?;
+                action_log.record(
+                    ActionLogFeature::CoreLimiter,
+                    Some(process_id),
+                    process_name,
+                    ActionLogResult::Restored,
+                    "Rule no longer limits this process.",
+                );
+            }
+            limited.remove(&process_id);
+        }
+        return Ok(());
+    };
+
+    if existing.as_ref().is_some_and(|limited| {
+        limited.applied_affinity == target_affinity && current_affinity == target_affinity
+    }) {
+        return Ok(());
+    }
 
     if current_affinity != target_affinity {
         process.set_affinity_mask(target_affinity)?;
@@ -552,7 +549,7 @@ fn apply_cpu_limit_to_process(
             Some(process_id),
             process_name.clone(),
             ActionLogResult::Applied,
-            format!("Constrained affinity from {previous_affinity:#x} to {target_affinity:#x}."),
+            format!("Constrained affinity from {original_affinity:#x} to {target_affinity:#x}."),
         );
     }
 
@@ -561,13 +558,12 @@ fn apply_cpu_limit_to_process(
         LimitedProcess {
             process_name,
             creation_time,
-            previous_affinity,
+            previous_affinity: original_affinity,
             applied_affinity: target_affinity,
         },
     );
     Ok(())
 }
-
 fn restore_affinity(
     process_id: u32,
     process_state: &LimitedProcess,
