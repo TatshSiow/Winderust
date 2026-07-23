@@ -855,30 +855,12 @@ pub struct TimerResolutionSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryTrimSettings {
     pub enabled: bool,
-    #[serde(default = "default_memory_trim_check_interval_minutes")]
-    pub check_interval_minutes: u64,
-    #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
-    #[serde(default = "default_true")]
-    pub trim_working_sets: bool,
     #[serde(default = "default_memory_trim_system_memory_load_threshold_percent")]
     pub system_memory_load_threshold_percent: u8,
     #[serde(default = "default_memory_trim_process_working_set_threshold_mb")]
     pub process_working_set_threshold_mb: u64,
-    #[serde(default = "default_memory_trim_process_cpu_idle_threshold_percent")]
-    pub process_cpu_idle_threshold_percent: u8,
     #[serde(default = "default_memory_trim_process_idle_seconds")]
     pub process_idle_seconds: u64,
-    #[serde(default = "default_memory_trim_cooldown_seconds")]
-    pub trim_cooldown_seconds: u64,
-    #[serde(default)]
-    pub purge_standby_list: bool,
-    #[serde(default)]
-    pub purge_system_file_cache: bool,
-    #[serde(default = "default_true")]
-    pub purge_only_in_performance_mode: bool,
-    #[serde(default = "default_memory_trim_purge_free_ram_threshold_mb")]
-    pub purge_free_ram_threshold_mb: u64,
     #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
@@ -1706,31 +1688,15 @@ const fn default_core_limiter_max_logical_processors() -> u8 {
 }
 
 const fn default_memory_trim_system_memory_load_threshold_percent() -> u8 {
-    65
+    80
 }
 
 const fn default_memory_trim_process_working_set_threshold_mb() -> u64 {
-    196
-}
-
-const fn default_memory_trim_process_cpu_idle_threshold_percent() -> u8 {
-    1
+    256
 }
 
 const fn default_memory_trim_process_idle_seconds() -> u64 {
     300
-}
-
-const fn default_memory_trim_cooldown_seconds() -> u64 {
-    900
-}
-
-const fn default_memory_trim_check_interval_minutes() -> u64 {
-    15
-}
-
-const fn default_memory_trim_purge_free_ram_threshold_mb() -> u64 {
-    1024
 }
 
 const fn default_timer_resolution_100ns() -> u32 {
@@ -2023,21 +1989,11 @@ impl Default for MemoryTrimSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            check_interval_minutes: default_memory_trim_check_interval_minutes(),
-            exclude_foreground_app: default_true(),
-            trim_working_sets: default_true(),
             system_memory_load_threshold_percent:
                 default_memory_trim_system_memory_load_threshold_percent(),
             process_working_set_threshold_mb: default_memory_trim_process_working_set_threshold_mb(
             ),
-            process_cpu_idle_threshold_percent:
-                default_memory_trim_process_cpu_idle_threshold_percent(),
             process_idle_seconds: default_memory_trim_process_idle_seconds(),
-            trim_cooldown_seconds: default_memory_trim_cooldown_seconds(),
-            purge_standby_list: false,
-            purge_system_file_cache: false,
-            purge_only_in_performance_mode: default_true(),
-            purge_free_ram_threshold_mb: default_memory_trim_purge_free_ram_threshold_mb(),
             exclusions: Vec::new(),
         }
     }

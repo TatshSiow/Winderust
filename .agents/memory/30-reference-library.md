@@ -22,7 +22,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Power Plan Control and Advanced Power Plan Tuning | `src/power/powercfg.rs` | Power scheme enumeration, activation, duplication, deletion, and processor setting values |
 | Adaptive Engine | `src/features/winderust_features/workload_engine.rs` and `workload_engine/process_control.rs` | Workload decisions plus the process QoS, process priority, and Dynamic Priority Boost boundary; affinity masks, CPU Sets, and Memory Priority use their feature managers |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` | Process power throttling and optional process-priority management |
-| Memory Trim | `src/features/winderust_features/memory_trim.rs` | Working-set trimming, memory status, and compatibility-sensitive NT system information |
+| Memory Trim | `src/features/winderust_features/memory_trim.rs` | Memory-pressure checks and process working-set trimming |
 | CPU Control | `src/features/cpu_control/` | Process affinity masks and CPU Sets |
 | Priority Control | `src/features/priority_control/` | Process/thread priorities, Dynamic Priority Boost, Memory Priority, NT I/O priority, and WDK GPU priority |
 | App Suspension | `src/features/advanced_controls/app_suspension.rs`, `app_suspension/process_freezer.rs`, and `app_suspension/wake_activity.rs` | Job Objects, a compatibility-sensitive freeze information class, and audio/network wake detection |
@@ -178,22 +178,13 @@ that boundary changes.
 Implementation entry points:
 
 - `src/features/winderust_features/memory_trim.rs`
-- `src/backend/privilege.rs`
 
 | API | Used for | Reference |
 | --- | --- | --- |
 | `GlobalMemoryStatusEx` | Reads overall physical-memory load and availability. | https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-globalmemorystatusex |
 | `K32GetProcessMemoryInfo` | Reads process working-set counters before deciding whether a process is eligible for trimming. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
 | `SetProcessWorkingSetSize` | Passes `SIZE_T(-1)` for both bounds to remove as many pages as possible from a target process working set. | https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-setprocessworkingsetsize |
-| `NtQuerySystemInformation` | Queries the manually declared system memory-list structures used for free-memory calculations. | https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation |
-| `NtSetSystemInformation` | Requests standby-list or system-file-cache purging through numeric information classes. | https://learn.microsoft.com/en-us/windows/win32/sysinfo/ntsetsysteminformation |
 
-Compatibility note: Microsoft states that `NtSetSystemInformation` is not
-declared by the Windows SDK and supports only a subset of system information
-classes. Winderust's numeric classes 80 and 81 and their buffer layouts are
-compatibility-sensitive. Keep the declarations, constants, layouts, privilege
-requirements, and tests together in `memory_trim.rs`; do not reuse them as a
-general system-information abstraction.
 
 ## Core Steering
 

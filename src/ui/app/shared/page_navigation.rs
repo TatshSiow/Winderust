@@ -442,10 +442,7 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
             t!("memory_trim.intro_1").to_string(),
             t!("memory_trim.intro_2").to_string(),
             t!("memory_trim.intro_3").to_string(),
-            t!("memory_trim.trim_working_sets_help").to_string(),
-            t!("memory_trim.purge_standby_list_help").to_string(),
-            t!("memory_trim.purge_system_file_cache_help").to_string(),
-            "memory ram trim working set standby list file cache purge background exclusion".to_string(),
+            "memory ram trim working set idle background exclusion".to_string(),
         ],
         Page::CoreSteering => vec![
             t!("core_steering.intro_1").to_string(),

@@ -166,15 +166,10 @@ pub(in crate::ui::app) fn numeric_value_width(field: NumericField) -> f32 {
         | NumericField::AdaptiveEngineProcessorPolicy(_)
         | NumericField::BackgroundCpuRestrictionPercent
         | NumericField::MemoryTrimMemoryLoadThreshold
-        | NumericField::MemoryTrimCpuIdleThreshold
         | NumericField::CoreLimiterThreshold(_)
         | NumericField::CoreLimiterMaxProcessors(_) => 76.0,
-        NumericField::MemoryTrimCheckIntervalMinutes
-        | NumericField::MemoryTrimPurgeFreeRamThreshold
-        | NumericField::TimerResolutionRule(_) => 104.0,
-        NumericField::MemoryTrimWorkingSetThreshold
-        | NumericField::MemoryTrimIdleSeconds
-        | NumericField::MemoryTrimCooldownSeconds => 112.0,
+        NumericField::TimerResolutionRule(_) => 104.0,
+        NumericField::MemoryTrimWorkingSetThreshold | NumericField::MemoryTrimIdleSeconds => 112.0,
         NumericField::NetworkThreshold(_) => 76.0,
         _ => 96.0,
     }

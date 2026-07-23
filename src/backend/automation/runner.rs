@@ -636,7 +636,6 @@ impl HiddenAutomationRunner {
             &settings.memory_trim,
             settings.general.enabled,
             foreground_process_id(),
-            self.by_running_app_manager.is_active(),
             &mut self.action_log,
         )
     }
@@ -646,7 +645,6 @@ impl HiddenAutomationRunner {
             &settings.memory_trim,
             settings.general.enabled,
             foreground_process_id(),
-            self.by_running_app_manager.is_active(),
             &mut self.action_log,
         )
     }

@@ -141,15 +141,6 @@ pub(in crate::ui::app) fn rule_count_label(count: usize) -> String {
     t!("common.rule_count", count = count).to_string()
 }
 
-pub(in crate::ui::app) fn yes_no_label(value: bool) -> String {
-    if value {
-        t!("common.yes")
-    } else {
-        t!("common.no")
-    }
-    .to_string()
-}
-
 pub(in crate::ui::app) fn schedule_days_label(days: &[WeekdaySetting]) -> String {
     if days.len() == WeekdaySetting::all().len() {
         return t!("common.all").to_string();

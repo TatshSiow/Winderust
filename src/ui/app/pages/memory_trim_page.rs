@@ -17,89 +17,6 @@ impl WinderustApp {
 
         let body = feature_body(enabled)
             .child(setting_group_with_help(
-                SettingGroupTarget::MemoryTrimBehaviour,
-                (
-                    t!("memory_trim.category_trim_behavior").to_string(),
-                    t!("memory_trim.category_trim_behavior_help").to_string(),
-                ),
-                div().into_any_element(),
-                self.is_setting_group_collapsed(SettingGroupTarget::MemoryTrimBehaviour),
-                vec![
-                    setting_group_action_row(
-                        "memory-trim-working-sets",
-                        t!("memory_trim.trim_working_sets").to_string(),
-                        setting_group_switch_action(
-                            "memory-trim-working-sets-switch",
-                            settings.trim_working_sets,
-                            cx.listener(|app, checked, _, cx| {
-                                app.settings.memory_trim.trim_working_sets = *checked;
-                                cx.notify();
-                            }),
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_action_row_element(
-                        "memory-trim-purge-standby-list",
-                        h_flex()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .gap_1()
-                            .items_center()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .child(t!("memory_trim.purge_standby_list").to_string()),
-                            )
-                            .child(title_info_button(
-                                "memory-trim-purge-standby-list-info",
-                                t!("memory_trim.purge_standby_list_help").to_string(),
-                            ))
-                            .into_any_element(),
-                        setting_group_switch_action(
-                            "memory-trim-purge-standby-list-switch",
-                            settings.purge_standby_list,
-                            cx.listener(|app, checked, _, cx| {
-                                app.settings.memory_trim.purge_standby_list = *checked;
-                                cx.notify();
-                            }),
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_action_row_element(
-                        "memory-trim-purge-system-file-cache",
-                        h_flex()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .gap_1()
-                            .items_center()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .child(t!("memory_trim.purge_system_file_cache").to_string()),
-                            )
-                            .child(title_info_button(
-                                "memory-trim-purge-system-file-cache-info",
-                                t!("memory_trim.purge_system_file_cache_help").to_string(),
-                            ))
-                            .into_any_element(),
-                        setting_group_switch_action(
-                            "memory-trim-purge-system-file-cache-switch",
-                            settings.purge_system_file_cache,
-                            cx.listener(|app, checked, _, cx| {
-                                app.settings.memory_trim.purge_system_file_cache = *checked;
-                                cx.notify();
-                            }),
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                ],
-                window,
-                cx,
-            ))
-            .child(setting_group_with_help(
                 SettingGroupTarget::MemoryTrimThresholds,
                 (
                     t!("memory_trim.category_thresholds").to_string(),
@@ -132,30 +49,6 @@ impl WinderustApp {
                         true,
                     )
                     .into_any_element(),
-                    setting_group_action_row(
-                        "memory-trim-cpu-idle-threshold",
-                        t!("memory_trim.cpu_idle_threshold").to_string(),
-                        self.render_numeric_value(
-                            NumericField::MemoryTrimCpuIdleThreshold,
-                            format!("{}%", settings.process_cpu_idle_threshold_percent),
-                            settings.process_cpu_idle_threshold_percent.to_string(),
-                            cx,
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_action_row(
-                        "memory-trim-purge-free-ram-threshold",
-                        t!("memory_trim.purge_free_ram_threshold").to_string(),
-                        self.render_numeric_value(
-                            NumericField::MemoryTrimPurgeFreeRamThreshold,
-                            format!("{} MB", settings.purge_free_ram_threshold_mb),
-                            settings.purge_free_ram_threshold_mb.to_string(),
-                            cx,
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
                 ],
                 window,
                 cx,
@@ -168,76 +61,18 @@ impl WinderustApp {
                 ),
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::MemoryTrimWhen),
-                vec![
-                    setting_group_action_row(
-                        "memory-trim-check-interval",
-                        t!("memory_trim.check_interval").to_string(),
-                        self.render_numeric_value(
-                            NumericField::MemoryTrimCheckIntervalMinutes,
-                            t!(
-                                "common.minutes_long",
-                                count = settings.check_interval_minutes
-                            )
-                            .to_string(),
-                            settings.check_interval_minutes.to_string(),
-                            cx,
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_action_row(
-                        "memory-trim-idle-time",
-                        t!("memory_trim.idle_time").to_string(),
-                        self.render_numeric_value(
-                            NumericField::MemoryTrimIdleSeconds,
-                            ui::duration_label(settings.process_idle_seconds),
-                            settings.process_idle_seconds.to_string(),
-                            cx,
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_action_row(
-                        "memory-trim-cooldown",
-                        t!("memory_trim.cooldown").to_string(),
-                        self.render_numeric_value(
-                            NumericField::MemoryTrimCooldownSeconds,
-                            ui::duration_label(settings.trim_cooldown_seconds),
-                            settings.trim_cooldown_seconds.to_string(),
-                            cx,
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                    setting_group_action_row_element(
-                        "memory-trim-purge-by-running-app",
-                        h_flex()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .gap_1()
-                            .items_center()
-                            .child(
-                                div().truncate().child(
-                                    t!("memory_trim.only_purge_performance_mode").to_string(),
-                                ),
-                            )
-                            .child(title_info_button(
-                                "memory-trim-purge-by-running-app-info",
-                                t!("memory_trim.only_purge_performance_mode_help").to_string(),
-                            ))
-                            .into_any_element(),
-                        setting_group_switch_action(
-                            "memory-trim-purge-by-running-app-switch",
-                            settings.purge_only_in_performance_mode,
-                            cx.listener(|app, checked, _, cx| {
-                                app.settings.memory_trim.purge_only_in_performance_mode = *checked;
-                                cx.notify();
-                            }),
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
-                ],
+                vec![setting_group_action_row(
+                    "memory-trim-idle-time",
+                    t!("memory_trim.idle_time").to_string(),
+                    self.render_numeric_value(
+                        NumericField::MemoryTrimIdleSeconds,
+                        ui::duration_label(settings.process_idle_seconds),
+                        settings.process_idle_seconds.to_string(),
+                        cx,
+                    ),
+                    true,
+                )
+                .into_any_element()],
                 window,
                 cx,
             ))
@@ -250,34 +85,6 @@ impl WinderustApp {
                 div().into_any_element(),
                 self.is_setting_group_collapsed(SettingGroupTarget::MemoryTrimSafety),
                 vec![
-                    setting_group_action_row_element(
-                        "memory-trim-foreground",
-                        h_flex()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .gap_1()
-                            .items_center()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .child(t!("memory_trim.focus_detection").to_string()),
-                            )
-                            .child(title_info_button(
-                                "memory-trim-foreground-info",
-                                t!("memory_trim.focus_detection_help").to_string(),
-                            ))
-                            .into_any_element(),
-                        setting_group_switch_action(
-                            "memory-trim-foreground-switch",
-                            settings.exclude_foreground_app,
-                            cx.listener(|app, checked, _, cx| {
-                                app.settings.memory_trim.exclude_foreground_app = *checked;
-                                cx.notify();
-                            }),
-                        ),
-                        true,
-                    )
-                    .into_any_element(),
                     v_flex()
                         .gap_2()
                         .py_3()
@@ -371,23 +178,8 @@ impl WinderustApp {
                             .unwrap_or_else(|| t!("common.unknown").to_string()),
                     ),
                     (
-                        t!("memory_trim.free_ram_excluding_cache").to_string(),
-                        self.memory_trim_status
-                            .free_ram_excluding_cache_mb
-                            .map(|mb| format!("{mb} MB"))
-                            .unwrap_or_else(|| t!("common.unknown").to_string()),
-                    ),
-                    (
                         t!("memory_trim.trimmed_processes").to_string(),
                         self.memory_trim_status.trimmed_processes.to_string(),
-                    ),
-                    (
-                        t!("memory_trim.purged_standby_list").to_string(),
-                        yes_no_label(self.memory_trim_status.purged_standby_list),
-                    ),
-                    (
-                        t!("memory_trim.purged_system_file_cache").to_string(),
-                        yes_no_label(self.memory_trim_status.purged_system_file_cache),
                     ),
                     (
                         t!("memory_trim.candidate_processes").to_string(),

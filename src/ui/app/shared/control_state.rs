@@ -62,7 +62,6 @@ pub(in crate::ui::app) enum SettingGroupTarget {
     GpuPriorityForegroundDetection,
     MemoryPriorityMaster,
     MemoryPriorityForegroundDetection,
-    MemoryTrimBehaviour,
     MemoryTrimMonitoring,
     MemoryTrimSafety,
     MemoryTrimThresholds,
@@ -113,13 +112,9 @@ pub(in crate::ui::app) enum NumericField {
     GeneralCheckInterval,
     ExecutionFailureSuppressionThreshold,
     BackgroundCpuRestrictionPercent,
-    MemoryTrimCheckIntervalMinutes,
     MemoryTrimMemoryLoadThreshold,
     MemoryTrimWorkingSetThreshold,
-    MemoryTrimCpuIdleThreshold,
     MemoryTrimIdleSeconds,
-    MemoryTrimCooldownSeconds,
-    MemoryTrimPurgeFreeRamThreshold,
     SuspensionBackgroundDelay,
     SuspensionThawInterval,
     SuspensionThawDuration,
@@ -999,11 +994,6 @@ impl WinderustApp {
                     self.settings.background_cpu_restriction.percent = value as u8;
                 }
             }
-            NumericField::MemoryTrimCheckIntervalMinutes => {
-                if let Some(value) = parse_u64_input(&value, 1, 1440) {
-                    self.settings.memory_trim.check_interval_minutes = value;
-                }
-            }
             NumericField::MemoryTrimMemoryLoadThreshold => {
                 if let Some(value) = parse_u64_input(&value, 1, 100) {
                     self.settings
@@ -1016,24 +1006,9 @@ impl WinderustApp {
                     self.settings.memory_trim.process_working_set_threshold_mb = value;
                 }
             }
-            NumericField::MemoryTrimCpuIdleThreshold => {
-                if let Some(value) = parse_u64_input(&value, 0, 100) {
-                    self.settings.memory_trim.process_cpu_idle_threshold_percent = value as u8;
-                }
-            }
             NumericField::MemoryTrimIdleSeconds => {
                 if let Some(value) = parse_u64_input(&value, 1, 86_400) {
                     self.settings.memory_trim.process_idle_seconds = value;
-                }
-            }
-            NumericField::MemoryTrimCooldownSeconds => {
-                if let Some(value) = parse_u64_input(&value, 1, 86_400) {
-                    self.settings.memory_trim.trim_cooldown_seconds = value;
-                }
-            }
-            NumericField::MemoryTrimPurgeFreeRamThreshold => {
-                if let Some(value) = parse_u64_input(&value, 0, 1_048_576) {
-                    self.settings.memory_trim.purge_free_ram_threshold_mb = value;
                 }
             }
             NumericField::SuspensionBackgroundDelay => {
