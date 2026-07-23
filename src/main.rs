@@ -106,6 +106,7 @@ impl SingleInstanceGuard {
 }
 
 fn single_instance_mutex_name() -> String {
+    // Scope the mutex to this executable path so separate portable copies can run independently.
     let digest = std::env::current_exe()
         .ok()
         .and_then(|path| path.canonicalize().ok())

@@ -171,43 +171,7 @@ impl Page {
     }
 
     pub fn section_label(self) -> String {
-        match self {
-            Self::Home => t!("nav.home"),
-            Self::PowerPlanControl => t!("nav.power_plan_control"),
-            Self::WinderustFeatures => t!("nav.winderust_features"),
-            Self::CpuControl => t!("nav.cpu_control"),
-            Self::PriorityControl => t!("nav.priority_control"),
-            Self::SettingsHome => t!("nav.settings"),
-            Self::AdvancedControls => t!("nav.advanced"),
-            Self::ProcessList => t!("nav.process_list"),
-            Self::ByActivity
-            | Self::ByTime
-            | Self::ByForeground
-            | Self::ByRunningApp
-            | Self::ByCpuLoad
-            | Self::AdvancedPowerPlanTuning => t!("nav.power_plan_control"),
-            Self::CoreLimiter | Self::BackgroundCpuRestriction | Self::CoreSteering => {
-                t!("nav.cpu_control")
-            }
-            Self::ProcessPriority
-            | Self::ThreadPriority
-            | Self::DynamicPriorityBoost
-            | Self::IoPriority
-            | Self::GpuPriority
-            | Self::MemoryPriority => t!("nav.priority_control"),
-            Self::AdaptiveEngine | Self::BackgroundEfficiency | Self::MemoryTrim => {
-                t!("nav.winderust_features")
-            }
-            Self::ActionLog => t!("nav.action_log"),
-            Self::WinderustBehaviour | Self::LanguageAndAppearance | Self::ExperimentalFeatures => {
-                t!("nav.settings")
-            }
-            Self::About => t!("nav.about"),
-            Self::AppSuspension | Self::TimerResolution | Self::Win32PrioritySeparation => {
-                t!("nav.advanced")
-            }
-        }
-        .to_string()
+        self.section_landing_page().label()
     }
 
     pub const fn section_landing_page(self) -> Page {
@@ -249,18 +213,11 @@ impl Page {
         }
     }
 
-    pub const fn child_pages(self) -> Option<&'static [Page]> {
-        match self {
-            Self::Home => Some(&OVERVIEW_PAGES),
-            Self::ProcessList => Some(&PROCESS_LIST_PAGES),
-            Self::WinderustFeatures => Some(&WINDERUST_FEATURE_PAGES),
-            Self::PowerPlanControl => Some(&POWER_PLAN_CONTROL_PAGES),
-            Self::CpuControl => Some(&CPU_CONTROL_PAGES),
-            Self::PriorityControl => Some(&PRIORITY_CONTROL_PAGES),
-            Self::SettingsHome => Some(&SETTINGS_PAGES),
-            Self::AdvancedControls => Some(&ADVANCED_CONTROLS_PAGES),
-            _ => None,
-        }
+    pub fn child_pages(self) -> Option<&'static [Page]> {
+        PAGE_SECTIONS
+            .iter()
+            .find(|section| section.landing_page == self)
+            .map(|section| section.pages)
     }
 
     pub const fn sections() -> &'static [PageSection] {
@@ -278,5 +235,24 @@ pub fn duration_label(seconds: u64) -> String {
             seconds = seconds % 60
         )
         .to_string()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn page_sections_are_consistent() {
+        let mut pages = HashSet::new();
+
+        for section in Page::sections() {
+            assert_eq!(section.landing_page.child_pages(), Some(section.pages));
+            for page in section.pages {
+                assert_eq!(page.section_landing_page(), section.landing_page);
+                assert!(pages.insert(*page), "{page:?} belongs to multiple sections");
+            }
+        }
     }
 }
