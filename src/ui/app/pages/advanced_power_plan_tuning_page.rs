@@ -17,7 +17,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         self.sync_processor_power_slider_states(window, cx);
-        let has_current_plan = self.current_plan.is_some();
+        let has_target_plan = self.processor_power_target_plan().is_some();
         let target_plan_notice = self.processor_power_target_plan_notice();
         let processor_power_presets = [
             ProcessorPowerPreset::Performance,
@@ -347,7 +347,7 @@ impl WinderustApp {
                     .child(
                         control_button(Button::new("processor-power-refresh-values"))
                             .label(t!("processor_power.refresh_values").to_string())
-                            .disabled(self.current_plan.is_none())
+                            .disabled(!has_target_plan)
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.refresh_processor_power_values();
                                 cx.notify();
@@ -356,7 +356,7 @@ impl WinderustApp {
                     .child(
                         primary_control_button(Button::new("processor-power-apply-custom"), cx)
                             .label(t!("processor_power.apply_custom").to_string())
-                            .disabled(!has_current_plan)
+                            .disabled(!has_target_plan)
                             .on_click(cx.listener(|app, _, _, cx| {
                                 app.apply_processor_power_custom();
                                 cx.notify();
