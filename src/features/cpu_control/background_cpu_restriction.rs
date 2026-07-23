@@ -30,11 +30,11 @@ impl BackgroundCpuRestrictionManager {
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> CoreSteeringSnapshot {
-        if !automation_enabled || !settings.enabled {
+        let mut update_affinity = |enabled: bool, rules: Vec<CoreSteeringRule>, message: &str| {
             let affinity_settings = CoreSteeringSettings {
-                enabled: false,
+                enabled,
                 exclude_foreground_app: settings.exclude_foreground_app,
-                rules: Vec::new(),
+                rules,
             };
             let mut snapshot = self.affinity.update(
                 &affinity_settings,
@@ -42,28 +42,23 @@ impl BackgroundCpuRestrictionManager {
                 foreground_process_id,
                 action_log,
             );
-            snapshot.message = if automation_enabled {
-                "Background CPU Restriction disabled.".to_owned()
+            snapshot.message = message.to_owned();
+            snapshot
+        };
+
+        if !automation_enabled || !settings.enabled {
+            let message = if automation_enabled {
+                "Background CPU Restriction disabled."
             } else {
-                "Automation disabled.".to_owned()
+                "Automation disabled."
             };
-            return snapshot;
+            return update_affinity(false, Vec::new(), message);
         }
 
         let Some(core_mask) = background_restriction_core_mask(settings) else {
-            let affinity_settings = CoreSteeringSettings {
-                enabled: false,
-                exclude_foreground_app: settings.exclude_foreground_app,
-                rules: Vec::new(),
-            };
-            let mut snapshot = self.affinity.update(
-                &affinity_settings,
-                automation_enabled,
-                foreground_process_id,
-                action_log,
-            );
+            let mut snapshot =
+                update_affinity(false, Vec::new(), "No usable CPU restriction target.");
             snapshot.enabled = true;
-            snapshot.message = "No usable CPU restriction target.".to_owned();
             return snapshot;
         };
 
@@ -71,41 +66,33 @@ impl BackgroundCpuRestrictionManager {
             CpuRestrictionMode::SoftCpuSets => CoreSteeringMode::Soft,
             CpuRestrictionMode::HardAffinity => CoreSteeringMode::Hard,
         };
-        let rules = list_processes()
-            .map(|processes| {
-                processes
-                    .into_iter()
-                    .filter(|process| {
-                        process.id != 0
-                            && !core_steering::is_builtin_excluded(&process.name)
-                            && !settings.exclusion_enabled_for(&process.name)
-                    })
-                    .map(|process| CoreSteeringRule {
-                        enabled: true,
-                        mode,
-                        process_name: process.name,
-                        core_mask,
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-
-        let affinity_settings = CoreSteeringSettings {
-            enabled: true,
-            exclude_foreground_app: settings.exclude_foreground_app,
-            rules,
+        let processes = match list_processes() {
+            Ok(processes) => processes,
+            Err(error) => {
+                let mut snapshot = update_affinity(false, Vec::new(), &error);
+                snapshot.enabled = true;
+                snapshot.last_error = Some(error);
+                return snapshot;
+            }
         };
-        let mut snapshot = self.affinity.update(
-            &affinity_settings,
-            automation_enabled,
-            foreground_process_id,
-            action_log,
-        );
-        snapshot.message = "Background CPU Restriction active.".to_owned();
-        snapshot
+        let rules = processes
+            .into_iter()
+            .filter(|process| {
+                process.id != 0
+                    && !core_steering::is_builtin_excluded(&process.name)
+                    && !settings.exclusion_enabled_for(&process.name)
+            })
+            .map(|process| CoreSteeringRule {
+                enabled: true,
+                mode,
+                process_name: process.name,
+                core_mask,
+            })
+            .collect();
+
+        update_affinity(true, rules, "Background CPU Restriction active.")
     }
 }
-
 fn background_restriction_core_mask(settings: &BackgroundCpuRestrictionSettings) -> Option<u64> {
     if settings.strategy == CpuRestrictionStrategy::Off {
         return None;
