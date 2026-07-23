@@ -166,10 +166,6 @@ impl WinderustApp {
 
         let mut rows = vec![
             (
-                t!("timer_resolution.current").to_string(),
-                format_optional_timer_resolution(status.current_100ns),
-            ),
-            (
                 t!("timer_resolution.foreground_rule").to_string(),
                 active_rule,
             ),

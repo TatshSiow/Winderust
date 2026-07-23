@@ -891,7 +891,6 @@ timer_resolution:
   intro_3: "Winderust releases its request when no foreground rule matches, this control is disabled, or the app exits."
   enable: "Enable Timer Resolution Control"
   warning: "Lower timer values can increase CPU wakeups and battery drain. Leave this off unless a workload needs it."
-  current: "Current resolution"
   requested: "Winderust request"
   foreground_rule: "Foreground rule"
   no_active_request: "No active request"
