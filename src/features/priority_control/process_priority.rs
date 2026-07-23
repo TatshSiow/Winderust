@@ -23,8 +23,6 @@ use crate::{
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProcessPrioritySnapshot {
     pub enabled: bool,
@@ -135,12 +133,7 @@ impl ProcessPriorityManager {
         let scanned_processes = processes.len();
         let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
-            })
+            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
         } else {
             None
         };
@@ -224,19 +217,23 @@ impl ProcessPriorityManager {
                     if loggable {
                         applied_processes += 1;
                     }
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                 }
                 Ok(ApplyOutcome::AlreadyApplied) => {
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                 }
                 Ok(ApplyOutcome::Preserved) => {
                     skipped_processes += 1;
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                 }
                 Err(ProcessPriorityError::ProcessExited) => skipped_processes += 1,
                 Err(ProcessPriorityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::ProcessPriority,
                         Some(process_id),
@@ -246,7 +243,8 @@ impl ProcessPriorityManager {
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     failures.record("Apply", process_id, &process_name, err, action_log);
                 }
             }
@@ -398,14 +396,14 @@ impl ProcessPriorityManager {
             match restore_process(*process_id, &process_state) {
                 Ok(()) => {
                     self.adjusted.remove(process_id);
-                    self.clear_process_failure(&log_name);
+                    self.failure_suppression.clear_process_failure(&log_name);
                     restored_processes += 1;
                 }
                 Err(ProcessPriorityError::ProcessExited) => {
                     self.adjusted.remove(process_id);
                 }
                 Err(err) => {
-                    self.record_process_failure(&log_name);
+                    self.failure_suppression.record_process_failure(&log_name);
                     failures.record("Restore", *process_id, &log_name, err, action_log);
                 }
             }
@@ -452,15 +450,6 @@ impl ProcessPriorityManager {
 
         true
     }
-
-    fn record_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .record_process_failure(process_name);
-    }
-
-    fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression.clear_process_failure(process_name);
-    }
 }
 
 impl Drop for ProcessPriorityManager {
@@ -491,9 +480,6 @@ impl ProcessPriorityFailures {
         error: ProcessPriorityError,
         action_log: &mut ActionLog,
     ) {
-        if matches!(&error, ProcessPriorityError::ProcessExited) {
-            return;
-        }
         let message = process_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
@@ -697,7 +683,7 @@ fn process_priority_error_message(error: ProcessPriorityError) -> String {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    BUILT_IN_EXCLUSIONS
+    CORE_BUILT_IN_PROCESS_EXCLUSIONS
         .iter()
         .any(|excluded| same_process_name(excluded, process_name))
 }
