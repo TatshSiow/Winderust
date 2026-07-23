@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
     sync::{mpsc, Arc},
     thread::{self, JoinHandle},
@@ -61,6 +62,7 @@ pub struct WindowsEventWatcher {
 struct PowerNotifications {
     settings: Vec<HPOWERNOTIFY>,
     suspend_resume: HPOWERNOTIFY,
+    settings_complete: bool,
 }
 
 impl WindowsEventWatcher {
@@ -140,19 +142,10 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
         )
     };
 
-    if foreground_hook.is_null() && window_hook.is_null() && window.is_null() {
-        let _ = sender.send(Err(
-            "Failed to start Windows foreground/window event hooks.".to_owned(),
-        ));
-        EVENT_CALLBACK.with(|slot| {
-            *slot.borrow_mut() = None;
-        });
-        return;
-    }
-
     let mut power_notifications = PowerNotifications {
         settings: Vec::new(),
         suspend_resume: 0,
+        settings_complete: false,
     };
     let mut session_notifications_registered = false;
     if !window.is_null() {
@@ -162,16 +155,77 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
             unsafe { WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) } != 0;
     }
 
+    if !event_sources_ready(
+        window,
+        foreground_hook,
+        window_hook,
+        &power_notifications,
+        session_notifications_registered,
+    ) {
+        cleanup_event_sources(
+            window,
+            foreground_hook,
+            window_hook,
+            power_notifications,
+            session_notifications_registered,
+        );
+        let _ = sender.send(Err(
+            "Failed to register every required Windows automation event source.".to_owned(),
+        ));
+        EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+        return;
+    }
+
     let _ = sender.send(Ok(thread_id));
 
-    // SAFETY: msg and every registered handle remain live on this owning thread; registrations
-    // and the hidden window are each released exactly once after the message loop.
+    // SAFETY: msg is writable and the hidden window remains live while messages are dispatched.
     unsafe {
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    }
 
+    cleanup_event_sources(
+        window,
+        foreground_hook,
+        window_hook,
+        power_notifications,
+        session_notifications_registered,
+    );
+
+    EVENT_CALLBACK.with(|slot| {
+        *slot.borrow_mut() = None;
+    });
+}
+
+fn event_sources_ready(
+    window: HWND,
+    foreground_hook: HWINEVENTHOOK,
+    window_hook: HWINEVENTHOOK,
+    power_notifications: &PowerNotifications,
+    session_notifications_registered: bool,
+) -> bool {
+    !window.is_null()
+        && !foreground_hook.is_null()
+        && !window_hook.is_null()
+        && power_notifications.settings_complete
+        && power_notifications.suspend_resume != 0
+        && session_notifications_registered
+}
+
+fn cleanup_event_sources(
+    window: HWND,
+    foreground_hook: HWINEVENTHOOK,
+    window_hook: HWINEVENTHOOK,
+    power_notifications: PowerNotifications,
+    session_notifications_registered: bool,
+) {
+    // SAFETY: every non-null handle was returned by its matching registration call on this
+    // owning thread and is released at most once here.
+    unsafe {
         if session_notifications_registered {
             WTSUnRegisterSessionNotification(window);
         }
@@ -191,10 +245,6 @@ fn event_thread(sender: mpsc::Sender<Result<u32, String>>, callback: EventCallba
             DestroyWindow(window);
         }
     }
-
-    EVENT_CALLBACK.with(|slot| {
-        *slot.borrow_mut() = None;
-    });
 }
 
 fn create_event_window() -> HWND {
@@ -251,9 +301,11 @@ fn register_power_notifications(window: HWND) -> PowerNotifications {
     // SAFETY: window is live and the registration stores only the HWND value.
     let suspend_resume =
         unsafe { RegisterSuspendResumeNotification(window as _, DEVICE_NOTIFY_WINDOW_HANDLE) };
+    let settings_complete = settings.len() == power_settings.len();
     PowerNotifications {
         settings,
         suspend_resume,
+        settings_complete,
     }
 }
 
@@ -309,9 +361,65 @@ unsafe extern "system" fn win_event_proc(
 }
 
 fn notify_event(event: WindowsAutomationEvent) {
-    EVENT_CALLBACK.with(|slot| {
-        if let Some(callback) = slot.borrow().as_ref() {
-            callback(event);
+    let callback = EVENT_CALLBACK.with(|slot| slot.borrow().clone());
+    if let Some(callback) = callback {
+        if catch_unwind(AssertUnwindSafe(|| callback(event))).is_err() {
+            eprintln!("Windows event callback panicked.");
         }
-    });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watcher_requires_every_event_source() {
+        let handle = std::ptr::dangling_mut();
+        let complete_power = PowerNotifications {
+            settings: Vec::new(),
+            suspend_resume: 1,
+            settings_complete: true,
+        };
+
+        assert!(event_sources_ready(
+            handle,
+            handle,
+            handle,
+            &complete_power,
+            true,
+        ));
+        assert!(!event_sources_ready(
+            std::ptr::null_mut(),
+            handle,
+            handle,
+            &complete_power,
+            true,
+        ));
+
+        let incomplete_power = PowerNotifications {
+            settings_complete: false,
+            ..complete_power
+        };
+        assert!(!event_sources_ready(
+            handle,
+            handle,
+            handle,
+            &incomplete_power,
+            true,
+        ));
+    }
+
+    #[test]
+    fn callback_panic_does_not_escape_windows_dispatch() {
+        EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = Some(Arc::new(|_| panic!("callback failed")));
+        });
+
+        notify_event(WindowsAutomationEvent::ForegroundChanged);
+
+        EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    }
 }

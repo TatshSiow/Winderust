@@ -20,6 +20,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Product surface | Implementation | Windows boundary |
 | --- | --- | --- |
 | Power Plan Control and Advanced Power Plan Tuning | `src/power/powercfg.rs` | Power scheme enumeration, activation, duplication, deletion, and processor setting values |
+| Automation event wake handling | `src/backend/windows_events.rs` | Foreground/window WinEvent hooks plus power, suspend/resume, and session notifications |
 | Adaptive Engine | `src/features/winderust_features/workload_engine.rs` and `workload_engine/process_control.rs` | Workload decisions plus the process QoS, process priority, and Dynamic Priority Boost boundary; affinity masks, CPU Sets, and Memory Priority use their feature managers |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` | Process power throttling and optional process-priority management |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs` | Memory-pressure checks and process working-set trimming |
@@ -66,6 +67,17 @@ User-facing behavior:
 | `GUID` | Identifies each Windows power scheme. Winderust stores GUIDs as lowercase strings in settings. | https://learn.microsoft.com/en-us/windows/win32/api/guiddef/ns-guiddef-guid |
 | `LocalFree` | Frees the GUID pointer returned by `PowerGetActiveScheme`. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-localfree |
 | System error codes | Power APIs return Win32 error codes such as `ERROR_SUCCESS`, `ERROR_MORE_DATA`, and `ERROR_NO_MORE_ITEMS`. | https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes |
+
+## Automation Event Watcher
+
+`src/backend/windows_events.rs` owns one hidden-window thread for event-driven automation wakes. Startup is all-or-nothing: the hidden window, foreground hook, window-creation hook, every configured power-setting notification, suspend/resume notification, and current-session notification must all register successfully. Partial registrations are released immediately and the watcher remains inactive so automation retains its polling fallback.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `SetWinEventHook` | Receives foreground changes and top-level window creation events outside Winderust's own process. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook |
+| `RegisterPowerSettingNotification` | Delivers A/C source, battery percentage, and power-scheme personality changes to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerpowersettingnotification |
+| `RegisterSuspendResumeNotification` | Delivers suspend and resume notifications to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registersuspendresumenotification |
+| `WTSRegisterSessionNotification` | Delivers current-session lock, unlock, logon, logoff, and related session changes. | https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/nf-wtsapi32-wtsregistersessionnotification |
 
 ## Background Efficiency / EcoQoS
 
