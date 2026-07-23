@@ -6,7 +6,7 @@ use std::{
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
+    Foundation::{GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Shell::{
@@ -37,6 +37,7 @@ static RESTORE_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 pub struct TrayIcon {
     hwnd: HWND,
+    original_wndproc: isize,
 }
 
 impl TrayIcon {
@@ -45,7 +46,7 @@ impl TrayIcon {
             return Err("Cannot create tray icon without a window handle.".to_owned());
         }
 
-        subclass_window(hwnd);
+        let original_wndproc = subclass_window(hwnd)?;
 
         let mut data = notify_data(hwnd);
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
@@ -57,10 +58,14 @@ impl TrayIcon {
         // shared or null icon handle valid for the call.
         let ok = unsafe { Shell_NotifyIconW(NIM_ADD, &data) };
         if ok == 0 {
+            restore_window_proc(hwnd, original_wndproc)?;
             return Err("Failed to add Winderust to the system tray.".to_owned());
         }
 
-        Ok(Self { hwnd })
+        Ok(Self {
+            hwnd,
+            original_wndproc,
+        })
     }
 }
 
@@ -71,6 +76,9 @@ impl Drop for TrayIcon {
         // not transfer ownership.
         unsafe {
             Shell_NotifyIconW(NIM_DELETE, &data);
+        }
+        if let Err(error) = restore_window_proc(self.hwnd, self.original_wndproc) {
+            eprintln!("{error}");
         }
     }
 }
@@ -92,7 +100,7 @@ pub fn take_restore_requested() -> bool {
 }
 
 fn take_requested(requested: &AtomicBool) -> bool {
-    requested.load(Ordering::Relaxed) && requested.swap(false, Ordering::Relaxed)
+    requested.swap(false, Ordering::Relaxed)
 }
 
 pub fn set_hide_on_close(enabled: bool) {
@@ -143,15 +151,45 @@ fn load_app_icon() -> HICON {
     }
 }
 
-fn subclass_window(hwnd: HWND) {
+fn subclass_window(hwnd: HWND) -> Result<isize, String> {
     if ORIGINAL_WNDPROC.load(Ordering::SeqCst) != 0 {
-        return;
+        return Err("The tray window is already subclassed.".to_owned());
     }
 
+    // SAFETY: clearing the calling thread's last-error value lets the zero return from the
+    // following SetWindowLongPtrW call be distinguished from failure.
+    unsafe { SetLastError(0) };
     // SAFETY: hwnd is the live GPUI window and tray_wnd_proc has the required static callback ABI.
     let previous =
         unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, tray_wnd_proc as *const () as isize) };
+    if previous == 0 {
+        // SAFETY: GetLastError is captured immediately after the failed SetWindowLongPtrW call.
+        let error = unsafe { GetLastError() };
+        return Err(format!(
+            "Failed to subclass the tray window with error code {error}."
+        ));
+    }
+
     ORIGINAL_WNDPROC.store(previous, Ordering::SeqCst);
+    Ok(previous)
+}
+
+fn restore_window_proc(hwnd: HWND, original_wndproc: isize) -> Result<(), String> {
+    // SAFETY: hwnd is the same live window subclassed by TrayIcon, and original_wndproc is the
+    // window procedure returned by that successful SetWindowLongPtrW call.
+    unsafe { SetLastError(0) };
+    // SAFETY: the original callback has the WNDPROC ABI and remains owned by the live window.
+    let previous = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original_wndproc) };
+    if previous == 0 {
+        // SAFETY: GetLastError is captured immediately after the failed SetWindowLongPtrW call.
+        let error = unsafe { GetLastError() };
+        return Err(format!(
+            "Failed to restore the tray window procedure with error code {error}."
+        ));
+    }
+
+    ORIGINAL_WNDPROC.store(0, Ordering::SeqCst);
+    Ok(())
 }
 
 unsafe extern "system" fn tray_wnd_proc(
@@ -269,5 +307,17 @@ fn quit_window(hwnd: HWND) {
     unsafe {
         ShowWindow(hwnd, SW_SHOWNA);
         PostMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_requests_are_consumed_once() {
+        let requested = AtomicBool::new(true);
+
+        assert!(take_requested(&requested));
+        assert!(!take_requested(&requested));
     }
 }

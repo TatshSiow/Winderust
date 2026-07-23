@@ -21,6 +21,7 @@ window rendering and infrastructure calls are not duplicated here.
 | --- | --- | --- |
 | Power Plan Control and Advanced Power Plan Tuning | `src/power/powercfg.rs` | Power scheme enumeration, activation, duplication, deletion, and processor setting values |
 | Automation event wake handling | `src/backend/windows_events.rs` | Foreground/window WinEvent hooks plus power, suspend/resume, and session notifications |
+| System tray lifecycle | `src/backend/tray.rs` | Notification-area icon, window-procedure subclassing, popup menu, and restore/quit messages |
 | Adaptive Engine | `src/features/winderust_features/workload_engine.rs` and `workload_engine/process_control.rs` | Workload decisions plus the process QoS, process priority, and Dynamic Priority Boost boundary; affinity masks, CPU Sets, and Memory Priority use their feature managers |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` | Process power throttling and optional process-priority management |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs` | Memory-pressure checks and process working-set trimming |
@@ -78,6 +79,16 @@ User-facing behavior:
 | `RegisterPowerSettingNotification` | Delivers A/C source, battery percentage, and power-scheme personality changes to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerpowersettingnotification |
 | `RegisterSuspendResumeNotification` | Delivers suspend and resume notifications to the hidden window. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registersuspendresumenotification |
 | `WTSRegisterSessionNotification` | Delivers current-session lock, unlock, logon, logoff, and related session changes. | https://learn.microsoft.com/en-us/windows/win32/api/wtsapi32/nf-wtsapi32-wtsregistersessionnotification |
+
+## System Tray Lifecycle
+
+`src/backend/tray.rs` adds and removes Winderust's notification-area icon and temporarily subclasses the live GPUI window to receive tray callbacks. `TrayIcon` owns both resources: failed icon installation and normal `Drop` restore the exact window procedure returned by `SetWindowLongPtrW`, while unhandled messages continue through `CallWindowProcW`.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `Shell_NotifyIconW` | Adds and removes the Winderust notification-area icon. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw |
+| `SetWindowLongPtrW` | Installs and restores the temporary `GWLP_WNDPROC` tray callback. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw |
+| `CallWindowProcW` | Forwards unhandled messages to the exact original window procedure. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw |
 
 ## Background Efficiency / EcoQoS
 
