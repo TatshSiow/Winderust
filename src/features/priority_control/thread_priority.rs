@@ -32,7 +32,6 @@ use crate::{
     win_util::{filetime_to_u64, last_error, WinHandle},
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
 const THREAD_PRIORITY_ERROR_RETURN: i32 = i32::MAX;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -151,12 +150,7 @@ impl ThreadPriorityManager {
         let scanned_processes = processes.len();
         let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
-            })
+            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
         } else {
             None
         };
@@ -233,12 +227,14 @@ impl ThreadPriorityManager {
                     applied_threads += outcome.applied_threads;
                     skipped_processes +=
                         usize::from(outcome.applied_threads == 0 && outcome.preserved_threads > 0);
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                 }
                 Err(ThreadPriorityError::ProcessExited) => skipped_processes += 1,
                 Err(ThreadPriorityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::ThreadPriority,
                         Some(process_id),
@@ -248,7 +244,8 @@ impl ThreadPriorityManager {
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     failures.record("Apply", process_id, &process_name, err, action_log);
                 }
             }
@@ -446,15 +443,6 @@ impl ThreadPriorityManager {
 
         true
     }
-
-    fn record_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .record_process_failure(process_name);
-    }
-
-    fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression.clear_process_failure(process_name);
-    }
 }
 
 #[derive(Default)]
@@ -472,9 +460,6 @@ impl ThreadPriorityFailures {
         error: ThreadPriorityError,
         action_log: &mut ActionLog,
     ) {
-        if matches!(&error, ThreadPriorityError::ProcessExited) {
-            return;
-        }
         let message = thread_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({id}): {message}"));
@@ -549,7 +534,13 @@ impl ThreadHandle {
         {
             Ok(filetime_to_u64(creation))
         } else {
-            Err(open_thread_error(0, last_error()))
+            match last_error() {
+                ERROR_ACCESS_DENIED => Err(ThreadPriorityError::AccessDenied),
+                ERROR_INVALID_PARAMETER => Err(ThreadPriorityError::ProcessExited),
+                error => Err(ThreadPriorityError::Failed(format!(
+                    "GetThreadTimes failed with error {error}."
+                ))),
+            }
         }
     }
 
@@ -672,7 +663,7 @@ fn thread_priority_error_message(error: ThreadPriorityError) -> String {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    BUILT_IN_EXCLUSIONS
+    CORE_BUILT_IN_PROCESS_EXCLUSIONS
         .iter()
         .any(|excluded| same_process_name(excluded, process_name))
 }
