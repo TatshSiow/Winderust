@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_io_priority_page(
+    pub(in crate::ui::app) fn render_io_priority_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -155,7 +155,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_process_priority_page(
+    pub(in crate::ui::app) fn render_process_priority_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -327,7 +327,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_process_priority_exclusions(
+    pub(in crate::ui::app) fn render_process_priority_exclusions(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -342,7 +342,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_process_priority_status_card(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_process_priority_status_card(&self) -> gpui::Div {
         let status = &self.process_priority_status;
         let message = if status.message.is_empty() {
             t!("process_priority.not_checked").to_string()
@@ -374,7 +374,7 @@ impl WinderustApp {
         stat_grid(rows)
     }
 
-    pub(super) fn render_process_priority_default_selector(
+    pub(in crate::ui::app) fn render_process_priority_default_selector(
         &self,
         target: ProcessPriorityDefaultTarget,
         selected_priority: ProcessPrioritySetting,
@@ -429,7 +429,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_thread_priority_page(
+    pub(in crate::ui::app) fn render_thread_priority_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -601,7 +601,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_thread_priority_exclusions(
+    pub(in crate::ui::app) fn render_thread_priority_exclusions(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -616,7 +616,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_thread_priority_status_card(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_thread_priority_status_card(&self) -> gpui::Div {
         let status = &self.thread_priority_status;
         let message = if status.message.is_empty() {
             t!("thread_priority.not_checked").to_string()
@@ -652,7 +652,7 @@ impl WinderustApp {
         stat_grid(rows)
     }
 
-    pub(super) fn render_thread_priority_default_selector(
+    pub(in crate::ui::app) fn render_thread_priority_default_selector(
         &self,
         target: ThreadPriorityDefaultTarget,
         selected_priority: ProcessThreadPrioritySetting,
@@ -707,7 +707,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_dynamic_priority_boost_page(
+    pub(in crate::ui::app) fn render_dynamic_priority_boost_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -855,7 +855,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_dynamic_priority_boost_exclusions(
+    pub(in crate::ui::app) fn render_dynamic_priority_boost_exclusions(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -870,7 +870,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_dynamic_priority_boost_status_card(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_dynamic_priority_boost_status_card(&self) -> gpui::Div {
         let status = &self.dynamic_priority_boost_status;
         let message = if status.message.is_empty() {
             t!("dynamic_priority_boost.not_checked").to_string()
@@ -902,7 +902,7 @@ impl WinderustApp {
         stat_grid(rows)
     }
 
-    pub(super) fn render_dynamic_priority_boost_default_selector(
+    pub(in crate::ui::app) fn render_dynamic_priority_boost_default_selector(
         &self,
         target: DynamicPriorityBoostDefaultTarget,
         selected_boost: ProcessDynamicPriorityBoostSetting,
@@ -955,7 +955,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_io_priority_exclusions(
+    pub(in crate::ui::app) fn render_io_priority_exclusions(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -970,7 +970,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_priority_exclusion_table(
+    pub(in crate::ui::app) fn render_priority_exclusion_table(
         &self,
         id_prefix: &'static str,
         rules: &[ProcessExclusionRule],
@@ -1070,7 +1070,7 @@ impl WinderustApp {
         table.into_any_element()
     }
 
-    pub(super) fn render_priority_exclusion_dropdown(
+    pub(in crate::ui::app) fn render_priority_exclusion_dropdown(
         &self,
         kind: ListItemRemovalKind,
         index: usize,
@@ -1281,7 +1281,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn set_priority_exclusion_enabled(
+    pub(in crate::ui::app) fn set_priority_exclusion_enabled(
         &mut self,
         kind: ListItemRemovalKind,
         index: usize,
@@ -1316,7 +1316,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn render_io_priority_default_selector(
+    pub(in crate::ui::app) fn render_io_priority_default_selector(
         &self,
         target: IoPriorityDefaultTarget,
         selected_priority: ProcessIoPrioritySetting,
@@ -1372,7 +1372,7 @@ impl WinderustApp {
         dropdown
     }
 
-    pub(super) fn render_gpu_priority_page(
+    pub(in crate::ui::app) fn render_gpu_priority_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1538,7 +1538,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_gpu_priority_exclusions(
+    pub(in crate::ui::app) fn render_gpu_priority_exclusions(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1553,7 +1553,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_gpu_priority_status_card(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_gpu_priority_status_card(&self) -> gpui::Div {
         let status = &self.gpu_priority_status;
         let message = if status.message.is_empty() {
             t!("gpu_priority.not_checked").to_string()
@@ -1597,7 +1597,7 @@ impl WinderustApp {
         stat_grid(rows)
     }
 
-    pub(super) fn render_gpu_priority_default_selector(
+    pub(in crate::ui::app) fn render_gpu_priority_default_selector(
         &self,
         target: GpuPriorityDefaultTarget,
         selected_priority: ProcessGpuPrioritySetting,
@@ -1653,7 +1653,7 @@ impl WinderustApp {
         dropdown
     }
 
-    pub(super) fn render_memory_priority_page(
+    pub(in crate::ui::app) fn render_memory_priority_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1824,7 +1824,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_memory_priority_exclusions(
+    pub(in crate::ui::app) fn render_memory_priority_exclusions(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1839,7 +1839,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_memory_priority_default_selector(
+    pub(in crate::ui::app) fn render_memory_priority_default_selector(
         &self,
         target: MemoryPriorityDefaultTarget,
         selected_priority: ProcessMemoryPrioritySetting,

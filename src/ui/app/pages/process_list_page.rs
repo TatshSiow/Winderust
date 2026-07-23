@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_process_list_page(
+    pub(in crate::ui::app) fn render_process_list_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -174,7 +174,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_process_list_column_visibility_dropdown(
+    pub(in crate::ui::app) fn render_process_list_column_visibility_dropdown(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -235,19 +235,19 @@ impl WinderustApp {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProcessListSortColumn {
+pub(in crate::ui::app) enum ProcessListSortColumn {
     ProcessName,
     Column(ProcessListColumn),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ProcessListSortDirection {
+pub(in crate::ui::app) enum ProcessListSortDirection {
     Ascending,
     Descending,
 }
 
 impl ProcessListSortDirection {
-    pub(super) fn toggled(self) -> Self {
+    pub(in crate::ui::app) fn toggled(self) -> Self {
         match self {
             Self::Ascending => Self::Descending,
             Self::Descending => Self::Ascending,
@@ -256,13 +256,13 @@ impl ProcessListSortDirection {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct ProcessListSort {
-    pub(super) column: ProcessListSortColumn,
-    pub(super) direction: ProcessListSortDirection,
+pub(in crate::ui::app) struct ProcessListSort {
+    pub(in crate::ui::app) column: ProcessListSortColumn,
+    pub(in crate::ui::app) direction: ProcessListSortDirection,
 }
 
 impl ProcessListSort {
-    pub(super) fn toggled_for(self, column: ProcessListSortColumn) -> Self {
+    pub(in crate::ui::app) fn toggled_for(self, column: ProcessListSortColumn) -> Self {
         if self.column == column {
             Self {
                 column,
@@ -286,19 +286,19 @@ impl Default for ProcessListSort {
     }
 }
 
-pub(super) struct ProcessListGroup<'a> {
-    pub(super) display_name: String,
-    pub(super) processes: Vec<&'a ProcessInfo>,
+pub(in crate::ui::app) struct ProcessListGroup<'a> {
+    pub(in crate::ui::app) display_name: String,
+    pub(in crate::ui::app) processes: Vec<&'a ProcessInfo>,
 }
 
 #[derive(Clone)]
-pub(super) struct ProcessListColumnLayout {
-    pub(super) name_width: f32,
-    pub(super) column_widths: HashMap<ProcessListColumn, f32>,
+pub(in crate::ui::app) struct ProcessListColumnLayout {
+    pub(in crate::ui::app) name_width: f32,
+    pub(in crate::ui::app) column_widths: HashMap<ProcessListColumn, f32>,
 }
 
 impl ProcessListColumnLayout {
-    pub(super) fn column_width(&self, column: ProcessListColumn) -> f32 {
+    pub(in crate::ui::app) fn column_width(&self, column: ProcessListColumn) -> f32 {
         self.column_widths
             .get(&column)
             .copied()
@@ -307,32 +307,32 @@ impl ProcessListColumnLayout {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ProcessListRenderLayout<'a> {
-    pub(super) hidden_columns: &'a HashSet<ProcessListColumn>,
-    pub(super) column_layout: &'a ProcessListColumnLayout,
+pub(in crate::ui::app) struct ProcessListRenderLayout<'a> {
+    pub(in crate::ui::app) hidden_columns: &'a HashSet<ProcessListColumn>,
+    pub(in crate::ui::app) column_layout: &'a ProcessListColumnLayout,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ProcessListGroupRowState {
-    pub(super) collapsed: bool,
-    pub(super) divided: bool,
+pub(in crate::ui::app) struct ProcessListGroupRowState {
+    pub(in crate::ui::app) collapsed: bool,
+    pub(in crate::ui::app) divided: bool,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ProcessListEntryRowState {
-    pub(super) divided: bool,
-    pub(super) nested: bool,
-    pub(super) editable: bool,
+pub(in crate::ui::app) struct ProcessListEntryRowState {
+    pub(in crate::ui::app) divided: bool,
+    pub(in crate::ui::app) nested: bool,
+    pub(in crate::ui::app) editable: bool,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ProcessListGroupRowData<'a> {
-    pub(super) process_name: &'a str,
-    pub(super) process_count: usize,
+pub(in crate::ui::app) struct ProcessListGroupRowData<'a> {
+    pub(in crate::ui::app) process_name: &'a str,
+    pub(in crate::ui::app) process_count: usize,
 }
 
 #[derive(Clone)]
-pub(super) enum ProcessListRenderedRow {
+pub(in crate::ui::app) enum ProcessListRenderedRow {
     Entry {
         process: ProcessInfo,
         summary: Arc<ProcessPolicySummary>,
@@ -348,28 +348,30 @@ pub(super) enum ProcessListRenderedRow {
     },
 }
 
-pub(super) struct ProcessListRenderData {
-    pub(super) process_count: usize,
-    pub(super) column_layout: ProcessListColumnLayout,
-    pub(super) table_width: Pixels,
-    pub(super) rows: Rc<Vec<ProcessListRenderedRow>>,
-    pub(super) item_sizes: Rc<Vec<gpui::Size<Pixels>>>,
+pub(in crate::ui::app) struct ProcessListRenderData {
+    pub(in crate::ui::app) process_count: usize,
+    pub(in crate::ui::app) column_layout: ProcessListColumnLayout,
+    pub(in crate::ui::app) table_width: Pixels,
+    pub(in crate::ui::app) rows: Rc<Vec<ProcessListRenderedRow>>,
+    pub(in crate::ui::app) item_sizes: Rc<Vec<gpui::Size<Pixels>>>,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ProcessListEditContext<'a> {
-    pub(super) app: &'a WinderustApp,
-    pub(super) window: &'a Window,
+pub(in crate::ui::app) struct ProcessListEditContext<'a> {
+    pub(in crate::ui::app) app: &'a WinderustApp,
+    pub(in crate::ui::app) window: &'a Window,
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct ProcessListPolicyCellTarget<'a> {
-    pub(super) process_name: &'a str,
-    pub(super) column: ProcessListColumn,
-    pub(super) editable: bool,
+pub(in crate::ui::app) struct ProcessListPolicyCellTarget<'a> {
+    pub(in crate::ui::app) process_name: &'a str,
+    pub(in crate::ui::app) column: ProcessListColumn,
+    pub(in crate::ui::app) editable: bool,
 }
 
-pub(super) fn process_list_groups(processes: &[ProcessInfo]) -> Vec<ProcessListGroup<'_>> {
+pub(in crate::ui::app) fn process_list_groups(
+    processes: &[ProcessInfo],
+) -> Vec<ProcessListGroup<'_>> {
     let mut groups = Vec::<ProcessListGroup<'_>>::with_capacity(processes.len());
     let mut group_indexes = HashMap::<String, usize>::with_capacity(processes.len());
 
@@ -389,7 +391,7 @@ pub(super) fn process_list_groups(processes: &[ProcessInfo]) -> Vec<ProcessListG
     groups
 }
 
-pub(super) fn process_list_sorted_rows<'a>(
+pub(in crate::ui::app) fn process_list_sorted_rows<'a>(
     groups: Vec<ProcessListGroup<'a>>,
     summaries: Vec<ProcessPolicySummary>,
     sort: ProcessListSort,
@@ -404,7 +406,7 @@ pub(super) fn process_list_sorted_rows<'a>(
     rows
 }
 
-pub(super) fn process_list_rendered_rows(
+pub(in crate::ui::app) fn process_list_rendered_rows(
     rows: &[(ProcessListGroup<'_>, ProcessPolicySummary)],
     process_icons_by_name: &HashMap<&str, &Arc<Image>>,
     is_group_collapsed: impl Fn(&str) -> bool,
@@ -475,7 +477,7 @@ pub(super) fn process_list_rendered_rows(
     rendered_rows
 }
 
-pub(super) fn process_list_render_data(app: &WinderustApp) -> ProcessListRenderData {
+pub(in crate::ui::app) fn process_list_render_data(app: &WinderustApp) -> ProcessListRenderData {
     let process_count = app.running_processes.len();
     let mut process_groups = process_list_groups(&app.running_processes);
     for group in &mut process_groups {
@@ -521,7 +523,7 @@ pub(super) fn process_list_render_data(app: &WinderustApp) -> ProcessListRenderD
     }
 }
 
-pub(super) fn process_list_sort_group_processes(
+pub(in crate::ui::app) fn process_list_sort_group_processes(
     group: &mut ProcessListGroup<'_>,
     sort: ProcessListSort,
 ) {
@@ -530,7 +532,7 @@ pub(super) fn process_list_sort_group_processes(
         .sort_by(|left, right| process_list_process_sort_cmp(left, right, sort));
 }
 
-pub(super) fn process_list_group_sort_cmp(
+pub(in crate::ui::app) fn process_list_group_sort_cmp(
     left_group: &ProcessListGroup<'_>,
     left_summary: &ProcessPolicySummary,
     right_group: &ProcessListGroup<'_>,
@@ -560,7 +562,7 @@ pub(super) fn process_list_group_sort_cmp(
         })
 }
 
-pub(super) fn process_list_process_sort_cmp(
+pub(in crate::ui::app) fn process_list_process_sort_cmp(
     left: &ProcessInfo,
     right: &ProcessInfo,
     sort: ProcessListSort,
@@ -576,7 +578,7 @@ pub(super) fn process_list_process_sort_cmp(
         .then_with(|| left.id.cmp(&right.id))
 }
 
-pub(super) fn process_list_directional_cmp(
+pub(in crate::ui::app) fn process_list_directional_cmp(
     ordering: CmpOrdering,
     direction: ProcessListSortDirection,
 ) -> CmpOrdering {
@@ -586,7 +588,7 @@ pub(super) fn process_list_directional_cmp(
     }
 }
 
-pub(super) fn process_list_group_min_pid(group: &ProcessListGroup<'_>) -> u32 {
+pub(in crate::ui::app) fn process_list_group_min_pid(group: &ProcessListGroup<'_>) -> u32 {
     group
         .processes
         .iter()
@@ -595,7 +597,7 @@ pub(super) fn process_list_group_min_pid(group: &ProcessListGroup<'_>) -> u32 {
         .unwrap_or_default()
 }
 
-pub(super) fn process_list_group_sort_pid(
+pub(in crate::ui::app) fn process_list_group_sort_pid(
     group: &ProcessListGroup<'_>,
     direction: ProcessListSortDirection,
 ) -> u32 {
@@ -607,25 +609,25 @@ pub(super) fn process_list_group_sort_pid(
     .unwrap_or_default()
 }
 
-pub(super) fn process_list_text_sort_cmp(left: &str, right: &str) -> CmpOrdering {
+pub(in crate::ui::app) fn process_list_text_sort_cmp(left: &str, right: &str) -> CmpOrdering {
     left.bytes()
         .map(|byte| byte.to_ascii_lowercase())
         .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
         .then_with(|| left.cmp(right))
 }
 
-pub(super) fn process_list_group_key(process_name: &str) -> String {
+pub(in crate::ui::app) fn process_list_group_key(process_name: &str) -> String {
     process_name.trim().to_ascii_lowercase()
 }
 
-pub(super) fn process_list_column_visible(
+pub(in crate::ui::app) fn process_list_column_visible(
     hidden_columns: &HashSet<ProcessListColumn>,
     column: ProcessListColumn,
 ) -> bool {
     !hidden_columns.contains(&column)
 }
 
-pub(super) fn process_list_column_min_width(column: ProcessListColumn) -> f32 {
+pub(in crate::ui::app) fn process_list_column_min_width(column: ProcessListColumn) -> f32 {
     match column {
         ProcessListColumn::Pid => PROCESS_LIST_PID_MIN_WIDTH,
         ProcessListColumn::CoreLimiter
@@ -644,7 +646,7 @@ pub(super) fn process_list_column_min_width(column: ProcessListColumn) -> f32 {
     }
 }
 
-pub(super) fn process_list_column_max_width(column: ProcessListColumn) -> f32 {
+pub(in crate::ui::app) fn process_list_column_max_width(column: ProcessListColumn) -> f32 {
     match column {
         ProcessListColumn::Pid => PROCESS_LIST_PID_MAX_WIDTH,
         ProcessListColumn::CoreLimiter
@@ -663,7 +665,10 @@ pub(super) fn process_list_column_max_width(column: ProcessListColumn) -> f32 {
     }
 }
 
-pub(super) fn process_list_column_label(column: ProcessListColumn, settings: &Settings) -> String {
+pub(in crate::ui::app) fn process_list_column_label(
+    column: ProcessListColumn,
+    settings: &Settings,
+) -> String {
     match column {
         ProcessListColumn::Pid => t!("process_list.pid").to_string(),
         ProcessListColumn::PowerPlanForeground => {
@@ -697,7 +702,7 @@ pub(super) fn process_list_column_label(column: ProcessListColumn, settings: &Se
     }
 }
 
-pub(super) fn process_list_column_layout(
+pub(in crate::ui::app) fn process_list_column_layout(
     settings: &Settings,
     groups: &[ProcessListGroup<'_>],
     summaries: &[ProcessPolicySummary],
@@ -774,11 +779,11 @@ pub(super) fn process_list_column_layout(
     }
 }
 
-pub(super) fn process_list_estimated_cell_width(text: &str, extra_width: f32) -> f32 {
+pub(in crate::ui::app) fn process_list_estimated_cell_width(text: &str, extra_width: f32) -> f32 {
     process_list_estimated_text_width(text) + extra_width
 }
 
-pub(super) fn process_list_estimated_policy_value_width(
+pub(in crate::ui::app) fn process_list_estimated_policy_value_width(
     column: ProcessListColumn,
     value: &str,
 ) -> f32 {
@@ -796,17 +801,17 @@ pub(super) fn process_list_estimated_policy_value_width(
     process_list_estimated_cell_width(value, PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING)
 }
 
-pub(super) fn process_list_header_cell_non_text_width() -> f32 {
+pub(in crate::ui::app) fn process_list_header_cell_non_text_width() -> f32 {
     PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING
         + PROCESS_LIST_SORT_ICON_WIDTH
         + PROCESS_LIST_SORT_HEADER_GAP
 }
 
-pub(super) fn process_list_estimated_text_width(text: &str) -> f32 {
+pub(in crate::ui::app) fn process_list_estimated_text_width(text: &str) -> f32 {
     text.chars().map(process_list_estimated_char_width).sum()
 }
 
-pub(super) fn process_list_estimated_char_width(character: char) -> f32 {
+pub(in crate::ui::app) fn process_list_estimated_char_width(character: char) -> f32 {
     if !character.is_ascii() {
         return 13.0;
     }
@@ -821,7 +826,7 @@ pub(super) fn process_list_estimated_char_width(character: char) -> f32 {
     }
 }
 
-pub(super) fn process_list_table_width(
+pub(in crate::ui::app) fn process_list_table_width(
     hidden_columns: &HashSet<ProcessListColumn>,
     layout: &ProcessListColumnLayout,
 ) -> Pixels {
@@ -842,7 +847,7 @@ pub(super) fn process_list_table_width(
     px(data_width + PROCESS_LIST_ROW_HORIZONTAL_PADDING + PROCESS_LIST_COLUMN_GAP * gap_count)
 }
 
-pub(super) fn process_list_scroll_height(window: &Window) -> Pixels {
+pub(in crate::ui::app) fn process_list_scroll_height(window: &Window) -> Pixels {
     let reserved_height = TITLE_BAR_HEIGHT
         + PAGE_HEADER_HEIGHT
         + PAGE_CONTENT_VERTICAL_PADDING * 2.0
@@ -852,7 +857,7 @@ pub(super) fn process_list_scroll_height(window: &Window) -> Pixels {
     (window.viewport_size().height - px(reserved_height)).max(Pixels::ZERO)
 }
 
-pub(super) fn process_list_surface() -> gpui::Div {
+pub(in crate::ui::app) fn process_list_surface() -> gpui::Div {
     v_flex()
         .size_full()
         .min_w(px(0.0))
@@ -866,11 +871,11 @@ pub(super) fn process_list_surface() -> gpui::Div {
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
 }
 
-pub(super) fn process_list_scroll_content(table_width: Pixels) -> gpui::Div {
+pub(in crate::ui::app) fn process_list_scroll_content(table_width: Pixels) -> gpui::Div {
     v_flex().w(table_width).min_w(table_width)
 }
 
-pub(super) fn process_list_header_row(
+pub(in crate::ui::app) fn process_list_header_row(
     settings: &Settings,
     hidden_columns: &HashSet<ProcessListColumn>,
     layout: &ProcessListColumnLayout,
@@ -911,7 +916,7 @@ pub(super) fn process_list_header_row(
     row
 }
 
-pub(super) fn process_list_priority_header_label(
+pub(in crate::ui::app) fn process_list_priority_header_label(
     label: String,
     has_foreground_background_split: bool,
 ) -> String {
@@ -927,15 +932,15 @@ pub(super) fn process_list_priority_header_label(
     }
 }
 
-pub(super) fn process_list_foreground_short_label() -> &'static str {
+pub(in crate::ui::app) fn process_list_foreground_short_label() -> &'static str {
     "FG"
 }
 
-pub(super) fn process_list_background_short_label() -> &'static str {
+pub(in crate::ui::app) fn process_list_background_short_label() -> &'static str {
     "BG"
 }
 
-pub(super) fn process_list_header_cell(
+pub(in crate::ui::app) fn process_list_header_cell(
     width: f32,
     label: String,
     column: ProcessListSortColumn,
@@ -970,7 +975,9 @@ pub(super) fn process_list_header_cell(
         .into_any_element()
 }
 
-pub(super) fn process_list_sort_column_id(column: ProcessListSortColumn) -> &'static str {
+pub(in crate::ui::app) fn process_list_sort_column_id(
+    column: ProcessListSortColumn,
+) -> &'static str {
     match column {
         ProcessListSortColumn::ProcessName => "process-name",
         ProcessListSortColumn::Column(ProcessListColumn::Pid) => "pid",
@@ -996,7 +1003,7 @@ pub(super) fn process_list_sort_column_id(column: ProcessListSortColumn) -> &'st
     }
 }
 
-pub(super) fn process_list_sort_icon(
+pub(in crate::ui::app) fn process_list_sort_icon(
     active: bool,
     direction: ProcessListSortDirection,
     cx: &mut Context<WinderustApp>,
@@ -1025,7 +1032,7 @@ pub(super) fn process_list_sort_icon(
     icon
 }
 
-pub(super) fn process_list_column_visibility_dropdown_options(
+pub(in crate::ui::app) fn process_list_column_visibility_dropdown_options(
     hidden_columns: &HashSet<ProcessListColumn>,
     settings: &Settings,
     max_height: Pixels,
@@ -1065,7 +1072,7 @@ pub(super) fn process_list_column_visibility_dropdown_options(
     options
 }
 
-pub(super) fn process_list_empty_row(message: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn process_list_empty_row(message: impl Into<SharedString>) -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
@@ -1076,7 +1083,7 @@ pub(super) fn process_list_empty_row(message: impl Into<SharedString>) -> gpui::
         .child(text_muted(message.into()))
 }
 
-pub(super) fn process_list_rendered_row(
+pub(in crate::ui::app) fn process_list_rendered_row(
     row: &ProcessListRenderedRow,
     layout: ProcessListRenderLayout<'_>,
     edit_context: ProcessListEditContext<'_>,
@@ -1119,7 +1126,7 @@ pub(super) fn process_list_rendered_row(
     }
 }
 
-pub(super) fn process_list_entry_row(
+pub(in crate::ui::app) fn process_list_entry_row(
     process: &ProcessInfo,
     summary: &ProcessPolicySummary,
     icon: Option<&Arc<Image>>,
@@ -1275,7 +1282,7 @@ pub(super) fn process_list_entry_row(
     .into_any_element()
 }
 
-pub(super) fn process_list_group_row(
+pub(in crate::ui::app) fn process_list_group_row(
     data: ProcessListGroupRowData<'_>,
     summary: &ProcessPolicySummary,
     icon: Option<&Arc<Image>>,
@@ -1336,7 +1343,7 @@ pub(super) fn process_list_group_row(
     ))
 }
 
-pub(super) fn process_list_name_cell(
+pub(in crate::ui::app) fn process_list_name_cell(
     name: impl Into<SharedString>,
     icon: Option<&Arc<Image>>,
     nested: bool,
@@ -1355,7 +1362,7 @@ pub(super) fn process_list_name_cell(
         .child(div().flex_1().min_w(px(0.0)).truncate().child(name.into()))
 }
 
-pub(super) fn process_list_group_name_cell(
+pub(in crate::ui::app) fn process_list_group_name_cell(
     process_name: &str,
     process_count: usize,
     icon: Option<&Arc<Image>>,
@@ -1396,7 +1403,7 @@ pub(super) fn process_list_group_name_cell(
         )
 }
 
-pub(super) fn process_list_policy_cells(
+pub(in crate::ui::app) fn process_list_policy_cells(
     process_name: &str,
     summary: &ProcessPolicySummary,
     layout: ProcessListRenderLayout<'_>,
@@ -1426,7 +1433,7 @@ pub(super) fn process_list_policy_cells(
         .collect()
 }
 
-pub(super) fn process_list_column_value(
+pub(in crate::ui::app) fn process_list_column_value(
     summary: &ProcessPolicySummary,
     column: ProcessListColumn,
 ) -> SharedString {
@@ -1450,11 +1457,14 @@ pub(super) fn process_list_column_value(
     }
 }
 
-pub(super) fn process_list_text_cell(width: f32, value: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn process_list_text_cell(
+    width: f32,
+    value: impl Into<SharedString>,
+) -> gpui::Div {
     process_list_text_cell_with_color(width, value, false, muted_text_color())
 }
 
-pub(super) fn process_list_text_cell_with_color(
+pub(in crate::ui::app) fn process_list_text_cell_with_color(
     width: f32,
     value: impl Into<SharedString>,
     emphasized: bool,
@@ -1471,7 +1481,7 @@ pub(super) fn process_list_text_cell_with_color(
         ))
 }
 
-pub(super) fn process_list_policy_value_content(
+pub(in crate::ui::app) fn process_list_policy_value_content(
     column: Option<ProcessListColumn>,
     value: SharedString,
     emphasized: bool,
@@ -1509,7 +1519,7 @@ pub(super) fn process_list_policy_value_content(
         .into_any_element()
 }
 
-pub(super) fn process_list_split_policy_value_row(
+pub(in crate::ui::app) fn process_list_split_policy_value_row(
     label: &'static str,
     value: &str,
     emphasized: bool,
@@ -1539,7 +1549,9 @@ pub(super) fn process_list_split_policy_value_row(
         )
 }
 
-pub(super) fn process_list_column_uses_split_priority_display(column: ProcessListColumn) -> bool {
+pub(in crate::ui::app) fn process_list_column_uses_split_priority_display(
+    column: ProcessListColumn,
+) -> bool {
     matches!(
         column,
         ProcessListColumn::IoPriority
@@ -1548,12 +1560,12 @@ pub(super) fn process_list_column_uses_split_priority_display(column: ProcessLis
     )
 }
 
-pub(super) fn process_list_split_policy_value(value: &str) -> Option<(&str, &str)> {
+pub(in crate::ui::app) fn process_list_split_policy_value(value: &str) -> Option<(&str, &str)> {
     let (foreground, background) = value.split_once(" / ")?;
     Some((foreground.trim(), background.trim()))
 }
 
-pub(super) fn process_list_policy_cell(
+pub(in crate::ui::app) fn process_list_policy_cell(
     width: f32,
     target: ProcessListPolicyCellTarget<'_>,
     value: impl Into<SharedString>,
@@ -1600,7 +1612,7 @@ pub(super) fn process_list_policy_cell(
     clippy::too_many_arguments,
     reason = "cell rendering needs table, row, and dropdown context"
 )]
-pub(super) fn process_list_editable_policy_cell(
+pub(in crate::ui::app) fn process_list_editable_policy_cell(
     width: f32,
     process_name: &str,
     column: ProcessListColumn,
@@ -1671,7 +1683,7 @@ pub(super) fn process_list_editable_policy_cell(
     .into_any_element()
 }
 
-pub(super) fn process_list_column_editable(column: ProcessListColumn) -> bool {
+pub(in crate::ui::app) fn process_list_column_editable(column: ProcessListColumn) -> bool {
     matches!(
         column,
         ProcessListColumn::PowerPlanForeground
@@ -1686,14 +1698,17 @@ pub(super) fn process_list_column_editable(column: ProcessListColumn) -> bool {
     )
 }
 
-pub(super) fn process_list_policy_cell_editable(
+pub(in crate::ui::app) fn process_list_policy_cell_editable(
     row_editable: bool,
     column: ProcessListColumn,
 ) -> bool {
     row_editable && process_list_column_editable(column)
 }
 
-pub(super) fn process_list_cell_editor_id(process_name: &str, column: ProcessListColumn) -> String {
+pub(in crate::ui::app) fn process_list_cell_editor_id(
+    process_name: &str,
+    column: ProcessListColumn,
+) -> String {
     format!(
         "process-list-cell-editor-{}-{}",
         process_list_group_key(process_name),
@@ -1701,7 +1716,7 @@ pub(super) fn process_list_cell_editor_id(process_name: &str, column: ProcessLis
     )
 }
 
-pub(super) fn process_list_cell_editor_option_count(
+pub(in crate::ui::app) fn process_list_cell_editor_option_count(
     column: ProcessListColumn,
     app: &WinderustApp,
 ) -> usize {
@@ -1724,7 +1739,7 @@ pub(super) fn process_list_cell_editor_option_count(
     }
 }
 
-pub(super) fn process_list_cell_editor_options(
+pub(in crate::ui::app) fn process_list_cell_editor_options(
     process_name: &str,
     column: ProcessListColumn,
     app: &WinderustApp,
@@ -1898,7 +1913,7 @@ pub(super) fn process_list_cell_editor_options(
     options
 }
 
-pub(super) fn process_list_include_exclude_editor_options(
+pub(in crate::ui::app) fn process_list_include_exclude_editor_options(
     mut options: Scrollable<gpui::Div>,
     process_name: &str,
     column: ProcessListColumn,
@@ -1921,7 +1936,7 @@ pub(super) fn process_list_include_exclude_editor_options(
     ))
 }
 
-pub(super) fn process_list_editor_option_id(
+pub(in crate::ui::app) fn process_list_editor_option_id(
     process_name: &str,
     column: ProcessListColumn,
     suffix: impl std::fmt::Display,
@@ -1932,7 +1947,7 @@ pub(super) fn process_list_editor_option_id(
     ))
 }
 
-pub(super) fn process_list_power_plan_editor_option(
+pub(in crate::ui::app) fn process_list_power_plan_editor_option(
     process_name: &str,
     column: ProcessListColumn,
     label: String,
@@ -1958,7 +1973,7 @@ pub(super) fn process_list_power_plan_editor_option(
         .into_any_element()
 }
 
-pub(super) fn process_list_include_exclude_editor_option(
+pub(in crate::ui::app) fn process_list_include_exclude_editor_option(
     process_name: &str,
     column: ProcessListColumn,
     included: bool,
@@ -1996,7 +2011,7 @@ pub(super) fn process_list_include_exclude_editor_option(
         .into_any_element()
 }
 
-pub(super) fn process_list_core_limiter_editor_option(
+pub(in crate::ui::app) fn process_list_core_limiter_editor_option(
     process_name: &str,
     percent: Option<u8>,
     selected: bool,
@@ -2021,7 +2036,7 @@ pub(super) fn process_list_core_limiter_editor_option(
         .into_any_element()
 }
 
-pub(super) fn process_list_timer_resolution_editor_option(
+pub(in crate::ui::app) fn process_list_timer_resolution_editor_option(
     process_name: &str,
     desired_100ns: Option<u32>,
     selected: bool,
@@ -2046,7 +2061,7 @@ pub(super) fn process_list_timer_resolution_editor_option(
         .into_any_element()
 }
 
-pub(super) fn process_list_policy_value_active(value: &str, emphasized: bool) -> bool {
+pub(in crate::ui::app) fn process_list_policy_value_active(value: &str, emphasized: bool) -> bool {
     if let Some(enabled) = process_list_state_enabled(value) {
         return enabled;
     }
@@ -2054,7 +2069,7 @@ pub(super) fn process_list_policy_value_active(value: &str, emphasized: bool) ->
     emphasized && !process_list_policy_value_inactive(value)
 }
 
-pub(super) fn process_list_policy_value_inactive(value: &str) -> bool {
+pub(in crate::ui::app) fn process_list_policy_value_inactive(value: &str) -> bool {
     let value = value.trim();
     value.is_empty()
         || value == "Default"
@@ -2064,7 +2079,7 @@ pub(super) fn process_list_policy_value_inactive(value: &str) -> bool {
         || value == t!("common.none").to_string().as_str()
 }
 
-pub(super) fn process_list_state_enabled(value: &str) -> Option<bool> {
+pub(in crate::ui::app) fn process_list_state_enabled(value: &str) -> Option<bool> {
     match value {
         "On" | "Include" => Some(true),
         "Off" | "Exclude" => Some(false),
@@ -2073,11 +2088,14 @@ pub(super) fn process_list_state_enabled(value: &str) -> Option<bool> {
     }
 }
 
-pub(super) fn process_list_count_label(count: usize) -> String {
+pub(in crate::ui::app) fn process_list_count_label(count: usize) -> String {
     t!("process_list.count", count = count).to_string()
 }
 
-pub(super) fn process_list_toolbar_label(app: &WinderustApp, process_count: usize) -> String {
+pub(in crate::ui::app) fn process_list_toolbar_label(
+    app: &WinderustApp,
+    process_count: usize,
+) -> String {
     let Some(process) = app.selected_process_id.and_then(|id| {
         app.running_processes
             .iter()
@@ -2098,7 +2116,7 @@ pub(super) fn process_list_toolbar_label(app: &WinderustApp, process_count: usiz
     .to_string()
 }
 
-pub(super) fn process_list_pid_count_label(count: usize) -> String {
+pub(in crate::ui::app) fn process_list_pid_count_label(count: usize) -> String {
     t!("common.pid_count", count = count).to_string()
 }
 

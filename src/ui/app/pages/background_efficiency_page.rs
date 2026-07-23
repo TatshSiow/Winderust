@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_background_efficiency_page(
+    pub(in crate::ui::app) fn render_background_efficiency_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -93,7 +93,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_background_efficiency_enable_card(
+    pub(in crate::ui::app) fn render_background_efficiency_enable_card(
         &self,
         enabled: bool,
         help: impl Into<SharedString>,
@@ -119,7 +119,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_background_efficiency_aggressiveness_selector(
+    pub(in crate::ui::app) fn render_background_efficiency_aggressiveness_selector(
         &self,
         enabled: bool,
         window: &mut Window,
@@ -151,7 +151,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_background_efficiency_aggressiveness_picker(
+    pub(in crate::ui::app) fn render_background_efficiency_aggressiveness_picker(
         &self,
         selected: BackgroundEfficiencyAggressiveness,
         enabled: bool,
@@ -190,11 +190,16 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn effective_background_cpu_restriction_strategy(&self) -> CpuRestrictionStrategy {
+    pub(in crate::ui::app) fn effective_background_cpu_restriction_strategy(
+        &self,
+    ) -> CpuRestrictionStrategy {
         self.settings.background_cpu_restriction.strategy
     }
 
-    pub(super) fn render_background_custom_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::ui::app) fn render_background_custom_rules(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self
             .settings

@@ -27,7 +27,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Priority Control | `src/features/priority_control/` | Process/thread priorities, Dynamic Priority Boost, Memory Priority, NT I/O priority, and WDK GPU priority |
 | App Suspension | `src/features/advanced_controls/app_suspension.rs` | Job Objects and a compatibility-sensitive freeze information class |
 | Timer Resolution | `src/features/advanced_controls/timer_resolution.rs` | WinMM timer capability, request, and release calls |
-| Win32 Priority Separation | `src/ui/app/advanced_controls_pages.rs`, `src/ui/app/appearance.rs`, and `src/backend/win_registry.rs` | Windows registry access and the `Win32PrioritySeparation` value |
+| Win32 Priority Separation | `src/ui/app/pages/advanced_controls_pages.rs`, `src/ui/app/shared/appearance.rs`, and `src/backend/win_registry.rs` | Windows registry access and the `Win32PrioritySeparation` value |
 
 ## Power Plan Switching
 
@@ -296,8 +296,8 @@ WinMM here because this feature is explicit timer-resolution control.
 
 Implementation entry points:
 
-- `src/ui/app/advanced_controls_pages.rs`
-- `src/ui/app/appearance.rs`
+- `src/ui/app/pages/advanced_controls_pages.rs`
+- `src/ui/app/shared/appearance.rs`
 - `src/backend/win_registry.rs`
 
 Winderust reads and writes the machine-wide `Win32PrioritySeparation` DWORD
@@ -307,7 +307,7 @@ Winderust-owned per-user backup before the first change.
 | API / Contract | Used for | Reference |
 | --- | --- | --- |
 | Windows Registry functions | Defines registry key/value access, access rights, and Win32 error handling. The Rust `winreg` wrapper is isolated in `src/backend/win_registry.rs`. | https://learn.microsoft.com/en-us/windows/win32/sysinfo/registry-functions |
-| `Win32PrioritySeparation` value and bit layout | Decodes quantum duration, quantum behavior, and foreground boost for the Advanced page. | No stable public Microsoft API reference; project contract is in `src/ui/app/appearance.rs` and its tests. |
+| `Win32PrioritySeparation` value and bit layout | Decodes quantum duration, quantum behavior, and foreground boost for the Advanced page. | No stable public Microsoft API reference; project contract is in `src/ui/app/shared/appearance.rs` and its tests. |
 
 Treat the value layout as compatibility-sensitive. Keep reading, backup,
 writing, bit decoding, and tests aligned, and fail visibly if the machine value

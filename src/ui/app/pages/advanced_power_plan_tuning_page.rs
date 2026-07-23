@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_advanced_power_plan_tuning_page(
+    pub(in crate::ui::app) fn render_advanced_power_plan_tuning_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -11,7 +11,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_processor_power_card(
+    pub(in crate::ui::app) fn render_processor_power_card(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -366,7 +366,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn effective_power_mode_status(&self) -> String {
+    pub(in crate::ui::app) fn effective_power_mode_status(&self) -> String {
         t!(
             "processor_power.effective_power_mode",
             mode = effective_power_mode_label(self.effective_power_mode)
@@ -374,7 +374,7 @@ impl WinderustApp {
         .to_string()
     }
 
-    pub(super) fn processor_power_target_plan_notice(&self) -> Option<(String, bool)> {
+    pub(in crate::ui::app) fn processor_power_target_plan_notice(&self) -> Option<(String, bool)> {
         let target_plan = self.processor_power_target_plan()?;
         if !target_plan.active {
             let active_plan = self
@@ -400,7 +400,7 @@ impl WinderustApp {
         Some((t!("processor_power.overlay_warning").to_string(), true))
     }
 
-    pub(super) fn render_processor_boost_mode_picker(
+    pub(in crate::ui::app) fn render_processor_boost_mode_picker(
         &self,
         source: ProcessorPowerSource,
         window: &mut Window,
@@ -468,7 +468,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_processor_power_plan_picker(
+    pub(in crate::ui::app) fn render_processor_power_plan_picker(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,

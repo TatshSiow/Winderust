@@ -113,7 +113,7 @@ and the corrected commit must be the tagged source.
 - `src/main.rs`: app entry, single-instance guard, GPUI startup.
 - `src/ui/app.rs`: shared `WinderustApp` state, lifecycle, command wiring,
   cross-page coordination, and app-level tests.
-- `src/ui/app/`: focused page renderers and UI helper families. Page dispatch is
+- `src/ui/app/pages/`: page and shell renderers. `src/ui/app/shared/`: reusable UI components, state helpers, formatting, policies, and shared feature logic. Page dispatch is
   in `chrome.rs`; process add/check and rule-construction helpers are in
   `process_policies.rs`.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
@@ -143,7 +143,7 @@ Pages are grouped in `src/ui.rs`:
 - Advanced: App Suspension, Timer Resolution, Win32 Priority Separation.
 
 Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
-`WinderustApp::render_page` in `src/ui/app/chrome.rs` together.
+`WinderustApp::render_page` in `src/ui/app/pages/chrome.rs` together.
 
 ## Settings
 
@@ -192,7 +192,7 @@ Process-control features must keep these defaults:
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
 - Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
 - Keep `src/ui/app.rs` for shared app state and cross-page coordination. Put a
-  complete page or repeated helper family in one focused `src/ui/app/` module;
+  complete page in `src/ui/app/pages/` and repeated helper families in `src/ui/app/shared/`;
   do not start a framework rewrite.
 - Multiple focused `impl WinderustApp` blocks are acceptable for the private UI
   module. Keep glob imports contained there; use explicit imports when a module
@@ -207,8 +207,8 @@ Process-control features must keep these defaults:
 - Tray behavior: `src/backend/tray.rs`.
 - Timer resolution: `src/features/advanced_controls/timer_resolution.rs`.
 - Win32 Priority Separation: page logic in
-  `src/ui/app/advanced_controls_pages.rs`, bit/value helpers in
-  `src/ui/app/appearance.rs`, and registry access in
+  `src/ui/app/pages/advanced_controls_pages.rs`, bit/value helpers in
+  `src/ui/app/shared/appearance.rs`, and registry access in
   `src/backend/win_registry.rs`.
 
 Prefer native API calls already used in the repo. Do not add command spawning around `powercfg` unless the Win32 path cannot support the needed behavior.

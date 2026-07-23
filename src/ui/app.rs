@@ -113,48 +113,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPI_GETCLIENTAREAANIMATION,
 };
 
-mod about_page;
-mod action_log_page;
-mod adaptive_engine_page;
-mod advanced_controls_pages;
-mod advanced_power_plan_tuning_page;
-mod app_suspension_page;
-mod appearance;
-mod background_efficiency_page;
-mod chrome;
-mod common_render;
-mod control_components;
-mod control_state;
-mod cpu_control_pages;
-mod dropdowns;
-mod formatting;
-mod indicators;
-mod memory_trim_page;
-mod motion;
-mod navigation_components;
-mod overview_page;
-mod power_plan_control_pages;
-mod presets;
-mod priority_control_pages;
-mod process_list_page;
-mod process_policies;
-mod processor_power;
-mod settings_pages;
-mod widgets;
+mod pages;
+mod shared;
 
-use action_log_page::*;
-use appearance::*;
-use control_components::*;
-use control_state::*;
-use dropdowns::*;
-use formatting::*;
-use indicators::*;
-use motion::*;
-use navigation_components::*;
-use presets::*;
-use process_list_page::*;
-use process_policies::*;
-use widgets::*;
+use pages::*;
+use shared::*;
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);

@@ -1,6 +1,6 @@
-use super::*;
+use crate::ui::app::*;
 
-pub(super) fn theme_mode_label(mode: AppThemeMode) -> String {
+pub(in crate::ui::app) fn theme_mode_label(mode: AppThemeMode) -> String {
     match mode {
         AppThemeMode::System => t!("theme.system").to_string(),
         AppThemeMode::Light => t!("theme.light").to_string(),
@@ -8,14 +8,14 @@ pub(super) fn theme_mode_label(mode: AppThemeMode) -> String {
     }
 }
 
-pub(super) fn update_channel_label(channel: UpdateChannel) -> String {
+pub(in crate::ui::app) fn update_channel_label(channel: UpdateChannel) -> String {
     match channel {
         UpdateChannel::Stable => t!("update_channel.stable").to_string(),
         UpdateChannel::PreRelease => t!("update_channel.pre_release").to_string(),
     }
 }
 
-pub(super) fn animation_mode_label(mode: AnimationMode) -> String {
+pub(in crate::ui::app) fn animation_mode_label(mode: AnimationMode) -> String {
     match mode {
         AnimationMode::System => t!("animation.system").to_string(),
         AnimationMode::On => t!("animation.on").to_string(),
@@ -23,14 +23,14 @@ pub(super) fn animation_mode_label(mode: AnimationMode) -> String {
     }
 }
 
-pub(super) fn accent_source_label(source: AccentColorSource) -> String {
+pub(in crate::ui::app) fn accent_source_label(source: AccentColorSource) -> String {
     match source {
         AccentColorSource::Windows => t!("theme.system").to_string(),
         AccentColorSource::Custom => t!("accent.custom").to_string(),
     }
 }
 
-pub(super) fn action_log_action_label(action: ActionLogAction) -> &'static str {
+pub(in crate::ui::app) fn action_log_action_label(action: ActionLogAction) -> &'static str {
     match action {
         ActionLogAction::Apply => "Apply",
         ActionLogAction::Restore => "Restore",
@@ -39,7 +39,7 @@ pub(super) fn action_log_action_label(action: ActionLogAction) -> &'static str {
     }
 }
 
-pub(super) fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
+pub(in crate::ui::app) fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
     let mut csv = csv::WriterBuilder::new()
         .terminator(csv::Terminator::CRLF)
         .from_writer(Vec::with_capacity(entries.len() * 128));
@@ -82,7 +82,7 @@ pub(super) fn action_log_entries_to_csv(entries: &[ActionLogEntry]) -> String {
     .expect("CSV fields are valid UTF-8")
 }
 
-pub(super) fn action_log_export_time_label(timestamp_epoch_ms: u128) -> String {
+pub(in crate::ui::app) fn action_log_export_time_label(timestamp_epoch_ms: u128) -> String {
     let timestamp = timestamp_epoch_ms.min(i64::MAX as u128) as i64;
     Local
         .timestamp_millis_opt(timestamp)
@@ -92,7 +92,7 @@ pub(super) fn action_log_export_time_label(timestamp_epoch_ms: u128) -> String {
 }
 
 #[cfg(test)]
-pub(super) fn csv_escape(value: &str) -> String {
+pub(in crate::ui::app) fn csv_escape(value: &str) -> String {
     if value.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", value.replace('"', "\"\""))
     } else {
@@ -101,7 +101,7 @@ pub(super) fn csv_escape(value: &str) -> String {
 }
 
 #[cfg(test)]
-pub(super) fn push_csv_field(csv: &mut String, value: &str) {
+pub(in crate::ui::app) fn push_csv_field(csv: &mut String, value: &str) {
     if value.contains([',', '"', '\n', '\r']) {
         csv.push('"');
         for character in value.chars() {
@@ -116,7 +116,7 @@ pub(super) fn push_csv_field(csv: &mut String, value: &str) {
     }
 }
 
-pub(super) fn action_log_process_label(entry: &ActionLogEntry) -> String {
+pub(in crate::ui::app) fn action_log_process_label(entry: &ActionLogEntry) -> String {
     let name = if entry.process_name.trim().is_empty() {
         t!("common.none").to_string()
     } else {
@@ -128,7 +128,7 @@ pub(super) fn action_log_process_label(entry: &ActionLogEntry) -> String {
     }
 }
 
-pub(super) fn action_log_time_label(timestamp_epoch_ms: u128) -> String {
+pub(in crate::ui::app) fn action_log_time_label(timestamp_epoch_ms: u128) -> String {
     let timestamp = timestamp_epoch_ms.min(i64::MAX as u128) as i64;
     Local
         .timestamp_millis_opt(timestamp)
@@ -137,11 +137,11 @@ pub(super) fn action_log_time_label(timestamp_epoch_ms: u128) -> String {
         .unwrap_or_else(|| "--:--:--".to_owned())
 }
 
-pub(super) fn rule_count_label(count: usize) -> String {
+pub(in crate::ui::app) fn rule_count_label(count: usize) -> String {
     t!("common.rule_count", count = count).to_string()
 }
 
-pub(super) fn yes_no_label(value: bool) -> String {
+pub(in crate::ui::app) fn yes_no_label(value: bool) -> String {
     if value {
         t!("common.yes")
     } else {
@@ -150,7 +150,7 @@ pub(super) fn yes_no_label(value: bool) -> String {
     .to_string()
 }
 
-pub(super) fn schedule_days_label(days: &[WeekdaySetting]) -> String {
+pub(in crate::ui::app) fn schedule_days_label(days: &[WeekdaySetting]) -> String {
     if days.len() == WeekdaySetting::all().len() {
         return t!("common.all").to_string();
     }
@@ -165,7 +165,7 @@ pub(super) fn schedule_days_label(days: &[WeekdaySetting]) -> String {
         .join(", ")
 }
 
-pub(super) fn activity_state_label(state: ActivityState) -> String {
+pub(in crate::ui::app) fn activity_state_label(state: ActivityState) -> String {
     match state {
         ActivityState::Active => t!("home.activity_active"),
         ActivityState::Idle => t!("home.activity_idle"),
@@ -174,7 +174,7 @@ pub(super) fn activity_state_label(state: ActivityState) -> String {
     .to_string()
 }
 
-pub(super) fn localized_runtime_status(message: &str) -> String {
+pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
     let key = match message {
         "Automation disabled." => "runtime_status.automation_disabled",
         "Paused: foreground app is unknown." => "runtime_status.foreground_unknown",
@@ -217,7 +217,7 @@ pub(super) fn localized_runtime_status(message: &str) -> String {
     t!(key).to_string()
 }
 
-pub(super) fn adaptive_power_profile_label(profile: &str) -> String {
+pub(in crate::ui::app) fn adaptive_power_profile_label(profile: &str) -> String {
     match profile {
         "Idle" => t!("adaptive_engine.profile_idle"),
         "Responsive" => t!("adaptive_engine.profile_responsive"),
@@ -228,7 +228,7 @@ pub(super) fn adaptive_power_profile_label(profile: &str) -> String {
     .to_string()
 }
 
-pub(super) fn weekday_short_label(day: WeekdaySetting) -> String {
+pub(in crate::ui::app) fn weekday_short_label(day: WeekdaySetting) -> String {
     match day {
         WeekdaySetting::Mon => t!("weekday.mon"),
         WeekdaySetting::Tue => t!("weekday.tue"),
@@ -241,7 +241,7 @@ pub(super) fn weekday_short_label(day: WeekdaySetting) -> String {
     .to_string()
 }
 
-pub(super) fn cpu_usage_comparison_label(comparison: CpuUsageComparison) -> String {
+pub(in crate::ui::app) fn cpu_usage_comparison_label(comparison: CpuUsageComparison) -> String {
     match comparison {
         CpuUsageComparison::AtOrAbove => t!("by_cpu_load.comparison_at_or_above"),
         CpuUsageComparison::AtOrBelow => t!("by_cpu_load.comparison_at_or_below"),

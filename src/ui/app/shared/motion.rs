@@ -1,13 +1,13 @@
-use super::*;
+use crate::ui::app::*;
 
 #[derive(Clone, Copy)]
-pub(super) enum PageTransitionMotion {
+pub(in crate::ui::app) enum PageTransitionMotion {
     EnterSub,
     ExitSub,
     SameLevel,
 }
 
-pub(super) fn animated_page_content_frame(
+pub(in crate::ui::app) fn animated_page_content_frame(
     frame: gpui::Div,
     transition: Option<&BreadcrumbTransition>,
 ) -> AnyElement {
@@ -38,7 +38,7 @@ pub(super) fn animated_page_content_frame(
     )
 }
 
-pub(super) fn page_transition_motion(
+pub(in crate::ui::app) fn page_transition_motion(
     transition: &BreadcrumbTransition,
 ) -> Option<PageTransitionMotion> {
     let previous = transition.previous.as_slice();
@@ -58,14 +58,14 @@ pub(super) fn page_transition_motion(
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum MotionSpeed {
+pub(in crate::ui::app) enum MotionSpeed {
     Fast,
     Standard,
     Expand,
 }
 
 impl MotionSpeed {
-    pub(super) fn animation(self) -> Animation {
+    pub(in crate::ui::app) fn animation(self) -> Animation {
         match self {
             Self::Fast => Animation::new(Duration::from_secs_f64(MOTION_FAST_SECONDS))
                 .with_easing(cubic_bezier(0.25, 1.0, 0.5, 1.0)),
@@ -77,7 +77,7 @@ impl MotionSpeed {
     }
 }
 
-pub(super) fn with_optional_motion<E>(
+pub(in crate::ui::app) fn with_optional_motion<E>(
     element: E,
     id: impl Into<SharedString>,
     speed: MotionSpeed,
@@ -100,7 +100,7 @@ where
     }
 }
 
-pub(super) fn begin_expandable_motion(id: impl Into<String>, expanded: bool) {
+pub(in crate::ui::app) fn begin_expandable_motion(id: impl Into<String>, expanded: bool) {
     if !ui_animations_enabled() {
         return;
     }
@@ -137,7 +137,7 @@ pub(super) fn begin_expandable_motion(id: impl Into<String>, expanded: bool) {
     }
 }
 
-pub(super) fn expandable_motion_progress(id: &str) -> Option<f32> {
+pub(in crate::ui::app) fn expandable_motion_progress(id: &str) -> Option<f32> {
     let Ok(mut state) = EXPANDABLE_MOTION_STATE.lock() else {
         return None;
     };
@@ -152,7 +152,7 @@ pub(super) fn expandable_motion_progress(id: &str) -> Option<f32> {
     }
 }
 
-pub(super) fn expandable_motion_progress_snapshot(id: &str) -> Option<f32> {
+pub(in crate::ui::app) fn expandable_motion_progress_snapshot(id: &str) -> Option<f32> {
     let Ok(state) = EXPANDABLE_MOTION_STATE.lock() else {
         return None;
     };
@@ -166,7 +166,7 @@ pub(super) fn expandable_motion_progress_snapshot(id: &str) -> Option<f32> {
     }
 }
 
-pub(super) fn expandable_motion_active(id: &str) -> bool {
+pub(in crate::ui::app) fn expandable_motion_active(id: &str) -> bool {
     let Ok(mut state) = EXPANDABLE_MOTION_STATE.lock() else {
         return false;
     };
@@ -183,7 +183,7 @@ pub(super) fn expandable_motion_active(id: &str) -> bool {
     }
 }
 
-pub(super) fn expandable_transition_progress(
+pub(in crate::ui::app) fn expandable_transition_progress(
     transition: ExpandableTransition,
     now: Instant,
 ) -> f32 {
@@ -198,7 +198,7 @@ pub(super) fn expandable_transition_progress(
         .clamp(0.0, 1.0)
 }
 
-pub(super) fn expandable_motion_ease(delta: f32, expanding: bool) -> f32 {
+pub(in crate::ui::app) fn expandable_motion_ease(delta: f32, expanding: bool) -> f32 {
     if expanding {
         1.0 - (1.0 - delta).powi(3)
     } else {
@@ -206,7 +206,11 @@ pub(super) fn expandable_motion_ease(delta: f32, expanding: bool) -> f32 {
     }
 }
 
-pub(super) fn begin_control_motion(id: impl Into<String>, target_on: bool, cx: &mut App) {
+pub(in crate::ui::app) fn begin_control_motion(
+    id: impl Into<String>,
+    target_on: bool,
+    cx: &mut App,
+) {
     let id = id.into();
     let started = Instant::now();
     let target_state = if target_on { "true" } else { "false" };
@@ -279,7 +283,7 @@ pub(super) fn begin_control_motion(id: impl Into<String>, target_on: bool, cx: &
     .detach();
 }
 
-pub(super) fn control_motion_progress(id: &str, target_on: bool) -> f32 {
+pub(in crate::ui::app) fn control_motion_progress(id: &str, target_on: bool) -> f32 {
     let target_progress = if target_on { 1.0 } else { 0.0 };
     let Ok(mut state) = CONTROL_MOTION_STATE.lock() else {
         return target_progress;
@@ -298,7 +302,7 @@ pub(super) fn control_motion_progress(id: &str, target_on: bool) -> f32 {
     }
 }
 
-pub(super) fn control_motion_active(id: &str, generation: u64) -> bool {
+pub(in crate::ui::app) fn control_motion_active(id: &str, generation: u64) -> bool {
     let Ok(mut state) = CONTROL_MOTION_STATE.lock() else {
         return false;
     };
@@ -319,7 +323,10 @@ pub(super) fn control_motion_active(id: &str, generation: u64) -> bool {
     }
 }
 
-pub(super) fn control_transition_progress(transition: ControlTransition, now: Instant) -> f32 {
+pub(in crate::ui::app) fn control_transition_progress(
+    transition: ControlTransition,
+    now: Instant,
+) -> f32 {
     let duration = transition.duration.as_secs_f32().max(f32::EPSILON);
     let raw = now
         .saturating_duration_since(transition.started)
@@ -331,14 +338,14 @@ pub(super) fn control_transition_progress(transition: ControlTransition, now: In
         .clamp(0.0, 1.0)
 }
 
-pub(super) fn control_state_progress(state: &str) -> f32 {
+pub(in crate::ui::app) fn control_state_progress(state: &str) -> f32 {
     match state {
         "true" | "checked" | "enabled" | "visible" => 1.0,
         _ => 0.0,
     }
 }
 
-pub(super) fn control_motion_generation(id: &str, state: &str) -> Option<u64> {
+pub(in crate::ui::app) fn control_motion_generation(id: &str, state: &str) -> Option<u64> {
     let Ok(mut motion_state) = CONTROL_MOTION_STATE.lock() else {
         return None;
     };
@@ -352,7 +359,7 @@ pub(super) fn control_motion_generation(id: &str, state: &str) -> Option<u64> {
     }
 }
 
-pub(super) fn with_state_change_motion<E>(
+pub(in crate::ui::app) fn with_state_change_motion<E>(
     element: E,
     id: impl Into<SharedString>,
     state: impl Into<SharedString>,
@@ -379,7 +386,7 @@ where
     }
 }
 
-pub(super) fn card_hover_snapshot(id: &str) -> (bool, Option<u64>) {
+pub(in crate::ui::app) fn card_hover_snapshot(id: &str) -> (bool, Option<u64>) {
     let Ok(state) = CARD_HOVER_STATE.lock() else {
         return (false, None);
     };
@@ -393,7 +400,7 @@ pub(super) fn card_hover_snapshot(id: &str) -> (bool, Option<u64>) {
     (hovered, animation_generation)
 }
 
-pub(super) fn set_card_hovered(id: String, hovered: bool, cx: &mut App) {
+pub(in crate::ui::app) fn set_card_hovered(id: String, hovered: bool, cx: &mut App) {
     let Ok(mut state) = CARD_HOVER_STATE.lock() else {
         return;
     };
@@ -419,7 +426,7 @@ pub(super) fn set_card_hovered(id: String, hovered: bool, cx: &mut App) {
     }
 }
 
-pub(super) fn clear_page_hovered() {
+pub(in crate::ui::app) fn clear_page_hovered() {
     let Ok(mut state) = CARD_HOVER_STATE.lock() else {
         return;
     };
@@ -428,7 +435,7 @@ pub(super) fn clear_page_hovered() {
     state.changes.clear();
 }
 
-pub(super) fn animated_card_hover_layer(id: &str) -> AnyElement {
+pub(in crate::ui::app) fn animated_card_hover_layer(id: &str) -> AnyElement {
     let (hovered, animation_generation) = card_hover_snapshot(id);
     let target_opacity = if hovered { 1.0 } else { 0.0 };
     let layer = div()
@@ -456,7 +463,10 @@ pub(super) fn animated_card_hover_layer(id: &str) -> AnyElement {
     layer.into_any_element()
 }
 
-pub(super) fn collapsible_chevron_icon(id: impl Into<SharedString>, collapsed: bool) -> AnyElement {
+pub(in crate::ui::app) fn collapsible_chevron_icon(
+    id: impl Into<SharedString>,
+    collapsed: bool,
+) -> AnyElement {
     let id = id.into();
     if let Some(progress) = expandable_motion_progress_snapshot(id.as_ref()) {
         return chevron_right_at_progress(progress);
@@ -465,7 +475,7 @@ pub(super) fn collapsible_chevron_icon(id: impl Into<SharedString>, collapsed: b
     chevron_right_at_progress(if collapsed { 0.0 } else { 1.0 })
 }
 
-pub(super) fn collapsible_chevron_icon_with_progress(
+pub(in crate::ui::app) fn collapsible_chevron_icon_with_progress(
     id: impl Into<SharedString>,
     collapsed: bool,
     progress: Option<f32>,
@@ -477,14 +487,14 @@ pub(super) fn collapsible_chevron_icon_with_progress(
     collapsible_chevron_icon(id, collapsed)
 }
 
-pub(super) fn chevron_right_at_progress(progress: f32) -> AnyElement {
+pub(in crate::ui::app) fn chevron_right_at_progress(progress: f32) -> AnyElement {
     Icon::new(NavIcon::ChevronRight)
         .with_size(px(16.0))
         .rotate(percentage(progress.clamp(0.0, 1.0) * 90.0 / 360.0))
         .into_any_element()
 }
 
-pub(super) fn handle_navigation_mouse_button(
+pub(in crate::ui::app) fn handle_navigation_mouse_button(
     app: &mut WinderustApp,
     button: MouseButton,
     cx: &mut Context<WinderustApp>,
@@ -504,7 +514,7 @@ pub(super) fn handle_navigation_mouse_button(
     }
 }
 
-pub(super) fn animated_expanded_child(
+pub(in crate::ui::app) fn animated_expanded_child(
     id: impl Into<SharedString>,
     child: AnyElement,
 ) -> AnyElement {
@@ -530,7 +540,7 @@ pub(super) fn animated_expanded_child(
     }
 }
 
-pub(super) fn expanded_child(child: AnyElement) -> AnyElement {
+pub(in crate::ui::app) fn expanded_child(child: AnyElement) -> AnyElement {
     div()
         .w_full()
         .min_w(px(0.0))
@@ -539,7 +549,7 @@ pub(super) fn expanded_child(child: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn animated_expanded_child_with_height(
+pub(in crate::ui::app) fn animated_expanded_child_with_height(
     id: impl Into<SharedString>,
     target_height: f32,
     child: impl IntoElement + 'static,
@@ -571,12 +581,12 @@ pub(super) fn animated_expanded_child_with_height(
     }
 }
 
-pub(super) fn remember_expanded_child_hidden(id: impl Into<SharedString>) {
+pub(in crate::ui::app) fn remember_expanded_child_hidden(id: impl Into<SharedString>) {
     let id = id.into();
     let _ = control_motion_generation(&format!("expanded-child-{id}"), "hidden");
 }
 
-pub(super) fn animated_rule_card_body_child(
+pub(in crate::ui::app) fn animated_rule_card_body_child(
     card_target: &RuleCardTarget,
     index: usize,
     row_count: usize,
@@ -590,7 +600,7 @@ pub(super) fn animated_rule_card_body_child(
     )
 }
 
-pub(super) fn animated_rule_card_body_child_with_height(
+pub(in crate::ui::app) fn animated_rule_card_body_child_with_height(
     card_target: &RuleCardTarget,
     index: usize,
     target_height: f32,
@@ -619,11 +629,11 @@ pub(super) fn animated_rule_card_body_child_with_height(
     }
 }
 
-pub(super) fn rule_card_body_height(row_count: usize) -> f32 {
+pub(in crate::ui::app) fn rule_card_body_height(row_count: usize) -> f32 {
     CARD_ROW_HEIGHT * row_count.max(1) as f32
 }
 
-pub(super) fn core_steering_selector_body_height() -> f32 {
+pub(in crate::ui::app) fn core_steering_selector_body_height() -> f32 {
     rule_card_body_height(1)
         + px_spacing(3) * 2.0
         + TEXT_BODY_LINE_HEIGHT
@@ -631,7 +641,7 @@ pub(super) fn core_steering_selector_body_height() -> f32 {
         + core_tile_grid_height()
 }
 
-pub(super) fn setting_group_core_grid_body_height(fixed_row_count: usize) -> f32 {
+pub(in crate::ui::app) fn setting_group_core_grid_body_height(fixed_row_count: usize) -> f32 {
     CARD_ROW_HEIGHT * fixed_row_count.max(1) as f32
         + px_spacing(3) * 2.0
         + TEXT_BODY_LINE_HEIGHT
@@ -639,7 +649,7 @@ pub(super) fn setting_group_core_grid_body_height(fixed_row_count: usize) -> f32
         + core_tile_grid_height()
 }
 
-pub(super) fn core_tile_grid_height() -> f32 {
+pub(in crate::ui::app) fn core_tile_grid_height() -> f32 {
     let processor_count = core_steering::logical_processors().len();
     let grid_rows =
         processor_count.saturating_add(CORE_TILE_GRID_COLUMNS - 1) / CORE_TILE_GRID_COLUMNS;
@@ -651,15 +661,15 @@ pub(super) fn core_tile_grid_height() -> f32 {
     }
 }
 
-pub(super) fn px_spacing(slot: usize) -> f32 {
+pub(in crate::ui::app) fn px_spacing(slot: usize) -> f32 {
     slot as f32 * 4.0
 }
 
-pub(super) fn rule_card_body_motion_id(card_target: &RuleCardTarget) -> String {
+pub(in crate::ui::app) fn rule_card_body_motion_id(card_target: &RuleCardTarget) -> String {
     format!("rule-card-{card_target:?}-body")
 }
 
-pub(super) fn rule_card_body_visible(
+pub(in crate::ui::app) fn rule_card_body_visible(
     card_target: &RuleCardTarget,
     collapsed: bool,
     window: &mut Window,
@@ -672,7 +682,7 @@ pub(super) fn rule_card_body_visible(
     !collapsed || motion_active
 }
 
-pub(super) fn animated_presence_child(
+pub(in crate::ui::app) fn animated_presence_child(
     id: impl Into<SharedString>,
     child: AnyElement,
 ) -> AnyElement {
@@ -687,7 +697,7 @@ pub(super) fn animated_presence_child(
     )
 }
 
-pub(super) fn animated_list_item_child(
+pub(in crate::ui::app) fn animated_list_item_child(
     id: impl Into<SharedString>,
     child: AnyElement,
     exiting: bool,

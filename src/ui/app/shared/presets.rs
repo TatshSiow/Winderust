@@ -1,12 +1,15 @@
-use super::*;
+use crate::ui::app::*;
 
-pub(super) fn adaptive_engine_enabled(settings: &Settings) -> bool {
+pub(in crate::ui::app) fn adaptive_engine_enabled(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled
         || settings.background_efficiency.enabled
         || settings.workload_engine.enabled
 }
 
-pub(super) fn app_tick_interval(settings: &Settings, start_minimized_applied: bool) -> Duration {
+pub(in crate::ui::app) fn app_tick_interval(
+    settings: &Settings,
+    start_minimized_applied: bool,
+) -> Duration {
     if start_minimized_applied && settings.adaptive_engine.enabled {
         ADAPTIVE_ENGINE_APP_TICK_INTERVAL
     } else {
@@ -14,7 +17,7 @@ pub(super) fn app_tick_interval(settings: &Settings, start_minimized_applied: bo
     }
 }
 
-pub(super) fn apply_adaptive_engine(settings: &mut Settings, enabled: bool) {
+pub(in crate::ui::app) fn apply_adaptive_engine(settings: &mut Settings, enabled: bool) {
     settings.adaptive_engine.enabled = enabled;
     if !enabled {
         settings.background_efficiency.enabled = false;
@@ -22,7 +25,7 @@ pub(super) fn apply_adaptive_engine(settings: &mut Settings, enabled: bool) {
     }
 }
 
-pub(super) fn power_mode_preset_label(preset: PowerModePreset) -> String {
+pub(in crate::ui::app) fn power_mode_preset_label(preset: PowerModePreset) -> String {
     match preset {
         PowerModePreset::PowerSave => t!("adaptive_engine.power_mode_powersave").to_string(),
         PowerModePreset::Balanced => t!("adaptive_engine.power_mode_balanced").to_string(),
@@ -31,7 +34,7 @@ pub(super) fn power_mode_preset_label(preset: PowerModePreset) -> String {
     }
 }
 
-pub(super) fn workload_engine_preset_label(preset: WorkloadEnginePreset) -> String {
+pub(in crate::ui::app) fn workload_engine_preset_label(preset: WorkloadEnginePreset) -> String {
     match preset {
         WorkloadEnginePreset::LowImpact => t!("workload_engine.preset_low_impact").to_string(),
         WorkloadEnginePreset::ForegroundFirst => {
@@ -43,7 +46,10 @@ pub(super) fn workload_engine_preset_label(preset: WorkloadEnginePreset) -> Stri
     }
 }
 
-pub(super) fn apply_power_mode_preset(settings: &mut Settings, preset: PowerModePreset) {
+pub(in crate::ui::app) fn apply_power_mode_preset(
+    settings: &mut Settings,
+    preset: PowerModePreset,
+) {
     match preset {
         PowerModePreset::PowerSave => {
             apply_adaptive_engine(settings, true);
@@ -98,7 +104,10 @@ pub(super) fn apply_power_mode_preset(settings: &mut Settings, preset: PowerMode
     }
 }
 
-pub(super) fn power_mode_matches_preset(settings: &Settings, preset: PowerModePreset) -> bool {
+pub(in crate::ui::app) fn power_mode_matches_preset(
+    settings: &Settings,
+    preset: PowerModePreset,
+) -> bool {
     match preset {
         PowerModePreset::PowerSave => {
             settings.adaptive_engine.enabled
@@ -167,15 +176,15 @@ pub(super) fn power_mode_matches_preset(settings: &Settings, preset: PowerModePr
     }
 }
 
-pub(super) fn power_mode_powersave_processor_values() -> ProcessorPowerValues {
+pub(in crate::ui::app) fn power_mode_powersave_processor_values() -> ProcessorPowerValues {
     ProcessorPowerValues::new_with_boost_mode(0, 5, 45, 0, ProcessorBoostMode::Disabled)
 }
 
-pub(super) fn power_mode_balanced_processor_values() -> ProcessorPowerValues {
+pub(in crate::ui::app) fn power_mode_balanced_processor_values() -> ProcessorPowerValues {
     ProcessorPowerValues::new_with_boost_mode(25, 5, 95, 60, ProcessorBoostMode::EfficientEnabled)
 }
 
-pub(super) fn power_mode_performance_processor_values() -> ProcessorPowerValues {
+pub(in crate::ui::app) fn power_mode_performance_processor_values() -> ProcessorPowerValues {
     ProcessorPowerValues::new_with_boost_mode(
         100,
         25,
@@ -185,11 +194,11 @@ pub(super) fn power_mode_performance_processor_values() -> ProcessorPowerValues 
     )
 }
 
-pub(super) fn power_mode_speed_processor_values() -> ProcessorPowerValues {
+pub(in crate::ui::app) fn power_mode_speed_processor_values() -> ProcessorPowerValues {
     ProcessorPowerValues::new_with_boost_mode(100, 25, 100, 100, ProcessorBoostMode::Aggressive)
 }
 
-pub(super) fn process_memory_priority_setting_label(
+pub(in crate::ui::app) fn process_memory_priority_setting_label(
     priority: ProcessMemoryPrioritySetting,
 ) -> String {
     match priority {
@@ -207,7 +216,7 @@ pub(super) fn process_memory_priority_setting_label(
     }
 }
 
-pub(super) fn core_steering_mode_label(mode: CoreSteeringMode) -> String {
+pub(in crate::ui::app) fn core_steering_mode_label(mode: CoreSteeringMode) -> String {
     match mode {
         CoreSteeringMode::Hard => t!("core_steering.mode_hard").to_string(),
         CoreSteeringMode::Soft => t!("core_steering.mode_soft").to_string(),
@@ -215,7 +224,7 @@ pub(super) fn core_steering_mode_label(mode: CoreSteeringMode) -> String {
     }
 }
 
-pub(super) fn workload_engine_escalation_tuning_label(auto: bool) -> String {
+pub(in crate::ui::app) fn workload_engine_escalation_tuning_label(auto: bool) -> String {
     if auto {
         t!("workload_engine.priority_auto").to_string()
     } else {
@@ -223,7 +232,7 @@ pub(super) fn workload_engine_escalation_tuning_label(auto: bool) -> String {
     }
 }
 
-pub(super) fn apply_workload_engine_preset(
+pub(in crate::ui::app) fn apply_workload_engine_preset(
     settings: &mut WorkloadEngineSettings,
     preset: WorkloadEnginePreset,
 ) {
@@ -262,7 +271,7 @@ pub(super) fn apply_workload_engine_preset(
     settings.workload_engine_max_targeted_processes = values.max_targeted_processes;
 }
 
-pub(super) fn workload_engine_matches_preset(
+pub(in crate::ui::app) fn workload_engine_matches_preset(
     settings: &WorkloadEngineSettings,
     preset: WorkloadEnginePreset,
 ) -> bool {
@@ -312,31 +321,31 @@ pub(super) fn workload_engine_matches_preset(
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct WorkloadEnginePresetValues {
-    pub(super) lower_background_apps: bool,
-    pub(super) workload_engine_background_efficiency_enabled: bool,
-    pub(super) background_priority: ProcessPriority,
-    pub(super) foreground_io_priority: ProcessIoPrioritySetting,
-    pub(super) lower_background_io_priority_enabled: bool,
-    pub(super) lower_background_io_priority: ProcessIoPriority,
-    pub(super) workload_engine_memory_priority_enabled: bool,
-    pub(super) workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting,
-    pub(super) workload_engine_memory_priority: ProcessMemoryPriority,
-    pub(super) workload_engine_affinity_escalation_enabled: bool,
-    pub(super) boost_foreground_app: bool,
-    pub(super) foreground_boost: ForegroundBoostPriority,
-    pub(super) lower_background_auto_cpu_percent: bool,
-    pub(super) manual_cpu_percent: u8,
-    pub(super) total_threshold: u8,
-    pub(super) process_threshold: u8,
-    pub(super) restore_threshold: u8,
-    pub(super) sustain_seconds: u64,
-    pub(super) minimum_restraint_seconds: u64,
-    pub(super) cooldown_seconds: u64,
-    pub(super) max_targeted_processes: u8,
+pub(in crate::ui::app) struct WorkloadEnginePresetValues {
+    pub(in crate::ui::app) lower_background_apps: bool,
+    pub(in crate::ui::app) workload_engine_background_efficiency_enabled: bool,
+    pub(in crate::ui::app) background_priority: ProcessPriority,
+    pub(in crate::ui::app) foreground_io_priority: ProcessIoPrioritySetting,
+    pub(in crate::ui::app) lower_background_io_priority_enabled: bool,
+    pub(in crate::ui::app) lower_background_io_priority: ProcessIoPriority,
+    pub(in crate::ui::app) workload_engine_memory_priority_enabled: bool,
+    pub(in crate::ui::app) workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting,
+    pub(in crate::ui::app) workload_engine_memory_priority: ProcessMemoryPriority,
+    pub(in crate::ui::app) workload_engine_affinity_escalation_enabled: bool,
+    pub(in crate::ui::app) boost_foreground_app: bool,
+    pub(in crate::ui::app) foreground_boost: ForegroundBoostPriority,
+    pub(in crate::ui::app) lower_background_auto_cpu_percent: bool,
+    pub(in crate::ui::app) manual_cpu_percent: u8,
+    pub(in crate::ui::app) total_threshold: u8,
+    pub(in crate::ui::app) process_threshold: u8,
+    pub(in crate::ui::app) restore_threshold: u8,
+    pub(in crate::ui::app) sustain_seconds: u64,
+    pub(in crate::ui::app) minimum_restraint_seconds: u64,
+    pub(in crate::ui::app) cooldown_seconds: u64,
+    pub(in crate::ui::app) max_targeted_processes: u8,
 }
 
-pub(super) fn workload_engine_preset_values(
+pub(in crate::ui::app) fn workload_engine_preset_values(
     preset: WorkloadEnginePreset,
 ) -> WorkloadEnginePresetValues {
     match preset {
@@ -412,7 +421,7 @@ pub(super) fn workload_engine_preset_values(
     }
 }
 
-pub(super) fn workload_engine_io_priority_preset_values(
+pub(in crate::ui::app) fn workload_engine_io_priority_preset_values(
     values: WorkloadEnginePresetValues,
 ) -> IoPrioritySettings {
     IoPrioritySettings {
@@ -426,7 +435,7 @@ pub(super) fn workload_engine_io_priority_preset_values(
     }
 }
 
-pub(super) fn workload_engine_thread_priority_preset_values(
+pub(in crate::ui::app) fn workload_engine_thread_priority_preset_values(
     preset: WorkloadEnginePreset,
 ) -> ThreadPrioritySettings {
     ThreadPrioritySettings {
@@ -448,7 +457,7 @@ pub(super) fn workload_engine_thread_priority_preset_values(
     }
 }
 
-pub(super) fn workload_engine_dynamic_priority_boost_preset_values(
+pub(in crate::ui::app) fn workload_engine_dynamic_priority_boost_preset_values(
     _preset: WorkloadEnginePreset,
 ) -> DynamicPriorityBoostSettings {
     DynamicPriorityBoostSettings {
@@ -460,7 +469,7 @@ pub(super) fn workload_engine_dynamic_priority_boost_preset_values(
     }
 }
 
-pub(super) fn workload_engine_gpu_priority_preset_values(
+pub(in crate::ui::app) fn workload_engine_gpu_priority_preset_values(
     preset: WorkloadEnginePreset,
 ) -> GpuPrioritySettings {
     GpuPrioritySettings {
@@ -482,7 +491,9 @@ pub(super) fn workload_engine_gpu_priority_preset_values(
     }
 }
 
-pub(super) fn foreground_boost_priority_label(priority: ForegroundBoostPriority) -> String {
+pub(in crate::ui::app) fn foreground_boost_priority_label(
+    priority: ForegroundBoostPriority,
+) -> String {
     match priority {
         ForegroundBoostPriority::Auto => t!("workload_engine.priority_auto").to_string(),
         ForegroundBoostPriority::Normal => format!("8 ({})", t!("workload_engine.priority_normal")),
@@ -492,7 +503,7 @@ pub(super) fn foreground_boost_priority_label(priority: ForegroundBoostPriority)
     }
 }
 
-pub(super) fn background_efficiency_aggressiveness_label(
+pub(in crate::ui::app) fn background_efficiency_aggressiveness_label(
     aggressiveness: BackgroundEfficiencyAggressiveness,
 ) -> String {
     match aggressiveness {

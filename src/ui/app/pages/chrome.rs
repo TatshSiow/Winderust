@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_title_bar(
+    pub(in crate::ui::app) fn render_title_bar(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -65,7 +65,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_sidebar_search(
+    pub(in crate::ui::app) fn render_sidebar_search(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -93,7 +93,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_navigation(
+    pub(in crate::ui::app) fn render_navigation(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -142,11 +142,11 @@ impl WinderustApp {
         nav.into_any_element()
     }
 
-    pub(super) fn nav_section_visible(&self, page: Page) -> bool {
+    pub(in crate::ui::app) fn nav_section_visible(&self, page: Page) -> bool {
         page != Page::AdvancedControls || self.settings.advanced.show_advanced_controls
     }
 
-    pub(super) fn render_unsaved_popup(
+    pub(in crate::ui::app) fn render_unsaved_popup(
         &self,
         vanish_progress: Option<f32>,
         cx: &mut Context<Self>,
@@ -227,7 +227,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_admin_rights_prompt(
+    pub(in crate::ui::app) fn render_admin_rights_prompt(
         &self,
         bottom: f32,
         cx: &mut Context<Self>,
@@ -303,7 +303,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_page(
+    pub(in crate::ui::app) fn render_page(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,

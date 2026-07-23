@@ -1,13 +1,13 @@
-use super::*;
+use crate::ui::app::*;
 
-pub(super) fn action_log_page_help() -> SharedString {
+pub(in crate::ui::app) fn action_log_page_help() -> SharedString {
     tooltip_lines(vec![
         t!("action_log.intro_1").to_string(),
         t!("action_log.intro_2").to_string(),
     ])
 }
 
-pub(super) fn page_header_with_help(
+pub(in crate::ui::app) fn page_header_with_help(
     page: Page,
     help: Option<SharedString>,
     transition: Option<&BreadcrumbTransition>,
@@ -85,7 +85,7 @@ pub(super) fn page_header_with_help(
     header
 }
 
-pub(super) fn tooltip_lines(
+pub(in crate::ui::app) fn tooltip_lines(
     lines: impl IntoIterator<Item = impl Into<SharedString>>,
 ) -> SharedString {
     let mut tooltip = String::new();
@@ -99,7 +99,7 @@ pub(super) fn tooltip_lines(
     tooltip.into()
 }
 
-pub(super) fn branded_panel() -> gpui::Div {
+pub(in crate::ui::app) fn branded_panel() -> gpui::Div {
     v_flex()
         .w_full()
         .min_w(px(0.0))
@@ -110,14 +110,14 @@ pub(super) fn branded_panel() -> gpui::Div {
         .text_color(rgb(primary_text_color()))
 }
 
-pub(super) fn section_card(title: &str) -> gpui::Div {
+pub(in crate::ui::app) fn section_card(title: &str) -> gpui::Div {
     branded_panel()
         .gap_3()
         .p_4()
         .child(section_title_text(title.to_owned()))
 }
 
-pub(super) fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn section_header(title: &str, help: impl Into<SharedString>) -> gpui::Div {
     let help = help.into();
 
     v_flex().w_full().min_w(px(0.0)).child(
@@ -135,7 +135,7 @@ pub(super) fn section_header(title: &str, help: impl Into<SharedString>) -> gpui
     )
 }
 
-pub(super) fn section_title_label(title: impl Into<SharedString>) -> Label {
+pub(in crate::ui::app) fn section_title_label(title: impl Into<SharedString>) -> Label {
     Label::new(title)
         .w_full()
         .text_size(px(TEXT_BODY_SIZE))
@@ -143,14 +143,14 @@ pub(super) fn section_title_label(title: impl Into<SharedString>) -> Label {
         .font_weight(gpui::FontWeight::BOLD)
 }
 
-pub(super) fn section_title_text(title: impl Into<SharedString>) -> Label {
+pub(in crate::ui::app) fn section_title_text(title: impl Into<SharedString>) -> Label {
     Label::new(title)
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
         .font_weight(gpui::FontWeight::BOLD)
 }
 
-pub(super) fn title_info_button(
+pub(in crate::ui::app) fn title_info_button(
     id: impl Into<SharedString>,
     tooltip: impl Into<SharedString>,
 ) -> AnyElement {
@@ -175,7 +175,7 @@ pub(super) fn title_info_button(
         .into_any_element()
 }
 
-pub(super) fn rule_card(
+pub(in crate::ui::app) fn rule_card(
     title: AnyElement,
     leading: AnyElement,
     collapse_indicator: AnyElement,
@@ -194,7 +194,7 @@ pub(super) fn rule_card(
     )
 }
 
-pub(super) fn rule_card_with_header_action(
+pub(in crate::ui::app) fn rule_card_with_header_action(
     title: AnyElement,
     leading: AnyElement,
     header_action: Option<AnyElement>,
@@ -295,7 +295,7 @@ pub(super) fn rule_card_with_header_action(
         )
 }
 
-pub(super) fn rule_card_collapse_indicator(
+pub(in crate::ui::app) fn rule_card_collapse_indicator(
     card_target: RuleCardTarget,
     collapsed: bool,
 ) -> AnyElement {
@@ -315,7 +315,7 @@ pub(super) fn rule_card_collapse_indicator(
         .into_any_element()
 }
 
-pub(super) fn rule_list(headers: Vec<AnyElement>) -> gpui::Div {
+pub(in crate::ui::app) fn rule_list(headers: Vec<AnyElement>) -> gpui::Div {
     let mut header = h_flex()
         .w_full()
         .min_w(px(0.0))
@@ -343,11 +343,11 @@ pub(super) fn rule_list(headers: Vec<AnyElement>) -> gpui::Div {
         .child(header)
 }
 
-pub(super) fn rule_table_active_header() -> AnyElement {
+pub(in crate::ui::app) fn rule_table_active_header() -> AnyElement {
     rule_table_centered_header("Active".to_string(), SUSPENSION_ACTIVE_COLUMN_WIDTH)
 }
 
-pub(super) fn rule_table_title_header(title: impl Into<SharedString>) -> AnyElement {
+pub(in crate::ui::app) fn rule_table_title_header(title: impl Into<SharedString>) -> AnyElement {
     div()
         .flex_1()
         .min_w(px(0.0))
@@ -356,7 +356,9 @@ pub(super) fn rule_table_title_header(title: impl Into<SharedString>) -> AnyElem
         .into_any_element()
 }
 
-pub(super) fn rule_table_title_input_header(title: impl Into<SharedString>) -> AnyElement {
+pub(in crate::ui::app) fn rule_table_title_input_header(
+    title: impl Into<SharedString>,
+) -> AnyElement {
     div()
         .flex_1()
         .min_w(px(160.0))
@@ -366,7 +368,7 @@ pub(super) fn rule_table_title_input_header(title: impl Into<SharedString>) -> A
         .into_any_element()
 }
 
-pub(super) fn rule_table_title_input_cell(input: gpui::Div) -> AnyElement {
+pub(in crate::ui::app) fn rule_table_title_input_cell(input: gpui::Div) -> AnyElement {
     div()
         .flex_1()
         .min_w(px(160.0))
@@ -374,7 +376,10 @@ pub(super) fn rule_table_title_input_cell(input: gpui::Div) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn rule_table_centered_header(title: impl Into<SharedString>, width: f32) -> AnyElement {
+pub(in crate::ui::app) fn rule_table_centered_header(
+    title: impl Into<SharedString>,
+    width: f32,
+) -> AnyElement {
     div()
         .w(px(width))
         .min_w(px(0.0))
@@ -385,7 +390,10 @@ pub(super) fn rule_table_centered_header(title: impl Into<SharedString>, width: 
         .into_any_element()
 }
 
-pub(super) fn rule_table_left_header(title: impl Into<SharedString>, width: f32) -> AnyElement {
+pub(in crate::ui::app) fn rule_table_left_header(
+    title: impl Into<SharedString>,
+    width: f32,
+) -> AnyElement {
     div()
         .w(px(width))
         .min_w(px(0.0))
@@ -395,11 +403,11 @@ pub(super) fn rule_table_left_header(title: impl Into<SharedString>, width: f32)
         .into_any_element()
 }
 
-pub(super) fn rule_table_action_header() -> AnyElement {
+pub(in crate::ui::app) fn rule_table_action_header() -> AnyElement {
     rule_table_centered_header("Actions".to_string(), SUSPENSION_ACTION_COLUMN_WIDTH)
 }
 
-pub(super) fn rule_table_action_cell(action: AnyElement) -> AnyElement {
+pub(in crate::ui::app) fn rule_table_action_cell(action: AnyElement) -> AnyElement {
     h_flex()
         .w(px(SUSPENSION_ACTION_COLUMN_WIDTH))
         .min_w(px(0.0))
@@ -410,7 +418,7 @@ pub(super) fn rule_table_action_cell(action: AnyElement) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn process_rule_table_headers() -> Vec<AnyElement> {
+pub(in crate::ui::app) fn process_rule_table_headers() -> Vec<AnyElement> {
     vec![
         rule_table_active_header(),
         rule_table_title_header(t!("process_list.process_name").to_string()),
@@ -418,11 +426,11 @@ pub(super) fn process_rule_table_headers() -> Vec<AnyElement> {
     ]
 }
 
-pub(super) fn feature_body(_enabled: bool) -> gpui::Div {
+pub(in crate::ui::app) fn feature_body(_enabled: bool) -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2().relative()
 }
 
-pub(super) fn disabled_feature_body(
+pub(in crate::ui::app) fn disabled_feature_body(
     id: impl Into<SharedString>,
     body: gpui::Div,
     enabled: bool,
@@ -472,7 +480,9 @@ pub(super) fn disabled_feature_body(
     body.into_any_element()
 }
 
-pub(super) fn disabled_interaction_shield(cx: &mut Context<WinderustApp>) -> AnyElement {
+pub(in crate::ui::app) fn disabled_interaction_shield(
+    cx: &mut Context<WinderustApp>,
+) -> AnyElement {
     div()
         .absolute()
         .inset_0()
@@ -489,7 +499,7 @@ pub(super) fn disabled_interaction_shield(cx: &mut Context<WinderustApp>) -> Any
         .into_any_element()
 }
 
-pub(super) fn rule_card_body_row(children: Vec<AnyElement>) -> gpui::Div {
+pub(in crate::ui::app) fn rule_card_body_row(children: Vec<AnyElement>) -> gpui::Div {
     let mut row = v_flex().w_full().min_w(px(0.0));
     for child in children {
         row = row.child(child);
@@ -497,11 +507,11 @@ pub(super) fn rule_card_body_row(children: Vec<AnyElement>) -> gpui::Div {
     row
 }
 
-pub(super) fn rule_card_body_action(action: AnyElement) -> gpui::Div {
+pub(in crate::ui::app) fn rule_card_body_action(action: AnyElement) -> gpui::Div {
     rule_card_body_actions(vec![action])
 }
 
-pub(super) fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
+pub(in crate::ui::app) fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
     let mut row = h_flex().items_center().justify_end().gap_2();
     for action in actions {
         row = row.child(action);
@@ -519,7 +529,7 @@ pub(super) fn rule_card_body_actions(actions: Vec<AnyElement>) -> gpui::Div {
         .child(row)
 }
 
-pub(super) fn rename_rule_button(
+pub(in crate::ui::app) fn rename_rule_button(
     target: RuleTitleTarget,
     cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
@@ -535,7 +545,9 @@ pub(super) fn rename_rule_button(
     .into_any_element()
 }
 
-pub(super) fn compact_rule_row(id: impl Into<SharedString>) -> gpui::Stateful<gpui::Div> {
+pub(in crate::ui::app) fn compact_rule_row(
+    id: impl Into<SharedString>,
+) -> gpui::Stateful<gpui::Div> {
     h_flex()
         .id(id.into())
         .w_full()
@@ -555,7 +567,9 @@ pub(super) fn compact_rule_row(id: impl Into<SharedString>) -> gpui::Stateful<gp
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
 }
 
-pub(super) fn priority_exclusion_table_cell(value: impl Into<SharedString>) -> AnyElement {
+pub(in crate::ui::app) fn priority_exclusion_table_cell(
+    value: impl Into<SharedString>,
+) -> AnyElement {
     div()
         .w(px(DROPDOWN_SELECT_TABLE_WIDTH))
         .min_w(px(0.0))
@@ -566,7 +580,7 @@ pub(super) fn priority_exclusion_table_cell(value: impl Into<SharedString>) -> A
         .into_any_element()
 }
 
-pub(super) fn rule_active_cell(
+pub(in crate::ui::app) fn rule_active_cell(
     id: impl Into<SharedString>,
     checked: bool,
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
@@ -581,7 +595,7 @@ pub(super) fn rule_active_cell(
         .into_any_element()
 }
 
-pub(super) fn rule_table_input_cell(
+pub(in crate::ui::app) fn rule_table_input_cell(
     input: Entity<InputState>,
     width: f32,
     window: &mut Window,
@@ -595,7 +609,7 @@ pub(super) fn rule_table_input_cell(
         .child(app_input(&input, focused, cx))
 }
 
-pub(super) fn rule_table_checkbox_cell(
+pub(in crate::ui::app) fn rule_table_checkbox_cell(
     id_prefix: &'static str,
     index: usize,
     checked: bool,
@@ -613,7 +627,7 @@ pub(super) fn rule_table_checkbox_cell(
         ))
 }
 
-pub(super) fn create_rule_card(
+pub(in crate::ui::app) fn create_rule_card(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     action: AnyElement,
@@ -621,7 +635,7 @@ pub(super) fn create_rule_card(
     setting_action_card(id, title, action)
 }
 
-pub(super) fn setting_group(
+pub(in crate::ui::app) fn setting_group(
     target: SettingGroupTarget,
     title: impl Into<SharedString>,
     action: AnyElement,
@@ -647,7 +661,7 @@ pub(super) fn setting_group(
     )
 }
 
-pub(super) fn setting_group_with_help(
+pub(in crate::ui::app) fn setting_group_with_help(
     target: SettingGroupTarget,
     title_help: (impl Into<SharedString>, impl Into<SharedString>),
     action: AnyElement,
@@ -679,7 +693,7 @@ pub(super) fn setting_group_with_help(
     )
 }
 
-pub(super) fn setting_group_with_title_element(
+pub(in crate::ui::app) fn setting_group_with_title_element(
     target: SettingGroupTarget,
     title: AnyElement,
     action: AnyElement,
@@ -702,7 +716,7 @@ pub(super) fn setting_group_with_title_element(
     )
 }
 
-pub(super) fn setting_group_with_title_element_with_body_height(
+pub(in crate::ui::app) fn setting_group_with_title_element_with_body_height(
     target: SettingGroupTarget,
     title: AnyElement,
     action: AnyElement,
@@ -810,7 +824,7 @@ pub(super) fn setting_group_with_title_element_with_body_height(
     group
 }
 
-pub(super) fn expanded_child_at_progress(
+pub(in crate::ui::app) fn expanded_child_at_progress(
     child: AnyElement,
     target_height: Option<f32>,
     progress: f32,
@@ -837,7 +851,7 @@ pub(super) fn expanded_child_at_progress(
     .into_any_element()
 }
 
-pub(super) fn setting_group_body_animation_height(
+pub(in crate::ui::app) fn setting_group_body_animation_height(
     target: SettingGroupTarget,
     row_count: usize,
 ) -> Option<f32> {
@@ -847,7 +861,7 @@ pub(super) fn setting_group_body_animation_height(
     }
 }
 
-pub(super) fn setting_group_collapse_button(
+pub(in crate::ui::app) fn setting_group_collapse_button(
     target: SettingGroupTarget,
     collapsed: bool,
     _cx: &mut Context<WinderustApp>,
@@ -874,7 +888,7 @@ pub(super) fn setting_group_collapse_button(
         .into_any_element()
 }
 
-pub(super) fn setting_group_switch_action(
+pub(in crate::ui::app) fn setting_group_switch_action(
     id: impl Into<SharedString>,
     enabled: bool,
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
@@ -882,7 +896,7 @@ pub(super) fn setting_group_switch_action(
     switch_toggle_action(id, enabled, handler)
 }
 
-pub(super) fn setting_group_action_row(
+pub(in crate::ui::app) fn setting_group_action_row(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     action: AnyElement,
@@ -901,7 +915,7 @@ pub(super) fn setting_group_action_row(
     )
 }
 
-pub(super) fn setting_group_action_row_with_help(
+pub(in crate::ui::app) fn setting_group_action_row_with_help(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     help: impl Into<SharedString>,
@@ -926,7 +940,7 @@ pub(super) fn setting_group_action_row_with_help(
     )
 }
 
-pub(super) fn setting_group_action_row_element(
+pub(in crate::ui::app) fn setting_group_action_row_element(
     id: impl Into<SharedString>,
     title: AnyElement,
     action: AnyElement,
@@ -957,7 +971,7 @@ pub(super) fn setting_group_action_row_element(
         )
 }
 
-pub(super) fn setting_group_stacked_action_row(
+pub(in crate::ui::app) fn setting_group_stacked_action_row(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     action: AnyElement,
@@ -983,7 +997,7 @@ pub(super) fn setting_group_stacked_action_row(
         )
 }
 
-pub(super) fn setting_group_stepper_row_u64(
+pub(in crate::ui::app) fn setting_group_stepper_row_u64(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     value: u64,
@@ -994,7 +1008,7 @@ pub(super) fn setting_group_stepper_row_u64(
     setting_group_stepper_row_u64_inner(id, title, None, value, value_element, divided, handler)
 }
 
-pub(super) fn setting_group_stepper_row_u64_with_help(
+pub(in crate::ui::app) fn setting_group_stepper_row_u64_with_help(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     help: impl Into<SharedString>,
@@ -1014,7 +1028,7 @@ pub(super) fn setting_group_stepper_row_u64_with_help(
     )
 }
 
-pub(super) fn setting_group_stepper_row_u64_inner(
+pub(in crate::ui::app) fn setting_group_stepper_row_u64_inner(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     help: Option<SharedString>,
@@ -1072,7 +1086,7 @@ pub(super) fn setting_group_stepper_row_u64_inner(
     .into_any_element()
 }
 
-pub(super) fn rule_action_row(
+pub(in crate::ui::app) fn rule_action_row(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     action: AnyElement,
@@ -1080,7 +1094,7 @@ pub(super) fn rule_action_row(
     rule_action_row_with_title_color(id, title, action, primary_text_color())
 }
 
-pub(super) fn rule_action_row_with_title_color(
+pub(in crate::ui::app) fn rule_action_row_with_title_color(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     action: AnyElement,
@@ -1100,7 +1114,7 @@ pub(super) fn rule_action_row_with_title_color(
     )
 }
 
-pub(super) fn rule_stepper_row_u64(
+pub(in crate::ui::app) fn rule_stepper_row_u64(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     value: u64,
@@ -1154,7 +1168,7 @@ pub(super) fn rule_stepper_row_u64(
     )
 }
 
-pub(super) fn rule_checkbox_row(
+pub(in crate::ui::app) fn rule_checkbox_row(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     checked: bool,
@@ -1194,7 +1208,7 @@ pub(super) fn rule_checkbox_row(
     .into_any_element()
 }
 
-pub(super) fn setting_action_card(
+pub(in crate::ui::app) fn setting_action_card(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     action: AnyElement,
@@ -1211,7 +1225,7 @@ pub(super) fn setting_action_card(
     )
 }
 
-pub(super) fn setting_action_card_with_help(
+pub(in crate::ui::app) fn setting_action_card_with_help(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     help: impl Into<SharedString>,
@@ -1232,7 +1246,7 @@ pub(super) fn setting_action_card_with_help(
     )
 }
 
-pub(super) fn setting_action_card_element(
+pub(in crate::ui::app) fn setting_action_card_element(
     id: impl Into<SharedString>,
     title: AnyElement,
     action: AnyElement,
@@ -1266,7 +1280,7 @@ pub(super) fn setting_action_card_element(
         )
 }
 
-pub(super) fn setting_stepper_card_u64(
+pub(in crate::ui::app) fn setting_stepper_card_u64(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     value: u64,
@@ -1319,7 +1333,7 @@ pub(super) fn setting_stepper_card_u64(
     )
 }
 
-pub(super) fn stat_grid(rows: Vec<(String, String)>) -> gpui::Div {
+pub(in crate::ui::app) fn stat_grid(rows: Vec<(String, String)>) -> gpui::Div {
     let mut list = v_flex().w_full().min_w(px(0.0));
     for (index, (label, value)) in rows.into_iter().enumerate() {
         list = list.child(
@@ -1358,7 +1372,7 @@ pub(super) fn stat_grid(rows: Vec<(String, String)>) -> gpui::Div {
     branded_panel().py_1().child(list)
 }
 
-pub(super) fn dashboard_card_slot(card: AnyElement) -> gpui::Div {
+pub(in crate::ui::app) fn dashboard_card_slot(card: AnyElement) -> gpui::Div {
     div()
         .w(relative(0.49))
         .min_w(px(320.0))
@@ -1366,7 +1380,7 @@ pub(super) fn dashboard_card_slot(card: AnyElement) -> gpui::Div {
         .child(card)
 }
 
-pub(super) fn dashboard_summary_card(
+pub(in crate::ui::app) fn dashboard_summary_card(
     title: impl Into<SharedString>,
     header_trailing: Option<AnyElement>,
     body: AnyElement,
@@ -1410,7 +1424,9 @@ pub(super) fn dashboard_summary_card(
         )
 }
 
-pub(super) fn dashboard_summary_header_value(value: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn dashboard_summary_header_value(
+    value: impl Into<SharedString>,
+) -> gpui::Div {
     div()
         .max_w(px(180.0))
         .flex_shrink_0()
@@ -1422,7 +1438,7 @@ pub(super) fn dashboard_summary_header_value(value: impl Into<SharedString>) -> 
         .child(value.into())
 }
 
-pub(super) fn dashboard_split_value_row(items: [gpui::Div; 2]) -> gpui::Div {
+pub(in crate::ui::app) fn dashboard_split_value_row(items: [gpui::Div; 2]) -> gpui::Div {
     items.into_iter().fold(
         h_flex()
             .w_full()
@@ -1435,7 +1451,7 @@ pub(super) fn dashboard_split_value_row(items: [gpui::Div; 2]) -> gpui::Div {
     )
 }
 
-pub(super) fn dashboard_split_value(
+pub(in crate::ui::app) fn dashboard_split_value(
     label: String,
     value: impl Into<SharedString>,
     color: Hsla,
@@ -1461,11 +1477,15 @@ pub(super) fn dashboard_split_value(
         )
 }
 
-pub(super) fn io_usage_split_value(label: String, value: Option<f64>, color: Hsla) -> gpui::Div {
+pub(in crate::ui::app) fn io_usage_split_value(
+    label: String,
+    value: Option<f64>,
+    color: Hsla,
+) -> gpui::Div {
     dashboard_split_value(label, io_usage_label(value), color)
 }
 
-pub(super) fn dashboard_graph_hover_overlay(
+pub(in crate::ui::app) fn dashboard_graph_hover_overlay(
     graph_id: &'static str,
     tooltips: Vec<SharedString>,
 ) -> gpui::Div {
@@ -1484,7 +1504,7 @@ pub(super) fn dashboard_graph_hover_overlay(
     overlay
 }
 
-pub(super) fn dashboard_graph_sample_tooltips(
+pub(in crate::ui::app) fn dashboard_graph_sample_tooltips(
     points: &[DashboardDualLinePoint],
     first_series_label: &str,
     second_series_label: &str,
@@ -1502,7 +1522,7 @@ pub(super) fn dashboard_graph_sample_tooltips(
         .collect()
 }
 
-pub(super) fn dashboard_sample_age_label(index: usize) -> String {
+pub(in crate::ui::app) fn dashboard_sample_age_label(index: usize) -> String {
     let age = CPU_USAGE_HISTORY_LEN.saturating_sub(index + 1);
     if age == 0 {
         t!("common.latest_sample").to_string()
@@ -1511,7 +1531,7 @@ pub(super) fn dashboard_sample_age_label(index: usize) -> String {
     }
 }
 
-pub(super) fn dashboard_cpu_dual_line_points(
+pub(in crate::ui::app) fn dashboard_cpu_dual_line_points(
     values: &VecDeque<CpuUsageHistorySample>,
     base_frequency_mhz: Option<u32>,
 ) -> Vec<DashboardDualLinePoint> {
@@ -1557,7 +1577,7 @@ pub(super) fn dashboard_cpu_dual_line_points(
     points
 }
 
-pub(super) fn normalize_cpu_frequency_percent(
+pub(in crate::ui::app) fn normalize_cpu_frequency_percent(
     frequency_mhz: Option<u32>,
     base_frequency_mhz: u32,
     peak_frequency_mhz: Option<u32>,
@@ -1577,7 +1597,7 @@ pub(super) fn normalize_cpu_frequency_percent(
         .clamp(0.0, 100.0)
 }
 
-pub(super) fn dashboard_dual_line_points(
+pub(in crate::ui::app) fn dashboard_dual_line_points(
     values: impl ExactSizeIterator<Item = (f32, f32)>,
     first_label: impl Fn(Option<f32>) -> String,
     second_label: impl Fn(Option<f32>) -> String,
@@ -1607,19 +1627,19 @@ pub(super) fn dashboard_dual_line_points(
     points
 }
 
-pub(super) fn dashboard_history_tick(index: usize) -> String {
+pub(in crate::ui::app) fn dashboard_history_tick(index: usize) -> String {
     format!("sample-{index:02}")
 }
 
-pub(super) fn dashboard_primary_series_color() -> Hsla {
+pub(in crate::ui::app) fn dashboard_primary_series_color() -> Hsla {
     Hsla::from(rgb(accent_color())).lighten(0.16)
 }
 
-pub(super) fn dashboard_secondary_series_color() -> Hsla {
+pub(in crate::ui::app) fn dashboard_secondary_series_color() -> Hsla {
     Hsla::from(rgb(accent_color())).darken(0.18)
 }
 
-pub(super) fn titled_status_list(
+pub(in crate::ui::app) fn titled_status_list(
     title: &str,
     header_trailing: Option<AnyElement>,
     items: Vec<(String, String)>,
@@ -1680,33 +1700,33 @@ pub(super) fn titled_status_list(
     dashboard_summary_card(title.to_owned(), header_trailing, list.into_any_element())
 }
 
-pub(super) const PROCESS_LIST_NAME_MIN_WIDTH: f32 = 180.0;
-pub(super) const PROCESS_LIST_NAME_MAX_WIDTH: f32 = 340.0;
-pub(super) const PROCESS_LIST_PID_MIN_WIDTH: f32 = 56.0;
-pub(super) const PROCESS_LIST_PID_MAX_WIDTH: f32 = 90.0;
-pub(super) const PROCESS_LIST_COLUMN_MIN_WIDTH: f32 = 72.0;
-pub(super) const PROCESS_LIST_COLUMN_MAX_WIDTH: f32 = 250.0;
-pub(super) const PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING: f32 = 24.0;
-pub(super) const PROCESS_LIST_NAME_CELL_NON_TEXT_WIDTH: f32 = 76.0;
-pub(super) const PROCESS_LIST_SORT_ICON_WIDTH: f32 = 18.0;
-pub(super) const PROCESS_LIST_SORT_HEADER_GAP: f32 = 4.0;
-pub(super) const PROCESS_LIST_SPLIT_LABEL_WIDTH: f32 = 18.0;
-pub(super) const PROCESS_LIST_SPLIT_LABEL_GAP: f32 = 4.0;
-pub(super) const PROCESS_LIST_CELL_EDITOR_WIDTH: f32 = 220.0;
-pub(super) const PROCESS_LIST_ROW_HORIZONTAL_PADDING: f32 = 32.0;
-pub(super) const PROCESS_LIST_COLUMN_GAP: f32 = 12.0;
-pub(super) const PROCESS_LIST_HEADER_HEIGHT: f32 = 32.0;
-pub(super) const PROCESS_LIST_ROW_HEIGHT: f32 = 52.0;
-pub(super) const PROCESS_LIST_TOOLBAR_HEIGHT: f32 = 40.0;
-pub(super) const PROCESS_LIST_VERTICAL_GAP_TOTAL: f32 = 8.0;
-pub(super) const PROCESS_LIST_SCROLLBAR_GUTTER: f32 = 16.0;
-pub(super) const PROCESS_LIST_TREE_TOGGLE_WIDTH: f32 = 16.0;
-pub(super) const PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_ID: &str =
+pub(in crate::ui::app) const PROCESS_LIST_NAME_MIN_WIDTH: f32 = 180.0;
+pub(in crate::ui::app) const PROCESS_LIST_NAME_MAX_WIDTH: f32 = 340.0;
+pub(in crate::ui::app) const PROCESS_LIST_PID_MIN_WIDTH: f32 = 56.0;
+pub(in crate::ui::app) const PROCESS_LIST_PID_MAX_WIDTH: f32 = 90.0;
+pub(in crate::ui::app) const PROCESS_LIST_COLUMN_MIN_WIDTH: f32 = 72.0;
+pub(in crate::ui::app) const PROCESS_LIST_COLUMN_MAX_WIDTH: f32 = 250.0;
+pub(in crate::ui::app) const PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING: f32 = 24.0;
+pub(in crate::ui::app) const PROCESS_LIST_NAME_CELL_NON_TEXT_WIDTH: f32 = 76.0;
+pub(in crate::ui::app) const PROCESS_LIST_SORT_ICON_WIDTH: f32 = 18.0;
+pub(in crate::ui::app) const PROCESS_LIST_SORT_HEADER_GAP: f32 = 4.0;
+pub(in crate::ui::app) const PROCESS_LIST_SPLIT_LABEL_WIDTH: f32 = 18.0;
+pub(in crate::ui::app) const PROCESS_LIST_SPLIT_LABEL_GAP: f32 = 4.0;
+pub(in crate::ui::app) const PROCESS_LIST_CELL_EDITOR_WIDTH: f32 = 220.0;
+pub(in crate::ui::app) const PROCESS_LIST_ROW_HORIZONTAL_PADDING: f32 = 32.0;
+pub(in crate::ui::app) const PROCESS_LIST_COLUMN_GAP: f32 = 12.0;
+pub(in crate::ui::app) const PROCESS_LIST_HEADER_HEIGHT: f32 = 32.0;
+pub(in crate::ui::app) const PROCESS_LIST_ROW_HEIGHT: f32 = 52.0;
+pub(in crate::ui::app) const PROCESS_LIST_TOOLBAR_HEIGHT: f32 = 40.0;
+pub(in crate::ui::app) const PROCESS_LIST_VERTICAL_GAP_TOTAL: f32 = 8.0;
+pub(in crate::ui::app) const PROCESS_LIST_SCROLLBAR_GUTTER: f32 = 16.0;
+pub(in crate::ui::app) const PROCESS_LIST_TREE_TOGGLE_WIDTH: f32 = 16.0;
+pub(in crate::ui::app) const PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_ID: &str =
     "process-list-column-visibility";
-pub(super) const PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_WIDTH: f32 = 360.0;
+pub(in crate::ui::app) const PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_WIDTH: f32 = 360.0;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(super) enum ProcessListColumn {
+pub(in crate::ui::app) enum ProcessListColumn {
     Pid,
     PowerPlanForeground,
     PowerPlanRunning,
@@ -1723,7 +1743,7 @@ pub(super) enum ProcessListColumn {
     TimerResolution,
 }
 
-pub(super) const PROCESS_LIST_OPTIONAL_COLUMNS: [ProcessListColumn; 14] = [
+pub(in crate::ui::app) const PROCESS_LIST_OPTIONAL_COLUMNS: [ProcessListColumn; 14] = [
     ProcessListColumn::Pid,
     ProcessListColumn::PowerPlanForeground,
     ProcessListColumn::PowerPlanRunning,

@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum SuggestionTarget {
+pub(in crate::ui::app) enum SuggestionTarget {
     Foreground,
     BackgroundEfficiency,
     BackgroundCpu,
@@ -21,13 +21,13 @@ pub(super) enum SuggestionTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RuleTitleTarget {
+pub(in crate::ui::app) enum RuleTitleTarget {
     ByTime(usize),
     ByCpuLoad(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) enum RuleCardTarget {
+pub(in crate::ui::app) enum RuleCardTarget {
     ByCpuLoad(usize),
     AppSuspension(String),
     CoreLimiter(String),
@@ -35,7 +35,7 @@ pub(super) enum RuleCardTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum SettingGroupTarget {
+pub(in crate::ui::app) enum SettingGroupTarget {
     AccentColor,
     AdaptiveEngineCpuScheduling,
     AdaptiveEngineProcessorPolicy,
@@ -73,18 +73,19 @@ pub(super) enum SettingGroupTarget {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum WorkloadEnginePreset {
+pub(in crate::ui::app) enum WorkloadEnginePreset {
     LowImpact,
     ForegroundFirst,
     MaxForeground,
 }
 
 impl WorkloadEnginePreset {
-    pub(super) const ALL: [Self; 3] = [Self::LowImpact, Self::ForegroundFirst, Self::MaxForeground];
+    pub(in crate::ui::app) const ALL: [Self; 3] =
+        [Self::LowImpact, Self::ForegroundFirst, Self::MaxForeground];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PowerModePreset {
+pub(in crate::ui::app) enum PowerModePreset {
     PowerSave,
     Balanced,
     Performance,
@@ -92,7 +93,7 @@ pub(super) enum PowerModePreset {
 }
 
 impl PowerModePreset {
-    pub(super) const ALL: [Self; 4] = [
+    pub(in crate::ui::app) const ALL: [Self; 4] = [
         Self::PowerSave,
         Self::Balanced,
         Self::Performance,
@@ -101,13 +102,13 @@ impl PowerModePreset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum ThresholdField {
+pub(in crate::ui::app) enum ThresholdField {
     Download(usize),
     Upload(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum NumericField {
+pub(in crate::ui::app) enum NumericField {
     ActivityIdleTimeout,
     GeneralCheckInterval,
     ExecutionFailureSuppressionThreshold,
@@ -153,7 +154,7 @@ pub(super) enum NumericField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum AdaptiveEngineProcessorPolicyField {
+pub(in crate::ui::app) enum AdaptiveEngineProcessorPolicyField {
     CoreParkingMin,
     PerformanceMin,
     PerformanceMax,
@@ -161,7 +162,7 @@ pub(super) enum AdaptiveEngineProcessorPolicyField {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum ProcessorPowerSlider {
+pub(in crate::ui::app) enum ProcessorPowerSlider {
     AcCoreParkingMin,
     AcPerformanceMin,
     AcPerformanceMax,
@@ -173,7 +174,7 @@ pub(super) enum ProcessorPowerSlider {
 }
 
 impl ProcessorPowerSlider {
-    pub(super) const fn paired_power_source(self) -> Self {
+    pub(in crate::ui::app) const fn paired_power_source(self) -> Self {
         match self {
             Self::AcCoreParkingMin => Self::DcCoreParkingMin,
             Self::AcPerformanceMin => Self::DcPerformanceMin,
@@ -188,13 +189,13 @@ impl ProcessorPowerSlider {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum ProcessorPowerSource {
+pub(in crate::ui::app) enum ProcessorPowerSource {
     Ac,
     Dc,
 }
 
 impl ProcessorPowerSource {
-    pub(super) const fn paired(self) -> Self {
+    pub(in crate::ui::app) const fn paired(self) -> Self {
         match self {
             Self::Ac => Self::Dc,
             Self::Dc => Self::Ac,
@@ -203,66 +204,67 @@ impl ProcessorPowerSource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum CpuThresholdSlider {
+pub(in crate::ui::app) enum CpuThresholdSlider {
     Lower(usize),
     Upper(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum ActivitySlider {
+pub(in crate::ui::app) enum ActivitySlider {
     IdleTimeout,
     CheckInterval,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct StepChange<T> {
-    pub(super) delta: T,
-    pub(super) increase: bool,
+pub(in crate::ui::app) struct StepChange<T> {
+    pub(in crate::ui::app) delta: T,
+    pub(in crate::ui::app) increase: bool,
 }
 
-pub(super) type StepChangeHandler<T> = Rc<dyn Fn(&StepChange<T>, &mut Window, &mut App)>;
-pub(super) type BoolChangeHandler = Rc<dyn Fn(&bool, &mut Window, &mut App)>;
+pub(in crate::ui::app) type StepChangeHandler<T> =
+    Rc<dyn Fn(&StepChange<T>, &mut Window, &mut App)>;
+pub(in crate::ui::app) type BoolChangeHandler = Rc<dyn Fn(&bool, &mut Window, &mut App)>;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct SliderRange {
-    pub(super) min: u64,
-    pub(super) max: u64,
-    pub(super) step: u64,
+pub(in crate::ui::app) struct SliderRange {
+    pub(in crate::ui::app) min: u64,
+    pub(in crate::ui::app) max: u64,
+    pub(in crate::ui::app) step: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct StableSliderSpec {
-    pub(super) range: SliderRange,
-    pub(super) enabled: bool,
-    pub(super) track_color: u32,
-    pub(super) thumb_color: u32,
+pub(in crate::ui::app) struct StableSliderSpec {
+    pub(in crate::ui::app) range: SliderRange,
+    pub(in crate::ui::app) enabled: bool,
+    pub(in crate::ui::app) track_color: u32,
+    pub(in crate::ui::app) thumb_color: u32,
 }
 
-pub(super) struct SliderRowSpec<'a, T> {
-    pub(super) id: SharedString,
-    pub(super) label: SharedString,
-    pub(super) value_element: AnyElement,
-    pub(super) state: &'a Entity<SliderState>,
-    pub(super) enabled: bool,
-    pub(super) delta: T,
+pub(in crate::ui::app) struct SliderRowSpec<'a, T> {
+    pub(in crate::ui::app) id: SharedString,
+    pub(in crate::ui::app) label: SharedString,
+    pub(in crate::ui::app) value_element: AnyElement,
+    pub(in crate::ui::app) state: &'a Entity<SliderState>,
+    pub(in crate::ui::app) enabled: bool,
+    pub(in crate::ui::app) delta: T,
 }
 
-pub(super) struct ActivitySliderCardSpec<'a> {
-    pub(super) id: SharedString,
-    pub(super) label: SharedString,
-    pub(super) value_element: AnyElement,
-    pub(super) state: &'a Entity<SliderState>,
-    pub(super) enabled: bool,
-    pub(super) range: SliderRange,
+pub(in crate::ui::app) struct ActivitySliderCardSpec<'a> {
+    pub(in crate::ui::app) id: SharedString,
+    pub(in crate::ui::app) label: SharedString,
+    pub(in crate::ui::app) value_element: AnyElement,
+    pub(in crate::ui::app) state: &'a Entity<SliderState>,
+    pub(in crate::ui::app) enabled: bool,
+    pub(in crate::ui::app) range: SliderRange,
 }
 
-pub(super) struct SettingGroupBody {
-    pub(super) collapsed: bool,
-    pub(super) rows: Vec<AnyElement>,
-    pub(super) animation_height: Option<f32>,
+pub(in crate::ui::app) struct SettingGroupBody {
+    pub(in crate::ui::app) collapsed: bool,
+    pub(in crate::ui::app) rows: Vec<AnyElement>,
+    pub(in crate::ui::app) animation_height: Option<f32>,
 }
 
-pub(super) fn make_input(
+pub(in crate::ui::app) fn make_input(
     window: &mut Window,
     cx: &mut Context<WinderustApp>,
     value: &str,
@@ -277,14 +279,14 @@ pub(super) fn make_input(
     })
 }
 
-pub(super) fn make_percent_slider(
+pub(in crate::ui::app) fn make_percent_slider(
     cx: &mut Context<WinderustApp>,
     value: u64,
 ) -> Entity<SliderState> {
     make_range_slider(cx, value, 0, 100, 1)
 }
 
-pub(super) fn make_range_slider(
+pub(in crate::ui::app) fn make_range_slider(
     cx: &mut Context<WinderustApp>,
     value: u64,
     min: u64,
@@ -302,14 +304,14 @@ pub(super) fn make_range_slider(
     })
 }
 
-pub(super) fn make_processor_power_slider(
+pub(in crate::ui::app) fn make_processor_power_slider(
     cx: &mut Context<WinderustApp>,
     value: u64,
 ) -> Entity<SliderState> {
     make_percent_slider(cx, value)
 }
 
-pub(super) fn processor_power_slider_input(
+pub(in crate::ui::app) fn processor_power_slider_input(
     inputs: &UiInputs,
     slider: ProcessorPowerSlider,
 ) -> Entity<SliderState> {
@@ -329,7 +331,7 @@ pub(super) fn processor_power_slider_input(
     }
 }
 
-pub(super) fn cpu_threshold_slider_input(
+pub(in crate::ui::app) fn cpu_threshold_slider_input(
     inputs: &UiInputs,
     slider: CpuThresholdSlider,
 ) -> Option<Entity<SliderState>> {
@@ -340,7 +342,7 @@ pub(super) fn cpu_threshold_slider_input(
     .cloned()
 }
 
-pub(super) fn sync_input_vec(
+pub(in crate::ui::app) fn sync_input_vec(
     inputs: &mut Vec<Entity<InputState>>,
     len: usize,
     window: &mut Window,
@@ -355,7 +357,7 @@ pub(super) fn sync_input_vec(
     inputs.truncate(len);
 }
 
-pub(super) fn sync_slider_vec(
+pub(in crate::ui::app) fn sync_slider_vec(
     inputs: &mut Vec<Entity<SliderState>>,
     len: usize,
     cx: &mut Context<WinderustApp>,
@@ -368,7 +370,7 @@ pub(super) fn sync_slider_vec(
     inputs.truncate(len);
 }
 
-pub(super) fn clear_input(
+pub(in crate::ui::app) fn clear_input(
     input: &Entity<InputState>,
     window: &mut Window,
     cx: &mut Context<WinderustApp>,
@@ -376,7 +378,7 @@ pub(super) fn clear_input(
     clear_input_to(input, "", window, cx);
 }
 
-pub(super) fn set_input_placeholder(
+pub(in crate::ui::app) fn set_input_placeholder(
     input: &Entity<InputState>,
     placeholder: impl Into<SharedString>,
     window: &mut Window,
@@ -387,7 +389,7 @@ pub(super) fn set_input_placeholder(
     });
 }
 
-pub(super) fn clear_input_to(
+pub(in crate::ui::app) fn clear_input_to(
     input: &Entity<InputState>,
     value: &str,
     window: &mut Window,
@@ -398,7 +400,7 @@ pub(super) fn clear_input_to(
 }
 
 impl UiInputs {
-    pub(super) fn new(
+    pub(in crate::ui::app) fn new(
         window: &mut Window,
         cx: &mut Context<WinderustApp>,
         settings: &Settings,
@@ -533,7 +535,7 @@ impl UiInputs {
         }
     }
 
-    pub(super) fn ensure_for_settings(
+    pub(in crate::ui::app) fn ensure_for_settings(
         &mut self,
         window: &mut Window,
         cx: &mut Context<WinderustApp>,
@@ -605,7 +607,7 @@ impl UiInputs {
         );
     }
 
-    pub(super) fn refresh_localized_placeholders(
+    pub(in crate::ui::app) fn refresh_localized_placeholders(
         &self,
         window: &mut Window,
         cx: &mut Context<WinderustApp>,
@@ -648,7 +650,11 @@ impl UiInputs {
 }
 
 impl WinderustApp {
-    pub(super) fn rebuild_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::ui::app) fn rebuild_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let settings = self.settings.clone();
         let processor_power_values = self.processor_power_values();
         self.editing_rule_title = None;
@@ -661,11 +667,11 @@ impl WinderustApp {
         self.subscribe_to_activity_sliders(window, cx);
     }
 
-    pub(super) fn rule_title_input_count(&self) -> usize {
+    pub(in crate::ui::app) fn rule_title_input_count(&self) -> usize {
         self.inputs.by_time_rule_names.len() + self.inputs.by_cpu_load_rule_names.len()
     }
 
-    pub(super) fn ensure_rule_title_input_subscriptions(
+    pub(in crate::ui::app) fn ensure_rule_title_input_subscriptions(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -675,7 +681,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn rebuild_rule_title_input_subscriptions(
+    pub(in crate::ui::app) fn rebuild_rule_title_input_subscriptions(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -704,7 +710,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn subscribe_to_rule_title_input(
+    pub(in crate::ui::app) fn subscribe_to_rule_title_input(
         &mut self,
         input: Entity<InputState>,
         target: RuleTitleTarget,
@@ -720,7 +726,7 @@ impl WinderustApp {
         ));
     }
 
-    pub(super) fn handle_rule_title_input_event(
+    pub(in crate::ui::app) fn handle_rule_title_input_event(
         &mut self,
         target: RuleTitleTarget,
         event: &InputEvent,
@@ -731,7 +737,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn subscribe_to_numeric_input(
+    pub(in crate::ui::app) fn subscribe_to_numeric_input(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -745,7 +751,7 @@ impl WinderustApp {
         ));
     }
 
-    pub(super) fn subscribe_to_dashboard_search_input(
+    pub(in crate::ui::app) fn subscribe_to_dashboard_search_input(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -759,7 +765,7 @@ impl WinderustApp {
         ));
     }
 
-    pub(super) fn subscribe_to_processor_power_sliders(
+    pub(in crate::ui::app) fn subscribe_to_processor_power_sliders(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -785,7 +791,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn handle_processor_power_slider_event(
+    pub(in crate::ui::app) fn handle_processor_power_slider_event(
         &mut self,
         slider: ProcessorPowerSlider,
         event: &SliderEvent,
@@ -796,11 +802,11 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn cpu_threshold_slider_input_count(&self) -> usize {
+    pub(in crate::ui::app) fn cpu_threshold_slider_input_count(&self) -> usize {
         self.inputs.cpu_rule_thresholds.len() + self.inputs.cpu_rule_upper_thresholds.len()
     }
 
-    pub(super) fn ensure_cpu_threshold_slider_subscriptions(
+    pub(in crate::ui::app) fn ensure_cpu_threshold_slider_subscriptions(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -811,7 +817,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn rebuild_cpu_threshold_slider_subscriptions(
+    pub(in crate::ui::app) fn rebuild_cpu_threshold_slider_subscriptions(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -847,7 +853,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn handle_cpu_threshold_slider_event(
+    pub(in crate::ui::app) fn handle_cpu_threshold_slider_event(
         &mut self,
         slider: CpuThresholdSlider,
         event: &SliderEvent,
@@ -859,7 +865,7 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn subscribe_to_activity_sliders(
+    pub(in crate::ui::app) fn subscribe_to_activity_sliders(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -885,7 +891,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn handle_activity_slider_event(
+    pub(in crate::ui::app) fn handle_activity_slider_event(
         &mut self,
         slider: ActivitySlider,
         event: &SliderEvent,
@@ -896,7 +902,7 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn handle_numeric_input_event(
+    pub(in crate::ui::app) fn handle_numeric_input_event(
         &mut self,
         event: &InputEvent,
         cx: &mut Context<Self>,
@@ -906,7 +912,10 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn rule_title_input(&self, target: RuleTitleTarget) -> Option<Entity<InputState>> {
+    pub(in crate::ui::app) fn rule_title_input(
+        &self,
+        target: RuleTitleTarget,
+    ) -> Option<Entity<InputState>> {
         match target {
             RuleTitleTarget::ByTime(index) => self.inputs.by_time_rule_names.get(index),
             RuleTitleTarget::ByCpuLoad(index) => self.inputs.by_cpu_load_rule_names.get(index),
@@ -914,7 +923,7 @@ impl WinderustApp {
         .cloned()
     }
 
-    pub(super) fn begin_rule_title_edit(
+    pub(in crate::ui::app) fn begin_rule_title_edit(
         &mut self,
         target: RuleTitleTarget,
         window: &mut Window,
@@ -927,7 +936,7 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn begin_numeric_edit(
+    pub(in crate::ui::app) fn begin_numeric_edit(
         &mut self,
         field: NumericField,
         value: String,
@@ -944,7 +953,7 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn finish_numeric_edit(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui::app) fn finish_numeric_edit(&mut self, cx: &mut Context<Self>) {
         let Some(field) = self.editing_numeric.take() else {
             return;
         };
@@ -953,7 +962,7 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn apply_numeric_input(&mut self, field: NumericField, value: &str) {
+    pub(in crate::ui::app) fn apply_numeric_input(&mut self, field: NumericField, value: &str) {
         let value = value.trim().replace(',', "");
         match field {
             NumericField::ActivityIdleTimeout => {
@@ -1303,7 +1312,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn finish_rule_title_edit(
+    pub(in crate::ui::app) fn finish_rule_title_edit(
         &mut self,
         target: RuleTitleTarget,
         cx: &mut Context<Self>,
@@ -1315,7 +1324,7 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn sync_input_values(&mut self, cx: &mut Context<Self>) {
+    pub(in crate::ui::app) fn sync_input_values(&mut self, cx: &mut Context<Self>) {
         for (rule, input) in self
             .settings
             .by_cpu_load
@@ -1348,7 +1357,11 @@ impl WinderustApp {
 }
 
 impl WinderustApp {
-    pub(super) fn set_cpu_threshold_slider_value(&mut self, slider: CpuThresholdSlider, value: u8) {
+    pub(in crate::ui::app) fn set_cpu_threshold_slider_value(
+        &mut self,
+        slider: CpuThresholdSlider,
+        value: u8,
+    ) {
         let value = value.min(100);
         match slider {
             CpuThresholdSlider::Lower(index) => {
@@ -1364,7 +1377,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn sync_cpu_threshold_slider_states(
+    pub(in crate::ui::app) fn sync_cpu_threshold_slider_states(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1385,7 +1398,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn sync_cpu_threshold_slider_state(
+    pub(in crate::ui::app) fn sync_cpu_threshold_slider_state(
         &self,
         slider: CpuThresholdSlider,
         value: u8,
@@ -1403,7 +1416,11 @@ impl WinderustApp {
         });
     }
 
-    pub(super) fn set_activity_slider_value(&mut self, slider: ActivitySlider, value: u64) {
+    pub(in crate::ui::app) fn set_activity_slider_value(
+        &mut self,
+        slider: ActivitySlider,
+        value: u64,
+    ) {
         match slider {
             ActivitySlider::IdleTimeout => {
                 self.settings.by_activity.idle_timeout_seconds = value.clamp(
@@ -1421,7 +1438,11 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn sync_activity_slider_states(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::ui::app) fn sync_activity_slider_states(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         for (slider, input, value) in [
             (
                 ActivitySlider::IdleTimeout,
@@ -1449,11 +1470,15 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn is_rule_card_collapsed(&self, target: &RuleCardTarget) -> bool {
+    pub(in crate::ui::app) fn is_rule_card_collapsed(&self, target: &RuleCardTarget) -> bool {
         !self.expanded_rule_cards.contains(target)
     }
 
-    pub(super) fn toggle_rule_card(&mut self, target: RuleCardTarget, cx: &mut Context<Self>) {
+    pub(in crate::ui::app) fn toggle_rule_card(
+        &mut self,
+        target: RuleCardTarget,
+        cx: &mut Context<Self>,
+    ) {
         let motion_id = rule_card_body_motion_id(&target);
         let expanded = if self.expanded_rule_cards.remove(&target) {
             false
@@ -1465,11 +1490,14 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn is_setting_group_collapsed(&self, target: SettingGroupTarget) -> bool {
+    pub(in crate::ui::app) fn is_setting_group_collapsed(
+        &self,
+        target: SettingGroupTarget,
+    ) -> bool {
         !self.expanded_setting_groups.contains(&target)
     }
 
-    pub(super) fn toggle_setting_group(
+    pub(in crate::ui::app) fn toggle_setting_group(
         &mut self,
         target: SettingGroupTarget,
         cx: &mut Context<Self>,
@@ -1478,7 +1506,7 @@ impl WinderustApp {
         cx.notify();
     }
 
-    pub(super) fn set_setting_group_expanded(
+    pub(in crate::ui::app) fn set_setting_group_expanded(
         &mut self,
         target: SettingGroupTarget,
         expanded: bool,

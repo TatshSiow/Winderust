@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_memory_trim_page(
+    pub(in crate::ui::app) fn render_memory_trim_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -436,7 +436,10 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_memory_trim_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::ui::app) fn render_memory_trim_exclusions(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.render_process_exclusion_list(
             &self.settings.memory_trim.exclusions,
             ListItemRemovalKind::MemoryTrimExclusion,

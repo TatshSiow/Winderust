@@ -1,26 +1,26 @@
-use super::*;
+use crate::ui::app::*;
 
-pub(super) struct SuspensionIndicator {
-    pub(super) label: String,
-    pub(super) bg: u32,
-    pub(super) fg: u32,
-    pub(super) hover: String,
+pub(in crate::ui::app) struct SuspensionIndicator {
+    pub(in crate::ui::app) label: String,
+    pub(in crate::ui::app) bg: u32,
+    pub(in crate::ui::app) fg: u32,
+    pub(in crate::ui::app) hover: String,
 }
 
-pub(super) struct AffinityIndicator {
-    pub(super) label: String,
-    pub(super) bg: u32,
-    pub(super) fg: u32,
-    pub(super) hover: String,
+pub(in crate::ui::app) struct AffinityIndicator {
+    pub(in crate::ui::app) label: String,
+    pub(in crate::ui::app) bg: u32,
+    pub(in crate::ui::app) fg: u32,
+    pub(in crate::ui::app) hover: String,
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum CoreTileGridAction {
+pub(in crate::ui::app) enum CoreTileGridAction {
     BackgroundCpuRestriction { available_mask: u64 },
     CoreSteeringRule { index: usize },
 }
 
-pub(super) fn app_suspension_indicator(
+pub(in crate::ui::app) fn app_suspension_indicator(
     status: &AppSuspensionSnapshot,
     process: &str,
 ) -> SuspensionIndicator {
@@ -99,7 +99,7 @@ pub(super) fn app_suspension_indicator(
     }
 }
 
-pub(super) fn core_steering_indicator(
+pub(in crate::ui::app) fn core_steering_indicator(
     status: &CoreSteeringSnapshot,
     process: &str,
 ) -> AffinityIndicator {
@@ -136,15 +136,15 @@ pub(super) fn core_steering_indicator(
     }
 }
 
-pub(super) fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
+pub(in crate::ui::app) fn can_manual_freeze(status: &AppSuspensionSnapshot, process: &str) -> bool {
     status.enabled && !app_suspension::contains_process(&status.suspended_apps, process)
 }
 
-pub(super) fn logical_core_count() -> usize {
+pub(in crate::ui::app) fn logical_core_count() -> usize {
     core_steering::logical_processors().len().clamp(1, 64)
 }
 
-pub(super) fn action_log_mode_label(mode: ActionLogMode) -> String {
+pub(in crate::ui::app) fn action_log_mode_label(mode: ActionLogMode) -> String {
     match mode {
         ActionLogMode::Full => t!("settings.action_log_mode_full").to_string(),
         ActionLogMode::Warning => t!("settings.action_log_mode_warning").to_string(),
@@ -153,7 +153,7 @@ pub(super) fn action_log_mode_label(mode: ActionLogMode) -> String {
     }
 }
 
-pub(super) fn action_log_mode_help(mode: ActionLogMode) -> String {
+pub(in crate::ui::app) fn action_log_mode_help(mode: ActionLogMode) -> String {
     match mode {
         ActionLogMode::Full => t!("settings.action_log_mode_full_help").to_string(),
         ActionLogMode::Warning => t!("settings.action_log_mode_warning_help").to_string(),
@@ -162,7 +162,7 @@ pub(super) fn action_log_mode_help(mode: ActionLogMode) -> String {
     }
 }
 
-pub(super) fn cpu_restriction_mode_label(mode: CpuRestrictionMode) -> String {
+pub(in crate::ui::app) fn cpu_restriction_mode_label(mode: CpuRestrictionMode) -> String {
     match mode {
         CpuRestrictionMode::SoftCpuSets => {
             t!("background_efficiency.cpu_restriction_soft").to_string()
@@ -173,7 +173,9 @@ pub(super) fn cpu_restriction_mode_label(mode: CpuRestrictionMode) -> String {
     }
 }
 
-pub(super) fn cpu_restriction_strategy_label(strategy: CpuRestrictionStrategy) -> String {
+pub(in crate::ui::app) fn cpu_restriction_strategy_label(
+    strategy: CpuRestrictionStrategy,
+) -> String {
     match strategy {
         CpuRestrictionStrategy::Off => t!("background_efficiency.cpu_set_off").to_string(),
         CpuRestrictionStrategy::Auto => t!("background_efficiency.cpu_set_auto").to_string(),
@@ -186,7 +188,9 @@ pub(super) fn cpu_restriction_strategy_label(strategy: CpuRestrictionStrategy) -
     }
 }
 
-pub(super) fn cpu_restriction_control_style_label(style: CpuRestrictionControlStyle) -> String {
+pub(in crate::ui::app) fn cpu_restriction_control_style_label(
+    style: CpuRestrictionControlStyle,
+) -> String {
     match style {
         CpuRestrictionControlStyle::Percentage => {
             t!("background_efficiency.control_style_percentage").to_string()
@@ -197,7 +201,7 @@ pub(super) fn cpu_restriction_control_style_label(style: CpuRestrictionControlSt
     }
 }
 
-pub(super) fn default_affinity_mask() -> u64 {
+pub(in crate::ui::app) fn default_affinity_mask() -> u64 {
     let processors = core_steering::logical_processors();
     let mask = core_steering_processors_mask(&processors);
     if mask == 0 {
@@ -212,11 +216,11 @@ pub(super) fn default_affinity_mask() -> u64 {
     }
 }
 
-pub(super) fn affinity_mask_contains(mask: u64, core: usize) -> bool {
+pub(in crate::ui::app) fn affinity_mask_contains(mask: u64, core: usize) -> bool {
     core < 64 && (mask & (1_u64 << core)) != 0
 }
 
-pub(super) fn toggle_affinity_core(mask: &mut u64, core: usize) {
+pub(in crate::ui::app) fn toggle_affinity_core(mask: &mut u64, core: usize) {
     if core >= 64 {
         return;
     }
@@ -229,7 +233,7 @@ pub(super) fn toggle_affinity_core(mask: &mut u64, core: usize) {
     }
 }
 
-pub(super) fn toggle_affinity_core_with_available_mask(
+pub(in crate::ui::app) fn toggle_affinity_core_with_available_mask(
     mask: &mut u64,
     core: usize,
     available_mask: u64,
@@ -249,14 +253,16 @@ pub(super) fn toggle_affinity_core_with_available_mask(
     }
 }
 
-pub(super) fn core_steering_processors_mask(processors: &[LogicalProcessorInfo]) -> u64 {
+pub(in crate::ui::app) fn core_steering_processors_mask(
+    processors: &[LogicalProcessorInfo],
+) -> u64 {
     processors
         .iter()
         .filter_map(|processor| core_steering_processor_bit(processor.index))
         .fold(0, |mask, bit| mask | bit)
 }
 
-pub(super) fn core_steering_processors_kind_mask(
+pub(in crate::ui::app) fn core_steering_processors_kind_mask(
     processors: &[LogicalProcessorInfo],
     kind: LogicalProcessorKind,
 ) -> u64 {
@@ -267,7 +273,9 @@ pub(super) fn core_steering_processors_kind_mask(
         .fold(0, |mask, bit| mask | bit)
 }
 
-pub(super) fn core_steering_processors_no_smt_mask(processors: &[LogicalProcessorInfo]) -> u64 {
+pub(in crate::ui::app) fn core_steering_processors_no_smt_mask(
+    processors: &[LogicalProcessorInfo],
+) -> u64 {
     let mut seen_cores = Vec::new();
     let mut mask = 0;
 
@@ -284,7 +292,7 @@ pub(super) fn core_steering_processors_no_smt_mask(processors: &[LogicalProcesso
     mask
 }
 
-pub(super) fn background_efficiency_strategy_core_mask(
+pub(in crate::ui::app) fn background_efficiency_strategy_core_mask(
     processors: &[LogicalProcessorInfo],
     strategy: CpuRestrictionStrategy,
 ) -> u64 {
@@ -306,11 +314,11 @@ pub(super) fn background_efficiency_strategy_core_mask(
     }
 }
 
-pub(super) fn core_steering_processor_bit(index: usize) -> Option<u64> {
+pub(in crate::ui::app) fn core_steering_processor_bit(index: usize) -> Option<u64> {
     (index < 64).then_some(1_u64 << index)
 }
 
-pub(super) fn core_tile_kind_label(processor: &LogicalProcessorInfo) -> String {
+pub(in crate::ui::app) fn core_tile_kind_label(processor: &LogicalProcessorInfo) -> String {
     match processor.kind {
         LogicalProcessorKind::Performance => "P-Core".to_owned(),
         LogicalProcessorKind::Efficiency => "E-Core".to_owned(),
@@ -318,7 +326,7 @@ pub(super) fn core_tile_kind_label(processor: &LogicalProcessorInfo) -> String {
     }
 }
 
-pub(super) fn processor_power_preset_label(preset: ProcessorPowerPreset) -> String {
+pub(in crate::ui::app) fn processor_power_preset_label(preset: ProcessorPowerPreset) -> String {
     match preset {
         ProcessorPowerPreset::Performance => t!("processor_power.performance").to_string(),
         ProcessorPowerPreset::Balanced => t!("processor_power.balanced").to_string(),
@@ -326,7 +334,7 @@ pub(super) fn processor_power_preset_label(preset: ProcessorPowerPreset) -> Stri
     }
 }
 
-pub(super) fn effective_power_mode_label(mode: EffectivePowerMode) -> String {
+pub(in crate::ui::app) fn effective_power_mode_label(mode: EffectivePowerMode) -> String {
     match mode {
         EffectivePowerMode::Unknown => t!("processor_power.mode_unknown").to_string(),
         EffectivePowerMode::BatterySaver => t!("processor_power.mode_battery_saver").to_string(),
@@ -343,7 +351,7 @@ pub(super) fn effective_power_mode_label(mode: EffectivePowerMode) -> String {
     }
 }
 
-pub(super) fn processor_boost_mode_label(boost_mode: ProcessorBoostMode) -> String {
+pub(in crate::ui::app) fn processor_boost_mode_label(boost_mode: ProcessorBoostMode) -> String {
     match boost_mode {
         ProcessorBoostMode::Disabled => t!("processor_power.boost_disabled").to_string(),
         ProcessorBoostMode::Enabled => t!("processor_power.boost_enabled").to_string(),
@@ -363,14 +371,16 @@ pub(super) fn processor_boost_mode_label(boost_mode: ProcessorBoostMode) -> Stri
     }
 }
 
-pub(super) const fn processor_boost_mode_picker_id(source: ProcessorPowerSource) -> &'static str {
+pub(in crate::ui::app) const fn processor_boost_mode_picker_id(
+    source: ProcessorPowerSource,
+) -> &'static str {
     match source {
         ProcessorPowerSource::Ac => "processor-power-ac-boost-mode-picker",
         ProcessorPowerSource::Dc => "processor-power-dc-boost-mode-picker",
     }
 }
 
-pub(super) fn network_threshold_edit_value(
+pub(in crate::ui::app) fn network_threshold_edit_value(
     threshold_bytes: u64,
     unit: NetworkThresholdUnit,
 ) -> String {
@@ -378,7 +388,7 @@ pub(super) fn network_threshold_edit_value(
     network_threshold_value_label(value)
 }
 
-pub(super) fn network_threshold_value_label(value: f64) -> String {
+pub(in crate::ui::app) fn network_threshold_value_label(value: f64) -> String {
     format!("{value:.3}")
         .trim_end_matches('0')
         .trim_end_matches('.')

@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_by_activity_page(
+    pub(in crate::ui::app) fn render_by_activity_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -187,7 +187,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_by_foreground_page(
+    pub(in crate::ui::app) fn render_by_foreground_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -279,7 +279,7 @@ impl WinderustApp {
         content.into_any_element()
     }
 
-    pub(super) fn render_foreground_rule(
+    pub(in crate::ui::app) fn render_foreground_rule(
         &self,
         index: usize,
         rule: &ByForegroundRule,
@@ -320,21 +320,21 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn new_foreground_rule(&self, process: &str) -> ByForegroundRule {
+    pub(in crate::ui::app) fn new_foreground_rule(&self, process: &str) -> ByForegroundRule {
         new_foreground_rule(
             process,
             self.current_plan.as_ref().map(|plan| plan.guid.clone()),
         )
     }
 
-    pub(super) fn new_by_running_app_rule(&self, process: &str) -> ByRunningAppRule {
+    pub(in crate::ui::app) fn new_by_running_app_rule(&self, process: &str) -> ByRunningAppRule {
         new_by_running_app_rule(
             process,
             self.current_plan.as_ref().map(|plan| plan.guid.clone()),
         )
     }
 
-    pub(super) fn render_rule_title(
+    pub(in crate::ui::app) fn render_rule_title(
         &self,
         title: &str,
         input: &Entity<InputState>,
@@ -396,7 +396,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_by_time_page(
+    pub(in crate::ui::app) fn render_by_time_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -471,7 +471,7 @@ impl WinderustApp {
         content.into_any_element()
     }
 
-    pub(super) fn render_by_time_rule(
+    pub(in crate::ui::app) fn render_by_time_rule(
         &self,
         index: usize,
         rule: &ByTimeRule,
@@ -532,7 +532,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_by_time_days_dropdown(
+    pub(in crate::ui::app) fn render_by_time_days_dropdown(
         &self,
         index: usize,
         days: &[WeekdaySetting],
@@ -596,7 +596,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_by_cpu_load_page(
+    pub(in crate::ui::app) fn render_by_cpu_load_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -672,7 +672,7 @@ impl WinderustApp {
         content.into_any_element()
     }
 
-    pub(super) fn render_by_cpu_load_rule(
+    pub(in crate::ui::app) fn render_by_cpu_load_rule(
         &self,
         index: usize,
         rule: &ByCpuLoadRule,
@@ -944,7 +944,7 @@ impl WinderustApp {
         card.into_any_element()
     }
 
-    pub(super) fn render_by_running_app_page(
+    pub(in crate::ui::app) fn render_by_running_app_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1023,7 +1023,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_by_running_app_rules(
+    pub(in crate::ui::app) fn render_by_running_app_rules(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,

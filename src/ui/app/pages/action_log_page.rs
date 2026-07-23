@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_action_log_page(
+    pub(in crate::ui::app) fn render_action_log_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -86,7 +86,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_action_log_result_filter(
+    pub(in crate::ui::app) fn render_action_log_result_filter(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -132,7 +132,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_action_log_feature_filter(
+    pub(in crate::ui::app) fn render_action_log_feature_filter(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -179,14 +179,17 @@ impl WinderustApp {
     }
 }
 
-pub(super) const ACTION_LOG_SEQUENCE_WIDTH: f32 = 56.0;
-pub(super) const ACTION_LOG_TIME_WIDTH: f32 = 96.0;
-pub(super) const ACTION_LOG_FEATURE_WIDTH: f32 = 156.0;
-pub(super) const ACTION_LOG_RESULT_WIDTH: f32 = 88.0;
-pub(super) const ACTION_LOG_PROCESS_WIDTH: f32 = 176.0;
-pub(super) const ACTION_LOG_PAGINATION_WIDTH: f32 = 320.0;
+pub(in crate::ui::app) const ACTION_LOG_SEQUENCE_WIDTH: f32 = 56.0;
+pub(in crate::ui::app) const ACTION_LOG_TIME_WIDTH: f32 = 96.0;
+pub(in crate::ui::app) const ACTION_LOG_FEATURE_WIDTH: f32 = 156.0;
+pub(in crate::ui::app) const ACTION_LOG_RESULT_WIDTH: f32 = 88.0;
+pub(in crate::ui::app) const ACTION_LOG_PROCESS_WIDTH: f32 = 176.0;
+pub(in crate::ui::app) const ACTION_LOG_PAGINATION_WIDTH: f32 = 320.0;
 
-pub(super) fn action_log_command_row(actions: AnyElement, page_controls: AnyElement) -> gpui::Div {
+pub(in crate::ui::app) fn action_log_command_row(
+    actions: AnyElement,
+    page_controls: AnyElement,
+) -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
@@ -199,7 +202,7 @@ pub(super) fn action_log_command_row(actions: AnyElement, page_controls: AnyElem
         .child(div().flex_shrink_0().child(page_controls))
 }
 
-pub(super) fn action_log_page_controls(
+pub(in crate::ui::app) fn action_log_page_controls(
     total_entries: usize,
     current_page: usize,
     page_count: usize,
@@ -230,7 +233,7 @@ pub(super) fn action_log_page_controls(
         )
 }
 
-pub(super) fn action_log_list_surface() -> gpui::Div {
+pub(in crate::ui::app) fn action_log_list_surface() -> gpui::Div {
     v_flex()
         .w_full()
         .min_w(px(0.0))
@@ -243,7 +246,7 @@ pub(super) fn action_log_list_surface() -> gpui::Div {
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
 }
 
-pub(super) fn action_log_empty_row(message: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn action_log_empty_row(message: impl Into<SharedString>) -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
@@ -254,7 +257,7 @@ pub(super) fn action_log_empty_row(message: impl Into<SharedString>) -> gpui::Di
         .child(text_muted(message.into()))
 }
 
-pub(super) fn action_log_table_summary(
+pub(in crate::ui::app) fn action_log_table_summary(
     total_entries: usize,
     current_page: usize,
     page_count: usize,
@@ -288,7 +291,7 @@ pub(super) fn action_log_table_summary(
         )
 }
 
-pub(super) fn action_log_header_row() -> gpui::Div {
+pub(in crate::ui::app) fn action_log_header_row() -> gpui::Div {
     h_flex()
         .w_full()
         .min_w(px(0.0))
@@ -341,7 +344,7 @@ pub(super) fn action_log_header_row() -> gpui::Div {
         )
 }
 
-pub(super) fn action_log_entry_row(
+pub(in crate::ui::app) fn action_log_entry_row(
     entry: &ActionLogEntry,
     divided: bool,
 ) -> gpui::Stateful<gpui::Div> {
@@ -421,7 +424,7 @@ pub(super) fn action_log_entry_row(
         )
 }
 
-pub(super) fn action_log_result_tag(result: ActionLogResult) -> AnyElement {
+pub(in crate::ui::app) fn action_log_result_tag(result: ActionLogResult) -> AnyElement {
     let label = action_log_result_label(result);
     match result {
         ActionLogResult::Applied | ActionLogResult::Restored => {
@@ -436,7 +439,7 @@ pub(super) fn action_log_result_tag(result: ActionLogResult) -> AnyElement {
     }
 }
 
-pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
+pub(in crate::ui::app) fn action_log_feature_label(feature: ActionLogFeature) -> String {
     match feature {
         ActionLogFeature::AppSuspension => t!("nav.app_suspension").to_string(),
         ActionLogFeature::BackgroundCpuRestriction => {
@@ -458,11 +461,11 @@ pub(super) fn action_log_feature_label(feature: ActionLogFeature) -> String {
     }
 }
 
-pub(super) fn action_log_result_label(result: ActionLogResult) -> SharedString {
+pub(in crate::ui::app) fn action_log_result_label(result: ActionLogResult) -> SharedString {
     action_log_result_text(result).into()
 }
 
-pub(super) fn action_log_result_text(result: ActionLogResult) -> &'static str {
+pub(in crate::ui::app) fn action_log_result_text(result: ActionLogResult) -> &'static str {
     match result {
         ActionLogResult::Applied => "Applied",
         ActionLogResult::Restored => "Restored",
@@ -471,7 +474,7 @@ pub(super) fn action_log_result_text(result: ActionLogResult) -> &'static str {
     }
 }
 
-pub(super) fn action_log_filter_label(filter: ActionLogResultFilter) -> String {
+pub(in crate::ui::app) fn action_log_filter_label(filter: ActionLogResultFilter) -> String {
     match filter {
         ActionLogResultFilter::All => t!("action_log.filter_all").to_string(),
         ActionLogResultFilter::Applied => {
@@ -489,14 +492,16 @@ pub(super) fn action_log_filter_label(filter: ActionLogResultFilter) -> String {
     }
 }
 
-pub(super) fn action_log_feature_filter_label(filter: ActionLogFeatureFilter) -> String {
+pub(in crate::ui::app) fn action_log_feature_filter_label(
+    filter: ActionLogFeatureFilter,
+) -> String {
     match filter {
         ActionLogFeatureFilter::All => t!("action_log.filter_all").to_string(),
         ActionLogFeatureFilter::Feature(feature) => action_log_feature_label(feature),
     }
 }
 
-pub(super) fn action_log_filtered_entries(
+pub(in crate::ui::app) fn action_log_filtered_entries(
     entries: &[ActionLogEntry],
     result_filter: ActionLogResultFilter,
     feature_filter: ActionLogFeatureFilter,
@@ -510,11 +515,11 @@ pub(super) fn action_log_filtered_entries(
         .collect()
 }
 
-pub(super) fn action_log_page_count(total_entries: usize) -> usize {
+pub(in crate::ui::app) fn action_log_page_count(total_entries: usize) -> usize {
     total_entries.div_ceil(ACTION_LOG_PAGE_SIZE)
 }
 
-pub(super) fn action_log_pagination_label(
+pub(in crate::ui::app) fn action_log_pagination_label(
     total_entries: usize,
     current_page: usize,
     page_count: usize,
@@ -585,7 +590,7 @@ mod tests {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ActionLogResultFilter {
+pub(in crate::ui::app) enum ActionLogResultFilter {
     All,
     Applied,
     Restored,
@@ -614,7 +619,7 @@ impl ActionLogResultFilter {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ActionLogFeatureFilter {
+pub(in crate::ui::app) enum ActionLogFeatureFilter {
     All,
     Feature(ActionLogFeature),
 }

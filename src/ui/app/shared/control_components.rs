@@ -1,6 +1,6 @@
-use super::*;
+use crate::ui::app::*;
 
-pub(super) fn app_input(
+pub(in crate::ui::app) fn app_input(
     input: &Entity<InputState>,
     focused: bool,
     cx: &mut Context<WinderustApp>,
@@ -29,7 +29,7 @@ pub(super) fn app_input(
         )
 }
 
-pub(super) fn app_input_color(focused: bool) -> u32 {
+pub(in crate::ui::app) fn app_input_color(focused: bool) -> u32 {
     if focused {
         settings_card_hover_color()
     } else {
@@ -37,7 +37,7 @@ pub(super) fn app_input_color(focused: bool) -> u32 {
     }
 }
 
-pub(super) fn app_input_border_color(focused: bool) -> u32 {
+pub(in crate::ui::app) fn app_input_border_color(focused: bool) -> u32 {
     if ui_is_dark() {
         if focused {
             0x5c5c5c
@@ -51,7 +51,7 @@ pub(super) fn app_input_border_color(focused: bool) -> u32 {
     }
 }
 
-pub(super) fn app_input_hover_border_color() -> u32 {
+pub(in crate::ui::app) fn app_input_hover_border_color() -> u32 {
     if ui_is_dark() {
         0x6a6a6a
     } else {
@@ -59,13 +59,13 @@ pub(super) fn app_input_hover_border_color() -> u32 {
     }
 }
 
-pub(super) fn syncing_rule_card(index: usize) -> AnyElement {
+pub(in crate::ui::app) fn syncing_rule_card(index: usize) -> AnyElement {
     section_card(&t!("common.rule", number = index + 1))
         .child(syncing_input_message())
         .into_any_element()
 }
 
-pub(super) fn rule_card_title(name: &str) -> String {
+pub(in crate::ui::app) fn rule_card_title(name: &str) -> String {
     let name = name.trim();
     if name.is_empty() {
         t!("common.unnamed_rule").to_string()
@@ -74,11 +74,15 @@ pub(super) fn rule_card_title(name: &str) -> String {
     }
 }
 
-pub(super) fn status_pill(label: impl Into<SharedString>, bg: u32, fg: u32) -> AnyElement {
+pub(in crate::ui::app) fn status_pill(
+    label: impl Into<SharedString>,
+    bg: u32,
+    fg: u32,
+) -> AnyElement {
     status_pill_div(label, bg, fg).into_any_element()
 }
 
-pub(super) fn status_pill_with_tooltip(
+pub(in crate::ui::app) fn status_pill_with_tooltip(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     bg: u32,
@@ -92,7 +96,11 @@ pub(super) fn status_pill_with_tooltip(
         .into_any_element()
 }
 
-pub(super) fn status_pill_div(label: impl Into<SharedString>, bg: u32, fg: u32) -> gpui::Div {
+pub(in crate::ui::app) fn status_pill_div(
+    label: impl Into<SharedString>,
+    bg: u32,
+    fg: u32,
+) -> gpui::Div {
     let label: SharedString = label.into();
 
     div()
@@ -107,7 +115,7 @@ pub(super) fn status_pill_div(label: impl Into<SharedString>, bg: u32, fg: u32) 
         .child(label)
 }
 
-pub(super) fn animated_checkmark(
+pub(in crate::ui::app) fn animated_checkmark(
     id: impl Into<SharedString>,
     check_color: u32,
     progress: f32,
@@ -126,7 +134,7 @@ pub(super) fn animated_checkmark(
         .into_any_element()
 }
 
-pub(super) fn checkbox_box(
+pub(in crate::ui::app) fn checkbox_box(
     id: impl Into<SharedString>,
     size: f32,
     mark_id: SharedString,
@@ -160,7 +168,7 @@ pub(super) fn checkbox_box(
     box_el.into_any_element()
 }
 
-pub(super) fn rule_enable_checkbox(
+pub(in crate::ui::app) fn rule_enable_checkbox(
     id: impl Into<SharedString>,
     checked: bool,
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
@@ -198,11 +206,11 @@ pub(super) fn rule_enable_checkbox(
         .into_any_element()
 }
 
-pub(super) fn syncing_input_message() -> gpui::Div {
+pub(in crate::ui::app) fn syncing_input_message() -> gpui::Div {
     text_muted(t!("common.syncing_rule_editor").to_string())
 }
 
-pub(super) fn checkbox(
+pub(in crate::ui::app) fn checkbox(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     checked: bool,
@@ -277,7 +285,10 @@ pub(super) fn checkbox(
         .into_any_element()
 }
 
-pub(super) fn title_bar_controls(window: &Window, cx: &mut Context<WinderustApp>) -> AnyElement {
+pub(in crate::ui::app) fn title_bar_controls(
+    window: &Window,
+    cx: &mut Context<WinderustApp>,
+) -> AnyElement {
     let (maximize_id, maximize_icon) = if window.is_maximized() {
         ("titlebar-restore", "\u{e923}")
     } else {
@@ -313,7 +324,7 @@ pub(super) fn title_bar_controls(window: &Window, cx: &mut Context<WinderustApp>
         .into_any_element()
 }
 
-pub(super) fn title_bar_control_button(
+pub(in crate::ui::app) fn title_bar_control_button(
     id: &'static str,
     icon: &'static str,
     control_area: WindowControlArea,
@@ -349,7 +360,7 @@ pub(super) fn title_bar_control_button(
         .into_any_element()
 }
 
-pub(super) fn section_landing_card(
+pub(in crate::ui::app) fn section_landing_card(
     page: Page,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
@@ -403,7 +414,7 @@ pub(super) fn section_landing_card(
         .child(trailing)
 }
 
-pub(super) fn nav_row(
+pub(in crate::ui::app) fn nav_row(
     page: Page,
     selected: bool,
     cx: &mut Context<WinderustApp>,
@@ -451,7 +462,7 @@ pub(super) fn nav_row(
         )
 }
 
-pub(super) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyElement {
+pub(in crate::ui::app) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyElement {
     let (hovered, _) = card_hover_snapshot(id);
     let hover_active = !selected && hovered;
     let selected_layer = div()
@@ -490,7 +501,7 @@ pub(super) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyElement {
         .into_any_element()
 }
 
-pub(super) fn nav_selection_indicator(page: Page, selected: bool) -> AnyElement {
+pub(in crate::ui::app) fn nav_selection_indicator(page: Page, selected: bool) -> AnyElement {
     let indicator = div()
         .w(px(3.0))
         .h(px(20.0))
@@ -511,7 +522,11 @@ pub(super) fn nav_selection_indicator(page: Page, selected: bool) -> AnyElement 
     )
 }
 
-pub(super) fn nav_icon(page: Page, selected: bool, cx: &mut Context<WinderustApp>) -> AnyElement {
+pub(in crate::ui::app) fn nav_icon(
+    page: Page,
+    selected: bool,
+    cx: &mut Context<WinderustApp>,
+) -> AnyElement {
     let color = if selected {
         rgb(accent_color()).into()
     } else {
@@ -534,7 +549,7 @@ pub(super) fn nav_icon(page: Page, selected: bool, cx: &mut Context<WinderustApp
     icon.into_any_element()
 }
 
-pub(super) fn nav_icon_name(page: Page) -> NavIcon {
+pub(in crate::ui::app) fn nav_icon_name(page: Page) -> NavIcon {
     match page {
         Page::Home => NavIcon::House,
         Page::PowerPlanControl => NavIcon::Zap,
@@ -574,7 +589,7 @@ pub(super) fn nav_icon_name(page: Page) -> NavIcon {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum NavIcon {
+pub(in crate::ui::app) enum NavIcon {
     AppWindow,
     BringToFront,
     CalendarDays,
@@ -659,7 +674,7 @@ impl IconNamed for NavIcon {
     }
 }
 
-pub(super) fn control_button(button: Button) -> Button {
+pub(in crate::ui::app) fn control_button(button: Button) -> Button {
     button
         .small()
         .h(px(32.0))
@@ -667,22 +682,25 @@ pub(super) fn control_button(button: Button) -> Button {
         .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
 }
 
-pub(super) fn primary_control_button(button: Button, cx: &mut Context<WinderustApp>) -> Button {
+pub(in crate::ui::app) fn primary_control_button(
+    button: Button,
+    cx: &mut Context<WinderustApp>,
+) -> Button {
     control_button(button.primary()).text_color(cx.theme().primary_foreground)
 }
 
-pub(super) fn danger_control_button(button: Button) -> Button {
+pub(in crate::ui::app) fn danger_control_button(button: Button) -> Button {
     control_button(button.danger()).text_color(rgb(0xffffff))
 }
 
-pub(super) fn remove_control_button(button: Button) -> Button {
+pub(in crate::ui::app) fn remove_control_button(button: Button) -> Button {
     danger_control_button(button)
         .with_size(px(32.0))
         .icon(Icon::new(NavIcon::Trash2).with_size(px(14.0)))
         .tooltip(t!("common.remove").to_string())
 }
 
-pub(super) fn accent_swatch(
+pub(in crate::ui::app) fn accent_swatch(
     id_prefix: &'static str,
     color: u32,
     selected: bool,
@@ -706,7 +724,7 @@ pub(super) fn accent_swatch(
         .when(selected, |style| style.border_2())
 }
 
-pub(super) fn accent_color_group(
+pub(in crate::ui::app) fn accent_color_group(
     title: impl Into<SharedString>,
     swatches: AnyElement,
 ) -> gpui::Div {
@@ -718,7 +736,7 @@ pub(super) fn accent_color_group(
         .child(swatches)
 }
 
-pub(super) fn accent_picker_featured_colors() -> Vec<Hsla> {
+pub(in crate::ui::app) fn accent_picker_featured_colors() -> Vec<Hsla> {
     ACCENT_PALETTE
         .iter()
         .copied()
@@ -726,20 +744,20 @@ pub(super) fn accent_picker_featured_colors() -> Vec<Hsla> {
         .collect()
 }
 
-pub(super) fn add_custom_accent_color(settings: &mut AccentSettings, color: u32) {
+pub(in crate::ui::app) fn add_custom_accent_color(settings: &mut AccentSettings, color: u32) {
     settings
         .custom_colors
         .retain(|stored_color| *stored_color != color);
     settings.custom_colors.push(color);
 }
 
-pub(super) fn remove_custom_accent_color(settings: &mut AccentSettings, color: u32) {
+pub(in crate::ui::app) fn remove_custom_accent_color(settings: &mut AccentSettings, color: u32) {
     settings
         .custom_colors
         .retain(|stored_color| *stored_color != color);
 }
 
-pub(super) fn hsla_to_rgb_u32(color: Hsla) -> Option<u32> {
+pub(in crate::ui::app) fn hsla_to_rgb_u32(color: Hsla) -> Option<u32> {
     let hex = color.to_hex();
     let hex = hex.trim_start_matches('#');
     if hex.len() < 6 {
@@ -748,7 +766,7 @@ pub(super) fn hsla_to_rgb_u32(color: Hsla) -> Option<u32> {
     u32::from_str_radix(&hex[..6], 16).ok()
 }
 
-pub(super) fn accent_palette_animation_height(custom_color_count: usize) -> f32 {
+pub(in crate::ui::app) fn accent_palette_animation_height(custom_color_count: usize) -> f32 {
     let palette_rows = accent_swatch_row_count(ACCENT_PALETTE.len());
     px_spacing(6)
         + accent_custom_color_group_height(custom_color_count)
@@ -756,7 +774,7 @@ pub(super) fn accent_palette_animation_height(custom_color_count: usize) -> f32 
         + accent_color_group_height(palette_rows)
 }
 
-pub(super) fn accent_custom_color_group_height(custom_color_count: usize) -> f32 {
+pub(in crate::ui::app) fn accent_custom_color_group_height(custom_color_count: usize) -> f32 {
     let swatch_rows = accent_swatch_row_count(custom_color_count);
     let swatch_height = if swatch_rows == 0 {
         0.0
@@ -767,7 +785,7 @@ pub(super) fn accent_custom_color_group_height(custom_color_count: usize) -> f32
     TEXT_BODY_LINE_HEIGHT + px_spacing(2) + swatch_height.max(ACCENT_COLOR_PICKER_WRAPPER_SIZE)
 }
 
-pub(super) fn accent_color_group_height(row_count: usize) -> f32 {
+pub(in crate::ui::app) fn accent_color_group_height(row_count: usize) -> f32 {
     let row_count = row_count.max(1);
     TEXT_BODY_LINE_HEIGHT
         + px_spacing(2)
@@ -775,11 +793,11 @@ pub(super) fn accent_color_group_height(row_count: usize) -> f32 {
         + px_spacing(2) * row_count.saturating_sub(1) as f32
 }
 
-pub(super) fn accent_swatch_row_count(swatch_count: usize) -> usize {
+pub(in crate::ui::app) fn accent_swatch_row_count(swatch_count: usize) -> usize {
     swatch_count.div_ceil(ACCENT_SWATCHES_PER_ROW)
 }
 
-pub(super) fn feature_toggle_switch(
+pub(in crate::ui::app) fn feature_toggle_switch(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     enabled: bool,
@@ -788,7 +806,7 @@ pub(super) fn feature_toggle_switch(
     feature_toggle_switch_inner(id, label, None, enabled, handler)
 }
 
-pub(super) fn feature_toggle_switch_with_help(
+pub(in crate::ui::app) fn feature_toggle_switch_with_help(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     help: impl Into<SharedString>,
@@ -798,7 +816,7 @@ pub(super) fn feature_toggle_switch_with_help(
     feature_toggle_switch_inner(id, label, Some(help.into()), enabled, handler)
 }
 
-pub(super) fn feature_toggle_switch_inner(
+pub(in crate::ui::app) fn feature_toggle_switch_inner(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     help: Option<SharedString>,
@@ -844,7 +862,7 @@ pub(super) fn feature_toggle_switch_inner(
         .into_any_element()
 }
 
-pub(super) fn switch_toggle_action(
+pub(in crate::ui::app) fn switch_toggle_action(
     id: impl Into<SharedString>,
     enabled: bool,
     handler: impl Fn(&bool, &mut Window, &mut App) + 'static,
@@ -865,7 +883,7 @@ pub(super) fn switch_toggle_action(
         .into_any_element()
 }
 
-pub(super) fn switch_indicator(id: SharedString, enabled: bool) -> gpui::Div {
+pub(in crate::ui::app) fn switch_indicator(id: SharedString, enabled: bool) -> gpui::Div {
     let accent = switch_accent_color();
     let switch_on_bg = accent;
     let switch_off_bg = settings_card_color();
@@ -914,7 +932,7 @@ pub(super) fn switch_indicator(id: SharedString, enabled: bool) -> gpui::Div {
         .child(track)
 }
 
-pub(super) fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
     div()
         .min_w(px(56.0))
         .h(px(32.0))
@@ -932,7 +950,7 @@ pub(super) fn value_pill(value: impl Into<SharedString>) -> gpui::Div {
         .child(value.into())
 }
 
-pub(super) fn numeric_value_width(field: NumericField) -> f32 {
+pub(in crate::ui::app) fn numeric_value_width(field: NumericField) -> f32 {
     match field {
         NumericField::ProcessorAcCoreParkingMin
         | NumericField::ProcessorAcPerformanceMin
@@ -959,14 +977,14 @@ pub(super) fn numeric_value_width(field: NumericField) -> f32 {
     }
 }
 
-pub(super) fn max_logical_processor_count() -> u8 {
+pub(in crate::ui::app) fn max_logical_processor_count() -> u8 {
     std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1)
         .clamp(1, u8::MAX as usize) as u8
 }
 
-pub(super) fn text_muted(value: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn text_muted(value: impl Into<SharedString>) -> gpui::Div {
     div()
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
@@ -974,7 +992,7 @@ pub(super) fn text_muted(value: impl Into<SharedString>) -> gpui::Div {
         .child(value.into())
 }
 
-pub(super) fn text_warning(value: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn text_warning(value: impl Into<SharedString>) -> gpui::Div {
     div()
         .text_size(px(TEXT_BODY_SIZE))
         .line_height(px(TEXT_BODY_LINE_HEIGHT))
@@ -982,7 +1000,9 @@ pub(super) fn text_warning(value: impl Into<SharedString>) -> gpui::Div {
         .child(value.into())
 }
 
-pub(super) fn processor_power_column_header(value: impl Into<SharedString>) -> gpui::Div {
+pub(in crate::ui::app) fn processor_power_column_header(
+    value: impl Into<SharedString>,
+) -> gpui::Div {
     div()
         .w_full()
         .min_w(px(0.0))
@@ -993,7 +1013,7 @@ pub(super) fn processor_power_column_header(value: impl Into<SharedString>) -> g
         .child(value.into())
 }
 
-pub(super) fn processor_power_slider(
+pub(in crate::ui::app) fn processor_power_slider(
     id: impl Into<SharedString>,
     label: &str,
     value_element: AnyElement,
@@ -1017,7 +1037,7 @@ pub(super) fn processor_power_slider(
     )
 }
 
-pub(super) fn processor_power_setting_row(
+pub(in crate::ui::app) fn processor_power_setting_row(
     id: &'static str,
     label: impl Into<SharedString>,
     value_element: AnyElement,
@@ -1057,7 +1077,7 @@ pub(super) fn processor_power_setting_row(
         .into_any_element()
 }
 
-pub(super) fn win32_priority_registry_value_row(
+pub(in crate::ui::app) fn win32_priority_registry_value_row(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     help: Option<String>,
@@ -1095,7 +1115,7 @@ pub(super) fn win32_priority_registry_value_row(
         .into_any_element()
 }
 
-pub(super) fn win32_priority_row(
+pub(in crate::ui::app) fn win32_priority_row(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     help: Option<String>,
@@ -1142,7 +1162,7 @@ pub(super) fn win32_priority_row(
         .into_any_element()
 }
 
-pub(super) fn threshold_level_slider(
+pub(in crate::ui::app) fn threshold_level_slider(
     spec: SliderRowSpec<'_, u8>,
     window: &mut Window,
     cx: &mut Context<WinderustApp>,
@@ -1151,7 +1171,7 @@ pub(super) fn threshold_level_slider(
     rule_percent_slider_row(spec, window, cx, handler)
 }
 
-pub(super) fn stable_slider(
+pub(in crate::ui::app) fn stable_slider(
     state: &Entity<SliderState>,
     spec: StableSliderSpec,
     window: &mut Window,
@@ -1268,7 +1288,7 @@ pub(super) fn stable_slider(
         .into_any_element()
 }
 
-pub(super) fn stable_slider_percentage(value: f32, min: u64, max: u64) -> f32 {
+pub(in crate::ui::app) fn stable_slider_percentage(value: f32, min: u64, max: u64) -> f32 {
     let min = min as f32;
     let max = max as f32;
     let range = max - min;
@@ -1279,7 +1299,7 @@ pub(super) fn stable_slider_percentage(value: f32, min: u64, max: u64) -> f32 {
     }
 }
 
-pub(super) fn update_stable_slider_from_position(
+pub(in crate::ui::app) fn update_stable_slider_from_position(
     state: &mut SliderState,
     bounds: Bounds<Pixels>,
     position: Point<Pixels>,
@@ -1304,7 +1324,7 @@ pub(super) fn update_stable_slider_from_position(
     cx.emit(SliderEvent::Change(SliderValue::Single(value)));
 }
 
-pub(super) fn activity_slider_card(
+pub(in crate::ui::app) fn activity_slider_card(
     spec: ActivitySliderCardSpec<'_>,
     window: &mut Window,
     cx: &mut Context<WinderustApp>,
@@ -1398,7 +1418,7 @@ pub(super) fn activity_slider_card(
     .into_any_element()
 }
 
-pub(super) fn rule_percent_slider_row<T>(
+pub(in crate::ui::app) fn rule_percent_slider_row<T>(
     spec: SliderRowSpec<'_, T>,
     window: &mut Window,
     cx: &mut Context<WinderustApp>,
@@ -1506,7 +1526,7 @@ where
     .into_any_element()
 }
 
-pub(super) fn percent_slider_row<T>(
+pub(in crate::ui::app) fn percent_slider_row<T>(
     spec: SliderRowSpec<'_, T>,
     window: &mut Window,
     cx: &mut Context<WinderustApp>,
@@ -1634,7 +1654,7 @@ where
         .into_any_element()
 }
 
-pub(super) fn u64_step(value: u64) -> u64 {
+pub(in crate::ui::app) fn u64_step(value: u64) -> u64 {
     if value >= 1_000 {
         100
     } else if value >= 100 {
@@ -1644,7 +1664,12 @@ pub(super) fn u64_step(value: u64) -> u64 {
     }
 }
 
-pub(super) fn apply_u64_step(current: u64, change: &StepChange<u64>, min: u64, max: u64) -> u64 {
+pub(in crate::ui::app) fn apply_u64_step(
+    current: u64,
+    change: &StepChange<u64>,
+    min: u64,
+    max: u64,
+) -> u64 {
     let next = if change.increase {
         current.saturating_add(change.delta)
     } else {
@@ -1653,7 +1678,12 @@ pub(super) fn apply_u64_step(current: u64, change: &StepChange<u64>, min: u64, m
     next.clamp(min, max)
 }
 
-pub(super) fn apply_u8_step(current: u8, change: &StepChange<u8>, min: u8, max: u8) -> u8 {
+pub(in crate::ui::app) fn apply_u8_step(
+    current: u8,
+    change: &StepChange<u8>,
+    min: u8,
+    max: u8,
+) -> u8 {
     let next = if change.increase {
         current.saturating_add(change.delta)
     } else {
@@ -1662,7 +1692,10 @@ pub(super) fn apply_u8_step(current: u8, change: &StepChange<u8>, min: u8, max: 
     next.clamp(min, max)
 }
 
-pub(super) fn activity_slider_normalized_value(slider: ActivitySlider, value: u64) -> u64 {
+pub(in crate::ui::app) fn activity_slider_normalized_value(
+    slider: ActivitySlider,
+    value: u64,
+) -> u64 {
     match slider {
         ActivitySlider::IdleTimeout => value.clamp(
             ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS,
@@ -1676,14 +1709,14 @@ pub(super) fn activity_slider_normalized_value(slider: ActivitySlider, value: u6
     }
 }
 
-pub(super) fn snap_to_step(value: u64, step: u64) -> u64 {
+pub(in crate::ui::app) fn snap_to_step(value: u64, step: u64) -> u64 {
     if step == 0 {
         return value;
     }
     ((value + (step / 2)) / step) * step
 }
 
-pub(super) fn seconds_label(seconds: u64) -> String {
+pub(in crate::ui::app) fn seconds_label(seconds: u64) -> String {
     duration_label_ms(
         seconds
             .clamp(
@@ -1694,7 +1727,7 @@ pub(super) fn seconds_label(seconds: u64) -> String {
     )
 }
 
-pub(super) fn milliseconds_label(milliseconds: u64) -> String {
+pub(in crate::ui::app) fn milliseconds_label(milliseconds: u64) -> String {
     duration_label_ms(
         snap_to_step(milliseconds, ACTIVITY_CHECK_INTERVAL_STEP_MS).clamp(
             ACTIVITY_CHECK_INTERVAL_MIN_MS,
@@ -1703,7 +1736,7 @@ pub(super) fn milliseconds_label(milliseconds: u64) -> String {
     )
 }
 
-pub(super) fn duration_label_ms(milliseconds: u64) -> String {
+pub(in crate::ui::app) fn duration_label_ms(milliseconds: u64) -> String {
     if milliseconds < 1_000 {
         return format!("{milliseconds} ms");
     }
@@ -1719,7 +1752,7 @@ pub(super) fn duration_label_ms(milliseconds: u64) -> String {
     rounded_duration_value(value, unit)
 }
 
-pub(super) fn rounded_duration_value(value: f64, unit: &str) -> String {
+pub(in crate::ui::app) fn rounded_duration_value(value: f64, unit: &str) -> String {
     let rounded = (value * 10.0).round() / 10.0;
     if (rounded - rounded.round()).abs() < f64::EPSILON {
         format!("{} {unit}", rounded.round() as u64)
@@ -1728,11 +1761,11 @@ pub(super) fn rounded_duration_value(value: f64, unit: &str) -> String {
     }
 }
 
-pub(super) fn parse_u64_input(value: &str, min: u64, max: u64) -> Option<u64> {
+pub(in crate::ui::app) fn parse_u64_input(value: &str, min: u64, max: u64) -> Option<u64> {
     value.parse::<u64>().ok().map(|value| value.clamp(min, max))
 }
 
-pub(super) fn parse_timer_resolution_input_100ns(
+pub(in crate::ui::app) fn parse_timer_resolution_input_100ns(
     value: &str,
     minimum_100ns: u32,
     maximum_100ns: u32,
@@ -1759,13 +1792,13 @@ pub(super) fn parse_timer_resolution_input_100ns(
     ))
 }
 
-pub(super) fn cpu_usage_label(percent: Option<f32>) -> String {
+pub(in crate::ui::app) fn cpu_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
         .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
-pub(super) fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
+pub(in crate::ui::app) fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
     frequency_mhz
         .map(|frequency_mhz| {
             if frequency_mhz >= 1_000 {
@@ -1777,34 +1810,38 @@ pub(super) fn cpu_frequency_label(frequency_mhz: Option<u32>) -> String {
         .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
-pub(super) fn memory_usage_label(percent: Option<f32>) -> String {
+pub(in crate::ui::app) fn memory_usage_label(percent: Option<f32>) -> String {
     percent
         .map(|percent| format!("{percent:.1}%"))
         .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
-pub(super) fn memory_usage_value_label(snapshot: MemoryUsageSnapshot) -> String {
+pub(in crate::ui::app) fn memory_usage_value_label(snapshot: MemoryUsageSnapshot) -> String {
     match (snapshot.used_physical_bytes, snapshot.total_physical_bytes) {
         (Some(used), Some(total)) => format_memory_used_total(used, total),
         _ => t!("home.collecting").to_string(),
     }
 }
 
-pub(super) fn memory_cache_value_label(snapshot: MemoryUsageSnapshot) -> String {
+pub(in crate::ui::app) fn memory_cache_value_label(snapshot: MemoryUsageSnapshot) -> String {
     snapshot
         .cached_physical_bytes
         .map(format_memory_capacity)
         .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
-pub(super) fn memory_cache_percent(snapshot: MemoryUsageSnapshot) -> Option<f32> {
+pub(in crate::ui::app) fn memory_cache_percent(snapshot: MemoryUsageSnapshot) -> Option<f32> {
     memory_bytes_percent(
         snapshot.cached_physical_bytes,
         snapshot.total_physical_bytes,
     )
 }
 
-pub(super) fn refresh_due(now: Instant, next_refresh: &mut Instant, interval: Duration) -> bool {
+pub(in crate::ui::app) fn refresh_due(
+    now: Instant,
+    next_refresh: &mut Instant,
+    interval: Duration,
+) -> bool {
     if now < *next_refresh {
         return false;
     }
@@ -1813,14 +1850,17 @@ pub(super) fn refresh_due(now: Instant, next_refresh: &mut Instant, interval: Du
     true
 }
 
-pub(super) fn active_plan_guid(plans: &[PowerPlan]) -> Option<&str> {
+pub(in crate::ui::app) fn active_plan_guid(plans: &[PowerPlan]) -> Option<&str> {
     plans
         .iter()
         .find(|plan| plan.active)
         .map(|plan| plan.guid.as_str())
 }
 
-pub(super) fn memory_bytes_percent(bytes: Option<u64>, total_bytes: Option<u64>) -> Option<f32> {
+pub(in crate::ui::app) fn memory_bytes_percent(
+    bytes: Option<u64>,
+    total_bytes: Option<u64>,
+) -> Option<f32> {
     let bytes = bytes?;
     let total_bytes = total_bytes?;
     if total_bytes == 0 {
@@ -1830,13 +1870,13 @@ pub(super) fn memory_bytes_percent(bytes: Option<u64>, total_bytes: Option<u64>)
     Some(((bytes as f64 / total_bytes as f64) * 100.0).clamp(0.0, 100.0) as f32)
 }
 
-pub(super) fn io_usage_label(bytes_per_second: Option<f64>) -> String {
+pub(in crate::ui::app) fn io_usage_label(bytes_per_second: Option<f64>) -> String {
     bytes_per_second
         .map(format_bytes_per_second)
         .unwrap_or_else(|| t!("home.collecting").to_string())
 }
 
-pub(super) fn format_memory_used_total(used_bytes: u64, total_bytes: u64) -> String {
+pub(in crate::ui::app) fn format_memory_used_total(used_bytes: u64, total_bytes: u64) -> String {
     let used = memory_capacity_parts(used_bytes);
     let total = memory_capacity_parts(total_bytes);
 
@@ -1856,7 +1896,7 @@ pub(super) fn format_memory_used_total(used_bytes: u64, total_bytes: u64) -> Str
     }
 }
 
-pub(super) fn format_memory_capacity(bytes: u64) -> String {
+pub(in crate::ui::app) fn format_memory_capacity(bytes: u64) -> String {
     let capacity = memory_capacity_parts(bytes);
     if capacity.unit == "B" {
         format!("{} B", bytes)
@@ -1869,11 +1909,11 @@ pub(super) fn format_memory_capacity(bytes: u64) -> String {
     }
 }
 
-pub(super) fn format_capacity_number(value: f64) -> String {
+pub(in crate::ui::app) fn format_capacity_number(value: f64) -> String {
     format!("{value:.1}")
 }
 
-pub(super) fn memory_capacity_parts(bytes: u64) -> MemoryCapacityParts {
+pub(in crate::ui::app) fn memory_capacity_parts(bytes: u64) -> MemoryCapacityParts {
     const KIB: f64 = 1024.0;
     const MIB: f64 = KIB * 1024.0;
     const GIB: f64 = MIB * 1024.0;
@@ -1908,7 +1948,7 @@ pub(super) fn memory_capacity_parts(bytes: u64) -> MemoryCapacityParts {
     }
 }
 
-pub(super) fn format_bytes_per_second(bytes_per_second: f64) -> String {
+pub(in crate::ui::app) fn format_bytes_per_second(bytes_per_second: f64) -> String {
     const KIB: f64 = 1024.0;
     const MIB: f64 = KIB * 1024.0;
     const GIB: f64 = MIB * 1024.0;
@@ -1924,12 +1964,12 @@ pub(super) fn format_bytes_per_second(bytes_per_second: f64) -> String {
     }
 }
 
-pub(super) fn input_hook_required(settings: &Settings) -> bool {
+pub(in crate::ui::app) fn input_hook_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (activity_input_hook_required(settings) || app_suspension_input_hook_required(settings))
 }
 
-pub(super) fn input_hook_config(settings: &Settings) -> InputHookConfig {
+pub(in crate::ui::app) fn input_hook_config(settings: &Settings) -> InputHookConfig {
     let app_suspension = app_suspension_input_hook_required(settings);
     InputHookConfig {
         keyboard: settings.by_activity.input_detection.keyboard || app_suspension,
@@ -1937,11 +1977,11 @@ pub(super) fn input_hook_config(settings: &Settings) -> InputHookConfig {
     }
 }
 
-pub(super) fn app_suspension_input_hook_required(settings: &Settings) -> bool {
+pub(in crate::ui::app) fn app_suspension_input_hook_required(settings: &Settings) -> bool {
     settings.app_suspension.enabled && !settings.adaptive_engine.enabled
 }
 
-pub(super) fn activity_input_hook_required(settings: &Settings) -> bool {
+pub(in crate::ui::app) fn activity_input_hook_required(settings: &Settings) -> bool {
     settings.by_activity.enabled
         && settings.by_activity.switch_to_performance_on_resume
         && settings

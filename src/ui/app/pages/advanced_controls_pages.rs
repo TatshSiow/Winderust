@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_timer_resolution_page(
+    pub(in crate::ui::app) fn render_timer_resolution_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -88,7 +88,10 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_timer_resolution_rules(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::ui::app) fn render_timer_resolution_rules(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut list = rule_list(vec![
             rule_table_active_header(),
             rule_table_title_header(t!("process_list.process_name").to_string()),
@@ -141,7 +144,7 @@ impl WinderustApp {
         list.into_any_element()
     }
 
-    pub(super) fn render_timer_resolution_status_card(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_timer_resolution_status_card(&self) -> gpui::Div {
         let status = &self.timer_resolution_status;
         let requested = status
             .requested_100ns
@@ -190,7 +193,7 @@ impl WinderustApp {
         stat_grid(rows)
     }
 
-    pub(super) fn render_win32_priority_separation_page(
+    pub(in crate::ui::app) fn render_win32_priority_separation_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -200,7 +203,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_win32_priority_separation_card(
+    pub(in crate::ui::app) fn render_win32_priority_separation_card(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -315,7 +318,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_win32_priority_separation_target_card(&self) -> AnyElement {
+    pub(in crate::ui::app) fn render_win32_priority_separation_target_card(&self) -> AnyElement {
         let current_value = self
             .win32_priority_separation_value
             .map(format_win32_priority_separation_with_description)
@@ -352,7 +355,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_win32_priority_separation_field_picker(
+    pub(in crate::ui::app) fn render_win32_priority_separation_field_picker(
         &self,
         field: Win32PrioritySeparationField,
         window: &mut Window,
@@ -417,7 +420,7 @@ impl WinderustApp {
             ))
             .into_any_element()
     }
-    pub(super) fn refresh_win32_priority_separation(&mut self) {
+    pub(in crate::ui::app) fn refresh_win32_priority_separation(&mut self) {
         let (value, status) = read_win32_priority_separation_with_status();
         self.win32_priority_separation_value = value;
         if let Some(value) = value {
@@ -429,7 +432,7 @@ impl WinderustApp {
         self.status_message = status;
     }
 
-    pub(super) fn set_win32_priority_separation_field(
+    pub(in crate::ui::app) fn set_win32_priority_separation_field(
         &mut self,
         field: Win32PrioritySeparationField,
         bits: u32,
@@ -443,7 +446,7 @@ impl WinderustApp {
         };
     }
 
-    pub(super) fn save_win32_priority_separation_backup(&mut self) {
+    pub(in crate::ui::app) fn save_win32_priority_separation_backup(&mut self) {
         let Some(value) = read_win32_priority_separation() else {
             self.win32_priority_separation_status =
                 t!("settings.win32_priority_separation_load_failed").to_string();
@@ -471,7 +474,7 @@ impl WinderustApp {
         self.status_message = self.win32_priority_separation_status.clone();
     }
 
-    pub(super) fn apply_win32_priority_separation(&mut self, value: u32) {
+    pub(in crate::ui::app) fn apply_win32_priority_separation(&mut self, value: u32) {
         let value = value.clamp(
             WIN32_PRIORITY_SEPARATION_MIN as u32,
             WIN32_PRIORITY_SEPARATION_MAX as u32,
@@ -506,7 +509,7 @@ impl WinderustApp {
         self.status_message = self.win32_priority_separation_status.clone();
     }
 
-    pub(super) fn restore_win32_priority_separation_backup(&mut self) {
+    pub(in crate::ui::app) fn restore_win32_priority_separation_backup(&mut self) {
         let Some(value) = self.win32_priority_separation_backup else {
             self.win32_priority_separation_status =
                 t!("settings.win32_priority_separation_no_backup").to_string();
@@ -535,7 +538,9 @@ impl WinderustApp {
         self.status_message = self.win32_priority_separation_status.clone();
     }
 
-    pub(super) fn ensure_win32_priority_separation_backup(&mut self) -> Result<(), String> {
+    pub(in crate::ui::app) fn ensure_win32_priority_separation_backup(
+        &mut self,
+    ) -> Result<(), String> {
         if self.win32_priority_separation_backup.is_some() {
             return Ok(());
         }

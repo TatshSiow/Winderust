@@ -1,10 +1,10 @@
-use super::*;
+use crate::ui::app::*;
 
-pub(super) fn apply_language(language: AppLanguage) {
+pub(in crate::ui::app) fn apply_language(language: AppLanguage) {
     rust_i18n::set_locale(language.locale());
 }
 
-pub(super) fn breadcrumb_button(
+pub(in crate::ui::app) fn breadcrumb_button(
     id: SharedString,
     target: Page,
     label: String,
@@ -23,7 +23,10 @@ pub(super) fn breadcrumb_button(
         }))
 }
 
-pub(super) fn breadcrumb_label_base(label: String, max_width: Option<f32>) -> gpui::Div {
+pub(in crate::ui::app) fn breadcrumb_label_base(
+    label: String,
+    max_width: Option<f32>,
+) -> gpui::Div {
     let label_container = h_flex()
         .min_w(px(0.0))
         .items_center()
@@ -44,7 +47,7 @@ pub(super) fn breadcrumb_label_base(label: String, max_width: Option<f32>) -> gp
     label_container.child(div().flex_1().min_w(px(0.0)).truncate().child(label))
 }
 
-pub(super) fn breadcrumb_separator() -> gpui::Div {
+pub(in crate::ui::app) fn breadcrumb_separator() -> gpui::Div {
     div()
         .flex_shrink_0()
         .text_size(px(TEXT_PAGE_CRUMB_SIZE))
@@ -55,7 +58,7 @@ pub(super) fn breadcrumb_separator() -> gpui::Div {
         .child(Icon::new(NavIcon::ChevronRight).with_size(px(16.0)))
 }
 
-pub(super) fn breadcrumb_trail(page: Page) -> Vec<BreadcrumbSegment> {
+pub(in crate::ui::app) fn breadcrumb_trail(page: Page) -> Vec<BreadcrumbSegment> {
     if page == Page::Home {
         return vec![BreadcrumbSegment {
             page,
@@ -84,7 +87,7 @@ pub(super) fn breadcrumb_trail(page: Page) -> Vec<BreadcrumbSegment> {
     trail
 }
 
-pub(super) fn common_breadcrumb_prefix_len(
+pub(in crate::ui::app) fn common_breadcrumb_prefix_len(
     previous: &[BreadcrumbSegment],
     current: &[BreadcrumbSegment],
 ) -> usize {
@@ -95,7 +98,7 @@ pub(super) fn common_breadcrumb_prefix_len(
         .count()
 }
 
-pub(super) fn breadcrumb_starts_with(
+pub(in crate::ui::app) fn breadcrumb_starts_with(
     trail: &[BreadcrumbSegment],
     prefix: &[BreadcrumbSegment],
 ) -> bool {
@@ -107,14 +110,18 @@ pub(super) fn breadcrumb_starts_with(
             .all(|(trail, prefix)| trail.page == prefix.page)
 }
 
-pub(super) fn breadcrumb_plain_label(label: String, current: bool, flexible: bool) -> gpui::Div {
+pub(in crate::ui::app) fn breadcrumb_plain_label(
+    label: String,
+    current: bool,
+    flexible: bool,
+) -> gpui::Div {
     breadcrumb_label_base(label, if flexible { None } else { Some(360.0) })
         .when(flexible, |label| label.flex_1().overflow_hidden())
         .when(!flexible, |label| label.flex_shrink_0())
         .when(!current, |label| label.opacity(0.68))
 }
 
-pub(super) fn breadcrumb_segment_element(
+pub(in crate::ui::app) fn breadcrumb_segment_element(
     segment: &BreadcrumbSegment,
     current: bool,
     interactive: bool,
@@ -134,7 +141,7 @@ pub(super) fn breadcrumb_segment_element(
     }
 }
 
-pub(super) fn breadcrumb_segment_group(
+pub(in crate::ui::app) fn breadcrumb_segment_group(
     segment: &BreadcrumbSegment,
     current: bool,
     interactive: bool,
@@ -157,7 +164,7 @@ pub(super) fn breadcrumb_segment_group(
         ))
 }
 
-pub(super) fn breadcrumb_transition_group(
+pub(in crate::ui::app) fn breadcrumb_transition_group(
     id: SharedString,
     entering: bool,
     group: gpui::Div,
@@ -181,7 +188,7 @@ pub(super) fn breadcrumb_transition_group(
     }
 }
 
-pub(super) fn breadcrumb_exit_overlay(
+pub(in crate::ui::app) fn breadcrumb_exit_overlay(
     transition: &BreadcrumbTransition,
     current_trail_len: usize,
     cx: &mut Context<WinderustApp>,
@@ -220,7 +227,7 @@ pub(super) fn breadcrumb_exit_overlay(
     overlay
 }
 
-pub(super) fn dashboard_sections_in_nav_order(
+pub(in crate::ui::app) fn dashboard_sections_in_nav_order(
     show_advanced_controls: bool,
 ) -> Vec<&'static ui::PageSection> {
     Page::sections()
@@ -237,7 +244,10 @@ pub(super) fn dashboard_sections_in_nav_order(
         .collect()
 }
 
-pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) -> Vec<Page> {
+pub(in crate::ui::app) fn dashboard_search_pages(
+    query: &str,
+    show_advanced_controls: bool,
+) -> Vec<Page> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
@@ -263,12 +273,12 @@ pub(super) fn dashboard_search_pages(query: &str, show_advanced_controls: bool) 
     pages
 }
 
-pub(super) fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
+pub(in crate::ui::app) fn dashboard_page_matches_query(page: Page, query: &str) -> bool {
     let text = dashboard_page_search_text(page).to_lowercase();
     query.split_whitespace().all(|term| text.contains(term))
 }
 
-pub(super) fn dashboard_page_search_text(page: Page) -> String {
+pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
     let mut text = format!("{} {}", page.label(), page.section_label());
 
     let extra = match page {
@@ -489,15 +499,15 @@ pub(super) fn dashboard_page_search_text(page: Page) -> String {
     text
 }
 
-pub(super) fn nav_section_in_footer(page: Page) -> bool {
+pub(in crate::ui::app) fn nav_section_in_footer(page: Page) -> bool {
     matches!(page, Page::ActionLog | Page::SettingsHome | Page::About)
 }
 
-pub(super) fn page_body_shell() -> gpui::Div {
+pub(in crate::ui::app) fn page_body_shell() -> gpui::Div {
     v_flex().w_full().min_w(px(0.0)).gap_2()
 }
 
-pub(super) fn search_results_page_header(_cx: &mut Context<WinderustApp>) -> gpui::Div {
+pub(in crate::ui::app) fn search_results_page_header(_cx: &mut Context<WinderustApp>) -> gpui::Div {
     h_flex()
         .w_full()
         .min_h(px(PAGE_HEADER_HEIGHT))
@@ -515,7 +525,7 @@ pub(super) fn search_results_page_header(_cx: &mut Context<WinderustApp>) -> gpu
         )
 }
 
-pub(super) fn page_content_frame(
+pub(in crate::ui::app) fn page_content_frame(
     header: AnyElement,
     body: AnyElement,
     fill_height: bool,

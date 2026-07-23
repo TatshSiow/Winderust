@@ -1,49 +1,49 @@
-use super::*;
+use crate::ui::app::*;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum PowerPlanKind {
+pub(in crate::ui::app) enum PowerPlanKind {
     Idle,
     Active,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum IoPriorityDefaultTarget {
+pub(in crate::ui::app) enum IoPriorityDefaultTarget {
     Background,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum ProcessPriorityDefaultTarget {
+pub(in crate::ui::app) enum ProcessPriorityDefaultTarget {
     Background,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum ThreadPriorityDefaultTarget {
+pub(in crate::ui::app) enum ThreadPriorityDefaultTarget {
     Background,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum DynamicPriorityBoostDefaultTarget {
+pub(in crate::ui::app) enum DynamicPriorityBoostDefaultTarget {
     Background,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum GpuPriorityDefaultTarget {
+pub(in crate::ui::app) enum GpuPriorityDefaultTarget {
     Background,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum MemoryPriorityDefaultTarget {
+pub(in crate::ui::app) enum MemoryPriorityDefaultTarget {
     Background,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum PowerPlanField {
+pub(in crate::ui::app) enum PowerPlanField {
     ActivityKind(PowerPlanKind),
     ByForegroundRule(usize),
     ByRunningAppRule(usize),
@@ -53,7 +53,7 @@ pub(super) enum PowerPlanField {
     ProcessorPowerTarget,
 }
 
-pub(super) fn power_plan_option_row(
+pub(in crate::ui::app) fn power_plan_option_row(
     id: String,
     label: String,
     selected: bool,
@@ -70,14 +70,14 @@ pub(super) fn power_plan_option_row(
         .into_any_element()
 }
 
-pub(super) fn dropdown_list_height(row_count: usize) -> Pixels {
+pub(in crate::ui::app) fn dropdown_list_height(row_count: usize) -> Pixels {
     let row_count = row_count.max(1);
     px(DROPDOWN_SURFACE_VERTICAL_PADDING
         + (row_count as f32 * DROPDOWN_OPTION_ROW_HEIGHT)
         + (row_count.saturating_sub(1) as f32 * DROPDOWN_OPTION_GAP))
 }
 
-pub(super) fn dropdown_popup_phase(
+pub(in crate::ui::app) fn dropdown_popup_phase(
     id: &str,
     is_open: bool,
     cx: &mut Context<WinderustApp>,
@@ -153,7 +153,7 @@ pub(super) fn dropdown_popup_phase(
     phase
 }
 
-pub(super) fn dropdown_anchor_sensor(
+pub(in crate::ui::app) fn dropdown_anchor_sensor(
     id: impl Into<String>,
     anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
 ) -> AnyElement {
@@ -170,14 +170,14 @@ pub(super) fn dropdown_anchor_sensor(
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum DropdownSelectWidth {
+pub(in crate::ui::app) enum DropdownSelectWidth {
     Compact,
     Table,
     Standard,
     Wide,
 }
 
-pub(super) fn dropdown_select_container(width: DropdownSelectWidth) -> gpui::Div {
+pub(in crate::ui::app) fn dropdown_select_container(width: DropdownSelectWidth) -> gpui::Div {
     let width = match width {
         DropdownSelectWidth::Compact => DROPDOWN_SELECT_COMPACT_WIDTH,
         DropdownSelectWidth::Table => DROPDOWN_SELECT_TABLE_WIDTH,
@@ -194,7 +194,10 @@ pub(super) fn dropdown_select_container(width: DropdownSelectWidth) -> gpui::Div
         .min_h(px(DROPDOWN_CONTROL_HEIGHT))
 }
 
-pub(super) fn dropdown_popup_layer(placement: DropdownPlacement, interactive: bool) -> gpui::Div {
+pub(in crate::ui::app) fn dropdown_popup_layer(
+    placement: DropdownPlacement,
+    interactive: bool,
+) -> gpui::Div {
     let layer = div()
         .absolute()
         .left(px(0.0))
@@ -208,7 +211,7 @@ pub(super) fn dropdown_popup_layer(placement: DropdownPlacement, interactive: bo
     }
 }
 
-pub(super) fn dropdown_popup_or_empty(
+pub(in crate::ui::app) fn dropdown_popup_or_empty(
     id: SharedString,
     phase: DropdownPopupPhase,
     placement: DropdownPlacement,
@@ -218,7 +221,7 @@ pub(super) fn dropdown_popup_or_empty(
     dropdown_popup_for_phase(phase, id, placement, options, cx)
 }
 
-pub(super) fn dropdown_popup_or_empty_lazy(
+pub(in crate::ui::app) fn dropdown_popup_or_empty_lazy(
     is_open: bool,
     id: SharedString,
     placement: impl FnOnce() -> DropdownPlacement,
@@ -235,7 +238,7 @@ pub(super) fn dropdown_popup_or_empty_lazy(
     dropdown_popup_for_phase(phase, id, placement, options, cx)
 }
 
-pub(super) fn dropdown_popup_for_phase(
+pub(in crate::ui::app) fn dropdown_popup_for_phase(
     phase: DropdownPopupPhase,
     id: SharedString,
     placement: DropdownPlacement,
@@ -307,7 +310,7 @@ pub(super) fn dropdown_popup_for_phase(
     }
 }
 
-pub(super) fn dropdown_select_control(
+pub(in crate::ui::app) fn dropdown_select_control(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     enabled: bool,
@@ -362,7 +365,7 @@ pub(super) fn dropdown_select_control(
         .child(dropdown_chevron(id, open, phase, cx))
 }
 
-pub(super) fn dropdown_surface(
+pub(in crate::ui::app) fn dropdown_surface(
     cx: &mut Context<WinderustApp>,
     max_height: Pixels,
 ) -> Scrollable<gpui::Div> {
@@ -378,7 +381,7 @@ pub(super) fn dropdown_surface(
         .bg(rgb(dropdown_surface_color()))
 }
 
-pub(super) fn dropdown_option_row(
+pub(in crate::ui::app) fn dropdown_option_row(
     id: SharedString,
     label: String,
     selected: bool,
@@ -412,7 +415,7 @@ pub(super) fn dropdown_option_row(
         .child(label)
 }
 
-pub(super) fn dropdown_process_option_row(
+pub(in crate::ui::app) fn dropdown_process_option_row(
     id: SharedString,
     process: &ProcessCandidate,
     selected: bool,
@@ -448,7 +451,7 @@ pub(super) fn dropdown_process_option_row(
         .child(div().min_w(px(0.0)).truncate().child(process.name.clone()))
 }
 
-pub(super) fn process_icon_cell(
+pub(in crate::ui::app) fn process_icon_cell(
     icon: Option<&Arc<Image>>,
     cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
@@ -474,7 +477,10 @@ pub(super) fn process_icon_cell(
         .into_any_element()
 }
 
-pub(super) fn dropdown_empty_row(message: String, cx: &mut Context<WinderustApp>) -> gpui::Div {
+pub(in crate::ui::app) fn dropdown_empty_row(
+    message: String,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Div {
     div()
         .min_h(px(40.0))
         .px_3()
@@ -487,7 +493,7 @@ pub(super) fn dropdown_empty_row(message: String, cx: &mut Context<WinderustApp>
         .child(message)
 }
 
-pub(super) fn dropdown_chevron(
+pub(in crate::ui::app) fn dropdown_chevron(
     id: SharedString,
     open: bool,
     phase: DropdownPopupPhase,
@@ -536,11 +542,11 @@ pub(super) fn dropdown_chevron(
         .into_any_element()
 }
 
-pub(super) fn dropdown_control_color() -> u32 {
+pub(in crate::ui::app) fn dropdown_control_color() -> u32 {
     settings_card_color()
 }
 
-pub(super) fn dropdown_control_border_color() -> u32 {
+pub(in crate::ui::app) fn dropdown_control_border_color() -> u32 {
     if ui_is_dark() {
         COLOR_BORDER
     } else {
@@ -548,11 +554,11 @@ pub(super) fn dropdown_control_border_color() -> u32 {
     }
 }
 
-pub(super) fn dropdown_control_hover_color() -> u32 {
+pub(in crate::ui::app) fn dropdown_control_hover_color() -> u32 {
     settings_card_hover_color()
 }
 
-pub(super) fn dropdown_control_hover_border_color() -> u32 {
+pub(in crate::ui::app) fn dropdown_control_hover_border_color() -> u32 {
     if ui_is_dark() {
         0x6a6a6a
     } else {
@@ -560,20 +566,20 @@ pub(super) fn dropdown_control_hover_border_color() -> u32 {
     }
 }
 
-pub(super) fn dropdown_surface_color() -> u32 {
+pub(in crate::ui::app) fn dropdown_surface_color() -> u32 {
     settings_card_color()
 }
 
-pub(super) fn dropdown_selected_color() -> u32 {
+pub(in crate::ui::app) fn dropdown_selected_color() -> u32 {
     panel_active_color()
 }
 
-pub(super) fn dropdown_option_hover_color() -> u32 {
+pub(in crate::ui::app) fn dropdown_option_hover_color() -> u32 {
     settings_card_hover_color()
 }
 
 impl WinderustApp {
-    pub(super) fn dropdown_placement(
+    pub(in crate::ui::app) fn dropdown_placement(
         &self,
         id: &str,
         full_list_height: Pixels,
@@ -606,7 +612,7 @@ impl WinderustApp {
         clippy::too_many_arguments,
         reason = "dropdown metadata plus the options builder is clearer at each UI call site"
     )]
-    pub(super) fn render_dropdown_select(
+    pub(in crate::ui::app) fn render_dropdown_select(
         &self,
         id: impl Into<String>,
         selected_label: impl Into<SharedString>,
@@ -655,7 +661,7 @@ impl WinderustApp {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct DropdownPlacement {
-    pub(super) open_up: bool,
-    pub(super) max_height: Pixels,
+pub(in crate::ui::app) struct DropdownPlacement {
+    pub(in crate::ui::app) open_up: bool,
+    pub(in crate::ui::app) max_height: Pixels,
 }

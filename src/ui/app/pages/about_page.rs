@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_about_page(
+    pub(in crate::ui::app) fn render_about_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,

@@ -1,6 +1,6 @@
-use super::*;
+use crate::ui::app::*;
 
-pub(super) fn process_target_can_accept(
+pub(in crate::ui::app) fn process_target_can_accept(
     target: SuggestionTarget,
     settings: &Settings,
     process: &str,
@@ -57,7 +57,7 @@ pub(super) fn process_target_can_accept(
     }
 }
 
-pub(super) fn can_add_process_candidate(
+pub(in crate::ui::app) fn can_add_process_candidate(
     process: &str,
     contains_process: impl FnOnce(&str) -> bool,
     is_builtin_excluded: impl FnOnce(&str) -> bool,
@@ -66,7 +66,10 @@ pub(super) fn can_add_process_candidate(
     !process.is_empty() && !contains_process(process) && !is_builtin_excluded(process)
 }
 
-pub(super) fn can_add_foreground_process(settings: &ByForegroundSettings, process: &str) -> bool {
+pub(in crate::ui::app) fn can_add_foreground_process(
+    settings: &ByForegroundSettings,
+    process: &str,
+) -> bool {
     can_add_process_candidate(
         process,
         |process| {
@@ -79,7 +82,7 @@ pub(super) fn can_add_foreground_process(settings: &ByForegroundSettings, proces
     )
 }
 
-pub(super) fn foreground_power_plan_override_guid(
+pub(in crate::ui::app) fn foreground_power_plan_override_guid(
     settings: &ByForegroundSettings,
     process_name: &str,
 ) -> Option<String> {
@@ -90,7 +93,7 @@ pub(super) fn foreground_power_plan_override_guid(
         .and_then(|rule| rule.power_plan_guid.clone())
 }
 
-pub(super) fn set_foreground_power_plan_override(
+pub(in crate::ui::app) fn set_foreground_power_plan_override(
     settings: &mut ByForegroundSettings,
     process_name: &str,
     power_plan_guid: Option<String>,
@@ -115,7 +118,7 @@ pub(super) fn set_foreground_power_plan_override(
     }
 }
 
-pub(super) fn new_foreground_rule(
+pub(in crate::ui::app) fn new_foreground_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByForegroundRule {
@@ -128,7 +131,7 @@ pub(super) fn new_foreground_rule(
     }
 }
 
-pub(super) fn can_add_background_efficiency_process(
+pub(in crate::ui::app) fn can_add_background_efficiency_process(
     settings: &BackgroundEfficiencySettings,
     process: &str,
 ) -> bool {
@@ -139,7 +142,7 @@ pub(super) fn can_add_background_efficiency_process(
     )
 }
 
-pub(super) fn can_add_background_cpu_exclusion(
+pub(in crate::ui::app) fn can_add_background_cpu_exclusion(
     settings: &BackgroundCpuRestrictionSettings,
     process: &str,
 ) -> bool {
@@ -150,7 +153,10 @@ pub(super) fn can_add_background_cpu_exclusion(
     )
 }
 
-pub(super) fn can_add_memory_trim_exclusion(settings: &MemoryTrimSettings, process: &str) -> bool {
+pub(in crate::ui::app) fn can_add_memory_trim_exclusion(
+    settings: &MemoryTrimSettings,
+    process: &str,
+) -> bool {
     can_add_process_candidate(
         process,
         |process| {
@@ -164,21 +170,23 @@ pub(super) fn can_add_memory_trim_exclusion(settings: &MemoryTrimSettings, proce
     )
 }
 
-pub(super) fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
+pub(in crate::ui::app) fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
     ProcessExclusionRule {
         process_name: process.trim().to_ascii_lowercase(),
         ..Default::default()
     }
 }
 
-pub(super) fn new_background_efficiency_rule(process: &str) -> BackgroundEfficiencyRule {
+pub(in crate::ui::app) fn new_background_efficiency_rule(
+    process: &str,
+) -> BackgroundEfficiencyRule {
     BackgroundEfficiencyRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
     }
 }
 
-pub(super) fn set_background_efficiency_custom_rule(
+pub(in crate::ui::app) fn set_background_efficiency_custom_rule(
     settings: &mut BackgroundEfficiencySettings,
     process_name: &str,
     excluded: bool,
@@ -202,7 +210,7 @@ pub(super) fn set_background_efficiency_custom_rule(
     }
 }
 
-pub(super) fn set_process_exclusion(
+pub(in crate::ui::app) fn set_process_exclusion(
     rules: &mut Vec<ProcessExclusionRule>,
     process_name: &str,
     excluded: bool,
@@ -221,7 +229,7 @@ pub(super) fn set_process_exclusion(
     }
 }
 
-pub(super) fn set_process_priority_rule(
+pub(in crate::ui::app) fn set_process_priority_rule(
     settings: &mut ProcessPrioritySettings,
     process_name: &str,
     priority: ProcessPrioritySetting,
@@ -243,7 +251,7 @@ pub(super) fn set_process_priority_rule(
     rule.set_process_priority_override(false, priority);
 }
 
-pub(super) fn set_memory_priority_rule(
+pub(in crate::ui::app) fn set_memory_priority_rule(
     settings: &mut MemoryPrioritySettings,
     process_name: &str,
     priority: ProcessMemoryPrioritySetting,
@@ -265,7 +273,7 @@ pub(super) fn set_memory_priority_rule(
     rule.set_memory_priority_override(false, priority);
 }
 
-pub(super) fn can_add_app_suspension_process(
+pub(in crate::ui::app) fn can_add_app_suspension_process(
     settings: &AppSuspensionSettings,
     process: &str,
 ) -> bool {
@@ -276,7 +284,7 @@ pub(super) fn can_add_app_suspension_process(
     )
 }
 
-pub(super) fn can_add_core_steering_process(
+pub(in crate::ui::app) fn can_add_core_steering_process(
     settings: &CoreSteeringSettings,
     process: &str,
 ) -> bool {
@@ -287,7 +295,7 @@ pub(super) fn can_add_core_steering_process(
     )
 }
 
-pub(super) fn can_add_workload_engine_process(
+pub(in crate::ui::app) fn can_add_workload_engine_process(
     settings: &WorkloadEngineSettings,
     process: &str,
 ) -> bool {
@@ -298,7 +306,10 @@ pub(super) fn can_add_workload_engine_process(
     )
 }
 
-pub(super) fn can_add_io_priority_exclusion(settings: &IoPrioritySettings, process: &str) -> bool {
+pub(in crate::ui::app) fn can_add_io_priority_exclusion(
+    settings: &IoPrioritySettings,
+    process: &str,
+) -> bool {
     can_add_process_candidate(
         process,
         |process| settings.contains_exclusion(process),
@@ -306,7 +317,7 @@ pub(super) fn can_add_io_priority_exclusion(settings: &IoPrioritySettings, proce
     )
 }
 
-pub(super) fn can_add_process_priority_exclusion(
+pub(in crate::ui::app) fn can_add_process_priority_exclusion(
     settings: &ProcessPrioritySettings,
     process: &str,
 ) -> bool {
@@ -317,7 +328,7 @@ pub(super) fn can_add_process_priority_exclusion(
     )
 }
 
-pub(super) fn can_add_thread_priority_exclusion(
+pub(in crate::ui::app) fn can_add_thread_priority_exclusion(
     settings: &ThreadPrioritySettings,
     process: &str,
 ) -> bool {
@@ -328,7 +339,7 @@ pub(super) fn can_add_thread_priority_exclusion(
     )
 }
 
-pub(super) fn can_add_dynamic_priority_boost_exclusion(
+pub(in crate::ui::app) fn can_add_dynamic_priority_boost_exclusion(
     settings: &DynamicPriorityBoostSettings,
     process: &str,
 ) -> bool {
@@ -339,7 +350,7 @@ pub(super) fn can_add_dynamic_priority_boost_exclusion(
     )
 }
 
-pub(super) fn can_add_gpu_priority_exclusion(
+pub(in crate::ui::app) fn can_add_gpu_priority_exclusion(
     settings: &GpuPrioritySettings,
     process: &str,
 ) -> bool {
@@ -350,7 +361,7 @@ pub(super) fn can_add_gpu_priority_exclusion(
     )
 }
 
-pub(super) fn can_add_memory_priority_exclusion(
+pub(in crate::ui::app) fn can_add_memory_priority_exclusion(
     settings: &MemoryPrioritySettings,
     process: &str,
 ) -> bool {
@@ -361,7 +372,7 @@ pub(super) fn can_add_memory_priority_exclusion(
     )
 }
 
-pub(super) fn can_add_timer_resolution_process(
+pub(in crate::ui::app) fn can_add_timer_resolution_process(
     settings: &TimerResolutionSettings,
     process: &str,
 ) -> bool {
@@ -372,7 +383,7 @@ pub(super) fn can_add_timer_resolution_process(
     )
 }
 
-pub(super) fn can_add_workload_engine_exclusion(
+pub(in crate::ui::app) fn can_add_workload_engine_exclusion(
     settings: &WorkloadEngineSettings,
     process: &str,
 ) -> bool {
@@ -383,7 +394,10 @@ pub(super) fn can_add_workload_engine_exclusion(
     )
 }
 
-pub(super) fn can_add_core_limiter_process(settings: &CoreLimiterSettings, process: &str) -> bool {
+pub(in crate::ui::app) fn can_add_core_limiter_process(
+    settings: &CoreLimiterSettings,
+    process: &str,
+) -> bool {
     can_add_process_candidate(
         process,
         |process| {
@@ -396,7 +410,7 @@ pub(super) fn can_add_core_limiter_process(settings: &CoreLimiterSettings, proce
     )
 }
 
-pub(super) fn can_add_by_running_app_process(
+pub(in crate::ui::app) fn can_add_by_running_app_process(
     settings: &ByRunningAppSettings,
     process: &str,
 ) -> bool {
@@ -412,7 +426,7 @@ pub(super) fn can_add_by_running_app_process(
     )
 }
 
-pub(super) fn new_app_suspension_rule(process: &str) -> AppSuspensionRule {
+pub(in crate::ui::app) fn new_app_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
@@ -425,7 +439,7 @@ pub(super) fn new_app_suspension_rule(process: &str) -> AppSuspensionRule {
     }
 }
 
-pub(super) fn new_core_steering_rule(process: &str) -> CoreSteeringRule {
+pub(in crate::ui::app) fn new_core_steering_rule(process: &str) -> CoreSteeringRule {
     CoreSteeringRule {
         enabled: true,
         mode: CoreSteeringMode::Soft,
@@ -434,7 +448,10 @@ pub(super) fn new_core_steering_rule(process: &str) -> CoreSteeringRule {
     }
 }
 
-pub(super) fn new_timer_resolution_rule(process: &str, desired_100ns: u32) -> TimerResolutionRule {
+pub(in crate::ui::app) fn new_timer_resolution_rule(
+    process: &str,
+    desired_100ns: u32,
+) -> TimerResolutionRule {
     TimerResolutionRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
@@ -442,7 +459,7 @@ pub(super) fn new_timer_resolution_rule(process: &str, desired_100ns: u32) -> Ti
     }
 }
 
-pub(super) fn set_timer_resolution_override(
+pub(in crate::ui::app) fn set_timer_resolution_override(
     settings: &mut TimerResolutionSettings,
     process_name: &str,
     desired_100ns: Option<u32>,
@@ -467,7 +484,7 @@ pub(super) fn set_timer_resolution_override(
     }
 }
 
-pub(super) fn new_core_limiter_rule(process: &str) -> CoreLimiterRule {
+pub(in crate::ui::app) fn new_core_limiter_rule(process: &str) -> CoreLimiterRule {
     CoreLimiterRule {
         enabled: true,
         process_name: process.trim().to_ascii_lowercase(),
@@ -478,7 +495,7 @@ pub(super) fn new_core_limiter_rule(process: &str) -> CoreLimiterRule {
     }
 }
 
-pub(super) fn core_limiter_override_percent(
+pub(in crate::ui::app) fn core_limiter_override_percent(
     settings: &CoreLimiterSettings,
     process_name: &str,
 ) -> Option<u8> {
@@ -489,7 +506,7 @@ pub(super) fn core_limiter_override_percent(
         .map(|rule| rule.max_logical_processors.min(100))
 }
 
-pub(super) fn set_core_limiter_override(
+pub(in crate::ui::app) fn set_core_limiter_override(
     settings: &mut CoreLimiterSettings,
     process_name: &str,
     max_logical_processors: Option<u8>,
@@ -514,7 +531,7 @@ pub(super) fn set_core_limiter_override(
     }
 }
 
-pub(super) fn set_app_suspension_override(
+pub(in crate::ui::app) fn set_app_suspension_override(
     settings: &mut AppSuspensionSettings,
     process_name: &str,
     included: bool,
@@ -538,7 +555,7 @@ pub(super) fn set_app_suspension_override(
     }
 }
 
-pub(super) fn by_running_app_power_plan_override_guid(
+pub(in crate::ui::app) fn by_running_app_power_plan_override_guid(
     settings: &ByRunningAppSettings,
     process_name: &str,
 ) -> Option<String> {
@@ -549,7 +566,7 @@ pub(super) fn by_running_app_power_plan_override_guid(
         .and_then(|rule| rule.power_plan_guid.clone())
 }
 
-pub(super) fn set_by_running_app_power_plan_override(
+pub(in crate::ui::app) fn set_by_running_app_power_plan_override(
     settings: &mut ByRunningAppSettings,
     process_name: &str,
     power_plan_guid: Option<String>,
@@ -574,7 +591,9 @@ pub(super) fn set_by_running_app_power_plan_override(
     }
 }
 
-pub(super) fn process_list_timer_resolution_options(app: &WinderustApp) -> Vec<Option<u32>> {
+pub(in crate::ui::app) fn process_list_timer_resolution_options(
+    app: &WinderustApp,
+) -> Vec<Option<u32>> {
     let mut options = Vec::new();
     for option in [
         None,
@@ -590,7 +609,7 @@ pub(super) fn process_list_timer_resolution_options(app: &WinderustApp) -> Vec<O
     options
 }
 
-pub(super) fn core_limiter_indicator(
+pub(in crate::ui::app) fn core_limiter_indicator(
     status: &CoreLimiterSnapshot,
     process: &str,
 ) -> (String, u32, u32) {
@@ -621,12 +640,12 @@ pub(super) fn core_limiter_indicator(
     }
 }
 
-pub(super) fn core_limiter_app_contains(apps: &[String], process: &str) -> bool {
+pub(in crate::ui::app) fn core_limiter_app_contains(apps: &[String], process: &str) -> bool {
     apps.iter()
         .any(|app| app.trim().eq_ignore_ascii_case(process.trim()))
 }
 
-pub(super) fn new_by_running_app_rule(
+pub(in crate::ui::app) fn new_by_running_app_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByRunningAppRule {
@@ -639,11 +658,11 @@ pub(super) fn new_by_running_app_rule(
     }
 }
 
-pub(super) fn foreground_lookup_required(settings: &Settings) -> bool {
+pub(in crate::ui::app) fn foreground_lookup_required(settings: &Settings) -> bool {
     settings.by_foreground.enabled && !settings.by_foreground.rules.is_empty()
 }
 
-pub(super) fn by_running_app_decision(
+pub(in crate::ui::app) fn by_running_app_decision(
     status: &ByRunningAppSnapshot,
 ) -> Option<ByRunningAppDecision> {
     Some(ByRunningAppDecision {
@@ -653,7 +672,7 @@ pub(super) fn by_running_app_decision(
     })
 }
 
-pub(super) fn process_policy_summary(
+pub(in crate::ui::app) fn process_policy_summary(
     settings: &Settings,
     plans: &[PowerPlan],
     process_name: &str,
@@ -771,7 +790,7 @@ pub(super) fn process_policy_summary(
     summary
 }
 
-pub(super) fn default_process_policy_summary() -> ProcessPolicySummary {
+pub(in crate::ui::app) fn default_process_policy_summary() -> ProcessPolicySummary {
     ProcessPolicySummary {
         power_plan_foreground: process_list_default_label(),
         power_plan_running: process_list_default_label(),
@@ -792,12 +811,15 @@ pub(super) fn default_process_policy_summary() -> ProcessPolicySummary {
     }
 }
 
-pub(super) fn process_setting_matches(configured_process: &str, process_name: &str) -> bool {
+pub(in crate::ui::app) fn process_setting_matches(
+    configured_process: &str,
+    process_name: &str,
+) -> bool {
     let configured_process = configured_process.trim();
     !configured_process.is_empty() && same_process_name(configured_process, process_name)
 }
 
-pub(super) fn foreground_power_plan_policy_label(
+pub(in crate::ui::app) fn foreground_power_plan_policy_label(
     settings: &Settings,
     plans: &[PowerPlan],
     process_name: &str,
@@ -814,7 +836,7 @@ pub(super) fn foreground_power_plan_policy_label(
     process_list_default_label()
 }
 
-pub(super) fn foreground_power_plan_policy_is_custom(
+pub(in crate::ui::app) fn foreground_power_plan_policy_is_custom(
     settings: &Settings,
     process_name: &str,
 ) -> bool {
@@ -825,7 +847,7 @@ pub(super) fn foreground_power_plan_policy_is_custom(
         .any(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
 }
 
-pub(super) fn running_app_power_plan_policy_label(
+pub(in crate::ui::app) fn running_app_power_plan_policy_label(
     settings: &ByRunningAppSettings,
     plans: &[PowerPlan],
     process_name: &str,
@@ -841,7 +863,7 @@ pub(super) fn running_app_power_plan_policy_label(
     process_list_default_label()
 }
 
-pub(super) fn running_app_power_plan_policy_is_custom(
+pub(in crate::ui::app) fn running_app_power_plan_policy_is_custom(
     settings: &ByRunningAppSettings,
     process_name: &str,
 ) -> bool {
@@ -851,7 +873,10 @@ pub(super) fn running_app_power_plan_policy_is_custom(
         .any(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
 }
 
-pub(super) fn power_plan_policy_value_label(plans: &[PowerPlan], guid: Option<&str>) -> String {
+pub(in crate::ui::app) fn power_plan_policy_value_label(
+    plans: &[PowerPlan],
+    guid: Option<&str>,
+) -> String {
     let Some(guid) = guid.map(str::trim).filter(|guid| !guid.is_empty()) else {
         return process_list_default_label();
     };
@@ -863,11 +888,11 @@ pub(super) fn power_plan_policy_value_label(plans: &[PowerPlan], guid: Option<&s
         .unwrap_or_else(|| guid.to_owned())
 }
 
-pub(super) fn process_list_off_label() -> String {
+pub(in crate::ui::app) fn process_list_off_label() -> String {
     "Off".to_owned()
 }
 
-pub(super) fn process_list_include_exclude_label(included: bool) -> String {
+pub(in crate::ui::app) fn process_list_include_exclude_label(included: bool) -> String {
     if included {
         process_list_include_label()
     } else {
@@ -875,23 +900,25 @@ pub(super) fn process_list_include_exclude_label(included: bool) -> String {
     }
 }
 
-pub(super) fn process_list_include_value_label(value: impl std::fmt::Display) -> String {
+pub(in crate::ui::app) fn process_list_include_value_label(
+    value: impl std::fmt::Display,
+) -> String {
     format!("{} ({value})", process_list_include_label())
 }
 
-pub(super) fn process_list_include_label() -> String {
+pub(in crate::ui::app) fn process_list_include_label() -> String {
     "Include".to_owned()
 }
 
-pub(super) fn process_list_exclude_label() -> String {
+pub(in crate::ui::app) fn process_list_exclude_label() -> String {
     "Exclude".to_owned()
 }
 
-pub(super) fn process_list_default_label() -> String {
+pub(in crate::ui::app) fn process_list_default_label() -> String {
     t!("process_list.default").to_string()
 }
 
-pub(super) fn background_cpu_restriction_policy_label(
+pub(in crate::ui::app) fn background_cpu_restriction_policy_label(
     settings: &BackgroundCpuRestrictionSettings,
 ) -> String {
     if settings.control_style == CpuRestrictionControlStyle::CoreToggle && settings.core_mask != 0 {
@@ -901,7 +928,7 @@ pub(super) fn background_cpu_restriction_policy_label(
     format!("{}%", settings.percent.min(100))
 }
 
-pub(super) fn core_steering_rule_label(rule: &CoreSteeringRule) -> String {
+pub(in crate::ui::app) fn core_steering_rule_label(rule: &CoreSteeringRule) -> String {
     match rule.mode {
         CoreSteeringMode::EfficiencyOff => {
             core_steering_mode_label(CoreSteeringMode::EfficiencyOff)
@@ -910,17 +937,19 @@ pub(super) fn core_steering_rule_label(rule: &CoreSteeringRule) -> String {
     }
 }
 
-pub(super) fn default_core_steering_label() -> String {
+pub(in crate::ui::app) fn default_core_steering_label() -> String {
     format_cpu_mask(default_affinity_mask())
 }
 
-pub(super) fn io_priority_has_foreground_background_split(settings: &IoPrioritySettings) -> bool {
+pub(in crate::ui::app) fn io_priority_has_foreground_background_split(
+    settings: &IoPrioritySettings,
+) -> bool {
     settings.enabled
         && settings.foreground_detection_enabled
         && settings.foreground_priority != settings.background_priority
 }
 
-pub(super) fn io_priority_policy_label(settings: &IoPrioritySettings) -> String {
+pub(in crate::ui::app) fn io_priority_policy_label(settings: &IoPrioritySettings) -> String {
     if io_priority_has_foreground_background_split(settings) {
         format!(
             "{} / {}",
@@ -932,13 +961,15 @@ pub(super) fn io_priority_policy_label(settings: &IoPrioritySettings) -> String 
     }
 }
 
-pub(super) fn gpu_priority_has_foreground_background_split(settings: &GpuPrioritySettings) -> bool {
+pub(in crate::ui::app) fn gpu_priority_has_foreground_background_split(
+    settings: &GpuPrioritySettings,
+) -> bool {
     settings.enabled
         && settings.foreground_detection_enabled
         && settings.foreground_priority != settings.background_priority
 }
 
-pub(super) fn gpu_priority_policy_label(settings: &GpuPrioritySettings) -> String {
+pub(in crate::ui::app) fn gpu_priority_policy_label(settings: &GpuPrioritySettings) -> String {
     if gpu_priority_has_foreground_background_split(settings) {
         format!(
             "{} / {}",
@@ -950,7 +981,7 @@ pub(super) fn gpu_priority_policy_label(settings: &GpuPrioritySettings) -> Strin
     }
 }
 
-pub(super) fn memory_priority_has_foreground_background_split(
+pub(in crate::ui::app) fn memory_priority_has_foreground_background_split(
     settings: &MemoryPrioritySettings,
 ) -> bool {
     settings.enabled
@@ -958,7 +989,9 @@ pub(super) fn memory_priority_has_foreground_background_split(
         && settings.foreground_priority != settings.background_priority
 }
 
-pub(super) fn memory_priority_policy_label(settings: &MemoryPrioritySettings) -> String {
+pub(in crate::ui::app) fn memory_priority_policy_label(
+    settings: &MemoryPrioritySettings,
+) -> String {
     if memory_priority_has_foreground_background_split(settings) {
         format!(
             "{} / {}",
@@ -970,7 +1003,7 @@ pub(super) fn memory_priority_policy_label(settings: &MemoryPrioritySettings) ->
     }
 }
 
-pub(super) fn format_cpu_mask(mask: u64) -> String {
+pub(in crate::ui::app) fn format_cpu_mask(mask: u64) -> String {
     if mask == 0 {
         return t!("common.none").to_string();
     }
@@ -999,7 +1032,7 @@ pub(super) fn format_cpu_mask(mask: u64) -> String {
     ranges.join(", ")
 }
 
-pub(super) fn process_priority_label(priority: ProcessPriority) -> String {
+pub(in crate::ui::app) fn process_priority_label(priority: ProcessPriority) -> String {
     match priority {
         ProcessPriority::Normal => format!("8 ({})", t!("workload_engine.priority_normal")),
         ProcessPriority::BelowNormal => {
@@ -1009,7 +1042,9 @@ pub(super) fn process_priority_label(priority: ProcessPriority) -> String {
     }
 }
 
-pub(super) fn process_priority_setting_label(priority: ProcessPrioritySetting) -> String {
+pub(in crate::ui::app) fn process_priority_setting_label(
+    priority: ProcessPrioritySetting,
+) -> String {
     match priority {
         ProcessPrioritySetting::Default => t!("process_priority.priority_default").to_string(),
         ProcessPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
@@ -1030,7 +1065,7 @@ pub(super) fn process_priority_setting_label(priority: ProcessPrioritySetting) -
     }
 }
 
-pub(super) fn process_thread_priority_setting_label(
+pub(in crate::ui::app) fn process_thread_priority_setting_label(
     priority: ProcessThreadPrioritySetting,
 ) -> String {
     match priority {
@@ -1060,7 +1095,7 @@ pub(super) fn process_thread_priority_setting_label(
     }
 }
 
-pub(super) fn process_dynamic_priority_boost_setting_label(
+pub(in crate::ui::app) fn process_dynamic_priority_boost_setting_label(
     boost: ProcessDynamicPriorityBoostSetting,
 ) -> String {
     match boost {
@@ -1077,7 +1112,9 @@ pub(super) fn process_dynamic_priority_boost_setting_label(
     }
 }
 
-pub(super) fn process_io_priority_setting_label(priority: ProcessIoPrioritySetting) -> String {
+pub(in crate::ui::app) fn process_io_priority_setting_label(
+    priority: ProcessIoPrioritySetting,
+) -> String {
     match priority {
         ProcessIoPrioritySetting::Default => t!("io_priority.priority_default").to_string(),
         ProcessIoPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
@@ -1089,7 +1126,9 @@ pub(super) fn process_io_priority_setting_label(priority: ProcessIoPrioritySetti
     }
 }
 
-pub(super) fn process_gpu_priority_setting_label(priority: ProcessGpuPrioritySetting) -> String {
+pub(in crate::ui::app) fn process_gpu_priority_setting_label(
+    priority: ProcessGpuPrioritySetting,
+) -> String {
     match priority {
         ProcessGpuPrioritySetting::Default => t!("gpu_priority.priority_default").to_string(),
         ProcessGpuPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
@@ -1106,19 +1145,19 @@ pub(super) fn process_gpu_priority_setting_label(priority: ProcessGpuPrioritySet
     }
 }
 
-pub(super) fn timer_resolution_edit_value(value_100ns: u32) -> String {
+pub(in crate::ui::app) fn timer_resolution_edit_value(value_100ns: u32) -> String {
     let milliseconds = value_100ns as f64 / 10_000.0;
     let value = format!("{milliseconds:.4}");
     value.trim_end_matches('0').trim_end_matches('.').to_owned()
 }
 
-pub(super) fn format_optional_timer_resolution(value_100ns: Option<u32>) -> String {
+pub(in crate::ui::app) fn format_optional_timer_resolution(value_100ns: Option<u32>) -> String {
     value_100ns
         .map(timer_resolution::format_resolution_ms)
         .unwrap_or_else(|| t!("common.unknown").to_string())
 }
 
-pub(super) fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
+pub(in crate::ui::app) fn process_memory_priority_label(priority: ProcessMemoryPriority) -> String {
     match priority {
         ProcessMemoryPriority::VeryLow => {
             t!("workload_engine.memory_priority_very_low").to_string()

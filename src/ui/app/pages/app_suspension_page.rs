@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_app_suspension_page(
+    pub(in crate::ui::app) fn render_app_suspension_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -278,7 +278,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_suspendable_apps(
+    pub(in crate::ui::app) fn render_suspendable_apps(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,

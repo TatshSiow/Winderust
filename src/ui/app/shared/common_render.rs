@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_process_exclusion_list(
+    pub(in crate::ui::app) fn render_process_exclusion_list(
         &self,
         rules: &[ProcessExclusionRule],
         removal_kind: ListItemRemovalKind,
@@ -73,7 +73,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn render_numeric_value(
+    pub(in crate::ui::app) fn render_numeric_value(
         &self,
         field: NumericField,
         display_value: String,
@@ -110,7 +110,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_network_threshold_cell(
+    pub(in crate::ui::app) fn render_network_threshold_cell(
         &self,
         field: ThresholdField,
         threshold_bytes: u64,
@@ -153,7 +153,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn threshold_rule_mut(
+    pub(in crate::ui::app) fn threshold_rule_mut(
         &mut self,
         field: ThresholdField,
     ) -> Option<&mut AppSuspensionRule> {
@@ -163,7 +163,7 @@ impl WinderustApp {
         self.settings.app_suspension.suspendable_apps.get_mut(index)
     }
 
-    pub(super) fn render_network_unit_picker(
+    pub(in crate::ui::app) fn render_network_unit_picker(
         &self,
         field: ThresholdField,
         selected: NetworkThresholdUnit,
@@ -244,7 +244,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_inline_power_plan_picker(
+    pub(in crate::ui::app) fn render_inline_power_plan_picker(
         &self,
         id: impl Into<String>,
         selected_guid: Option<String>,
@@ -323,7 +323,11 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn set_power_plan_field(&mut self, field: PowerPlanField, guid: Option<String>) {
+    pub(in crate::ui::app) fn set_power_plan_field(
+        &mut self,
+        field: PowerPlanField,
+        guid: Option<String>,
+    ) {
         match field {
             PowerPlanField::ActivityKind(PowerPlanKind::Idle) => {
                 self.settings.by_activity.power_plans.power_save_guid = guid
@@ -362,7 +366,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn render_process_suggestions(
+    pub(in crate::ui::app) fn render_process_suggestions(
         &self,
         id: impl Into<String>,
         query: &str,
@@ -418,7 +422,7 @@ impl WinderustApp {
         suggestions.into_any_element()
     }
 
-    pub(super) fn process_icon_for_name(&self, process: &str) -> Option<&Arc<Image>> {
+    pub(in crate::ui::app) fn process_icon_for_name(&self, process: &str) -> Option<&Arc<Image>> {
         let process = process.trim();
         self.process_candidates
             .iter()
@@ -426,7 +430,11 @@ impl WinderustApp {
             .and_then(|candidate| candidate.icon.as_ref())
     }
 
-    pub(super) fn process_rule_title(&self, process: &str, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::ui::app) fn process_rule_title(
+        &self,
+        process: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         h_flex()
             .flex_1()
             .min_w(px(0.0))
@@ -447,7 +455,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_process_picker(
+    pub(in crate::ui::app) fn render_process_picker(
         &self,
         id: impl Into<String>,
         input: &Entity<InputState>,
@@ -516,7 +524,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn apply_process_suggestion(
+    pub(in crate::ui::app) fn apply_process_suggestion(
         &mut self,
         target: SuggestionTarget,
         process: &str,

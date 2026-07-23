@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_section_landing_page(
+    pub(in crate::ui::app) fn render_section_landing_page(
         &self,
         section_page: Page,
         cx: &mut Context<Self>,
@@ -69,7 +69,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_home_page_page_card(
+    pub(in crate::ui::app) fn render_home_page_page_card(
         &self,
         target: Page,
         cx: &mut Context<Self>,
@@ -83,7 +83,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_search_result_page_card(
+    pub(in crate::ui::app) fn render_search_result_page_card(
         &self,
         target: Page,
         cx: &mut Context<Self>,
@@ -100,7 +100,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn dashboard_search_query(&self, cx: &mut Context<Self>) -> String {
+    pub(in crate::ui::app) fn dashboard_search_query(&self, cx: &mut Context<Self>) -> String {
         self.inputs
             .dashboard_search
             .read(cx)
@@ -109,7 +109,7 @@ impl WinderustApp {
             .to_string()
     }
 
-    pub(super) fn render_search_results_page(
+    pub(in crate::ui::app) fn render_search_results_page(
         &self,
         search_query: &str,
         cx: &mut Context<Self>,
@@ -152,7 +152,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_home_page(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::ui::app) fn render_home_page(&self, cx: &mut Context<Self>) -> AnyElement {
         let settings = &self.saved_settings;
         let mut section_cards = h_flex()
             .w_full()
@@ -216,7 +216,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn dashboard_enabled_function_items(
+    pub(in crate::ui::app) fn dashboard_enabled_function_items(
         &self,
         settings: &Settings,
     ) -> Vec<(String, String)> {
@@ -350,7 +350,7 @@ impl WinderustApp {
         items
     }
 
-    pub(super) fn render_cpu_usage_summary(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_cpu_usage_summary(&self) -> gpui::Div {
         let graph = self.render_cpu_history_graph("cpu", &self.cpu_usage_history);
         let body = v_flex()
             .w_full()
@@ -384,7 +384,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_memory_usage_summary(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_memory_usage_summary(&self) -> gpui::Div {
         let graph = self.render_memory_history_graph("memory", &self.memory_usage_history);
         let body = v_flex()
             .w_full()
@@ -418,7 +418,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_io_usage_summary(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_io_usage_summary(&self) -> gpui::Div {
         let graph = self.render_io_history_graph("io", &self.io_usage_history);
 
         dashboard_summary_card(
@@ -452,7 +452,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_network_usage_summary(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_network_usage_summary(&self) -> gpui::Div {
         let graph = self.render_network_history_graph("network", &self.network_usage_history);
 
         dashboard_summary_card(
@@ -486,7 +486,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_cpu_history_graph(
+    pub(in crate::ui::app) fn render_cpu_history_graph(
         &self,
         graph_id: &'static str,
         history: &VecDeque<CpuUsageHistorySample>,
@@ -502,7 +502,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_memory_history_graph(
+    pub(in crate::ui::app) fn render_memory_history_graph(
         &self,
         graph_id: &'static str,
         history: &VecDeque<MemoryUsageHistorySample>,
@@ -524,7 +524,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_io_history_graph(
+    pub(in crate::ui::app) fn render_io_history_graph(
         &self,
         graph_id: &'static str,
         history: &VecDeque<IoUsageHistorySample>,
@@ -546,7 +546,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_network_history_graph(
+    pub(in crate::ui::app) fn render_network_history_graph(
         &self,
         graph_id: &'static str,
         history: &VecDeque<NetworkUsageHistorySample>,
@@ -575,7 +575,7 @@ impl WinderustApp {
         clippy::too_many_arguments,
         reason = "dashboard graph labels and scaling stay clearer at each call site"
     )]
-    pub(super) fn render_dual_line_history_graph(
+    pub(in crate::ui::app) fn render_dual_line_history_graph(
         &self,
         graph_id: &'static str,
         data: Vec<DashboardDualLinePoint>,

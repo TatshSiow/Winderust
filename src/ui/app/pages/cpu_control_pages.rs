@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_background_cpu_restriction_page(
+    pub(in crate::ui::app) fn render_background_cpu_restriction_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -341,7 +341,10 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_background_cpu_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::ui::app) fn render_background_cpu_exclusions(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.render_process_exclusion_list(
             &self.settings.background_cpu_restriction.exclusions,
             ListItemRemovalKind::BackgroundCpuExclusion,
@@ -353,7 +356,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_core_limiter_page(
+    pub(in crate::ui::app) fn render_core_limiter_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -447,7 +450,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_core_limiter_rules(
+    pub(in crate::ui::app) fn render_core_limiter_rules(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -569,7 +572,7 @@ impl WinderustApp {
         list.into_any_element()
     }
 
-    pub(super) fn render_core_limiter_numeric_row(
+    pub(in crate::ui::app) fn render_core_limiter_numeric_row(
         &self,
         index: usize,
         field: NumericField,
@@ -586,7 +589,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_core_steering_page(
+    pub(in crate::ui::app) fn render_core_steering_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -684,7 +687,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_core_steering_rules(
+    pub(in crate::ui::app) fn render_core_steering_rules(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -791,7 +794,7 @@ impl WinderustApp {
         list.into_any_element()
     }
 
-    pub(super) fn render_core_steering_mode_selector(
+    pub(in crate::ui::app) fn render_core_steering_mode_selector(
         &self,
         index: usize,
         selected_mode: CoreSteeringMode,
@@ -836,7 +839,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_core_steering_core_selector(
+    pub(in crate::ui::app) fn render_core_steering_core_selector(
         &self,
         index: usize,
         core_mask: u64,
@@ -948,7 +951,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_core_tile_grid(
+    pub(in crate::ui::app) fn render_core_tile_grid(
         &self,
         processors: &[LogicalProcessorInfo],
         core_mask: u64,

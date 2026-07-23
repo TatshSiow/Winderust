@@ -1,4 +1,4 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
     fn refresh_processor_power_target_plan_personality(&mut self) -> bool {
@@ -13,7 +13,7 @@ impl WinderustApp {
         true
     }
 
-    pub(super) fn ensure_processor_power_target_plan(&mut self) {
+    pub(in crate::ui::app) fn ensure_processor_power_target_plan(&mut self) {
         let target_still_available = self
             .processor_power_target_plan_guid
             .as_deref()
@@ -33,7 +33,7 @@ impl WinderustApp {
             .map(|plan| plan.guid.clone());
     }
 
-    pub(super) fn processor_power_target_plan(&self) -> Option<PowerPlan> {
+    pub(in crate::ui::app) fn processor_power_target_plan(&self) -> Option<PowerPlan> {
         self.processor_power_target_plan_guid
             .as_deref()
             .and_then(|target| {
@@ -51,7 +51,10 @@ impl WinderustApp {
         self.sync_processor_power_values_from_target_plan(true);
     }
 
-    pub(super) fn set_processor_power_target_plan_option(&mut self, guid: Option<String>) {
+    pub(in crate::ui::app) fn set_processor_power_target_plan_option(
+        &mut self,
+        guid: Option<String>,
+    ) {
         if let Some(guid) = guid {
             self.set_processor_power_target_plan(guid);
         } else {
@@ -59,7 +62,10 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn sync_processor_power_values_from_target_plan(&mut self, force: bool) -> bool {
+    pub(in crate::ui::app) fn sync_processor_power_values_from_target_plan(
+        &mut self,
+        force: bool,
+    ) -> bool {
         self.refresh_processor_power_target_plan_personality();
         let Some(plan) = self.processor_power_target_plan() else {
             self.processor_power_loaded_plan_guid = None;
@@ -87,7 +93,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn processor_power_values(&self) -> ProcessorPowerAcDcValues {
+    pub(in crate::ui::app) fn processor_power_values(&self) -> ProcessorPowerAcDcValues {
         ProcessorPowerAcDcValues::new(
             ProcessorPowerValues::new_with_boost_mode(
                 self.processor_power_ac_core_parking_min as u32,
@@ -107,7 +113,10 @@ impl WinderustApp {
         .normalized()
     }
 
-    pub(super) fn set_processor_power_values(&mut self, values: ProcessorPowerAcDcValues) {
+    pub(in crate::ui::app) fn set_processor_power_values(
+        &mut self,
+        values: ProcessorPowerAcDcValues,
+    ) {
         let values = values.normalized();
         self.processor_power_ac_core_parking_min = values.ac.core_parking_min as u64;
         self.processor_power_ac_performance_min = values.ac.performance_min as u64;
@@ -121,7 +130,7 @@ impl WinderustApp {
         self.processor_power_dc_boost_mode = values.dc.boost_mode;
     }
 
-    pub(super) fn set_processor_power_boost_mode(
+    pub(in crate::ui::app) fn set_processor_power_boost_mode(
         &mut self,
         source: ProcessorPowerSource,
         boost_mode: ProcessorBoostMode,
@@ -145,7 +154,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn set_processor_power_slider_value(
+    pub(in crate::ui::app) fn set_processor_power_slider_value(
         &mut self,
         slider: ProcessorPowerSlider,
         value: u64,
@@ -187,7 +196,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn adaptive_engine_processor_policy_percent(
+    pub(in crate::ui::app) fn adaptive_engine_processor_policy_percent(
         &self,
         field: AdaptiveEngineProcessorPolicyField,
     ) -> u32 {
@@ -204,7 +213,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn set_adaptive_engine_processor_policy_percent(
+    pub(in crate::ui::app) fn set_adaptive_engine_processor_policy_percent(
         &mut self,
         field: AdaptiveEngineProcessorPolicyField,
         value: u64,
@@ -224,7 +233,7 @@ impl WinderustApp {
         self.settings.adaptive_engine.processor_policy_values = values.normalized();
     }
 
-    pub(super) fn sync_processor_power_slider_states(
+    pub(in crate::ui::app) fn sync_processor_power_slider_states(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -273,7 +282,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn refresh_processor_power_values(&mut self) {
+    pub(in crate::ui::app) fn refresh_processor_power_values(&mut self) {
         let Some(plan) = self.processor_power_target_plan() else {
             self.status_message = t!("processor_power.no_active_plan").to_string();
             return;
@@ -284,7 +293,7 @@ impl WinderustApp {
         }
     }
 
-    pub(super) fn fill_processor_power_preset(&mut self, preset: ProcessorPowerPreset) {
+    pub(in crate::ui::app) fn fill_processor_power_preset(&mut self, preset: ProcessorPowerPreset) {
         let values = ProcessorPowerValues::for_preset(preset);
         self.set_processor_power_values(ProcessorPowerAcDcValues::same(values));
         self.processor_power_dirty = true;
@@ -295,12 +304,15 @@ impl WinderustApp {
         .to_string();
     }
 
-    pub(super) fn processor_power_matches_preset(&self, preset: ProcessorPowerPreset) -> bool {
+    pub(in crate::ui::app) fn processor_power_matches_preset(
+        &self,
+        preset: ProcessorPowerPreset,
+    ) -> bool {
         let values = ProcessorPowerValues::for_preset(preset);
         self.processor_power_values() == ProcessorPowerAcDcValues::same(values).normalized()
     }
 
-    pub(super) fn apply_processor_power_custom(&mut self) {
+    pub(in crate::ui::app) fn apply_processor_power_custom(&mut self) {
         let Some(plan) = self.processor_power_target_plan() else {
             self.status_message = t!("processor_power.no_active_plan").to_string();
             return;

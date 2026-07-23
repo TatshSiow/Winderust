@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_adaptive_engine_page(
+    pub(in crate::ui::app) fn render_adaptive_engine_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -145,7 +145,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_power_mode_preset_selector(
+    pub(in crate::ui::app) fn render_power_mode_preset_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -196,7 +196,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_adaptive_engine_status_card(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_adaptive_engine_status_card(&self) -> gpui::Div {
         let selected_preset = PowerModePreset::ALL
             .iter()
             .copied()
@@ -275,7 +275,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_tunables(
+    pub(in crate::ui::app) fn render_workload_engine_tunables(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -284,7 +284,7 @@ impl WinderustApp {
         feature_body(enabled).child(self.render_workload_engine_advanced_cards(window, cx))
     }
 
-    pub(super) fn render_power_mode_advanced_settings_toggle(
+    pub(in crate::ui::app) fn render_power_mode_advanced_settings_toggle(
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -309,7 +309,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_adaptive_engine_processor_policy_group(
+    pub(in crate::ui::app) fn render_adaptive_engine_processor_policy_group(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -368,7 +368,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_adaptive_engine_processor_policy_row(
+    pub(in crate::ui::app) fn render_adaptive_engine_processor_policy_row(
         &self,
         field: AdaptiveEngineProcessorPolicyField,
         id: &'static str,
@@ -396,7 +396,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_adaptive_engine_processor_boost_mode_picker(
+    pub(in crate::ui::app) fn render_adaptive_engine_processor_boost_mode_picker(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -471,7 +471,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_adaptive_engine_cpu_scheduling_group(
+    pub(in crate::ui::app) fn render_adaptive_engine_cpu_scheduling_group(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -505,7 +505,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_workload_engine_target_preset_selector(
+    pub(in crate::ui::app) fn render_workload_engine_target_preset_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -548,7 +548,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_efficiency_group(
+    pub(in crate::ui::app) fn render_workload_engine_efficiency_group(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -604,7 +604,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_workload_engine_advanced_cards(
+    pub(in crate::ui::app) fn render_workload_engine_advanced_cards(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -982,7 +982,7 @@ impl WinderustApp {
         v_flex().gap_2().children(rows).into_any_element()
     }
 
-    pub(super) fn render_workload_engine_priority_assist_group(
+    pub(in crate::ui::app) fn render_workload_engine_priority_assist_group(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1220,7 +1220,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_workload_engine_io_priority_selector(
+    pub(in crate::ui::app) fn render_workload_engine_io_priority_selector(
         &self,
         target: IoPriorityDefaultTarget,
         selected_priority: ProcessIoPrioritySetting,
@@ -1281,7 +1281,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_thread_priority_selector(
+    pub(in crate::ui::app) fn render_workload_engine_thread_priority_selector(
         &self,
         target: ThreadPriorityDefaultTarget,
         selected_priority: ProcessThreadPrioritySetting,
@@ -1342,7 +1342,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_dynamic_priority_boost_selector(
+    pub(in crate::ui::app) fn render_workload_engine_dynamic_priority_boost_selector(
         &self,
         target: DynamicPriorityBoostDefaultTarget,
         selected_boost: ProcessDynamicPriorityBoostSetting,
@@ -1397,7 +1397,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_gpu_priority_selector(
+    pub(in crate::ui::app) fn render_workload_engine_gpu_priority_selector(
         &self,
         target: GpuPriorityDefaultTarget,
         selected_priority: ProcessGpuPrioritySetting,
@@ -1458,7 +1458,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_exclusions_section(
+    pub(in crate::ui::app) fn render_workload_engine_exclusions_section(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1523,7 +1523,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_foreground_boost_selector(
+    pub(in crate::ui::app) fn render_foreground_boost_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1592,7 +1592,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_workload_engine_background_priority_selector(
+    pub(in crate::ui::app) fn render_workload_engine_background_priority_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1640,7 +1640,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_escalation_tuning_selector(
+    pub(in crate::ui::app) fn render_workload_engine_escalation_tuning_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1683,7 +1683,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_affinity_mode_selector(
+    pub(in crate::ui::app) fn render_workload_engine_affinity_mode_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1721,7 +1721,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_memory_priority_selector(
+    pub(in crate::ui::app) fn render_workload_engine_memory_priority_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1762,7 +1762,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_foreground_memory_priority_selector(
+    pub(in crate::ui::app) fn render_workload_engine_foreground_memory_priority_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1805,7 +1805,10 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_workload_engine_exclusions(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(in crate::ui::app) fn render_workload_engine_exclusions(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         self.render_process_exclusion_list(
             &self.settings.workload_engine.workload_engine_exclusions,
             ListItemRemovalKind::WorkloadEngineExclusion,

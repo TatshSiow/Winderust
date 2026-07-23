@@ -1,6 +1,6 @@
-use super::*;
+use crate::ui::app::*;
 
-pub(super) fn apply_appearance_settings(
+pub(in crate::ui::app) fn apply_appearance_settings(
     general: &config::GeneralSettings,
     window: &mut Window,
     cx: &mut App,
@@ -22,7 +22,7 @@ pub(super) fn apply_appearance_settings(
     window.refresh();
 }
 
-pub(super) fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
+pub(in crate::ui::app) fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
     let accent_color = resolve_accent_color(settings);
     UI_ACCENT_COLOR.store(accent_color, Ordering::Relaxed);
     UI_ACCENT_TINT_SURFACES.store(
@@ -109,14 +109,14 @@ pub(super) fn apply_accent_color(settings: &AccentSettings, cx: &mut App) {
     theme.input = accent.opacity(0.72);
 }
 
-pub(super) fn resolve_accent_color(settings: &AccentSettings) -> u32 {
+pub(in crate::ui::app) fn resolve_accent_color(settings: &AccentSettings) -> u32 {
     match settings.source {
         AccentColorSource::Windows => read_windows_accent_color().unwrap_or(COLOR_ACCENT),
         AccentColorSource::Custom => settings.custom_color,
     }
 }
 
-pub(super) fn read_windows_accent_color() -> Option<u32> {
+pub(in crate::ui::app) fn read_windows_accent_color() -> Option<u32> {
     read_windows_accent_palette_tint().or_else(|| {
         read_registry_dword_root(
             HKEY_CURRENT_USER,
@@ -127,7 +127,7 @@ pub(super) fn read_windows_accent_color() -> Option<u32> {
     })
 }
 
-pub(super) fn read_windows_accent_palette_tint() -> Option<u32> {
+pub(in crate::ui::app) fn read_windows_accent_palette_tint() -> Option<u32> {
     read_registry_binary_root(
         HKEY_CURRENT_USER,
         EXPLORER_ACCENT_REGISTRY_SUB_KEY,
@@ -136,35 +136,35 @@ pub(super) fn read_windows_accent_palette_tint() -> Option<u32> {
     .and_then(|palette| windows_accent_palette_tint(&palette))
 }
 
-pub(super) fn windows_accent_palette_tint(palette: &[u8]) -> Option<u32> {
+pub(in crate::ui::app) fn windows_accent_palette_tint(palette: &[u8]) -> Option<u32> {
     let color = palette.get(4..8)?;
     Some(((color[0] as u32) << 16) | ((color[1] as u32) << 8) | color[2] as u32)
 }
 
-pub(super) fn windows_abgr_to_rgb(color: u32) -> u32 {
+pub(in crate::ui::app) fn windows_abgr_to_rgb(color: u32) -> u32 {
     ((color & 0xff) << 16) | (color & 0xff00) | ((color >> 16) & 0xff)
 }
 
-pub(super) fn accent_contrast_prefers_light(color: u32) -> bool {
+pub(in crate::ui::app) fn accent_contrast_prefers_light(color: u32) -> bool {
     let red = ((color >> 16) & 0xff) as f32;
     let green = ((color >> 8) & 0xff) as f32;
     let blue = (color & 0xff) as f32;
     (0.299 * red + 0.587 * green + 0.114 * blue) < 140.0
 }
 
-pub(super) fn accent_color() -> u32 {
+pub(in crate::ui::app) fn accent_color() -> u32 {
     UI_ACCENT_COLOR.load(Ordering::Relaxed)
 }
 
-pub(super) fn accent_tints_surfaces() -> bool {
+pub(in crate::ui::app) fn accent_tints_surfaces() -> bool {
     UI_ACCENT_TINT_SURFACES.load(Ordering::Relaxed)
 }
 
-pub(super) fn ui_is_dark() -> bool {
+pub(in crate::ui::app) fn ui_is_dark() -> bool {
     UI_DARK_MODE.load(Ordering::Relaxed)
 }
 
-pub(super) fn resolve_animation_enabled(mode: AnimationMode) -> bool {
+pub(in crate::ui::app) fn resolve_animation_enabled(mode: AnimationMode) -> bool {
     match mode {
         AnimationMode::System => windows_client_area_animation_enabled().unwrap_or(true),
         AnimationMode::On => true,
@@ -172,7 +172,7 @@ pub(super) fn resolve_animation_enabled(mode: AnimationMode) -> bool {
     }
 }
 
-pub(super) fn windows_client_area_animation_enabled() -> Option<bool> {
+pub(in crate::ui::app) fn windows_client_area_animation_enabled() -> Option<bool> {
     let mut enabled = 0;
 
     // SAFETY: enabled is writable storage of the documented BOOL size for
@@ -189,11 +189,11 @@ pub(super) fn windows_client_area_animation_enabled() -> Option<bool> {
     (result != 0).then_some(enabled != 0)
 }
 
-pub(super) fn ui_animations_enabled() -> bool {
+pub(in crate::ui::app) fn ui_animations_enabled() -> bool {
     UI_ANIMATIONS_ENABLED.load(Ordering::Relaxed)
 }
 
-pub(super) fn settings_card_color() -> u32 {
+pub(in crate::ui::app) fn settings_card_color() -> u32 {
     if ui_is_dark() {
         accent_surface_color(COLOR_SETTINGS_CARD, 0.06)
     } else {
@@ -201,7 +201,7 @@ pub(super) fn settings_card_color() -> u32 {
     }
 }
 
-pub(super) fn settings_card_hover_color() -> u32 {
+pub(in crate::ui::app) fn settings_card_hover_color() -> u32 {
     if ui_is_dark() {
         accent_surface_color(COLOR_SETTINGS_CARD_HOVER, 0.1)
     } else {
@@ -209,7 +209,7 @@ pub(super) fn settings_card_hover_color() -> u32 {
     }
 }
 
-pub(super) fn windows_slider_thumb_color() -> u32 {
+pub(in crate::ui::app) fn windows_slider_thumb_color() -> u32 {
     if ui_is_dark() {
         0xd9d9d9
     } else {
@@ -217,7 +217,7 @@ pub(super) fn windows_slider_thumb_color() -> u32 {
     }
 }
 
-pub(super) fn disabled_slider_track_color() -> u32 {
+pub(in crate::ui::app) fn disabled_slider_track_color() -> u32 {
     if ui_is_dark() {
         0x4a4a4a
     } else {
@@ -225,7 +225,7 @@ pub(super) fn disabled_slider_track_color() -> u32 {
     }
 }
 
-pub(super) fn disabled_slider_thumb_color() -> u32 {
+pub(in crate::ui::app) fn disabled_slider_thumb_color() -> u32 {
     if ui_is_dark() {
         0x707070
     } else {
@@ -233,7 +233,7 @@ pub(super) fn disabled_slider_thumb_color() -> u32 {
     }
 }
 
-pub(super) fn border_color() -> u32 {
+pub(in crate::ui::app) fn border_color() -> u32 {
     if ui_is_dark() {
         COLOR_BORDER
     } else {
@@ -241,7 +241,7 @@ pub(super) fn border_color() -> u32 {
     }
 }
 
-pub(super) fn primary_text_color() -> u32 {
+pub(in crate::ui::app) fn primary_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_TEXT
     } else {
@@ -249,7 +249,7 @@ pub(super) fn primary_text_color() -> u32 {
     }
 }
 
-pub(super) fn muted_text_color() -> u32 {
+pub(in crate::ui::app) fn muted_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_MUTED
     } else {
@@ -257,7 +257,7 @@ pub(super) fn muted_text_color() -> u32 {
     }
 }
 
-pub(super) fn dim_text_color() -> u32 {
+pub(in crate::ui::app) fn dim_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_DIM
     } else {
@@ -265,7 +265,7 @@ pub(super) fn dim_text_color() -> u32 {
     }
 }
 
-pub(super) fn sidebar_selected_color() -> u32 {
+pub(in crate::ui::app) fn sidebar_selected_color() -> u32 {
     if ui_is_dark() {
         accent_surface_color(COLOR_SIDEBAR_SELECTED, 0.18)
     } else {
@@ -273,7 +273,7 @@ pub(super) fn sidebar_selected_color() -> u32 {
     }
 }
 
-pub(super) fn sidebar_hover_color() -> u32 {
+pub(in crate::ui::app) fn sidebar_hover_color() -> u32 {
     if ui_is_dark() {
         accent_surface_color(COLOR_SIDEBAR_HOVER, 0.1)
     } else {
@@ -281,7 +281,7 @@ pub(super) fn sidebar_hover_color() -> u32 {
     }
 }
 
-pub(super) fn panel_active_color() -> u32 {
+pub(in crate::ui::app) fn panel_active_color() -> u32 {
     if ui_is_dark() {
         accent_surface_color(COLOR_PANEL_ACTIVE, 0.2)
     } else {
@@ -289,7 +289,7 @@ pub(super) fn panel_active_color() -> u32 {
     }
 }
 
-pub(super) fn success_bg_color() -> u32 {
+pub(in crate::ui::app) fn success_bg_color() -> u32 {
     if ui_is_dark() {
         COLOR_SUCCESS_BG
     } else {
@@ -297,7 +297,7 @@ pub(super) fn success_bg_color() -> u32 {
     }
 }
 
-pub(super) fn success_text_color() -> u32 {
+pub(in crate::ui::app) fn success_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_SUCCESS
     } else {
@@ -305,7 +305,7 @@ pub(super) fn success_text_color() -> u32 {
     }
 }
 
-pub(super) fn warning_bg_color() -> u32 {
+pub(in crate::ui::app) fn warning_bg_color() -> u32 {
     if ui_is_dark() {
         COLOR_WARNING_BG
     } else {
@@ -313,7 +313,7 @@ pub(super) fn warning_bg_color() -> u32 {
     }
 }
 
-pub(super) fn warning_text_color() -> u32 {
+pub(in crate::ui::app) fn warning_text_color() -> u32 {
     if ui_is_dark() {
         COLOR_WARNING
     } else {
@@ -321,7 +321,7 @@ pub(super) fn warning_text_color() -> u32 {
     }
 }
 
-pub(super) fn accent_glyph_color(accent: u32) -> u32 {
+pub(in crate::ui::app) fn accent_glyph_color(accent: u32) -> u32 {
     if !ui_is_dark() || accent_contrast_prefers_light(accent) {
         0xffffff
     } else {
@@ -329,7 +329,7 @@ pub(super) fn accent_glyph_color(accent: u32) -> u32 {
     }
 }
 
-pub(super) fn lerp_rgb(from: u32, to: u32, delta: f32) -> u32 {
+pub(in crate::ui::app) fn lerp_rgb(from: u32, to: u32, delta: f32) -> u32 {
     let delta = delta.clamp(0.0, 1.0);
     let from_r = ((from >> 16) & 0xff) as f32;
     let from_g = ((from >> 8) & 0xff) as f32;
@@ -344,11 +344,11 @@ pub(super) fn lerp_rgb(from: u32, to: u32, delta: f32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
-pub(super) fn accent_surface_color(base: u32, amount: f32) -> u32 {
+pub(in crate::ui::app) fn accent_surface_color(base: u32, amount: f32) -> u32 {
     accent_surface_color_with_tint(base, amount, accent_color(), accent_tints_surfaces())
 }
 
-pub(super) fn accent_surface_color_with_tint(
+pub(in crate::ui::app) fn accent_surface_color_with_tint(
     base: u32,
     amount: f32,
     accent: u32,
@@ -361,11 +361,11 @@ pub(super) fn accent_surface_color_with_tint(
     }
 }
 
-pub(super) fn switch_accent_color() -> u32 {
+pub(in crate::ui::app) fn switch_accent_color() -> u32 {
     accent_color()
 }
 
-pub(super) fn read_win32_priority_separation() -> Option<u32> {
+pub(in crate::ui::app) fn read_win32_priority_separation() -> Option<u32> {
     read_registry_dword_root(
         HKEY_LOCAL_MACHINE,
         WIN32_PRIORITY_CONTROL_SUB_KEY,
@@ -373,7 +373,7 @@ pub(super) fn read_win32_priority_separation() -> Option<u32> {
     )
 }
 
-pub(super) fn read_win32_priority_separation_with_status() -> (Option<u32>, String) {
+pub(in crate::ui::app) fn read_win32_priority_separation_with_status() -> (Option<u32>, String) {
     match read_win32_priority_separation() {
         Some(value) => (
             Some(value),
@@ -390,7 +390,7 @@ pub(super) fn read_win32_priority_separation_with_status() -> (Option<u32>, Stri
     }
 }
 
-pub(super) fn write_win32_priority_separation(value: u32) -> Result<(), String> {
+pub(in crate::ui::app) fn write_win32_priority_separation(value: u32) -> Result<(), String> {
     write_registry_dword_root(
         HKEY_LOCAL_MACHINE,
         WIN32_PRIORITY_CONTROL_SUB_KEY,
@@ -399,7 +399,7 @@ pub(super) fn write_win32_priority_separation(value: u32) -> Result<(), String> 
     )
 }
 
-pub(super) fn read_win32_priority_separation_backup() -> Option<u32> {
+pub(in crate::ui::app) fn read_win32_priority_separation_backup() -> Option<u32> {
     read_registry_dword_root(
         HKEY_CURRENT_USER,
         WINDERUST_REGISTRY_SUB_KEY,
@@ -407,7 +407,7 @@ pub(super) fn read_win32_priority_separation_backup() -> Option<u32> {
     )
 }
 
-pub(super) fn write_win32_priority_separation_backup(value: u32) -> Result<(), String> {
+pub(in crate::ui::app) fn write_win32_priority_separation_backup(value: u32) -> Result<(), String> {
     write_registry_dword_create_root(
         HKEY_CURRENT_USER,
         WINDERUST_REGISTRY_SUB_KEY,
@@ -416,11 +416,11 @@ pub(super) fn write_win32_priority_separation_backup(value: u32) -> Result<(), S
     )
 }
 
-pub(super) fn format_win32_priority_separation(value: u32) -> String {
+pub(in crate::ui::app) fn format_win32_priority_separation(value: u32) -> String {
     format!("0x{value:02X} ({value})")
 }
 
-pub(super) fn format_win32_priority_separation_with_description(value: u32) -> String {
+pub(in crate::ui::app) fn format_win32_priority_separation_with_description(value: u32) -> String {
     format!(
         "{} - {}",
         format_win32_priority_separation(value),
@@ -428,7 +428,7 @@ pub(super) fn format_win32_priority_separation_with_description(value: u32) -> S
     )
 }
 
-pub(super) fn win32_priority_separation_description(value: u32) -> String {
+pub(in crate::ui::app) fn win32_priority_separation_description(value: u32) -> String {
     match value {
         0x14 => t!("settings.win32_priority_separation_desc_long_variable_none").to_string(),
         0x15 => t!("settings.win32_priority_separation_desc_long_variable_medium").to_string(),
@@ -446,7 +446,7 @@ pub(super) fn win32_priority_separation_description(value: u32) -> String {
     }
 }
 
-pub(super) fn normalize_win32_priority_separation_value(value: u32) -> u32 {
+pub(in crate::ui::app) fn normalize_win32_priority_separation_value(value: u32) -> u32 {
     win32_priority_separation_field_bits(value, Win32PrioritySeparationField::QuantumDuration)
         | win32_priority_separation_field_bits(
             value,
@@ -455,7 +455,7 @@ pub(super) fn normalize_win32_priority_separation_value(value: u32) -> u32 {
         | win32_priority_separation_field_bits(value, Win32PrioritySeparationField::ForegroundBoost)
 }
 
-pub(super) fn win32_priority_separation_field_bits(
+pub(in crate::ui::app) fn win32_priority_separation_field_bits(
     value: u32,
     field: Win32PrioritySeparationField,
 ) -> u32 {
@@ -475,7 +475,7 @@ pub(super) fn win32_priority_separation_field_bits(
     }
 }
 
-pub(super) fn win32_priority_separation_field_picker_id(
+pub(in crate::ui::app) fn win32_priority_separation_field_picker_id(
     field: Win32PrioritySeparationField,
 ) -> &'static str {
     match field {
@@ -491,7 +491,7 @@ pub(super) fn win32_priority_separation_field_picker_id(
     }
 }
 
-pub(super) fn win32_priority_separation_field_options(
+pub(in crate::ui::app) fn win32_priority_separation_field_options(
     field: Win32PrioritySeparationField,
 ) -> Vec<Win32PrioritySeparationFieldOption> {
     match field {
@@ -511,7 +511,7 @@ pub(super) fn win32_priority_separation_field_options(
     }
 }
 
-pub(super) fn win32_priority_separation_field_option_label(
+pub(in crate::ui::app) fn win32_priority_separation_field_option_label(
     field: Win32PrioritySeparationField,
     bits: u32,
 ) -> String {
@@ -541,7 +541,7 @@ pub(super) fn win32_priority_separation_field_option_label(
     }
 }
 
-pub(super) fn win32_priority_separation_field_label(
+pub(in crate::ui::app) fn win32_priority_separation_field_label(
     field: Win32PrioritySeparationField,
     value: u32,
 ) -> String {

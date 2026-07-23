@@ -1,7 +1,7 @@
-use super::*;
+use crate::ui::app::*;
 
 impl WinderustApp {
-    pub(super) fn render_theme_selector(
+    pub(in crate::ui::app) fn render_theme_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -44,7 +44,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_update_channel_selector(
+    pub(in crate::ui::app) fn render_update_channel_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -83,7 +83,7 @@ impl WinderustApp {
         )
     }
 
-    pub(super) fn render_language_selector(
+    pub(in crate::ui::app) fn render_language_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -126,7 +126,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_animation_selector(
+    pub(in crate::ui::app) fn render_animation_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -171,7 +171,11 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn sync_accent_color_picker(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(in crate::ui::app) fn sync_accent_color_picker(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let color = self.settings.general.accent.custom_color;
         self.accent_color_picker.update(cx, |picker, cx| {
             if picker.value().and_then(hsla_to_rgb_u32) != Some(color) {
@@ -180,7 +184,7 @@ impl WinderustApp {
         });
     }
 
-    pub(super) fn render_accent_selector(
+    pub(in crate::ui::app) fn render_accent_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -427,7 +431,7 @@ impl WinderustApp {
         accent_card.into_any_element()
     }
 
-    pub(super) fn render_winderust_behaviour_page(
+    pub(in crate::ui::app) fn render_winderust_behaviour_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -501,7 +505,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_language_and_appearance_page(
+    pub(in crate::ui::app) fn render_language_and_appearance_page(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -514,7 +518,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_experimental_features_page(
+    pub(in crate::ui::app) fn render_experimental_features_page(
         &self,
         _window: &mut Window,
         cx: &mut Context<Self>,
@@ -688,7 +692,7 @@ impl WinderustApp {
             .into_any_element()
     }
 
-    pub(super) fn render_action_log_mode_selector(
+    pub(in crate::ui::app) fn render_action_log_mode_selector(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -732,7 +736,7 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(super) fn render_failure_suppression_threshold_setting(
+    pub(in crate::ui::app) fn render_failure_suppression_threshold_setting(
         &self,
         cx: &mut Context<Self>,
     ) -> AnyElement {

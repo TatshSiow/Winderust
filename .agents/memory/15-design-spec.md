@@ -15,7 +15,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - The sidebar is fixed-width, searchable, and grouped by product area through `Page::sections()`.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
-  dispatch stays in `WinderustApp::render_page` in `src/ui/app/chrome.rs`.
+  dispatch stays in `WinderustApp::render_page` in `src/ui/app/pages/chrome.rs`.
 
 ## Layout Rules
 
