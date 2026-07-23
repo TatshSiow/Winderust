@@ -77,7 +77,10 @@ impl WindowsEventWatcher {
                 let _ = thread.join();
                 Err(err)
             }
-            Err(err) => Err(format!("Windows event watcher did not start: {err}")),
+            Err(err) => {
+                let _ = thread.join();
+                Err(format!("Windows event watcher did not start: {err}"))
+            }
         }
     }
 }
