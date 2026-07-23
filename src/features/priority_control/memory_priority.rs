@@ -24,8 +24,6 @@ use crate::{
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemoryPrioritySnapshot {
     pub enabled: bool,
@@ -568,9 +566,6 @@ impl MemoryPriorityFailures {
         action_log_feature: ActionLogFeature,
         action_log: &mut ActionLog,
     ) {
-        if matches!(&error, MemoryPriorityError::ProcessExited) {
-            return;
-        }
         let message = memory_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
@@ -613,7 +608,10 @@ impl ProcessHandle {
         if !handle.is_null() {
             Ok(Self(WinHandle::new(handle)))
         } else {
-            Err(open_process_error(process_id, last_error()))
+            Err(process_error(
+                &format!("OpenProcess({process_id})"),
+                last_error(),
+            ))
         }
     }
 
@@ -630,7 +628,7 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(open_process_error(0, last_error()))
+            Err(process_error("GetProcessInformation", last_error()))
         } else {
             Ok(memory_priority_from_raw(priority.MemoryPriority))
         }
@@ -654,7 +652,7 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(open_process_error(0, last_error()))
+            Err(process_error("SetProcessInformation", last_error()))
         } else {
             Ok(())
         }
@@ -711,13 +709,11 @@ fn restore_process(
     }
 }
 
-fn open_process_error(process_id: u32, error: u32) -> MemoryPriorityError {
+fn process_error(operation: &str, error: u32) -> MemoryPriorityError {
     match error {
         ERROR_ACCESS_DENIED => MemoryPriorityError::AccessDenied,
         ERROR_INVALID_PARAMETER => MemoryPriorityError::ProcessExited,
-        _ => MemoryPriorityError::Failed(format!(
-            "OpenProcess({process_id}) failed with error {error}."
-        )),
+        _ => MemoryPriorityError::Failed(format!("{operation} failed with error {error}.")),
     }
 }
 
@@ -766,7 +762,7 @@ pub fn memory_priority_label(priority: ProcessMemoryPriority) -> &'static str {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
+    contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, process_name)
 }
 
 fn should_skip_process(
