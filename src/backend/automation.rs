@@ -17,7 +17,6 @@ use crate::{
     app_suspension::{AppSuspensionManager, AppSuspensionSnapshot},
     background_cpu::BackgroundCpuRestrictionManager,
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
-    by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
     config::{
         AccentColorSource, AnimationMode, AppThemeMode, PowerPlanSettings, ProcessIoPriority,
         Settings,
@@ -29,6 +28,7 @@ use crate::{
     cpu::{CpuUsageMonitor, CpuUsageSnapshot, PerProcessorUsageMonitor},
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
+    features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
     foreground::{
         list_processes, process_name_key, top_level_window_process_ids, ForegroundDetector,
     },

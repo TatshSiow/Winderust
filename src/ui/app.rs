@@ -47,7 +47,6 @@ use crate::{
     app_suspension::{self, AppSuspensionSnapshot},
     automation::BackgroundAutomation,
     background_efficiency::{self, BackgroundEfficiencySnapshot},
-    by_running_app::{self, ByRunningAppSnapshot},
     config::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
         AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
@@ -72,6 +71,7 @@ use crate::{
         NetworkUsageMonitor, NetworkUsageSnapshot,
     },
     dynamic_priority_boost::{self, DynamicPriorityBoostSnapshot},
+    features::power_plan_control::by_running_app::ByRunningAppSnapshot,
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
         capture_process_action_target, list_process_candidates, list_processes, same_process_name,

@@ -25,7 +25,6 @@ use backend::{
 use features::{
     advanced_controls::{app_suspension, timer_resolution},
     cpu_control::{background_cpu_restriction as background_cpu, core_limiter, core_steering},
-    power_plan_control::by_running_app,
     priority_control::{
         dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,
         thread_priority,

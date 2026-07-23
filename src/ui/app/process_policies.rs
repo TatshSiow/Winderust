@@ -408,7 +408,7 @@ pub(super) fn can_add_by_running_app_process(
                 .iter()
                 .any(|rule| same_process_name(&rule.process_name, process))
         },
-        by_running_app::is_builtin_excluded,
+        crate::features::power_plan_control::by_running_app::is_builtin_excluded,
     )
 }
 
