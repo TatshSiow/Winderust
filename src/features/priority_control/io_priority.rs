@@ -24,8 +24,6 @@ use crate::{
 const PROCESS_IO_PRIORITY: u32 = 33;
 const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
 
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IoPrioritySnapshot {
     pub enabled: bool,
@@ -135,12 +133,7 @@ impl IoPriorityManager {
         let scanned_processes = processes.len();
         let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
-            })
+            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
         } else {
             None
         };
@@ -479,9 +472,6 @@ impl IoPriorityFailures {
         error: IoPriorityError,
         action_log: &mut ActionLog,
     ) {
-        if matches!(&error, IoPriorityError::ProcessExited) {
-            return;
-        }
         let message = io_priority_error_message(error);
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
@@ -656,7 +646,7 @@ fn io_priority_apply_summary_message(count: usize) -> String {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
+    contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, process_name)
 }
 
 unsafe extern "system" {
