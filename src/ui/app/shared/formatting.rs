@@ -91,31 +91,6 @@ pub(in crate::ui::app) fn action_log_export_time_label(timestamp_epoch_ms: u128)
         .unwrap_or_else(|| timestamp_epoch_ms.to_string())
 }
 
-#[cfg(test)]
-pub(in crate::ui::app) fn csv_escape(value: &str) -> String {
-    if value.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_owned()
-    }
-}
-
-#[cfg(test)]
-pub(in crate::ui::app) fn push_csv_field(csv: &mut String, value: &str) {
-    if value.contains([',', '"', '\n', '\r']) {
-        csv.push('"');
-        for character in value.chars() {
-            if character == '"' {
-                csv.push('"');
-            }
-            csv.push(character);
-        }
-        csv.push('"');
-    } else {
-        csv.push_str(value);
-    }
-}
-
 pub(in crate::ui::app) fn action_log_process_label(entry: &ActionLogEntry) -> String {
     let name = if entry.process_name.trim().is_empty() {
         t!("common.none").to_string()
@@ -245,17 +220,6 @@ pub(in crate::ui::app) fn cpu_usage_comparison_label(comparison: CpuUsageCompari
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn csv_escape_quotes_fields_with_special_characters() {
-        let mut escaped = String::new();
-        push_csv_field(&mut escaped, "two,parts");
-        assert_eq!(escaped.len(), 11);
-        assert_eq!(csv_escape("plain"), "plain");
-        assert_eq!(csv_escape("two,parts"), "\"two,parts\"");
-        assert_eq!(csv_escape("quoted \"value\""), "\"quoted \"\"value\"\"\"");
-        assert_eq!(csv_escape("line\r\nbreak"), "\"line\r\nbreak\"");
-    }
 
     #[test]
     fn action_log_entries_export_as_csv() {
