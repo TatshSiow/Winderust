@@ -181,11 +181,13 @@ fn restore_window_proc(hwnd: HWND, original_wndproc: isize) -> Result<(), String
     // SAFETY: the original callback has the WNDPROC ABI and remains owned by the live window.
     let previous = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original_wndproc) };
     if previous == 0 {
-        // SAFETY: GetLastError is captured immediately after the failed SetWindowLongPtrW call.
+        // SAFETY: GetLastError is captured immediately after SetWindowLongPtrW returned zero.
         let error = unsafe { GetLastError() };
-        return Err(format!(
-            "Failed to restore the tray window procedure with error code {error}."
-        ));
+        if error != 0 {
+            return Err(format!(
+                "Failed to restore the tray window procedure with error code {error}."
+            ));
+        }
     }
 
     ORIGINAL_WNDPROC.store(0, Ordering::SeqCst);
