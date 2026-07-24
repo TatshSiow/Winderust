@@ -406,7 +406,7 @@ pub(in crate::ui::app) fn action_log_entry_row(
         );
 
     h_flex()
-        .id(row_id.clone())
+        .id(row_id)
         .w_full()
         .min_w(px(0.0))
         .h(px(40.0))
