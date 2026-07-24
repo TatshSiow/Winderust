@@ -36,12 +36,15 @@ fn config_dir() -> PathBuf {
 }
 
 pub fn load() -> Result<Settings, String> {
-    let path = config_path();
-    if !path.exists() {
-        return Ok(Settings::default());
-    }
+    load_from_path(&config_path())
+}
 
-    read_toml_settings(&path)
+fn load_from_path(path: &Path) -> Result<Settings, String> {
+    match fs::read_to_string(path) {
+        Ok(raw) => parse_toml_settings(path, &raw),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
+    }
 }
 
 pub fn save(settings: &Settings) -> Result<(), String> {
@@ -62,7 +65,11 @@ pub fn import_toml_from(path: &Path) -> Result<Settings, String> {
 fn read_toml_settings(path: &Path) -> Result<Settings, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {err}", path.display()))?;
-    toml::from_str(&raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
+    parse_toml_settings(path, &raw)
+}
+
+fn parse_toml_settings(path: &Path, raw: &str) -> Result<Settings, String> {
+    toml::from_str(raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
 }
 
 fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
@@ -97,6 +104,21 @@ mod tests {
         ProcessPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
         WorkloadEngineSettings,
     };
+
+    #[test]
+    fn only_missing_settings_use_defaults() {
+        let path = std::env::temp_dir().join(format!(
+            "winderust-settings-load-test-{}.toml",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(load_from_path(&path).unwrap(), Settings::default());
+        fs::write(&path, "invalid = [").unwrap();
+        assert!(load_from_path(&path).is_err());
+
+        fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn toml_round_trip_preserves_settings() {
