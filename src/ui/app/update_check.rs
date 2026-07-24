@@ -18,6 +18,10 @@ impl WinderustApp {
             let result = check.await;
             let _ = this.update(cx, |app, cx| {
                 app.update_check_in_progress = false;
+                if app.settings.general.update_channel != channel {
+                    cx.notify();
+                    return;
+                }
                 match result {
                     Ok(check) => {
                         app.latest_version = Some(check.latest_version);
