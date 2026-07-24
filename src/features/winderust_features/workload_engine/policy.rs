@@ -1,4 +1,5 @@
 use super::*;
+use rust_i18n::t;
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
@@ -25,47 +26,47 @@ pub(super) fn workload_engine_status_message(
     }
 
     if launch_boost_running {
-        return "Launch boost active: boosting the foreground app while background restraints wait."
-            .to_owned();
+        return t!("runtime_status.workload_engine_launch_boost").to_string();
     }
 
     if !running {
+        let threshold = settings.workload_engine_total_threshold_percent.min(100);
         return match (foreground_cpu_usage_percent, total_cpu_usage_percent) {
-            (Some(usage), _) if foreground_cpu_saturates_workload(usage) => format!(
-                "Paused: foreground workload is saturating CPU ({:.1}%).",
-                usage.clamp(0.0, 100.0)
+            (Some(usage), _) if foreground_cpu_saturates_workload(usage) => t!(
+                "runtime_status.workload_engine_foreground_saturated",
+                usage = format!("{:.1}", usage.clamp(0.0, 100.0))
             ),
-            (Some(foreground), Some(total)) => format!(
-                "Waiting for CPU pressure: foreground {:.1}%, system {:.1}% of {}%.",
-                foreground.clamp(0.0, 100.0),
-                total.clamp(0.0, 100.0),
-                settings.workload_engine_total_threshold_percent.min(100)
+            (Some(foreground), Some(total)) => t!(
+                "runtime_status.workload_engine_waiting_for_cpu",
+                foreground = format!("{:.1}", foreground.clamp(0.0, 100.0)),
+                total = format!("{:.1}", total.clamp(0.0, 100.0)),
+                threshold = threshold
             ),
-            (Some(foreground), None) => format!(
-                "Waiting for CPU pressure: foreground {:.1}% of {}%.",
-                foreground.clamp(0.0, 100.0),
-                settings.workload_engine_total_threshold_percent.min(100)
+            (Some(foreground), None) => t!(
+                "runtime_status.workload_engine_waiting_for_foreground_cpu",
+                foreground = format!("{:.1}", foreground.clamp(0.0, 100.0)),
+                threshold = threshold
             ),
-            (None, Some(total)) => format!(
-                "Waiting for CPU pressure: system {:.1}% of {}%.",
-                total.clamp(0.0, 100.0),
-                settings.workload_engine_total_threshold_percent.min(100)
+            (None, Some(total)) => t!(
+                "runtime_status.workload_engine_waiting_for_system_cpu",
+                total = format!("{:.1}", total.clamp(0.0, 100.0)),
+                threshold = threshold
             ),
-            (None, None) => {
-                "Waiting for a CPU pressure sample before Workload Engine can act.".to_owned()
-            }
-        };
+            (None, None) => t!("runtime_status.workload_engine_waiting_for_sample"),
+        }
+        .to_string();
     }
 
     if restrained_count == 0 {
-        return "CPU pressure is high; watching background processes for sustained spikes."
-            .to_owned();
+        return t!("runtime_status.workload_engine_watching").to_string();
     }
 
-    format!(
-        "Balancing {restrained_count} background process{} to preserve foreground work.",
-        if restrained_count == 1 { "" } else { "es" }
-    )
+    let key = if restrained_count == 1 {
+        "runtime_status.workload_engine_balancing_one"
+    } else {
+        "runtime_status.workload_engine_balancing_many"
+    };
+    t!(key, count = restrained_count).to_string()
 }
 
 pub(super) fn matching_rule<'a>(
