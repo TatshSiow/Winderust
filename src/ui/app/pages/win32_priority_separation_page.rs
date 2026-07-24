@@ -353,7 +353,7 @@ impl WinderustApp {
             return Ok(());
         }
         let current = read_win32_priority_separation()
-            .ok_or_else(|| "Current Win32PrioritySeparation value could not be read.".to_owned())?;
+            .ok_or_else(|| t!("settings.win32_priority_separation_load_failed").to_string())?;
         write_win32_priority_separation_backup(current)?;
         self.win32_priority_separation_backup = Some(current);
         Ok(())
