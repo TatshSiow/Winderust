@@ -141,7 +141,7 @@ impl WinderustApp {
                 enabled,
                 cx,
             ))
-            .child(self.render_adaptive_engine_status_card())
+            .child(self.render_adaptive_engine_status_card(cx))
             .into_any_element()
     }
 
@@ -196,7 +196,10 @@ impl WinderustApp {
         .into_any_element()
     }
 
-    pub(in crate::ui::app) fn render_adaptive_engine_status_card(&self) -> gpui::Div {
+    pub(in crate::ui::app) fn render_adaptive_engine_status_card(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         let selected_preset = PowerModePreset::ALL
             .iter()
             .copied()
@@ -281,6 +284,7 @@ impl WinderustApp {
                 ),
             ],
             None,
+            cx,
         )
     }
 

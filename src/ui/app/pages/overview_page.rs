@@ -204,6 +204,7 @@ impl WinderustApp {
                     }),
                     self.dashboard_enabled_function_items(settings),
                     Some(t!("home.no_enabled_features").to_string()),
+                    cx,
                 )
                 .into_any_element(),
             ));

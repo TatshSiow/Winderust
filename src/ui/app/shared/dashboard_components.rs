@@ -311,6 +311,7 @@ pub(in crate::ui::app) fn titled_status_list(
     header_trailing: Option<AnyElement>,
     items: Vec<(Option<Page>, String, String)>,
     empty_message: Option<String>,
+    cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
     let mut list = v_flex()
         .w_full()
@@ -346,28 +347,41 @@ pub(in crate::ui::app) fn titled_status_list(
             content = content.child(text_muted(detail).truncate().flex_shrink_0());
         }
 
-        list = list.child(
-            h_flex()
-                .w_full()
-                .min_w(px(0.0))
-                .items_center()
-                .gap_2()
-                .py_1()
-                .child(if let Some(page) = page {
-                    Icon::new(nav_icon_name(page.section_landing_page()))
-                        .with_size(px(16.0))
-                        .text_color(rgb(accent_color()))
-                        .into_any_element()
-                } else {
-                    div()
-                        .size(px(6.0))
-                        .rounded_full()
-                        .flex_shrink_0()
-                        .bg(rgb(accent_color()))
-                        .into_any_element()
-                })
-                .child(content),
-        );
+        let row = h_flex()
+            .w_full()
+            .min_w(px(0.0))
+            .items_center()
+            .gap_2()
+            .py_1()
+            .rounded(px(BRAND_RADIUS_CONTROL))
+            .child(if let Some(page) = page {
+                Icon::new(nav_icon_name(page.section_landing_page()))
+                    .with_size(px(16.0))
+                    .text_color(rgb(accent_color()))
+                    .into_any_element()
+            } else {
+                div()
+                    .size(px(6.0))
+                    .rounded_full()
+                    .flex_shrink_0()
+                    .bg(rgb(accent_color()))
+                    .into_any_element()
+            })
+            .child(content);
+        let row = if let Some(page) = page {
+            row.id(SharedString::from(format!(
+                "dashboard-enabled-feature-{page:?}"
+            )))
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(settings_card_hover_color())))
+            .on_click(cx.listener(move |app, _, _, cx| {
+                app.navigate_to(page, cx);
+            }))
+            .into_any_element()
+        } else {
+            row.into_any_element()
+        };
+        list = list.child(row);
     }
 
     dashboard_summary_card(title.to_owned(), header_trailing, list.into_any_element())
