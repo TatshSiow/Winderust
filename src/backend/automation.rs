@@ -90,6 +90,7 @@ const PRIORITY_BOOST_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const IO_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const GPU_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const MEMORY_PRIORITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const MEMORY_TRIM_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
 const TIMER_RESOLUTION_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const PROCESS_APPEARANCE_SCAN_INTERVAL: Duration = Duration::from_secs(1);
 const HIDDEN_AUTOMATION_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -487,7 +488,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let memory_trim_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
-            memory_trim_refresh_interval(&settings),
+            MEMORY_TRIM_REFRESH_INTERVAL,
         );
         let timer_resolution_refresh_interval = automation_refresh_interval(
             hidden_to_tray,

@@ -31,10 +31,6 @@ pub(super) fn workload_refresh_interval(
     }
 }
 
-pub(super) fn memory_trim_refresh_interval(_: &Settings) -> Duration {
-    Duration::from_secs(15 * 60)
-}
-
 pub(super) fn workload_engine_fast_refresh_deadline(
     settings: &Settings,
     now: Instant,
