@@ -9,6 +9,7 @@ use raw_window_handle::{
     RawWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
 };
 use rfd::FileDialog;
+use rust_i18n::t;
 use windows_sys::Win32::Foundation::HWND;
 
 use crate::config;
@@ -25,7 +26,7 @@ pub(crate) fn choose_settings_file(hwnd: Option<HWND>, mode: FileDialogMode) -> 
         FileDialogMode::Save => config::storage::default_export_toml_path(),
     };
     let dialog = dialog(hwnd)
-        .add_filter("TOML settings", &["toml"])
+        .add_filter(t!("settings.settings_files").to_string(), &["toml"])
         .set_directory(default_path.parent().unwrap_or_else(|| Path::new(".")))
         .set_file_name(
             default_path
@@ -34,8 +35,8 @@ pub(crate) fn choose_settings_file(hwnd: Option<HWND>, mode: FileDialogMode) -> 
                 .to_string_lossy(),
         )
         .set_title(match mode {
-            FileDialogMode::Open => "Import settings",
-            FileDialogMode::Save => "Export settings",
+            FileDialogMode::Open => t!("settings.import_settings").to_string(),
+            FileDialogMode::Save => t!("settings.export_settings").to_string(),
         });
     match mode {
         FileDialogMode::Open => dialog.pick_file(),
@@ -50,14 +51,14 @@ pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<PathBu
         Local::now().format("%Y-%m-%d")
     );
     dialog(hwnd)
-        .add_filter("CSV files", &["csv"])
+        .add_filter(t!("action_log.csv_files").to_string(), &["csv"])
         .set_directory(
             config::storage::config_path()
                 .parent()
                 .unwrap_or_else(|| Path::new(".")),
         )
         .set_file_name(filename)
-        .set_title("Export log")
+        .set_title(t!("action_log.export_csv").to_string())
         .save_file()
 }
 

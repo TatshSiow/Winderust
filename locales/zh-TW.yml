@@ -989,6 +989,7 @@ action_log:
   intro_2: "項目會保存在記憶體中，並在 Winderust 結束時重設。"
   clear: "清除記錄"
   export_csv: "匯出記錄"
+  csv_files: "CSV 檔案"
   filter: "篩選"
   filter_all: "全部"
   result_filter: "結果篩選"

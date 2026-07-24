@@ -988,6 +988,7 @@ action_log:
   intro_2: "Entries are kept in memory and reset when Winderust exits."
   clear: "Clear Log"
   export_csv: "Export Log"
+  csv_files: "CSV Files"
   filter: "Filter"
   filter_all: "All"
   result_filter: "Result Filter"
