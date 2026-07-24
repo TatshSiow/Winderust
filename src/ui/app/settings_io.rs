@@ -49,10 +49,8 @@ impl WinderustApp {
 
         match choose_action_log_export_file(self.hwnd) {
             Some(path) => {
-                match fs::write(
-                    &path,
-                    action_log_entries_to_csv(self.action_log_entries.as_slice()),
-                ) {
+                let csv = action_log_entries_to_csv(self.action_log_entries.as_slice());
+                match config::storage::write_bytes_atomically(&path, csv.as_bytes()) {
                     Ok(()) => {
                         self.status_message =
                             t!("status.exported_action_log", path = path.display()).to_string();

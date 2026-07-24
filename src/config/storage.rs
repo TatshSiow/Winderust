@@ -73,14 +73,18 @@ fn parse_toml_settings(path: &Path, raw: &str) -> Result<Settings, String> {
 }
 
 fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
+    let raw = toml::to_string_pretty(settings)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    write_bytes_atomically(path, raw.as_bytes())
+}
+
+pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let raw = toml::to_string_pretty(settings)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     let mut file = AtomicWriteFile::open(path)?;
-    file.write_all(raw.as_bytes())?;
+    file.write_all(bytes)?;
     file.commit()
 }
 
@@ -117,6 +121,20 @@ mod tests {
         fs::write(&path, "invalid = [").unwrap();
         assert!(load_from_path(&path).is_err());
 
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "winderust-atomic-write-test-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, "old").unwrap();
+
+        write_bytes_atomically(&path, b"new").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
         fs::remove_file(path).unwrap();
     }
 
