@@ -491,8 +491,8 @@ impl UiInputs {
             activity_check_interval: make_range_slider(
                 cx,
                 settings.general.check_interval_ms,
-                ACTIVITY_CHECK_INTERVAL_MIN_MS,
-                ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                CHECK_INTERVAL_MIN_MS,
+                CHECK_INTERVAL_MAX_MS,
                 ACTIVITY_CHECK_INTERVAL_STEP_MS,
             ),
             processor_power_ac_core_parking_min: make_processor_power_slider(
@@ -973,11 +973,9 @@ impl WinderustApp {
                 }
             }
             NumericField::GeneralCheckInterval => {
-                if let Some(value) = parse_u64_input(
-                    &value,
-                    ACTIVITY_CHECK_INTERVAL_MIN_MS,
-                    ACTIVITY_CHECK_INTERVAL_MAX_MS,
-                ) {
+                if let Some(value) =
+                    parse_u64_input(&value, CHECK_INTERVAL_MIN_MS, CHECK_INTERVAL_MAX_MS)
+                {
                     self.set_activity_slider_value(ActivitySlider::CheckInterval, value);
                 }
             }
@@ -1408,10 +1406,8 @@ impl WinderustApp {
             }
             ActivitySlider::CheckInterval => {
                 self.settings.general.check_interval_ms =
-                    snap_to_step(value, ACTIVITY_CHECK_INTERVAL_STEP_MS).clamp(
-                        ACTIVITY_CHECK_INTERVAL_MIN_MS,
-                        ACTIVITY_CHECK_INTERVAL_MAX_MS,
-                    );
+                    snap_to_step(value, ACTIVITY_CHECK_INTERVAL_STEP_MS)
+                        .clamp(CHECK_INTERVAL_MIN_MS, CHECK_INTERVAL_MAX_MS);
             }
         }
     }
@@ -1433,10 +1429,10 @@ impl WinderustApp {
             (
                 ActivitySlider::CheckInterval,
                 self.inputs.activity_check_interval.clone(),
-                self.settings.general.check_interval_ms.clamp(
-                    ACTIVITY_CHECK_INTERVAL_MIN_MS,
-                    ACTIVITY_CHECK_INTERVAL_MAX_MS,
-                ),
+                self.settings
+                    .general
+                    .check_interval_ms
+                    .clamp(CHECK_INTERVAL_MIN_MS, CHECK_INTERVAL_MAX_MS),
             ),
         ] {
             let value = activity_slider_normalized_value(slider, value) as f32;

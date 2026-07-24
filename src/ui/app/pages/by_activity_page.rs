@@ -146,8 +146,8 @@ impl WinderustApp {
                     state: &self.inputs.activity_check_interval,
                     enabled,
                     range: SliderRange {
-                        min: ACTIVITY_CHECK_INTERVAL_MIN_MS,
-                        max: ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                        min: CHECK_INTERVAL_MIN_MS,
+                        max: CHECK_INTERVAL_MAX_MS,
                         step: ACTIVITY_CHECK_INTERVAL_STEP_MS,
                     },
                 },
@@ -157,8 +157,8 @@ impl WinderustApp {
                     let value = apply_u64_step(
                         app.settings.general.check_interval_ms,
                         change,
-                        ACTIVITY_CHECK_INTERVAL_MIN_MS,
-                        ACTIVITY_CHECK_INTERVAL_MAX_MS,
+                        CHECK_INTERVAL_MIN_MS,
+                        CHECK_INTERVAL_MAX_MS,
                     );
                     app.set_activity_slider_value(ActivitySlider::CheckInterval, value);
                     cx.notify();

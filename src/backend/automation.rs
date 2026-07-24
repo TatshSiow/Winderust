@@ -19,7 +19,7 @@ use crate::{
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     config::{
         AccentColorSource, AnimationMode, AppThemeMode, PowerPlanSettings, ProcessIoPriority,
-        Settings,
+        Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
     core_limiter::{CoreLimiterManager, CoreLimiterSnapshot},
     core_steering::{

@@ -900,10 +900,7 @@ pub(in crate::ui::app) fn activity_slider_normalized_value(
             ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS,
         ),
         ActivitySlider::CheckInterval => snap_to_step(value, ACTIVITY_CHECK_INTERVAL_STEP_MS)
-            .clamp(
-                ACTIVITY_CHECK_INTERVAL_MIN_MS,
-                ACTIVITY_CHECK_INTERVAL_MAX_MS,
-            ),
+            .clamp(CHECK_INTERVAL_MIN_MS, CHECK_INTERVAL_MAX_MS),
     }
 }
 
@@ -927,10 +924,8 @@ pub(in crate::ui::app) fn seconds_label(seconds: u64) -> String {
 
 pub(in crate::ui::app) fn milliseconds_label(milliseconds: u64) -> String {
     duration_label_ms(
-        snap_to_step(milliseconds, ACTIVITY_CHECK_INTERVAL_STEP_MS).clamp(
-            ACTIVITY_CHECK_INTERVAL_MIN_MS,
-            ACTIVITY_CHECK_INTERVAL_MAX_MS,
-        ),
+        snap_to_step(milliseconds, ACTIVITY_CHECK_INTERVAL_STEP_MS)
+            .clamp(CHECK_INTERVAL_MIN_MS, CHECK_INTERVAL_MAX_MS),
     )
 }
 

@@ -371,7 +371,12 @@ pub(super) fn has_active_plan(power_plans: &PowerPlanSettings) -> bool {
 }
 
 pub(super) fn configured_check_interval(settings: &Settings) -> Duration {
-    Duration::from_millis(settings.general.check_interval_ms.max(250))
+    Duration::from_millis(
+        settings
+            .general
+            .check_interval_ms
+            .clamp(CHECK_INTERVAL_MIN_MS, CHECK_INTERVAL_MAX_MS),
+    )
 }
 
 pub(super) fn hidden_power_plan_check_delay(

@@ -523,7 +523,7 @@ impl WinderustApp {
                     self.settings
                         .general
                         .check_interval_ms
-                        .max(ACTIVITY_CHECK_INTERVAL_MIN_MS),
+                        .clamp(CHECK_INTERVAL_MIN_MS, CHECK_INTERVAL_MAX_MS),
                 );
         }
 

@@ -8,6 +8,9 @@ use crate::rules::{
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };
 
+pub const CHECK_INTERVAL_MIN_MS: u64 = 250;
+pub const CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub general: GeneralSettings,

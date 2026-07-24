@@ -62,6 +62,7 @@ use crate::{
         ProcessPriority, ProcessPrioritySetting, ProcessPrioritySettings,
         ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings, TimerResolutionRule,
         TimerResolutionSettings, UpdateChannel, WeekdaySetting, WorkloadEngineSettings,
+        CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
     core_limiter::{self, CoreLimiterSnapshot},
     core_steering::{self, CoreSteeringSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
@@ -191,8 +192,6 @@ const SWITCH_RETRY_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_NETWORK_THRESHOLD_BYTES: u64 = 1_000_000_000;
 const ACTIVITY_IDLE_TIMEOUT_MIN_SECONDS: u64 = 1;
 const ACTIVITY_IDLE_TIMEOUT_MAX_SECONDS: u64 = 60 * 60;
-const ACTIVITY_CHECK_INTERVAL_MIN_MS: u64 = 250;
-const ACTIVITY_CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
 const ACTIVITY_CHECK_INTERVAL_STEP_MS: u64 = 250;
 const TIMER_RESOLUTION_INPUT_MIN_MS: f64 = 0.1;
 const TIMER_RESOLUTION_INPUT_MAX_MS: f64 = 1000.0;

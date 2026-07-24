@@ -551,6 +551,22 @@ fn hidden_activity_input_resume_waits_for_hook_event() {
 }
 
 #[test]
+fn configured_check_interval_clamps_imported_values() {
+    let mut settings = Settings::default();
+    settings.general.check_interval_ms = 0;
+    assert_eq!(
+        configured_check_interval(&settings),
+        Duration::from_millis(CHECK_INTERVAL_MIN_MS)
+    );
+
+    settings.general.check_interval_ms = u64::MAX;
+    assert_eq!(
+        configured_check_interval(&settings),
+        Duration::from_millis(CHECK_INTERVAL_MAX_MS)
+    );
+}
+
+#[test]
 fn hidden_schedule_checks_sleep_until_next_time_boundary() {
     let mut settings = Settings::default();
     settings.by_activity.enabled = false;
