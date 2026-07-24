@@ -65,6 +65,10 @@ pub struct AdvancedSettings {
     pub expose_all_priority_values: bool,
     #[serde(default)]
     pub show_advanced_controls: bool,
+    #[serde(default)]
+    pub pause_dashboard_metrics: bool,
+    #[serde(default)]
+    pub pause_process_population: bool,
 }
 
 impl AdvancedSettings {
@@ -1462,6 +1466,8 @@ impl Default for AdvancedSettings {
                 default_execution_failure_suppression_threshold(),
             expose_all_priority_values: false,
             show_advanced_controls: false,
+            pause_dashboard_metrics: false,
+            pause_process_population: false,
         }
     }
 }

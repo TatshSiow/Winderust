@@ -50,6 +50,10 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn refresh_process_candidates(&mut self, report_status: bool) -> bool {
+        if self.settings.advanced.pause_process_population {
+            return false;
+        }
+
         self.next_process_refresh = Instant::now() + PROCESS_REFRESH_INTERVAL;
         match list_process_candidates() {
             Ok(processes) => {
@@ -82,6 +86,10 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn refresh_running_processes(&mut self, report_status: bool) -> bool {
+        if self.settings.advanced.pause_process_population {
+            return false;
+        }
+
         self.next_process_refresh = Instant::now() + PROCESS_REFRESH_INTERVAL;
         match list_processes() {
             Ok(mut processes) => {

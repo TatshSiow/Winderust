@@ -44,6 +44,40 @@ impl WinderustApp {
                 }),
             ))
             .child(section_title_text(t!("settings.advanced").to_string()))
+            .child(setting_action_card_with_help(
+                "pause-dashboard-metrics",
+                t!("settings.pause_dashboard_metrics").to_string(),
+                t!("settings.pause_dashboard_metrics_help").to_string(),
+                switch_toggle_action(
+                    "pause-dashboard-metrics-toggle",
+                    self.settings.advanced.pause_dashboard_metrics,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.advanced.pause_dashboard_metrics = *checked;
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .child(setting_action_card_with_help(
+                "pause-process-population",
+                t!("settings.pause_process_population").to_string(),
+                t!("settings.pause_process_population_help").to_string(),
+                switch_toggle_action(
+                    "pause-process-population-toggle",
+                    self.settings.advanced.pause_process_population,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.advanced.pause_process_population = *checked;
+                        app.next_process_refresh = Instant::now();
+                        if *checked {
+                            app.process_candidates.clear();
+                            app.running_processes.clear();
+                            app.process_icon_cache.clear();
+                            app.expanded_process_list_groups.clear();
+                            app.active_power_plan_picker = None;
+                        }
+                        cx.notify();
+                    }),
+                ),
+            ))
             .child(self.render_failure_suppression_threshold_setting(cx))
             .child(self.render_action_log_mode_selector(window, cx))
             .child(section_title_text(

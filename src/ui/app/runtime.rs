@@ -201,6 +201,10 @@ impl WinderustApp {
     }
 
     pub(in crate::ui::app) fn refresh_dashboard_resource_samples(&mut self) -> bool {
+        if self.settings.advanced.pause_dashboard_metrics {
+            return false;
+        }
+
         let now = Instant::now();
         if !refresh_due(
             now,

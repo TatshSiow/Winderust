@@ -160,6 +160,8 @@ mod tests {
                 execution_failure_suppression_threshold: 5,
                 expose_all_priority_values: true,
                 show_advanced_controls: true,
+                pause_dashboard_metrics: true,
+                pause_process_population: true,
             },
             adaptive_engine: AdaptiveEngineSettings {
                 enabled: true,
