@@ -80,14 +80,14 @@ impl WinderustApp {
     ) {
         match choose_settings_file(self.hwnd, FileDialogMode::Open) {
             Some(path) => match config::storage::import_toml_from(&path) {
-                Ok(settings) => {
-                    self.settings = settings;
-                    apply_language(self.settings.general.language);
-                    apply_appearance_settings(&self.settings.general, window, cx);
-                    match config::storage::save(&self.settings) {
-                        Ok(()) => {
-                            self.saved_settings = self.settings.clone();
-                            self.status_message = match startup::set_startup_with_windows(
+                Ok(settings) => match config::storage::save(&settings) {
+                    Ok(()) => {
+                        self.settings = settings;
+                        apply_language(self.settings.general.language);
+                        apply_appearance_settings(&self.settings.general, window, cx);
+                        self.saved_settings = self.settings.clone();
+                        self.status_message =
+                            match startup::set_startup_with_windows(
                                 self.saved_settings.general.startup_with_windows,
                             ) {
                                 Ok(()) => t!("status.imported_settings", path = path.display())
@@ -95,13 +95,12 @@ impl WinderustApp {
                                 Err(err) => t!("status.imported_settings_with_error", error = err)
                                     .to_string(),
                             };
-                            self.rebuild_inputs(window, cx);
-                            self.sync_input_hook();
-                            self.sync_background_settings();
-                        }
-                        Err(err) => self.status_message = err,
+                        self.rebuild_inputs(window, cx);
+                        self.sync_input_hook();
+                        self.sync_background_settings();
                     }
-                }
+                    Err(err) => self.status_message = err,
+                },
                 Err(err) => self.status_message = err,
             },
             None => {
