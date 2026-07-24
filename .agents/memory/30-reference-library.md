@@ -68,6 +68,8 @@ User-facing behavior:
 | `GUID` | Identifies each Windows power scheme. Winderust stores GUIDs as lowercase strings in settings. | https://learn.microsoft.com/en-us/windows/win32/api/guiddef/ns-guiddef-guid |
 | `LocalFree` | Frees the GUID pointer returned by `PowerGetActiveScheme`. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-localfree |
 | System error codes | Power APIs return Win32 error codes such as `ERROR_SUCCESS`, `ERROR_MORE_DATA`, and `ERROR_NO_MORE_ITEMS`. | https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes |
+| `PowerRegisterForEffectivePowerModeNotifications` | Registers the callback that keeps the displayed Windows effective power mode current. Only `S_OK` indicates successful registration. | https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerregisterforeffectivepowermodenotifications |
+| `PowerUnregisterFromEffectivePowerModeNotifications` | Unregisters the callback and waits for active callbacks to complete. If it returns failure, Winderust retains the callback context for process lifetime because Windows may still reference it. | https://learn.microsoft.com/en-us/windows/win32/api/powersetting/nf-powersetting-powerunregisterfromeffectivepowermodenotifications |
 
 ## Automation Event Watcher
 

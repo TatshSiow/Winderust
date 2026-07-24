@@ -325,7 +325,7 @@ impl EffectivePowerModeMonitor {
             )
         };
 
-        if result >= 0 {
+        if result == 0 {
             Ok(Self { mode, registration })
         } else {
             Err(format!(
@@ -343,9 +343,17 @@ impl Drop for EffectivePowerModeMonitor {
     fn drop(&mut self) {
         if !self.registration.is_null() {
             // SAFETY: registration was returned by the successful registration call and is
-            // unregistered exactly once before the context Arc is dropped.
-            unsafe {
-                PowerUnregisterFromEffectivePowerModeNotifications(self.registration.cast_const());
+            // unregistered exactly once; successful cleanup waits for callbacks to finish.
+            let result = unsafe {
+                PowerUnregisterFromEffectivePowerModeNotifications(self.registration.cast_const())
+            };
+            if result != 0 {
+                eprintln!(
+                    "PowerUnregisterFromEffectivePowerModeNotifications failed with HRESULT {result:#x}."
+                );
+                // ponytail: Retain the callback context after failed unregister; process exit is
+                // the only safe cleanup while Windows may still invoke the callback.
+                std::mem::forget(Arc::clone(&self.mode));
             }
         }
     }
