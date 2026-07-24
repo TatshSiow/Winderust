@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
@@ -25,8 +25,12 @@ fn enable_startup() -> Result<(), String> {
 
 fn disable_startup() -> Result<(), String> {
     let key = RegKey::predef(HKEY_CURRENT_USER);
-    let Ok(key) = key.open_subkey_with_flags(RUN_KEY, winreg::enums::KEY_SET_VALUE) else {
-        return Ok(());
+    let key = match key.open_subkey_with_flags(RUN_KEY, winreg::enums::KEY_SET_VALUE) {
+        Ok(key) => key,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!("Failed to open startup registry key: {error}"));
+        }
     };
     match key.delete_value(VALUE_NAME) {
         Ok(()) => Ok(()),
@@ -35,11 +39,14 @@ fn disable_startup() -> Result<(), String> {
     }
 }
 
-fn startup_command() -> Result<String, String> {
+fn startup_command() -> Result<OsString, String> {
     let exe = std::env::current_exe()
         .map_err(|err| format!("failed to read Winderust executable path: {err}"))?;
     let exe = sanitize_startup_executable(exe)?;
-    Ok(format!("\"{}\"", exe.display()))
+    let mut command = OsString::from("\"");
+    command.push(exe);
+    command.push("\"");
+    Ok(command)
 }
 
 fn sanitize_startup_executable(exe: PathBuf) -> Result<PathBuf, String> {

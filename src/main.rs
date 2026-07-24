@@ -1,4 +1,6 @@
 #![windows_subsystem = "windows"]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(unsafe_op_in_unsafe_fn)]
 
 #[cfg(not(windows))]
 compile_error!("Winderust is a Windows-only application.");
@@ -12,7 +14,6 @@ mod features;
 mod foreground;
 mod power;
 mod rules;
-mod scheduler;
 mod ui;
 
 use backend::{
@@ -23,7 +24,6 @@ use backend::{
 use features::{
     advanced_controls::{app_suspension, timer_resolution},
     cpu_control::{background_cpu_restriction as background_cpu, core_limiter, core_steering},
-    power_plan_control::by_running_app,
     priority_control::{
         dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,
         thread_priority,
@@ -70,13 +70,13 @@ fn main() {
 }
 
 struct SingleInstanceGuard {
-    _handle: win_util::WinHandle,
+    handle: win_util::WinHandle,
 }
 
 impl SingleInstanceGuard {
     fn acquire() -> Option<Self> {
         use windows_sys::Win32::{
-            Foundation::WAIT_TIMEOUT,
+            Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0},
             System::Threading::{CreateMutexW, WaitForSingleObject},
         };
 
@@ -85,39 +85,60 @@ impl SingleInstanceGuard {
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
 
+        // SAFETY: name is terminated UTF-16 and the returned handle is owned by this process.
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return None;
+        }
+
+        let handle = win_util::WinHandle::new(handle);
+        // SAFETY: handle owns a live mutex and a zero timeout does not retain pointers.
+        let wait_status = unsafe { WaitForSingleObject(handle.raw(), 0) };
+        matches!(wait_status, WAIT_OBJECT_0 | WAIT_ABANDONED).then_some(Self { handle })
+    }
+}
+
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Threading::ReleaseMutex;
+
+        // SAFETY: acquire only constructs the guard after this thread owns the mutex.
         unsafe {
-            let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
-            if handle.is_null() {
-                return None;
-            }
-
-            let handle = win_util::WinHandle::new(handle);
-            let wait_status = WaitForSingleObject(handle.raw(), 0);
-            if wait_status == WAIT_TIMEOUT || wait_status == 0xFFFFFFFF {
-                return None;
-            }
-
-            Some(Self { _handle: handle })
+            ReleaseMutex(self.handle.raw());
         }
     }
 }
 
 fn single_instance_mutex_name() -> String {
+    use std::os::windows::ffi::OsStrExt;
+
+    // Scope the mutex to this executable path so separate portable copies can run independently.
     let digest = std::env::current_exe()
         .ok()
-        .and_then(|path| path.canonicalize().ok())
-        .and_then(|path| path.to_str().map(str::to_owned))
-        .map(fnv1a64)
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .map(|path| fnv1a64(path.as_os_str().encode_wide()))
         .unwrap_or(0x5f3f_2a4e_13a5_59f0);
 
     format!("Local\\Winderust.SingleInstance.{digest:016x}")
 }
 
-fn fnv1a64(input: impl AsRef<str>) -> u64 {
+fn fnv1a64(input: impl IntoIterator<Item = u16>) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in input.as_ref().as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x00000100000001b3);
+    for unit in input {
+        for byte in unit.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x00000100000001b3);
+        }
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn executable_path_hash_preserves_non_unicode_units() {
+        assert_ne!(fnv1a64([0xD800]), fnv1a64([0xFFFD]));
+    }
 }

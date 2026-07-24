@@ -22,18 +22,16 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ProcessThreadPrioritySetting, ThreadPrioritySettings},
     foreground::{
-        is_foreground_process, is_process_exited_message, list_processes, process_failure_key,
-        process_names_by_id, process_session_id, same_process_name, unique_app_names,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, list_processes, process_failure_key, process_names_by_id,
+        process_session_id, same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
 };
 
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
 const THREAD_PRIORITY_ERROR_RETURN: i32 = i32::MAX;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -122,6 +120,7 @@ impl ThreadPriorityManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(action_log, "current Windows session is unknown");
@@ -151,12 +150,7 @@ impl ThreadPriorityManager {
         let scanned_processes = processes.len();
         let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
-            })
+            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
         } else {
             None
         };
@@ -233,23 +227,25 @@ impl ThreadPriorityManager {
                     applied_threads += outcome.applied_threads;
                     skipped_processes +=
                         usize::from(outcome.applied_threads == 0 && outcome.preserved_threads > 0);
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                 }
                 Err(ThreadPriorityError::ProcessExited) => skipped_processes += 1,
                 Err(ThreadPriorityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::ThreadPriority,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because one or more threads could not be opened.",
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     failures.record("Apply", process_id, &process_name, err, action_log);
                 }
             }
@@ -259,7 +255,6 @@ impl ThreadPriorityManager {
                 ActionLogFeature::ThreadPriority,
                 None,
                 "Thread Priority",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 format!("Applied thread priority to {applied_threads} thread(s)."),
             );
@@ -413,7 +408,6 @@ impl ThreadPriorityManager {
                 ActionLogFeature::ThreadPriority,
                 None,
                 "Thread Priority",
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 format!("Restored thread priority for {restored_threads} thread(s): {reason}."),
             );
@@ -439,7 +433,6 @@ impl ThreadPriorityManager {
                 ActionLogFeature::ThreadPriority,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Thread Priority after {} failed attempts.",
@@ -449,15 +442,6 @@ impl ThreadPriorityManager {
         }
 
         true
-    }
-
-    fn record_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .record_process_failure(process_name);
-    }
-
-    fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression.clear_process_failure(process_name);
     }
 }
 
@@ -477,9 +461,6 @@ impl ThreadPriorityFailures {
         action_log: &mut ActionLog,
     ) {
         let message = thread_priority_error_message(error);
-        if is_process_exited_message(&message) {
-            return;
-        }
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({id}): {message}"));
         }
@@ -488,7 +469,6 @@ impl ThreadPriorityFailures {
             ActionLogFeature::ThreadPriority,
             Some(id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -506,6 +486,8 @@ struct ThreadHandle(WinHandle);
 
 impl ThreadHandle {
     fn open(thread_id: u32) -> Result<Self, ThreadPriorityError> {
+        // SAFETY: thread_id came from the current thread snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenThread(
                 THREAD_QUERY_INFORMATION | THREAD_SET_INFORMATION,
@@ -521,6 +503,7 @@ impl ThreadHandle {
     }
 
     fn priority(&self) -> Result<i32, ThreadPriorityError> {
+        // SAFETY: self owns a live thread handle.
         let priority = unsafe { GetThreadPriority(self.0.raw()) };
         if priority != THREAD_PRIORITY_ERROR_RETURN {
             Ok(priority)
@@ -537,6 +520,8 @@ impl ThreadHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live thread handle and every FILETIME output is writable for the
+        // duration of the call.
         if unsafe {
             GetThreadTimes(
                 self.0.raw(),
@@ -549,11 +534,19 @@ impl ThreadHandle {
         {
             Ok(filetime_to_u64(creation))
         } else {
-            Err(open_thread_error(0, last_error()))
+            match last_error() {
+                ERROR_ACCESS_DENIED => Err(ThreadPriorityError::AccessDenied),
+                ERROR_INVALID_PARAMETER => Err(ThreadPriorityError::ProcessExited),
+                error => Err(ThreadPriorityError::Failed(format!(
+                    "GetThreadTimes failed with error {error}."
+                ))),
+            }
         }
     }
 
     fn set_priority(&self, priority: i32) -> Result<(), ThreadPriorityError> {
+        // SAFETY: self owns a live thread handle and priority is selected from documented Win32
+        // thread-priority constants.
         if unsafe { SetThreadPriority(self.0.raw(), priority) } != 0 {
             Ok(())
         } else {
@@ -566,6 +559,7 @@ impl ThreadHandle {
 }
 
 fn process_thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityError> {
+    // SAFETY: TH32CS_SNAPTHREAD ignores the process id argument and returns an owned handle.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
         return Err(ThreadPriorityError::Failed(format!(
@@ -579,12 +573,14 @@ fn process_thread_ids(process_id: u32) -> Result<Vec<u32>, ThreadPriorityError> 
         ..THREADENTRY32::default()
     };
     let mut ids = Vec::new();
+    // SAFETY: snapshot is live and entry declares its size and remains writable.
     let mut ok = unsafe { Thread32First(snapshot, &mut entry) };
     while ok != 0 {
         if entry.th32OwnerProcessID == process_id {
             ids.push(entry.th32ThreadID);
         }
         entry.dwSize = size_of::<THREADENTRY32>() as u32;
+        // SAFETY: snapshot remains live and entry remains writable for the next record.
         ok = unsafe { Thread32Next(snapshot, &mut entry) };
     }
     let error = last_error();
@@ -667,7 +663,7 @@ fn thread_priority_error_message(error: ThreadPriorityError) -> String {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    BUILT_IN_EXCLUSIONS
+    CORE_BUILT_IN_PROCESS_EXCLUSIONS
         .iter()
         .any(|excluded| same_process_name(excluded, process_name))
 }

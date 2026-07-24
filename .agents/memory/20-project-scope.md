@@ -10,15 +10,19 @@ Process Lasso is a useful comparison point, not the target to clone. Prefer smal
 
 ## Current Scope
 
-- Power-plan automation by foreground app, running app, CPU load, idle/activity, and schedule.
-- Processor power-plan tuning for core parking and processor performance values.
-- Foreground responsiveness / ProBalance-style background restraint.
-- Core Limiter, Background CPU Restriction, and Core Steering.
-- Efficiency Mode / EcoQoS.
+- Power Plan Control through By Foreground, By Running App, By CPU Load, By
+  Activity, and By Time.
+- Advanced Power Plan Tuning for core parking and processor performance values.
+- Adaptive Engine CPU scheduling for foreground responsiveness and background restraint.
+- Background Efficiency, implemented with Windows EcoQoS at the operating-system
+  boundary.
+- CPU Control through Core Limiter, Background CPU Restriction, and Core
+  Steering.
 - App Suspension for explicit opt-in apps.
-- IO, GPU, and memory priority policies.
-- Memory Trim and memory-priority controls.
-- Timer resolution rules tied to foreground apps.
+- Priority Control through Process Priority, Thread Priority, Dynamic Priority
+  Boost, IO Priority, GPU Priority, and Memory Priority.
+- Memory Trim.
+- Timer Resolution rules tied to foreground apps.
 - Action Log and CSV export.
 - Process List as the main per-process policy surface.
 

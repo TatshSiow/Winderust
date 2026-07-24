@@ -28,4 +28,4 @@ Command:
 ```
 
 Results are local direction only. The script's controls and additional scenarios
-are documented in [the benchmark guide](../docs/workload-engine-benchmark.md).
+are documented in [the benchmark guide](../docs/adaptive-engine-benchmark.md).

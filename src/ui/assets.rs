@@ -109,3 +109,17 @@ fn push_attr(svg: &mut String, name: &str, value: Option<&str>) {
         svg.push('"');
     }
 }
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::*;
+
+    #[test]
+    fn icon_asset_paths_are_unique() {
+        let mut paths = HashSet::new();
+        for (path, _) in ICON_ASSETS {
+            assert!(paths.insert(*path), "duplicate icon asset path: {path}");
+        }
+    }
+}

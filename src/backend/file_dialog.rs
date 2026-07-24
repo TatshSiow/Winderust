@@ -9,6 +9,7 @@ use raw_window_handle::{
     RawWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
 };
 use rfd::FileDialog;
+use rust_i18n::t;
 use windows_sys::Win32::Foundation::HWND;
 
 use crate::config;
@@ -19,16 +20,13 @@ pub(crate) enum FileDialogMode {
     Save,
 }
 
-pub(crate) fn choose_settings_file(
-    hwnd: Option<HWND>,
-    mode: FileDialogMode,
-) -> Result<Option<PathBuf>, String> {
+pub(crate) fn choose_settings_file(hwnd: Option<HWND>, mode: FileDialogMode) -> Option<PathBuf> {
     let default_path = match mode {
         FileDialogMode::Open => config::storage::config_path(),
         FileDialogMode::Save => config::storage::default_export_toml_path(),
     };
     let dialog = dialog(hwnd)
-        .add_filter("TOML settings", &["toml"])
+        .add_filter(t!("settings.settings_files").to_string(), &["toml"])
         .set_directory(default_path.parent().unwrap_or_else(|| Path::new(".")))
         .set_file_name(
             default_path
@@ -37,31 +35,31 @@ pub(crate) fn choose_settings_file(
                 .to_string_lossy(),
         )
         .set_title(match mode {
-            FileDialogMode::Open => "Import settings",
-            FileDialogMode::Save => "Export settings",
+            FileDialogMode::Open => t!("settings.import_settings").to_string(),
+            FileDialogMode::Save => t!("settings.export_settings").to_string(),
         });
-    Ok(match mode {
+    match mode {
         FileDialogMode::Open => dialog.pick_file(),
         FileDialogMode::Save => dialog.save_file(),
-    })
+    }
 }
 
-pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Result<Option<PathBuf>, String> {
+pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<PathBuf> {
     let filename = format!(
         "winderust_action_log_{}_{}.csv",
         env!("CARGO_PKG_VERSION"),
         Local::now().format("%Y-%m-%d")
     );
-    Ok(dialog(hwnd)
-        .add_filter("CSV files", &["csv"])
+    dialog(hwnd)
+        .add_filter(t!("action_log.csv_files").to_string(), &["csv"])
         .set_directory(
             config::storage::config_path()
                 .parent()
                 .unwrap_or_else(|| Path::new(".")),
         )
         .set_file_name(filename)
-        .set_title("Export log")
-        .save_file())
+        .set_title(t!("action_log.export_csv").to_string())
+        .save_file()
 }
 
 fn dialog(hwnd: Option<HWND>) -> FileDialog {
@@ -82,6 +80,8 @@ impl DialogParent {
 impl HasWindowHandle for DialogParent {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let raw = RawWindowHandle::Win32(Win32WindowHandle::new(self.0));
+        // SAFETY: self stores a non-null HWND borrowed from the live GPUI window for no longer
+        // than this DialogParent value.
         Ok(unsafe { WindowHandle::borrow_raw(raw) })
     }
 }
@@ -89,6 +89,7 @@ impl HasWindowHandle for DialogParent {
 impl HasDisplayHandle for DialogParent {
     fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
         let raw = RawDisplayHandle::Windows(WindowsDisplayHandle::new());
+        // SAFETY: Windows has a process-global display handle with no owned resource to release.
         Ok(unsafe { DisplayHandle::borrow_raw(raw) })
     }
 }

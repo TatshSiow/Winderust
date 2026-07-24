@@ -20,12 +20,12 @@ use windows_sys::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{GpuPrioritySettings, ProcessGpuPriority, ProcessGpuPrioritySetting},
     foreground::{
-        contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
-        process_count_label, process_failure_key, process_names_by_id, process_session_id,
-        same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, is_foreground_process, list_processes, process_count_label,
+        process_failure_key, process_names_by_id, process_session_id, same_process_name,
+        unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::ExecutionFailureTracker,
 };
@@ -33,8 +33,6 @@ use crate::{
 const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
 const STATUS_INVALID_PARAMETER: u32 = 0xC000000D;
 const GPU_PRIORITY_SUMMARY_LOG_INTERVAL: Duration = Duration::from_secs(30);
-
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GpuPrioritySnapshot {
@@ -125,6 +123,7 @@ impl GpuPriorityManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(action_log, "current Windows session is unknown");
@@ -154,12 +153,7 @@ impl GpuPriorityManager {
         let scanned_processes = processes.len();
         let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
-            })
+            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
         } else {
             None
         };
@@ -438,7 +432,6 @@ impl GpuPriorityManager {
                         ActionLogFeature::GpuPriority,
                         Some(*process_id),
                         log_name,
-                        ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         format!("Restored previous GPU priority: {reason}."),
                     );
@@ -452,7 +445,6 @@ impl GpuPriorityManager {
                         ActionLogFeature::GpuPriority,
                         Some(*process_id),
                         log_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         format!(
                             "Skipped restoring previous GPU priority because Windows denied access: {reason}."
@@ -465,7 +457,6 @@ impl GpuPriorityManager {
                         ActionLogFeature::GpuPriority,
                         Some(*process_id),
                         log_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         format!(
                             "Skipped restoring previous GPU priority because GPU scheduling priority is unavailable: {reason}."
@@ -528,7 +519,6 @@ impl GpuPriorityManager {
                 ActionLogFeature::GpuPriority,
                 None,
                 "GPU Priority",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 gpu_priority_apply_summary_message(count),
             );
@@ -544,7 +534,6 @@ impl GpuPriorityManager {
                 ActionLogFeature::GpuPriority,
                 None,
                 "GPU Priority",
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 gpu_priority_skip_summary_message(pending_context_count, access_denied_count),
             );
@@ -587,9 +576,6 @@ impl GpuPriorityFailures {
         action_log: &mut ActionLog,
     ) {
         let message = gpu_priority_error_message(error);
-        if is_process_exited_message(&message) {
-            return;
-        }
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -598,7 +584,6 @@ impl GpuPriorityFailures {
             ActionLogFeature::GpuPriority,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -616,6 +601,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, GpuPriorityError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -632,6 +619,7 @@ impl ProcessHandle {
 
     fn gpu_priority_raw(&self) -> Result<u32, GpuPriorityError> {
         let mut priority = 0;
+        // SAFETY: self owns a live process handle and priority is writable for the call.
         let status = unsafe {
             D3DKMTGetProcessSchedulingPriorityClass(self.0.raw(), &mut priority as *mut _)
         };
@@ -645,6 +633,7 @@ impl ProcessHandle {
     fn set_gpu_priority_raw(&self, priority: u32) -> Result<(), GpuPriorityError> {
         let priority = D3DKMT_SCHEDULINGPRIORITYCLASS::try_from(priority)
             .map_err(|_| GpuPriorityError::Failed(format!("Invalid GPU priority {priority}.")))?;
+        // SAFETY: self owns a live process handle and priority is a validated scheduling class.
         let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(self.0.raw(), priority) };
         ntstatus_result(status)
     }
@@ -755,11 +744,7 @@ fn gpu_priority_error_message(error: GpuPriorityError) -> String {
 }
 
 fn gpu_priority_apply_summary_message(count: usize) -> String {
-    if count == 1 {
-        "Applied GPU priority to 1 process.".to_owned()
-    } else {
-        format!("Applied GPU priority to {count} processes.")
-    }
+    format!("Applied GPU priority to {}.", process_count_label(count))
 }
 
 fn gpu_priority_skip_summary_message(
@@ -809,7 +794,7 @@ fn gpu_priority_status_message(
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
+    contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, process_name)
 }
 
 #[cfg(test)]

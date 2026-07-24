@@ -33,7 +33,7 @@ jobs:
       - name: Verify source
         run: |
           cargo fmt -- --check
-          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn
           cargo test --locked
 
       - name: Build release executable

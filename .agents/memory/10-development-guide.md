@@ -13,10 +13,14 @@ This is the working guide for code changes. Product scope and future goals live 
 Use these checks before handoff:
 
 ```powershell
+git diff --check
 cargo fmt -- --check
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings -D unsafe-op-in-unsafe-fn
 cargo test --locked
 ```
+
+When reviewing or committing an existing index, also run
+`git diff --cached --check`.
 
 For release builds:
 
@@ -49,28 +53,79 @@ feature branches from `dev` and merge them back through pull requests; promote
 tested `dev` changes to `main` for release. CI runs on pushes to `main` and
 `dev`, and on every pull request. Release automation remains tag-only.
 
+## Rust Engineering Practices
+
+- Trace every caller before changing a shared helper, enum, setting, or error
+  contract. Fix a defect once at the shared boundary when all affected callers
+  route through it.
+- Keep behavior-preserving refactors mechanical. Move one coherent page or
+  helper family at a time, avoid mixing feature work into the split, and verify
+  the resulting tree before claiming behavior is unchanged.
+- Prefer existing project helpers, the standard library, and native Windows
+  facilities before adding abstractions or dependencies.
+- Use `Result` and typed errors when callers need to distinguish or report a
+  failure. Avoid `unwrap` and `expect` on live process, filesystem, network,
+  configuration, and Win32 paths.
+- Treat unsupported internal enum variants or impossible UI wiring as invariant
+  violations with a clear message; do not silently convert them into a no-op.
+
+### Maintainability Review Workflow
+
+Use this order for simplification and over-engineering reviews:
+
+1. Query Graphify, then read the complete module and trace every caller and
+   lifecycle path before proposing a change.
+2. Ask whether each type, helper, field, scan, or abstraction needs to exist.
+   Reuse an existing project helper, the standard library, or Win32 directly
+   before adding code.
+3. Separate genuine state ownership from namespacing. Keep stateful managers
+   that own timers, resources, restoration, or shutdown; replace stateless
+   structs with functions when that makes callers simpler.
+4. Remove parallel representations, duplicate scans, unused status fields, and
+   one-use wrappers when one source of truth is sufficient.
+5. Prefer the smallest coherent deletion-first change. Do not perform renames,
+   file moves, or abstraction swaps that merely reshuffle working code.
+6. Review the exact diff for changed behavior and damaged tests, especially
+   after mechanical edits. Preserve runtime safety, failure handling, cleanup,
+   and process-state restoration.
+7. Compile all targets, run the required checks and tests, then update Graphify.
+   If no change clearly reduces maintenance cost, leave the code alone and say
+   why.
+
 ## Release Runbook
 
-1. Start from a clean, current `main`. Choose a SemVer-compatible prerelease
-   version such as `0.1.1-alpha` and tag it as `v0.1.1-alpha`.
+1. Start from a clean, current `dev`. Choose a SemVer-compatible prerelease
+   version such as `0.2.0-alpha`; do not create its tag yet. Confirm `gh` is
+   installed and authenticated before starting the GitHub publishing steps.
 2. Update the package version in `Cargo.toml`, refresh the root package entry in
    `Cargo.lock`, and add the dated release section to `CHANGELOG.md`. Verify that
-   the lockfile contains no unrelated dependency changes.
+   the lockfile contains no unrelated dependency changes. Build the changelog
+   from commits after the previous tag and do not rewrite a published section.
 3. Run the default checks, the naming scan below, and
    `.\scripts\build_release.cmd`. Complete a Windows smoke test of the resulting
-   executable for changes that affect runtime behavior or packaging.
-4. Commit and push the release preparation to `main`. Wait for CI to pass.
-5. Create and push an annotated tag on that exact commit:
+   executable. If UI automation is unavailable, obtain the user's explicit
+   smoke-test confirmation before tagging.
+4. Commit and push the release preparation to `dev`, wait for CI, then open and
+   merge a `dev` to `main` pull request without deleting `dev`. Wait for CI on
+   the final `main` commit.
+5. Create and push an annotated tag on that final `main` commit. Never create
+   the release tag on `dev`:
 
    ```powershell
-   git tag -a v0.1.1-alpha -m "Winderust v0.1.1-alpha"
-   git push origin v0.1.1-alpha
+   git tag -a v0.2.0-alpha -m "Winderust v0.2.0-alpha"
+   git push origin v0.2.0-alpha
    ```
 
 6. The `Draft Release` workflow validates the tag against Cargo metadata,
    repeats verification, builds the executable, and creates a draft prerelease
-   with a ZIP and SHA-256 file. Confirm the workflow succeeded and inspect both
-   assets before manually publishing the draft on GitHub.
+   with a ZIP and SHA-256 file. Release workflows are uncached and may take
+   significantly longer than regular CI. Confirm the workflow succeeded and
+   verify the checksum, ZIP contents, and embedded executable version. Publish
+   the draft only when the user explicitly requests publication or has already
+   approved the complete release flow.
+7. After publication, verify the release is a prerelease rather than a draft,
+   confirm both assets are available, sync local `main` with `origin/main`, and
+   keep `dev` as the integration branch for subsequent work.
 
 Never move or recreate a published tag. If a draft workflow fails, fix the
 cause on `main`; only replace an unpublished tag when no release was published
@@ -79,36 +134,47 @@ and the corrected commit must be the tagged source.
 ## Source Map
 
 - `src/main.rs`: app entry, single-instance guard, GPUI startup.
-- `src/ui/app.rs`: main GPUI state, rendering, navigation, dialogs, and page wiring. It is large; shrink by moving one complete page/helper cluster at a time.
+- `src/ui/app.rs`: `WinderustApp` state, construction, rendering, teardown, and app-level tests. Operational method groups live in `src/ui/app/*.rs` (`runtime`, `settings_io`, `process_refresh`, `tray_state`, navigation, removal, and update checks).
+- `src/ui/app/pages/`: page and shell renderers. `src/ui/app/shared/`: reusable UI components, state helpers, formatting, policies, and shared feature logic. Page dispatch is
+  in `app_shell.rs`; process add/check and rule-construction helpers are in
+  `process_policies.rs`. Process List table grouping, sorting, and layout live in
+  `pages/process_list_page/table_model.rs`; edit actions live in `editing.rs`.
 - `src/ui.rs`: page enum, section grouping, labels, and small UI-independent helpers.
 - `src/config/settings.rs`: persisted settings structs and defaults.
 - `src/config/storage.rs`: config path, TOML load/save/import/export.
-- `src/backend/automation.rs`: background worker loop that applies runtime policies.
+- `src/backend/automation.rs`: background service lifecycle and worker scheduling loop. Runtime feature execution and adaptive/static power-plan ownership live in `src/backend/automation/runner.rs`; wake/event decisions live in `wake.rs`; status fan-out lives in `status.rs`; activation predicates and refresh timing live in `requirements.rs`.
+- `src/backend/file_dialog.rs`: native settings and Action Log file dialogs.
+- `src/backend/update_checker.rs`: GitHub release checks and Stable/Pre-release filtering.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
-- Feature backends use the UI names: `background_efficiency`, `workload_engine`, `memory_trim`, `app_suspension`, `core_limiter`, `core_steering`, `by_running_app`, and the priority-control modules.
+- Feature backends use the UI names: `background_efficiency`, `workload_engine`, `memory_trim`, `app_suspension`, `core_limiter`, `core_steering`, `by_running_app`, and the priority-control modules. Workload Engine Win32 process control lives in `workload_engine/process_control.rs`; pure workload decisions and core-selection calculations live in `workload_engine/policy.rs`; stateful manager lifecycle remains in `workload_engine.rs`.
 
 ## Navigation
 
 Pages are grouped in `src/ui.rs`:
 
-- Overview: dashboard.
+- Home: dashboard.
 - Process List: process table and per-process policy surface.
 - Winderust Features: Adaptive Engine, Background Efficiency, Memory Trim.
 - Power Plan Control: By Foreground, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
-- Priority Control: CPU priority, thread priority, dynamic priority boost, IO priority, GPU priority, memory priority.
+- Priority Control: Process Priority, Thread Priority, Dynamic Priority Boost,
+  IO Priority, GPU Priority, Memory Priority.
 - CPU Control: Core Limiter, Background CPU Restriction, Core Steering.
 - Action Log.
-- Settings.
-- Advanced: App Suspension, Timer Resolution, Win32 priority separation.
+- Settings: Winderust Behaviour, Language and Appearance, Experimental
+  Features.
+- About.
+- Advanced: App Suspension, Timer Resolution, Win32 Priority Separation.
 
-Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `WinderustApp::render_page` together.
+Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
+`WinderustApp::render_page` in `src/ui/app/pages/app_shell.rs` together.
 
 ## Settings
 
 - Runtime settings live in `Settings`.
 - Use `#[serde(default)]` only when a current setting is intentionally optional; do not add pre-release migration aliases.
-- If a setting is edited through the UI, update the relevant input sync code in `src/ui/app.rs`.
-- TOML import/export uses native Windows file dialogs from `src/ui/app.rs`.
+- If a setting is edited through the UI, update the relevant page module and
+  input synchronization in `src/ui/app.rs`.
+- TOML import/export uses native Windows file dialogs from `src/backend/file_dialog.rs`, invoked by the UI.
 
 ### Power Plan Ownership
 
@@ -121,7 +187,8 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and `W
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
 - Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CoreLimiter`, `CoreSteering`, and `DynamicPriorityBoost`.
-- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, CPU Affinity feature names, CPU Limiter feature names, or Performance Mode settings names.
+- Workload Engine is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
+- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, CPU Affinity feature names, or CPU Limiter feature names. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
 
 Run this quick compatibility/naming check before handoff:
@@ -147,7 +214,13 @@ Process-control features must keep these defaults:
 - Use existing GPUI/gpui-component helpers before adding new UI primitives.
 - Keep plan mapping inside the relevant power-plan pages, not in a global settings page.
 - Do not reintroduce removed sidebar/manual-pause/test buttons without a current product reason.
-- For `src/ui/app.rs` cleanup, move one complete page or repeated helper family at a time; do not start a framework rewrite.
+- Keep `src/ui/app.rs` for shared app state, construction, rendering, and teardown; keep operational method groups in `src/ui/app/*.rs`. Put a
+  complete page in `src/ui/app/pages/` and repeated helper families in `src/ui/app/shared/`;
+  do not start a framework rewrite.
+- Multiple focused `impl WinderustApp` blocks are acceptable for the private UI
+  module. Keep glob imports contained there; use explicit imports when a module
+  gains independent ownership or its dependencies become unclear, not as
+  mechanical churn.
 
 ## Windows APIs
 
@@ -156,6 +229,28 @@ Process-control features must keep these defaults:
 - Idle and input hooks: `src/activity/`.
 - Tray behavior: `src/backend/tray.rs`.
 - Timer resolution: `src/features/advanced_controls/timer_resolution.rs`.
-- Win32 priority separation: registry code in `src/ui/app.rs`.
+- Win32 Priority Separation: page logic in
+  `src/ui/app/pages/win32_priority_separation_page.rs`, bit/value helpers in
+  `src/ui/app/shared/appearance.rs`, and registry access in
+  `src/backend/win_registry.rs`.
 
 Prefer native API calls already used in the repo. Do not add command spawning around `powercfg` unless the Win32 path cannot support the needed behavior.
+
+When adding, removing, or changing a feature-defining or
+compatibility-sensitive Win32, NT, or WDK boundary, update
+`30-reference-library.md` in the same change. Link directly to official
+Microsoft documentation when it exists and explicitly mark numeric information
+classes or manually declared interfaces that are not stable public SDK
+contracts.
+
+- Keep the crate-level `clippy::undocumented_unsafe_blocks` and
+  `unsafe_op_in_unsafe_fn` warnings enabled.
+- Prefer private safe wrappers around Win32 FFI. Required `unsafe extern`
+  callbacks must still wrap unsafe operations in explicit blocks.
+- Put an immediately preceding `// SAFETY:` comment on each unsafe block that
+  states the handle, pointer, buffer, lifetime, ownership, and ABI invariants
+  relevant to that call.
+- Capture `GetLastError` immediately after the failing Win32 call, before any
+  other call can overwrite the thread-local error.
+- Put owned Windows handles in the existing RAII wrappers and release each
+  resource exactly once.

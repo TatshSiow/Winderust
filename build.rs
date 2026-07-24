@@ -14,12 +14,18 @@ fn main() {
             parts.next().unwrap_or(0),
             parts.next().unwrap_or(0),
         );
-        let icon = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap())
-            .join("resources")
-            .join("winderust.ico")
-            .to_string_lossy()
-            .replace('\\', "\\\\");
-        let rc = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("winderust.rc");
+        let icon = std::path::PathBuf::from(
+            std::env::var_os("CARGO_MANIFEST_DIR")
+                .expect("Cargo must set CARGO_MANIFEST_DIR for build scripts"),
+        )
+        .join("resources")
+        .join("winderust.ico")
+        .to_string_lossy()
+        .replace('\\', "\\\\");
+        let rc = std::path::PathBuf::from(
+            std::env::var_os("OUT_DIR").expect("Cargo must set OUT_DIR for build scripts"),
+        )
+        .join("winderust.rc");
 
         std::fs::write(
             &rc,

@@ -1,13 +1,12 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::c_void,
     time::{Duration, Instant},
 };
 
 use windows_sys::Win32::{
     Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FILETIME, HANDLE},
     System::{
-        SystemInformation::{GetSystemInfo, GlobalMemoryStatusEx, MEMORYSTATUSEX, SYSTEM_INFO},
+        SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
         Threading::{
             GetCurrentProcessId, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
             PROCESS_SET_QUOTA,
@@ -16,22 +15,19 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::MemoryTrimSettings,
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_session_id, should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_failure_key, process_session_id,
+        should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
-    privilege::{enable_increase_quota_privilege, enable_profile_single_process_privilege},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
 };
 
 const MB: u64 = 1024 * 1024;
-const SYSTEM_MEMORY_LIST_INFORMATION_CLASS: u32 = 80;
-const SYSTEM_FILE_CACHE_INFORMATION_EX_CLASS: u32 = 81;
-const MEMORY_PURGE_STANDBY_LIST: u32 = 4;
+const CPU_IDLE_THRESHOLD_PERCENT: f32 = 1.0;
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 
@@ -43,9 +39,6 @@ pub struct MemoryTrimSnapshot {
     pub trimmed_processes: usize,
     pub skipped_processes: usize,
     pub failed_processes: usize,
-    pub purged_standby_list: bool,
-    pub purged_system_file_cache: bool,
-    pub free_ram_excluding_cache_mb: Option<u64>,
     pub memory_load_percent: Option<u8>,
     pub trimmed_apps: Vec<String>,
     pub auto_excluded_processes: Vec<String>,
@@ -56,9 +49,7 @@ pub struct MemoryTrimSnapshot {
 #[derive(Default)]
 pub struct MemoryTrimManager {
     tracked: BTreeMap<u32, TrackedProcess>,
-    last_trimmed: BTreeMap<u32, Instant>,
     failure_suppression: ExecutionFailureTracker,
-    system_failure_suppression: ExecutionFailureTracker,
 }
 
 #[derive(Clone)]
@@ -66,6 +57,7 @@ struct TrackedProcess {
     process_name: String,
     previous_cpu_time: Option<ProcessCpuSample>,
     idle_since: Option<Instant>,
+    trimmed_while_idle: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -85,14 +77,12 @@ impl MemoryTrimManager {
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
-        performance_mode_active: bool,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
         self.update_with_mode(
             settings,
             automation_enabled,
             foreground_process_id,
-            performance_mode_active,
             MemoryTrimMode::Automatic,
             action_log,
         )
@@ -103,14 +93,12 @@ impl MemoryTrimManager {
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
-        performance_mode_active: bool,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
         self.update_with_mode(
             settings,
             automation_enabled,
             foreground_process_id,
-            performance_mode_active,
             MemoryTrimMode::Manual,
             action_log,
         )
@@ -121,7 +109,6 @@ impl MemoryTrimManager {
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
         foreground_process_id: Option<u32>,
-        performance_mode_active: bool,
         mode: MemoryTrimMode,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
@@ -145,7 +132,7 @@ impl MemoryTrimManager {
             };
         }
 
-        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+        if foreground_process_id.is_none() {
             self.clear_tracking();
             return MemoryTrimSnapshot {
                 enabled: true,
@@ -178,6 +165,7 @@ impl MemoryTrimManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             self.clear_tracking();
@@ -203,16 +191,12 @@ impl MemoryTrimManager {
         };
 
         let scanned_processes = processes.len();
-        let foreground_process_name = if settings.exclude_foreground_app {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
-            })
-        } else {
-            None
-        };
+        let foreground_process_name = foreground_process_id.and_then(|id| {
+            processes
+                .iter()
+                .find(|process| process.id == id)
+                .map(|process| process.name.clone())
+        });
 
         let mut target_processes = BTreeMap::new();
         for process in processes {
@@ -221,7 +205,7 @@ impl MemoryTrimManager {
                 || is_builtin_excluded(&process.name)
                 || settings.exclusion_enabled_for(&process.name)
                 || should_ignore_foreground_process(
-                    settings.exclude_foreground_app,
+                    true,
                     process.id,
                     &process.name,
                     foreground_process_id,
@@ -237,8 +221,6 @@ impl MemoryTrimManager {
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         self.tracked
-            .retain(|process_id, _| target_ids.contains(process_id));
-        self.last_trimmed
             .retain(|process_id, _| target_ids.contains(process_id));
         let active_target_names = target_processes
             .values()
@@ -282,7 +264,6 @@ impl MemoryTrimManager {
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Apply,
                         ActionLogResult::Applied,
                         trim_reason(mode, freed_bytes),
                     );
@@ -290,7 +271,6 @@ impl MemoryTrimManager {
                 Err(MemoryTrimError::ProcessExited) => {
                     skipped_processes += 1;
                     self.tracked.remove(&process_id);
-                    self.last_trimmed.remove(&process_id);
                 }
                 Err(MemoryTrimError::AccessDenied) => {
                     skipped_processes += 1;
@@ -299,7 +279,6 @@ impl MemoryTrimManager {
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
@@ -311,74 +290,6 @@ impl MemoryTrimManager {
             }
         }
 
-        let mut purged_standby_list = false;
-        let mut purged_system_file_cache = false;
-        let free_ram_excluding_cache_mb = free_ram_excluding_cache_mb().ok();
-        let purge_allowed = purge_allowed(
-            settings,
-            mode,
-            performance_mode_active,
-            free_ram_excluding_cache_mb,
-        );
-
-        if settings.purge_standby_list && purge_allowed {
-            if !self.is_system_action_suppressed(
-                "purge-standby-list",
-                "Purge standby list",
-                action_log,
-            ) {
-                match purge_standby_list() {
-                    Ok(()) => {
-                        purged_standby_list = true;
-                        self.clear_system_action_failure("purge-standby-list");
-                        action_log.record(
-                            ActionLogFeature::MemoryTrim,
-                            None,
-                            "System".to_owned(),
-                            ActionLogAction::Apply,
-                            ActionLogResult::Applied,
-                            "Purged standby list.",
-                        );
-                    }
-                    Err(err) => {
-                        self.record_system_action_failure("purge-standby-list");
-                        failures.record_system("Purge standby list", err, action_log);
-                    }
-                }
-            }
-        } else {
-            self.clear_system_action_failure("purge-standby-list");
-        }
-
-        if settings.purge_system_file_cache && purge_allowed {
-            if !self.is_system_action_suppressed(
-                "purge-system-file-cache",
-                "Purge system file cache",
-                action_log,
-            ) {
-                match purge_system_file_cache() {
-                    Ok(()) => {
-                        purged_system_file_cache = true;
-                        self.clear_system_action_failure("purge-system-file-cache");
-                        action_log.record(
-                            ActionLogFeature::MemoryTrim,
-                            None,
-                            "System".to_owned(),
-                            ActionLogAction::Apply,
-                            ActionLogResult::Applied,
-                            "Purged system file cache.",
-                        );
-                    }
-                    Err(err) => {
-                        self.record_system_action_failure("purge-system-file-cache");
-                        failures.record_system("Purge system file cache", err, action_log);
-                    }
-                }
-            }
-        } else {
-            self.clear_system_action_failure("purge-system-file-cache");
-        }
-
         MemoryTrimSnapshot {
             enabled: true,
             scanned_processes,
@@ -386,9 +297,6 @@ impl MemoryTrimManager {
             trimmed_processes,
             skipped_processes,
             failed_processes: failures.count,
-            purged_standby_list,
-            purged_system_file_cache,
-            free_ram_excluding_cache_mb,
             memory_load_percent: Some(memory_load_percent),
             trimmed_apps: trimmed_apps.into_iter().collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
@@ -410,27 +318,10 @@ impl MemoryTrimManager {
     ) -> Result<ProcessUpdate, MemoryTrimError> {
         let process = ProcessHandle::open(process_id)?;
         let memory = process.memory_sample()?;
-        if !settings.trim_working_sets {
-            self.tracked.remove(&process_id);
-            return Ok(ProcessUpdate::Waiting);
-        }
-
         let threshold_bytes = settings.process_working_set_threshold_mb.saturating_mul(MB);
         if memory.working_set_bytes < threshold_bytes {
             self.tracked.remove(&process_id);
             return Ok(ProcessUpdate::Waiting);
-        }
-
-        if mode == MemoryTrimMode::Automatic
-            && self
-                .last_trimmed
-                .get(&process_id)
-                .is_some_and(|trimmed_at| {
-                    now.duration_since(*trimmed_at)
-                        < Duration::from_secs(settings.trim_cooldown_seconds)
-                })
-        {
-            return Ok(ProcessUpdate::Candidate);
         }
 
         if mode == MemoryTrimMode::Manual {
@@ -440,7 +331,6 @@ impl MemoryTrimManager {
                 .memory_sample()
                 .map(|sample| sample.working_set_bytes)
                 .unwrap_or(0);
-            self.last_trimmed.insert(process_id, now);
             return Ok(ProcessUpdate::Trimmed {
                 freed_bytes: before.saturating_sub(after),
             });
@@ -454,6 +344,7 @@ impl MemoryTrimManager {
                 process_name: process_name.clone(),
                 previous_cpu_time: None,
                 idle_since: None,
+                trimmed_while_idle: false,
             });
         state.process_name = process_name;
 
@@ -465,14 +356,12 @@ impl MemoryTrimManager {
             return Ok(ProcessUpdate::Candidate);
         };
 
-        let idle_threshold = f32::from(settings.process_cpu_idle_threshold_percent.min(100));
-        if usage <= idle_threshold {
-            let idle_since = *state.idle_since.get_or_insert(now);
-            if now.duration_since(idle_since) < Duration::from_secs(settings.process_idle_seconds) {
-                return Ok(ProcessUpdate::Candidate);
-            }
-        } else {
-            state.idle_since = None;
+        if !ready_to_trim(
+            state,
+            usage,
+            Duration::from_secs(settings.process_idle_seconds),
+            now,
+        ) {
             return Ok(ProcessUpdate::Candidate);
         }
 
@@ -482,8 +371,7 @@ impl MemoryTrimManager {
             .memory_sample()
             .map(|sample| sample.working_set_bytes)
             .unwrap_or(0);
-        self.last_trimmed.insert(process_id, now);
-        state.idle_since = Some(now);
+        state.trimmed_while_idle = true;
         Ok(ProcessUpdate::Trimmed {
             freed_bytes: before.saturating_sub(after),
         })
@@ -491,12 +379,10 @@ impl MemoryTrimManager {
 
     fn clear_tracking(&mut self) {
         self.tracked.clear();
-        self.last_trimmed.clear();
     }
 
     fn clear_failure_suppression(&mut self) {
         self.failure_suppression.clear();
-        self.system_failure_suppression.clear();
     }
 
     fn is_process_suppressed(
@@ -517,7 +403,6 @@ impl MemoryTrimManager {
                 ActionLogFeature::MemoryTrim,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Memory Trim after {} failed attempts.",
@@ -537,42 +422,6 @@ impl MemoryTrimManager {
     fn clear_process_failure(&mut self, process_name: &str) {
         self.failure_suppression.clear_process_failure(process_name);
     }
-
-    fn is_system_action_suppressed(
-        &mut self,
-        key: &str,
-        label: &str,
-        action_log: &mut ActionLog,
-    ) -> bool {
-        let suppression = self.system_failure_suppression.key_suppression(key);
-        if !suppression.suppressed {
-            return false;
-        }
-
-        if suppression.newly_suppressed {
-            action_log.record(
-                ActionLogFeature::MemoryTrim,
-                None,
-                "System".to_owned(),
-                ActionLogAction::Skip,
-                ActionLogResult::Skipped,
-                format!(
-                    "Stopped retrying Memory Trim {label} after {} failed attempts.",
-                    execution_failure_suppression_threshold(),
-                ),
-            );
-        }
-
-        true
-    }
-
-    fn record_system_action_failure(&mut self, key: &str) {
-        self.system_failure_suppression.record_key_failure(key);
-    }
-
-    fn clear_system_action_failure(&mut self, key: &str) {
-        self.system_failure_suppression.clear_key_failure(key);
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -587,6 +436,24 @@ enum ProcessUpdate {
     Trimmed { freed_bytes: u64 },
 }
 
+fn ready_to_trim(
+    state: &mut TrackedProcess,
+    cpu_usage_percent: f32,
+    idle_duration: Duration,
+    now: Instant,
+) -> bool {
+    if cpu_usage_percent > CPU_IDLE_THRESHOLD_PERCENT {
+        state.idle_since = None;
+        state.trimmed_while_idle = false;
+        return false;
+    }
+    if state.trimmed_while_idle {
+        return false;
+    }
+
+    let idle_since = *state.idle_since.get_or_insert(now);
+    now.duration_since(idle_since) >= idle_duration
+}
 fn trim_reason(mode: MemoryTrimMode, freed_bytes: u64) -> String {
     match mode {
         MemoryTrimMode::Automatic => format!(
@@ -614,10 +481,10 @@ impl MemoryTrimFailures {
         error: MemoryTrimError,
         action_log: &mut ActionLog,
     ) {
-        let message = memory_trim_error_message(error);
-        if is_process_exited_message(&message) {
+        if matches!(&error, MemoryTrimError::ProcessExited) {
             return;
         }
+        let message = memory_trim_error_message(error);
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(format!("Trim {process_name} ({process_id}): {message}"));
@@ -626,106 +493,9 @@ impl MemoryTrimFailures {
             ActionLogFeature::MemoryTrim,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
-    }
-
-    fn record_system(&mut self, operation: &str, message: String, action_log: &mut ActionLog) {
-        self.count += 1;
-        if self.last_error.is_none() {
-            self.last_error = Some(format!("{operation}: {message}"));
-        }
-        action_log.record(
-            ActionLogFeature::MemoryTrim,
-            None,
-            "System".to_owned(),
-            ActionLogAction::Fail,
-            ActionLogResult::Failed,
-            format!("{operation}: {message}"),
-        );
-    }
-}
-
-fn purge_allowed(
-    settings: &MemoryTrimSettings,
-    mode: MemoryTrimMode,
-    performance_mode_active: bool,
-    free_ram_excluding_cache_mb: Option<u64>,
-) -> bool {
-    if settings.purge_only_in_performance_mode && !performance_mode_active {
-        return false;
-    }
-
-    if mode == MemoryTrimMode::Manual {
-        return true;
-    }
-
-    free_ram_excluding_cache_mb
-        .is_some_and(|free_mb| free_mb < settings.purge_free_ram_threshold_mb)
-}
-
-fn purge_standby_list() -> Result<(), String> {
-    if !enable_profile_single_process_privilege() {
-        return Err("SeProfileSingleProcessPrivilege is not available.".to_owned());
-    }
-
-    let mut command = MEMORY_PURGE_STANDBY_LIST;
-    nt_status_result(unsafe {
-        NtSetSystemInformation(
-            SYSTEM_MEMORY_LIST_INFORMATION_CLASS,
-            (&mut command as *mut u32).cast::<c_void>(),
-            std::mem::size_of::<u32>() as u32,
-        )
-    })
-    .map_err(|status| format!("NtSetSystemInformation(SystemMemoryListInformation) failed with NTSTATUS 0x{status:08X}."))
-}
-
-fn purge_system_file_cache() -> Result<(), String> {
-    if !enable_increase_quota_privilege() {
-        return Err("SeIncreaseQuotaPrivilege is not available.".to_owned());
-    }
-
-    let mut cache_info = SystemFileCacheInformation {
-        minimum_working_set: usize::MAX,
-        maximum_working_set: usize::MAX,
-        ..Default::default()
-    };
-    nt_status_result(unsafe {
-        NtSetSystemInformation(
-            SYSTEM_FILE_CACHE_INFORMATION_EX_CLASS,
-            (&mut cache_info as *mut SystemFileCacheInformation).cast::<c_void>(),
-            std::mem::size_of::<SystemFileCacheInformation>() as u32,
-        )
-    })
-    .map_err(|status| format!("NtSetSystemInformation(SystemFileCacheInformationEx) failed with NTSTATUS 0x{status:08X}."))
-}
-
-fn free_ram_excluding_cache_mb() -> Result<u64, String> {
-    let mut info = SystemMemoryListInformation::default();
-    nt_status_result(unsafe {
-        NtQuerySystemInformation(
-            SYSTEM_MEMORY_LIST_INFORMATION_CLASS,
-            (&mut info as *mut SystemMemoryListInformation).cast::<c_void>(),
-            std::mem::size_of::<SystemMemoryListInformation>() as u32,
-            std::ptr::null_mut(),
-        )
-    })
-    .map_err(|status| format!("NtQuerySystemInformation(SystemMemoryListInformation) failed with NTSTATUS 0x{status:08X}."))?;
-
-    Ok(
-        (info.zero_page_count.saturating_add(info.free_page_count) as u64)
-            .saturating_mul(u64::from(system_page_size()))
-            / MB,
-    )
-}
-
-fn nt_status_result(status: i32) -> Result<(), u32> {
-    if status >= 0 {
-        Ok(())
-    } else {
-        Err(status as u32)
     }
 }
 
@@ -733,6 +503,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, MemoryTrimError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_QUOTA,
@@ -752,6 +524,8 @@ impl ProcessHandle {
             cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
             ..Default::default()
         };
+        // SAFETY: self owns a live process handle and counters is writable for exactly the
+        // supplied structure size.
         let ok = unsafe {
             K32GetProcessMemoryInfo(
                 self.0.raw(),
@@ -776,6 +550,8 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
+        // call.
         let ok = unsafe {
             GetProcessTimes(
                 self.0.raw(),
@@ -799,6 +575,8 @@ impl ProcessHandle {
     }
 
     fn empty_working_set(&self) -> Result<(), MemoryTrimError> {
+        // SAFETY: self owns a live process handle; both usize::MAX values are the documented
+        // request to empty the working set.
         let ok = unsafe { SetProcessWorkingSetSize(self.0.raw(), usize::MAX, usize::MAX) };
         if ok == 0 {
             Err(MemoryTrimError::Failed(format!(
@@ -816,6 +594,7 @@ fn system_memory_load_percent() -> Result<u8, String> {
         dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
         ..Default::default()
     };
+    // SAFETY: status declares its initialized size and remains writable for the call.
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
     if ok == 0 {
         Err(format!(
@@ -857,41 +636,6 @@ fn size_label(bytes: u64) -> String {
     }
 }
 
-fn system_page_size() -> u32 {
-    let mut info = std::mem::MaybeUninit::<SYSTEM_INFO>::zeroed();
-    unsafe {
-        GetSystemInfo(info.as_mut_ptr());
-        info.assume_init().dwPageSize
-    }
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct SystemMemoryListInformation {
-    zero_page_count: usize,
-    free_page_count: usize,
-    modified_page_count: usize,
-    modified_no_write_page_count: usize,
-    bad_page_count: usize,
-    page_count_by_priority: [usize; 8],
-    repurposed_pages_by_priority: [usize; 8],
-    modified_page_count_page_file: usize,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct SystemFileCacheInformation {
-    current_size: usize,
-    peak_size: usize,
-    page_fault_count: u32,
-    minimum_working_set: usize,
-    maximum_working_set: usize,
-    current_size_including_transition_in_pages: usize,
-    peak_size_including_transition_in_pages: usize,
-    transition_repurpose_count: u32,
-    flags: u32,
-}
-
 #[repr(C)]
 #[derive(Default)]
 struct ProcessMemoryCounters {
@@ -908,19 +652,6 @@ struct ProcessMemoryCounters {
 }
 
 unsafe extern "system" {
-    fn NtQuerySystemInformation(
-        SystemInformationClass: u32,
-        SystemInformation: *mut c_void,
-        SystemInformationLength: u32,
-        ReturnLength: *mut u32,
-    ) -> i32;
-
-    fn NtSetSystemInformation(
-        SystemInformationClass: u32,
-        SystemInformation: *mut c_void,
-        SystemInformationLength: u32,
-    ) -> i32;
-
     fn K32GetProcessMemoryInfo(
         Process: HANDLE,
         Counters: *mut ProcessMemoryCounters,
@@ -943,9 +674,6 @@ impl Default for MemoryTrimSnapshot {
             trimmed_processes: 0,
             skipped_processes: 0,
             failed_processes: 0,
-            purged_standby_list: false,
-            purged_system_file_cache: false,
-            free_ram_excluding_cache_mb: None,
             memory_load_percent: None,
             trimmed_apps: Vec::new(),
             auto_excluded_processes: Vec::new(),
@@ -975,7 +703,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].feature, ActionLogFeature::MemoryTrim);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0].reason.contains("Stopped retrying Memory Trim"));
     }
@@ -995,63 +722,6 @@ mod tests {
     }
 
     #[test]
-    fn repeated_system_failures_suppress_memory_trim_system_actions_once() {
-        let mut manager = MemoryTrimManager::default();
-        let mut log = ActionLog::new(8);
-
-        manager.record_system_action_failure("purge-standby-list");
-        manager.record_system_action_failure("purge-standby-list");
-        assert!(!manager.is_system_action_suppressed(
-            "purge-standby-list",
-            "Purge standby list",
-            &mut log
-        ));
-
-        manager.record_system_action_failure("purge-standby-list");
-        assert!(manager.is_system_action_suppressed(
-            "purge-standby-list",
-            "Purge standby list",
-            &mut log
-        ));
-        assert!(manager.is_system_action_suppressed(
-            "purge-standby-list",
-            "Purge standby list",
-            &mut log
-        ));
-
-        let entries = log.entries();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].feature, ActionLogFeature::MemoryTrim);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
-        assert_eq!(entries[0].result, ActionLogResult::Skipped);
-        assert!(entries[0]
-            .reason
-            .contains("Stopped retrying Memory Trim Purge standby list"));
-    }
-
-    #[test]
-    fn successful_system_action_clears_memory_trim_failure_suppression() {
-        let mut manager = MemoryTrimManager::default();
-        let mut log = ActionLog::new(8);
-
-        manager.record_system_action_failure("purge-standby-list");
-        manager.record_system_action_failure("purge-standby-list");
-        manager.record_system_action_failure("purge-standby-list");
-        assert!(manager.is_system_action_suppressed(
-            "purge-standby-list",
-            "Purge standby list",
-            &mut log
-        ));
-
-        manager.clear_system_action_failure("purge-standby-list");
-        assert!(!manager.is_system_action_suppressed(
-            "purge-standby-list",
-            "Purge standby list",
-            &mut log
-        ));
-    }
-
-    #[test]
     fn builtin_exclusions_cover_sensitive_windows_processes() {
         assert!(is_builtin_excluded("csrss.exe"));
         assert!(is_builtin_excluded("winlogon.exe"));
@@ -1060,39 +730,22 @@ mod tests {
 
     #[test]
     fn foreground_skip_matches_pid_or_name() {
-        let settings = MemoryTrimSettings {
-            enabled: true,
-            check_interval_minutes: 15,
-            exclude_foreground_app: true,
-            trim_working_sets: true,
-            system_memory_load_threshold_percent: 80,
-            process_working_set_threshold_mb: 512,
-            process_cpu_idle_threshold_percent: 1,
-            process_idle_seconds: 300,
-            trim_cooldown_seconds: 900,
-            purge_standby_list: false,
-            purge_system_file_cache: false,
-            purge_only_in_performance_mode: true,
-            purge_free_ram_threshold_mb: 1024,
-            exclusions: Vec::new(),
-        };
-
         assert!(should_ignore_foreground_process(
-            settings.exclude_foreground_app,
+            true,
             42,
             "helper.exe",
             Some(42),
             Some("app.exe"),
         ));
         assert!(should_ignore_foreground_process(
-            settings.exclude_foreground_app,
+            true,
             99,
             "APP.EXE",
             Some(42),
             Some("app.exe"),
         ));
         assert!(!should_ignore_foreground_process(
-            settings.exclude_foreground_app,
+            true,
             99,
             "other.exe",
             Some(42),
@@ -1100,6 +753,40 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn trim_eligibility_rearms_only_after_process_activity() {
+        let now = Instant::now();
+        let mut process = TrackedProcess {
+            process_name: "app.exe".to_owned(),
+            previous_cpu_time: None,
+            idle_since: None,
+            trimmed_while_idle: false,
+        };
+        let idle_duration = Duration::from_secs(300);
+
+        assert!(!ready_to_trim(&mut process, 0.0, idle_duration, now));
+        assert!(ready_to_trim(
+            &mut process,
+            0.0,
+            idle_duration,
+            now + idle_duration
+        ));
+
+        process.trimmed_while_idle = true;
+        assert!(!ready_to_trim(
+            &mut process,
+            0.0,
+            idle_duration,
+            now + idle_duration
+        ));
+        assert!(!ready_to_trim(
+            &mut process,
+            2.0,
+            idle_duration,
+            now + idle_duration
+        ));
+        assert!(!process.trimmed_while_idle);
+    }
     #[test]
     fn process_cpu_usage_percent_scales_by_processor_count() {
         let now = Instant::now();

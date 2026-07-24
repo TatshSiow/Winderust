@@ -14,7 +14,6 @@ pub struct ActionLogEntry {
     pub feature: ActionLogFeature,
     pub process_id: Option<u32>,
     pub process_name: String,
-    pub action: ActionLogAction,
     pub result: ActionLogResult,
     pub reason: String,
 }
@@ -39,14 +38,6 @@ pub enum ActionLogFeature {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActionLogAction {
-    Apply,
-    Restore,
-    Skip,
-    Fail,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionLogResult {
     Applied,
     Restored,
@@ -63,10 +54,11 @@ pub struct ActionLog {
 
 impl ActionLog {
     pub fn new(capacity: usize) -> Self {
+        let capacity = capacity.max(1);
         Self {
-            entries: VecDeque::with_capacity(capacity.max(1)),
+            entries: VecDeque::with_capacity(capacity),
             next_sequence: 1,
-            capacity: capacity.max(1),
+            capacity,
             mode: ActionLogMode::Full,
         }
     }
@@ -80,7 +72,6 @@ impl ActionLog {
         feature: ActionLogFeature,
         process_id: Option<u32>,
         process_name: impl Into<String>,
-        action: ActionLogAction,
         result: ActionLogResult,
         reason: impl Into<String>,
     ) {
@@ -98,7 +89,6 @@ impl ActionLog {
             feature,
             process_id,
             process_name: process_name.into(),
-            action,
             result,
             reason: reason.into(),
         };
@@ -116,12 +106,6 @@ impl ActionLog {
 
     pub fn clear(&mut self) {
         self.entries.clear();
-        self.entries.shrink_to_fit();
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.entries.len()
     }
 }
 
@@ -163,7 +147,6 @@ mod tests {
             ActionLogFeature::CoreLimiter,
             Some(1),
             "a.exe",
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             "first",
         );
@@ -171,7 +154,6 @@ mod tests {
             ActionLogFeature::CoreLimiter,
             Some(2),
             "b.exe",
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             "second",
         );
@@ -179,13 +161,12 @@ mod tests {
             ActionLogFeature::CoreLimiter,
             Some(3),
             "c.exe",
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             "third",
         );
 
         let entries = log.entries();
-        assert_eq!(log.len(), 2);
+        assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].sequence, 2);
         assert_eq!(entries[1].sequence, 3);
         assert_eq!(entries[1].process_name, "c.exe");
@@ -198,7 +179,6 @@ mod tests {
             ActionLogFeature::CoreLimiter,
             Some(1),
             "a.exe",
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             "first",
         );
@@ -207,7 +187,6 @@ mod tests {
             ActionLogFeature::CoreLimiter,
             Some(2),
             "b.exe",
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             "second",
         );
@@ -226,7 +205,6 @@ mod tests {
             ActionLogFeature::CoreLimiter,
             Some(1),
             "a.exe",
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             "ok",
         );
@@ -244,7 +222,6 @@ mod tests {
             ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
             "applied",
         );
@@ -252,7 +229,6 @@ mod tests {
             ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
-            ActionLogAction::Skip,
             ActionLogResult::Skipped,
             "skipped",
         );
@@ -260,7 +236,6 @@ mod tests {
             ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             "failed",
         );
@@ -276,7 +251,6 @@ mod tests {
             ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
-            ActionLogAction::Skip,
             ActionLogResult::Skipped,
             "skipped",
         );
@@ -284,7 +258,6 @@ mod tests {
             ActionLogFeature::BackgroundEfficiency,
             Some(1),
             "app.exe",
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             "failed",
         );
@@ -297,7 +270,6 @@ mod tests {
             ActionLogFeature::BackgroundEfficiency,
             Some(2),
             "other.exe",
-            ActionLogAction::Restore,
             ActionLogResult::Restored,
             "restored",
         );

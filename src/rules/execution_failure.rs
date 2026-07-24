@@ -37,19 +37,15 @@ struct ExecutionFailureState {
 }
 
 impl ExecutionFailureState {
-    pub fn record_failure(&mut self) {
+    fn record_failure(&mut self) {
         self.attempts = self.attempts.saturating_add(1);
     }
 
-    pub fn is_suppressed(&self) -> bool {
-        self.is_suppressed_at(execution_failure_suppression_threshold())
+    fn is_suppressed(&self) -> bool {
+        self.attempts >= execution_failure_suppression_threshold()
     }
 
-    pub fn is_suppressed_at(&self, threshold: u8) -> bool {
-        self.attempts >= threshold
-    }
-
-    pub fn mark_suppression_logged(&mut self) -> bool {
+    fn mark_suppression_logged(&mut self) -> bool {
         if self.suppression_logged {
             false
         } else {

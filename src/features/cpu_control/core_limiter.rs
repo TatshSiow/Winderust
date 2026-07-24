@@ -13,13 +13,13 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{CoreLimiterRule, CoreLimiterSettings},
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, is_process_exited_message, list_processes, process_failure_key,
-        process_names_by_id, process_session_id, same_process_name,
-        should_ignore_foreground_process, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_failure_key, process_names_by_id,
+        process_session_id, same_process_name, should_ignore_foreground_process, unique_app_names,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
@@ -107,6 +107,7 @@ impl CoreLimiterManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
@@ -169,7 +170,6 @@ impl CoreLimiterManager {
                         ActionLogFeature::CoreLimiter,
                         Some(process.id),
                         process.name.clone(),
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because Core Steering is already managing this process.",
                     );
@@ -226,16 +226,11 @@ impl CoreLimiterManager {
                         ActionLogFeature::CoreLimiter,
                         Some(process_id),
                         failure_process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
                 }
                 Err(CoreLimiterError::Failed(err)) => {
-                    if is_process_exited_message(&err) {
-                        skipped_processes += 1;
-                        continue;
-                    }
                     self.record_process_failure(&failure_process_name);
                     failures.record_message(
                         "Limit",
@@ -301,10 +296,11 @@ impl CoreLimiterManager {
             if self.limited.contains_key(&process_id)
                 || now.duration_since(high_since) >= Duration::from_secs(rule.sustain_seconds)
             {
-                self.apply_limit(
+                apply_cpu_limit_to_process(
                     process_id,
                     process_name,
                     rule.max_logical_processors,
+                    &mut self.limited,
                     action_log,
                 )?;
             }
@@ -322,22 +318,6 @@ impl CoreLimiterManager {
         }
 
         Ok(())
-    }
-
-    fn apply_limit(
-        &mut self,
-        process_id: u32,
-        process_name: String,
-        max_logical_processors: u8,
-        action_log: &mut ActionLog,
-    ) -> Result<(), CoreLimiterError> {
-        apply_cpu_limit_to_process(
-            process_id,
-            process_name,
-            max_logical_processors,
-            &mut self.limited,
-            action_log,
-        )
     }
 
     fn release_non_targets(
@@ -400,7 +380,6 @@ impl CoreLimiterManager {
                         ActionLogFeature::CoreLimiter,
                         Some(*process_id),
                         process_name,
-                        ActionLogAction::Restore,
                         ActionLogResult::Restored,
                         reason.to_owned(),
                     );
@@ -428,7 +407,6 @@ impl CoreLimiterManager {
                 ActionLogFeature::CoreLimiter,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Core Limiter after {} failed attempts.",
@@ -530,27 +508,39 @@ fn apply_cpu_limit_to_process(
         .process_creation_time()
         .ok_or(CoreLimiterError::ProcessExited)?;
     let (current_affinity, system_affinity) = process.affinity_mask()?;
-    let Some(target_affinity) =
-        limited_affinity_mask(current_affinity, system_affinity, max_logical_processors)
-    else {
-        return Ok(());
-    };
-
-    if limited.get(&process_id).is_some_and(|limited| {
-        limited.creation_time == creation_time
-            && same_process_name(&limited.process_name, &process_name)
-            && limited.applied_affinity == target_affinity
-            && current_affinity == target_affinity
-    }) {
-        return Ok(());
-    }
-
-    let previous_affinity = limited
+    let existing = limited
         .get(&process_id)
         .filter(|limited| limited.creation_time == creation_time)
         .filter(|limited| same_process_name(&limited.process_name, &process_name))
-        .map(|limited| limited.previous_affinity)
-        .unwrap_or(current_affinity);
+        .cloned();
+    let original_affinity = existing
+        .as_ref()
+        .map_or(current_affinity, |limited| limited.previous_affinity);
+
+    let Some(target_affinity) =
+        limited_affinity_mask(original_affinity, system_affinity, max_logical_processors)
+    else {
+        if let Some(existing) = existing {
+            if current_affinity != existing.previous_affinity {
+                process.set_affinity_mask(existing.previous_affinity)?;
+                action_log.record(
+                    ActionLogFeature::CoreLimiter,
+                    Some(process_id),
+                    process_name,
+                    ActionLogResult::Restored,
+                    "Rule no longer limits this process.",
+                );
+            }
+            limited.remove(&process_id);
+        }
+        return Ok(());
+    };
+
+    if existing.as_ref().is_some_and(|limited| {
+        limited.applied_affinity == target_affinity && current_affinity == target_affinity
+    }) {
+        return Ok(());
+    }
 
     if current_affinity != target_affinity {
         process.set_affinity_mask(target_affinity)?;
@@ -558,9 +548,8 @@ fn apply_cpu_limit_to_process(
             ActionLogFeature::CoreLimiter,
             Some(process_id),
             process_name.clone(),
-            ActionLogAction::Apply,
             ActionLogResult::Applied,
-            format!("Constrained affinity from {previous_affinity:#x} to {target_affinity:#x}."),
+            format!("Constrained affinity from {original_affinity:#x} to {target_affinity:#x}."),
         );
     }
 
@@ -569,13 +558,12 @@ fn apply_cpu_limit_to_process(
         LimitedProcess {
             process_name,
             creation_time,
-            previous_affinity,
+            previous_affinity: original_affinity,
             applied_affinity: target_affinity,
         },
     );
     Ok(())
 }
-
 fn restore_affinity(
     process_id: u32,
     process_state: &LimitedProcess,
@@ -629,9 +617,6 @@ impl CoreLimiterFailures {
         message: String,
         action_log: &mut ActionLog,
     ) {
-        if is_process_exited_message(&message) {
-            return;
-        }
         self.count += 1;
         if self.last_error.is_none() {
             self.last_error = Some(process_failure_message(
@@ -645,7 +630,6 @@ impl CoreLimiterFailures {
             ActionLogFeature::CoreLimiter,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -679,6 +663,8 @@ impl ProcessHandle {
 
         let mut last_open_error = 0;
         for access in access_masks {
+            // SAFETY: process_id came from the current process snapshot, access is one of the two
+            // documented masks above, and no inherited handle is requested.
             let handle = unsafe { OpenProcess(access, 0, process_id) };
             if !handle.is_null() {
                 return Ok(Self(WinHandle::new(handle)));
@@ -690,6 +676,8 @@ impl ProcessHandle {
     }
 
     fn open_query(process_id: u32) -> Result<Self, CoreLimiterError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
         if !handle.is_null() {
             Ok(Self(WinHandle::new(handle)))
@@ -701,6 +689,7 @@ impl ProcessHandle {
     fn affinity_mask(&self) -> Result<(usize, usize), CoreLimiterError> {
         let mut process_affinity = 0;
         let mut system_affinity = 0;
+        // SAFETY: self owns a live process handle and both affinity outputs are writable.
         let ok = unsafe {
             GetProcessAffinityMask(self.0.raw(), &mut process_affinity, &mut system_affinity)
         };
@@ -715,6 +704,8 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), CoreLimiterError> {
+        // SAFETY: self owns a live process handle and affinity_mask was normalized against the
+        // system mask read from this process.
         let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
         if ok == 0 {
             Err(CoreLimiterError::Failed(format!(
@@ -731,6 +722,8 @@ impl ProcessHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live process handle and every FILETIME output is writable for the
+        // call.
         let ok = unsafe {
             GetProcessTimes(
                 self.0.raw(),
@@ -842,7 +835,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].process_name, "app.exe");
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 

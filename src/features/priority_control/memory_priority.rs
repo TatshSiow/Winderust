@@ -14,17 +14,15 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{MemoryPrioritySettings, ProcessMemoryPriority, ProcessMemoryPrioritySetting},
     foreground::{
-        contains_process_name, is_foreground_process, is_process_exited_message, list_processes,
-        process_count_label, process_failure_key, process_session_id, same_process_name,
-        unique_app_names, ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, is_foreground_process, list_processes, process_count_label,
+        process_failure_key, process_session_id, same_process_name, unique_app_names,
+        ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
-
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemoryPrioritySnapshot {
@@ -122,6 +120,7 @@ impl MemoryPriorityManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(
@@ -297,7 +296,6 @@ impl MemoryPriorityManager {
                         action_log_feature,
                         Some(target.process_id),
                         target.process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because Windows denied memory priority access to the process.",
                     );
@@ -320,7 +318,6 @@ impl MemoryPriorityManager {
                 action_log_feature,
                 None,
                 memory_priority_summary_process_name(action_log_feature),
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 memory_priority_apply_summary_message(applied_processes),
             );
@@ -476,7 +473,6 @@ impl MemoryPriorityManager {
                         action_log_feature,
                         Some(*process_id),
                         log_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         format!(
                             "Skipped restoring previous memory priority because Windows denied access: {reason}."
@@ -501,7 +497,6 @@ impl MemoryPriorityManager {
                 action_log_feature,
                 None,
                 memory_priority_summary_process_name(action_log_feature),
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
                 memory_priority_restore_summary_message(restored_processes, reason),
             );
@@ -528,7 +523,6 @@ impl MemoryPriorityManager {
                 action_log_feature,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying memory priority after {} failed attempts.",
@@ -573,9 +567,6 @@ impl MemoryPriorityFailures {
         action_log: &mut ActionLog,
     ) {
         let message = memory_priority_error_message(error);
-        if is_process_exited_message(&message) {
-            return;
-        }
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -584,7 +575,6 @@ impl MemoryPriorityFailures {
             action_log_feature,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -606,6 +596,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, MemoryPriorityError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -616,12 +608,17 @@ impl ProcessHandle {
         if !handle.is_null() {
             Ok(Self(WinHandle::new(handle)))
         } else {
-            Err(open_process_error(process_id, last_error()))
+            Err(process_error(
+                &format!("OpenProcess({process_id})"),
+                last_error(),
+            ))
         }
     }
 
     fn memory_priority(&self) -> Result<ProcessMemoryPriority, MemoryPriorityError> {
         let mut priority = MEMORY_PRIORITY_INFORMATION::default();
+        // SAFETY: self owns a live process handle and priority is writable for exactly the
+        // structure size supplied.
         let ok = unsafe {
             GetProcessInformation(
                 self.0.raw(),
@@ -631,7 +628,7 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(open_process_error(0, last_error()))
+            Err(process_error("GetProcessInformation", last_error()))
         } else {
             Ok(memory_priority_from_raw(priority.MemoryPriority))
         }
@@ -644,6 +641,8 @@ impl ProcessHandle {
         let info = MEMORY_PRIORITY_INFORMATION {
             MemoryPriority: memory_priority_raw(priority),
         };
+        // SAFETY: self owns a live process handle and info is fully initialized for exactly the
+        // structure size supplied.
         let ok = unsafe {
             SetProcessInformation(
                 self.0.raw(),
@@ -653,7 +652,7 @@ impl ProcessHandle {
             )
         };
         if ok == 0 {
-            Err(open_process_error(0, last_error()))
+            Err(process_error("SetProcessInformation", last_error()))
         } else {
             Ok(())
         }
@@ -710,13 +709,11 @@ fn restore_process(
     }
 }
 
-fn open_process_error(process_id: u32, error: u32) -> MemoryPriorityError {
+fn process_error(operation: &str, error: u32) -> MemoryPriorityError {
     match error {
         ERROR_ACCESS_DENIED => MemoryPriorityError::AccessDenied,
         ERROR_INVALID_PARAMETER => MemoryPriorityError::ProcessExited,
-        _ => MemoryPriorityError::Failed(format!(
-            "OpenProcess({process_id}) failed with error {error}."
-        )),
+        _ => MemoryPriorityError::Failed(format!("{operation} failed with error {error}.")),
     }
 }
 
@@ -765,7 +762,7 @@ pub fn memory_priority_label(priority: ProcessMemoryPriority) -> &'static str {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
+    contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, process_name)
 }
 
 fn should_skip_process(
@@ -868,7 +865,6 @@ mod tests {
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].feature, ActionLogFeature::WorkloadEngine);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
         assert!(entries[0]
             .reason

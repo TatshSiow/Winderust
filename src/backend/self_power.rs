@@ -39,7 +39,7 @@ fn set_hidden_mode(enabled: bool) -> Result<(), String> {
     let mut state = SELF_POWER_STATE
         .lock()
         .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
-    ensure_state(&mut state)?.hidden_mode = enabled;
+    ensure_state(&mut state).hidden_mode = enabled;
     apply_self_power_state(&mut state)
 }
 
@@ -47,31 +47,28 @@ fn set_adaptive_engine(enabled: bool) -> Result<(), String> {
     let mut state = SELF_POWER_STATE
         .lock()
         .map_err(|_| "Winderust self power state lock is poisoned.".to_owned())?;
-    ensure_state(&mut state)?.adaptive_engine = enabled;
+    ensure_state(&mut state).adaptive_engine = enabled;
     apply_self_power_state(&mut state)
 }
 
-fn ensure_state(state: &mut Option<SelfPowerState>) -> Result<&mut SelfPowerState, String> {
-    if state.is_none() {
+fn ensure_state(state: &mut Option<SelfPowerState>) -> &mut SelfPowerState {
+    state.get_or_insert_with(|| {
+        // SAFETY: GetCurrentProcess takes no arguments and returns a valid pseudo-handle.
         let process = unsafe { GetCurrentProcess() };
-        *state = Some(SelfPowerState {
+        SelfPowerState {
             previous_power_throttling: power_throttling_state(process).ok(),
             previous_priority: priority_class(process).ok(),
             hidden_mode: false,
             adaptive_engine: false,
-        });
-    }
-
-    state
-        .as_mut()
-        .ok_or_else(|| "Winderust self power state is unavailable.".to_owned())
+        }
+    })
 }
-
 fn apply_self_power_state(state: &mut Option<SelfPowerState>) -> Result<(), String> {
     let Some(current) = *state else {
         return Ok(());
     };
 
+    // SAFETY: GetCurrentProcess takes no arguments and returns a valid pseudo-handle.
     let process = unsafe { GetCurrentProcess() };
     let enabled = current.hidden_mode || current.adaptive_engine;
     let next_power_state = if enabled {
@@ -101,6 +98,8 @@ fn power_throttling_state(
     process: windows_sys::Win32::Foundation::HANDLE,
 ) -> Result<PROCESS_POWER_THROTTLING_STATE, String> {
     let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+    // SAFETY: process is the current-process pseudo-handle and state is writable for exactly the
+    // structure size passed to Windows.
     let ok = unsafe {
         GetProcessInformation(
             process,
@@ -123,6 +122,8 @@ fn set_power_throttling_state(
     process: windows_sys::Win32::Foundation::HANDLE,
     state: PROCESS_POWER_THROTTLING_STATE,
 ) -> Result<(), String> {
+    // SAFETY: process is the current-process pseudo-handle and state points to a fully initialized
+    // structure for exactly the supplied size.
     let ok = unsafe {
         SetProcessInformation(
             process,
@@ -142,6 +143,7 @@ fn set_power_throttling_state(
 }
 
 fn priority_class(process: windows_sys::Win32::Foundation::HANDLE) -> Result<u32, String> {
+    // SAFETY: process is the valid current-process pseudo-handle.
     let priority = unsafe { GetPriorityClass(process) };
     if priority == 0 {
         Err(format!(
@@ -157,6 +159,8 @@ fn set_priority_class(
     process: windows_sys::Win32::Foundation::HANDLE,
     priority_class: u32,
 ) -> Result<(), String> {
+    // SAFETY: process is the valid current-process pseudo-handle and priority_class is selected
+    // from documented Win32 constants or a previously read value.
     let ok = unsafe { SetPriorityClass(process, priority_class) };
     if ok == 0 {
         Err(format!(

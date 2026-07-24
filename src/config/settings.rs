@@ -8,6 +8,9 @@ use crate::rules::{
     DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD,
 };
 
+pub const CHECK_INTERVAL_MIN_MS: u64 = 250;
+pub const CHECK_INTERVAL_MAX_MS: u64 = 60 * 1000;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub general: GeneralSettings,
@@ -62,6 +65,10 @@ pub struct AdvancedSettings {
     pub expose_all_priority_values: bool,
     #[serde(default)]
     pub show_advanced_controls: bool,
+    #[serde(default)]
+    pub pause_dashboard_metrics: bool,
+    #[serde(default)]
+    pub pause_process_population: bool,
 }
 
 impl AdvancedSettings {
@@ -238,7 +245,7 @@ pub struct InputDetectionSettings {
     pub controller: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByForegroundSettings {
     #[serde(default)]
     pub enabled: bool,
@@ -855,30 +862,12 @@ pub struct TimerResolutionSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryTrimSettings {
     pub enabled: bool,
-    #[serde(default = "default_memory_trim_check_interval_minutes")]
-    pub check_interval_minutes: u64,
-    #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
-    #[serde(default = "default_true")]
-    pub trim_working_sets: bool,
     #[serde(default = "default_memory_trim_system_memory_load_threshold_percent")]
     pub system_memory_load_threshold_percent: u8,
     #[serde(default = "default_memory_trim_process_working_set_threshold_mb")]
     pub process_working_set_threshold_mb: u64,
-    #[serde(default = "default_memory_trim_process_cpu_idle_threshold_percent")]
-    pub process_cpu_idle_threshold_percent: u8,
     #[serde(default = "default_memory_trim_process_idle_seconds")]
     pub process_idle_seconds: u64,
-    #[serde(default = "default_memory_trim_cooldown_seconds")]
-    pub trim_cooldown_seconds: u64,
-    #[serde(default)]
-    pub purge_standby_list: bool,
-    #[serde(default)]
-    pub purge_system_file_cache: bool,
-    #[serde(default = "default_true")]
-    pub purge_only_in_performance_mode: bool,
-    #[serde(default = "default_memory_trim_purge_free_ram_threshold_mb")]
-    pub purge_free_ram_threshold_mb: u64,
     #[serde(default)]
     pub exclusions: Vec<ProcessExclusionRule>,
 }
@@ -1431,7 +1420,7 @@ impl Default for Settings {
             advanced: AdvancedSettings::default(),
             adaptive_engine: AdaptiveEngineSettings::default(),
             by_activity: ByActivitySettings {
-                enabled: true,
+                enabled: false,
                 idle_timeout_seconds: 300,
                 switch_to_performance_on_resume: true,
                 input_detection: InputDetectionSettings::default(),
@@ -1477,6 +1466,8 @@ impl Default for AdvancedSettings {
                 default_execution_failure_suppression_threshold(),
             expose_all_priority_values: false,
             show_advanced_controls: false,
+            pause_dashboard_metrics: false,
+            pause_process_population: false,
         }
     }
 }
@@ -1497,15 +1488,6 @@ impl Default for InputDetectionSettings {
 
 const fn default_true() -> bool {
     true
-}
-
-impl Default for ByForegroundSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            rules: Vec::new(),
-        }
-    }
 }
 
 impl Default for ByCpuLoadSettings {
@@ -1706,31 +1688,15 @@ const fn default_core_limiter_max_logical_processors() -> u8 {
 }
 
 const fn default_memory_trim_system_memory_load_threshold_percent() -> u8 {
-    65
+    80
 }
 
 const fn default_memory_trim_process_working_set_threshold_mb() -> u64 {
-    196
-}
-
-const fn default_memory_trim_process_cpu_idle_threshold_percent() -> u8 {
-    1
+    256
 }
 
 const fn default_memory_trim_process_idle_seconds() -> u64 {
     300
-}
-
-const fn default_memory_trim_cooldown_seconds() -> u64 {
-    900
-}
-
-const fn default_memory_trim_check_interval_minutes() -> u64 {
-    15
-}
-
-const fn default_memory_trim_purge_free_ram_threshold_mb() -> u64 {
-    1024
 }
 
 const fn default_timer_resolution_100ns() -> u32 {
@@ -2023,21 +1989,11 @@ impl Default for MemoryTrimSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            check_interval_minutes: default_memory_trim_check_interval_minutes(),
-            exclude_foreground_app: default_true(),
-            trim_working_sets: default_true(),
             system_memory_load_threshold_percent:
                 default_memory_trim_system_memory_load_threshold_percent(),
             process_working_set_threshold_mb: default_memory_trim_process_working_set_threshold_mb(
             ),
-            process_cpu_idle_threshold_percent:
-                default_memory_trim_process_cpu_idle_threshold_percent(),
             process_idle_seconds: default_memory_trim_process_idle_seconds(),
-            trim_cooldown_seconds: default_memory_trim_cooldown_seconds(),
-            purge_standby_list: false,
-            purge_system_file_cache: false,
-            purge_only_in_performance_mode: default_true(),
-            purge_free_ram_threshold_mb: default_memory_trim_purge_free_ram_threshold_mb(),
             exclusions: Vec::new(),
         }
     }
@@ -2228,10 +2184,7 @@ impl TimerResolutionSettings {
             .find(|rule| {
                 rule.enabled
                     && !rule.process_name.trim().is_empty()
-                    && wildcard_match(
-                        &rule.process_name.trim().to_ascii_lowercase(),
-                        &process_name.trim().to_ascii_lowercase(),
-                    )
+                    && process_name_matches_pattern(&rule.process_name, process_name)
             })
             .map(|rule| (rule.process_name.clone(), rule.desired_100ns))
     }
@@ -2339,7 +2292,7 @@ impl WorkloadEngineSettings {
             .any(|rule| same_process_name(&rule.process_name, process_name))
     }
 
-    pub fn contains_workload_engine_exclusion(&self, process_name: &str) -> bool {
+    pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.workload_engine_exclusions
             .iter()
             .any(|rule| same_process_name(&rule.process_name, process_name))
@@ -2479,6 +2432,36 @@ impl ByCpuLoadRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_run_rule_modules_are_disabled() {
+        let settings = Settings::default();
+
+        assert!(![
+            settings.adaptive_engine.enabled,
+            settings.by_activity.enabled,
+            settings.by_foreground.enabled,
+            settings.by_time.enabled,
+            settings.by_cpu_load.enabled,
+            settings.background_efficiency.enabled,
+            settings.app_suspension.enabled,
+            settings.core_steering.enabled,
+            settings.background_cpu_restriction.enabled,
+            settings.core_limiter.enabled,
+            settings.by_running_app.enabled,
+            settings.workload_engine.enabled,
+            settings.process_priority.enabled,
+            settings.thread_priority.enabled,
+            settings.dynamic_priority_boost.enabled,
+            settings.io_priority.enabled,
+            settings.gpu_priority.enabled,
+            settings.memory_priority.enabled,
+            settings.memory_trim.enabled,
+            settings.timer_resolution.enabled,
+        ]
+        .into_iter()
+        .any(|enabled| enabled));
+    }
 
     #[test]
     fn network_threshold_units_convert_to_canonical_bytes() {

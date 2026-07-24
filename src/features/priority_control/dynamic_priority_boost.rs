@@ -11,17 +11,15 @@ use windows_sys::Win32::{
 use crate::win_util::{last_error, WinHandle};
 
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{DynamicPriorityBoostSettings, ProcessDynamicPriorityBoostSetting},
     foreground::{
-        is_foreground_process, is_process_exited_message, list_processes, process_failure_key,
+        is_foreground_process, list_processes, process_count_label, process_failure_key,
         process_names_by_id, process_session_id, same_process_name, unique_app_names,
         CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
-
-const BUILT_IN_EXCLUSIONS: &[&str] = CORE_BUILT_IN_PROCESS_EXCLUSIONS;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DynamicPriorityBoostSnapshot {
@@ -102,6 +100,7 @@ impl DynamicPriorityBoostManager {
             };
         }
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failures = self.clear_all(action_log, "current Windows session is unknown");
@@ -131,12 +130,7 @@ impl DynamicPriorityBoostManager {
         let scanned_processes = processes.len();
         let current_process_names = process_names_by_id(&processes);
         let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
-            })
+            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
         } else {
             None
         };
@@ -206,26 +200,29 @@ impl DynamicPriorityBoostManager {
                     if loggable {
                         applied_processes += 1;
                     }
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                 }
                 Ok(ApplyOutcome::AlreadyApplied) => {
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                 }
                 Err(DynamicPriorityBoostError::ProcessExited) => skipped_processes += 1,
                 Err(DynamicPriorityBoostError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::DynamicPriorityBoost,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process could not be opened.",
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     failures.record("Apply", process_id, &process_name, err, action_log);
                 }
             }
@@ -235,10 +232,10 @@ impl DynamicPriorityBoostManager {
                 ActionLogFeature::DynamicPriorityBoost,
                 None,
                 "Dynamic Priority Boost",
-                ActionLogAction::Apply,
                 ActionLogResult::Applied,
                 format!(
-                    "Applied dynamic priority boost defaults to {applied_processes} process(es)."
+                    "Applied dynamic priority boost defaults to {}.",
+                    process_count_label(applied_processes)
                 ),
             );
         }
@@ -277,9 +274,11 @@ impl DynamicPriorityBoostManager {
         });
         let current_disabled = process.dynamic_priority_boost_disabled()?;
 
-        if reusable_existing.is_some_and(|adjusted| {
-            adjusted.applied_disabled == disabled && current_disabled == disabled
-        }) {
+        if boost_already_applied(
+            current_disabled,
+            disabled,
+            reusable_existing.map(|adjusted| adjusted.applied_disabled),
+        ) {
             return Ok(ApplyOutcome::AlreadyApplied);
         }
 
@@ -360,14 +359,14 @@ impl DynamicPriorityBoostManager {
             match restore_process(*process_id, &process_state) {
                 Ok(()) => {
                     self.adjusted.remove(process_id);
-                    self.clear_process_failure(&log_name);
+                    self.failure_suppression.clear_process_failure(&log_name);
                     restored_processes += 1;
                 }
                 Err(DynamicPriorityBoostError::ProcessExited) => {
                     self.adjusted.remove(process_id);
                 }
                 Err(err) => {
-                    self.record_process_failure(&log_name);
+                    self.failure_suppression.record_process_failure(&log_name);
                     failures.record("Restore", *process_id, &log_name, err, action_log);
                 }
             }
@@ -377,9 +376,11 @@ impl DynamicPriorityBoostManager {
                 ActionLogFeature::DynamicPriorityBoost,
                 None,
                 "Dynamic Priority Boost",
-                ActionLogAction::Restore,
                 ActionLogResult::Restored,
-                format!("Restored dynamic priority boost for {restored_processes} process(es): {reason}."),
+                format!(
+                    "Restored dynamic priority boost for {}: {reason}.",
+                    process_count_label(restored_processes)
+                ),
             );
         }
         failures
@@ -403,7 +404,6 @@ impl DynamicPriorityBoostManager {
                 ActionLogFeature::DynamicPriorityBoost,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying Dynamic Priority Boost after {} failed attempts.",
@@ -413,15 +413,6 @@ impl DynamicPriorityBoostManager {
         }
 
         true
-    }
-
-    fn record_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .record_process_failure(process_name);
-    }
-
-    fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression.clear_process_failure(process_name);
     }
 }
 
@@ -453,9 +444,6 @@ impl DynamicPriorityBoostFailures {
         action_log: &mut ActionLog,
     ) {
         let message = dynamic_priority_boost_error_message(error);
-        if is_process_exited_message(&message) {
-            return;
-        }
         if self.last_error.is_none() {
             self.last_error = Some(format!("{action} {process_name} ({process_id}): {message}"));
         }
@@ -464,7 +452,6 @@ impl DynamicPriorityBoostFailures {
             ActionLogFeature::DynamicPriorityBoost,
             Some(process_id),
             process_name.to_owned(),
-            ActionLogAction::Fail,
             ActionLogResult::Failed,
             message,
         );
@@ -475,6 +462,8 @@ struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
     fn open(process_id: u32) -> Result<Self, DynamicPriorityBoostError> {
+        // SAFETY: process_id came from the current process snapshot and no inherited handle is
+        // requested.
         let handle = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
@@ -491,6 +480,7 @@ impl ProcessHandle {
 
     fn dynamic_priority_boost_disabled(&self) -> Result<bool, DynamicPriorityBoostError> {
         let mut disabled = 0_i32;
+        // SAFETY: self owns a live process handle and disabled is writable for the call.
         if unsafe { GetProcessPriorityBoost(self.0.raw(), &mut disabled) } != 0 {
             Ok(disabled != 0)
         } else {
@@ -505,6 +495,8 @@ impl ProcessHandle {
         &self,
         disabled: bool,
     ) -> Result<(), DynamicPriorityBoostError> {
+        // SAFETY: self owns a live process handle and disabled is converted to the documented BOOL
+        // representation.
         if unsafe { SetProcessPriorityBoost(self.0.raw(), i32::from(disabled)) } != 0 {
             Ok(())
         } else {
@@ -545,6 +537,15 @@ fn open_process_error(process_id: u32, error: u32) -> DynamicPriorityBoostError 
     }
 }
 
+fn boost_already_applied(
+    current_disabled: bool,
+    desired_disabled: bool,
+    applied_disabled: Option<bool>,
+) -> bool {
+    current_disabled == desired_disabled
+        && applied_disabled.is_none_or(|applied| applied == desired_disabled)
+}
+
 fn dynamic_priority_boost_error_message(error: DynamicPriorityBoostError) -> String {
     match error {
         DynamicPriorityBoostError::AccessDenied => "Access denied.".to_owned(),
@@ -554,7 +555,18 @@ fn dynamic_priority_boost_error_message(error: DynamicPriorityBoostError) -> Str
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
-    BUILT_IN_EXCLUSIONS
+    CORE_BUILT_IN_PROCESS_EXCLUSIONS
         .iter()
         .any(|excluded| same_process_name(excluded, process_name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::boost_already_applied;
+
+    #[test]
+    fn matching_unmanaged_boost_is_already_applied() {
+        assert!(boost_already_applied(false, false, None));
+        assert!(!boost_already_applied(false, false, Some(true)));
+    }
 }

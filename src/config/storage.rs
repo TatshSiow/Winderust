@@ -23,12 +23,8 @@ fn default_export_toml_filename() -> String {
     format!(
         "winderust_{}_{}.toml",
         env!("CARGO_PKG_VERSION"),
-        export_date()
+        Local::now().format("%Y-%m-%d")
     )
-}
-
-fn export_date() -> String {
-    Local::now().format("%Y-%m-%d").to_string()
 }
 
 fn config_dir() -> PathBuf {
@@ -40,12 +36,15 @@ fn config_dir() -> PathBuf {
 }
 
 pub fn load() -> Result<Settings, String> {
-    let path = config_path();
-    if !path.exists() {
-        return Ok(Settings::default());
-    }
+    load_from_path(&config_path())
+}
 
-    read_toml_settings(&path)
+fn load_from_path(path: &Path) -> Result<Settings, String> {
+    match fs::read_to_string(path) {
+        Ok(raw) => parse_toml_settings(path, &raw),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
+    }
 }
 
 pub fn save(settings: &Settings) -> Result<(), String> {
@@ -66,27 +65,27 @@ pub fn import_toml_from(path: &Path) -> Result<Settings, String> {
 fn read_toml_settings(path: &Path) -> Result<Settings, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read {}: {err}", path.display()))?;
-    toml_to_settings(&raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
+    parse_toml_settings(path, &raw)
+}
+
+fn parse_toml_settings(path: &Path, raw: &str) -> Result<Settings, String> {
+    toml::from_str(raw).map_err(|err| format!("Failed to parse {}: {err}", path.display()))
 }
 
 fn write_toml_settings(path: &Path, settings: &Settings) -> io::Result<()> {
+    let raw = toml::to_string_pretty(settings)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    write_bytes_atomically(path, raw.as_bytes())
+}
+
+pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let raw = settings_to_toml(settings)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     let mut file = AtomicWriteFile::open(path)?;
-    file.write_all(raw.as_bytes())?;
+    file.write_all(bytes)?;
     file.commit()
-}
-
-fn settings_to_toml(settings: &Settings) -> Result<String, toml::ser::Error> {
-    toml::to_string_pretty(settings)
-}
-
-fn toml_to_settings(raw: &str) -> Result<Settings, toml::de::Error> {
-    toml::from_str(raw)
 }
 
 #[cfg(test)]
@@ -111,6 +110,35 @@ mod tests {
     };
 
     #[test]
+    fn only_missing_settings_use_defaults() {
+        let path = std::env::temp_dir().join(format!(
+            "winderust-settings-load-test-{}.toml",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(load_from_path(&path).unwrap(), Settings::default());
+        fs::write(&path, "invalid = [").unwrap();
+        assert!(load_from_path(&path).is_err());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_replaces_existing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "winderust-atomic-write-test-{}.txt",
+            std::process::id()
+        ));
+        fs::write(&path, "old").unwrap();
+
+        write_bytes_atomically(&path, b"new").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn toml_round_trip_preserves_settings() {
         let settings = Settings {
             general: GeneralSettings {
@@ -132,6 +160,8 @@ mod tests {
                 execution_failure_suppression_threshold: 5,
                 expose_all_priority_values: true,
                 show_advanced_controls: true,
+                pause_dashboard_metrics: true,
+                pause_process_population: true,
             },
             adaptive_engine: AdaptiveEngineSettings {
                 enabled: true,
@@ -412,28 +442,19 @@ mod tests {
             },
             memory_trim: MemoryTrimSettings {
                 enabled: true,
-                check_interval_minutes: 15,
-                exclude_foreground_app: true,
-                trim_working_sets: true,
-                system_memory_load_threshold_percent: 85,
-                process_working_set_threshold_mb: 768,
-                process_cpu_idle_threshold_percent: 2,
-                process_idle_seconds: 120,
-                trim_cooldown_seconds: 600,
-                purge_standby_list: true,
-                purge_system_file_cache: true,
-                purge_only_in_performance_mode: true,
-                purge_free_ram_threshold_mb: 1024,
+                system_memory_load_threshold_percent: 80,
+                process_working_set_threshold_mb: 512,
+                process_idle_seconds: 300,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
-                    process_name: "game*.exe".to_owned(),
+                    process_name: "keep.exe".to_owned(),
                     ..Default::default()
                 }],
             },
         };
 
-        let raw = settings_to_toml(&settings).expect("settings should serialize");
-        let parsed = toml_to_settings(&raw).expect("TOML should parse");
+        let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
+        let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
 
         assert_eq!(parsed, settings);
     }
@@ -448,11 +469,11 @@ mod tests {
         settings.memory_priority.enabled = true;
         settings.memory_priority.foreground_priority = ProcessMemoryPrioritySetting::Default;
 
-        let raw = settings_to_toml(&settings).expect("settings should serialize");
+        let raw = toml::to_string_pretty(&settings).expect("settings should serialize");
         assert!(raw.contains("background_priority = \"default\""));
         assert!(raw.contains("foreground_priority = \"default\""));
 
-        let parsed = toml_to_settings(&raw).expect("TOML should parse");
+        let parsed: Settings = toml::from_str(&raw).expect("TOML should parse");
 
         assert_eq!(
             parsed.io_priority.background_priority,

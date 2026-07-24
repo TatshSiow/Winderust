@@ -9,7 +9,7 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{
         ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
-        ERROR_NOT_SUPPORTED, FILETIME, HANDLE, NO_ERROR, WAIT_TIMEOUT,
+        ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
     },
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, GetPerTcp6ConnectionEStats,
@@ -25,7 +25,7 @@ use windows_sys::Win32::{
             AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, SetInformationJobObject,
         },
         Threading::{
-            GetCurrentProcessId, GetProcessTimes, OpenProcess, WaitForSingleObject,
+            GetCurrentProcessId, OpenProcess, WaitForSingleObject,
             PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE,
             PROCESS_TERMINATE,
         },
@@ -34,22 +34,28 @@ use windows_sys::Win32::{
 
 use crate::{
     audio_activity::active_audio_process_ids,
-    win_util::{filetime_to_u64, last_error, WinHandle},
+    win_util::{last_error, WinHandle},
 };
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    contains_process_name, is_process_exited_message, list_processes, process_name_key,
-    process_session_id, unique_app_names, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+    contains_process_name, list_processes, process_name_key, process_session_id, unique_app_names,
+    EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 use crate::{
-    action_log::{ActionLog, ActionLogAction, ActionLogFeature, ActionLogResult},
+    action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 const NETWORK_DETECTION_FAILURE_KEY: &str = "network-detection";
 const AUDIO_DETECTION_FAILURE_KEY: &str = "audio-detection";
+mod process_freezer;
+mod wake_activity;
+
+use process_freezer::*;
+use wake_activity::*;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppSuspensionSnapshot {
     pub enabled: bool,
@@ -109,34 +115,6 @@ struct AudioWakeWindow {
     wake_until: Instant,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NetworkActivityCounters {
-    bytes_in: u64,
-    bytes_out: u64,
-}
-
-impl NetworkActivityCounters {
-    fn exceeds_threshold_since(
-        self,
-        previous: Self,
-        thresholds: NetworkActivityThresholds,
-    ) -> bool {
-        let bytes_in = self.bytes_in.saturating_sub(previous.bytes_in);
-        let bytes_out = self.bytes_out.saturating_sub(previous.bytes_out);
-        if thresholds.bytes_in == 0 && thresholds.bytes_out == 0 {
-            return bytes_in > 0 || bytes_out > 0;
-        }
-        (thresholds.bytes_in > 0 && bytes_in >= thresholds.bytes_in)
-            || (thresholds.bytes_out > 0 && bytes_out >= thresholds.bytes_out)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct NetworkActivityThresholds {
-    bytes_in: u64,
-    bytes_out: u64,
-}
-
 struct TrackedApp {
     process_name: String,
     background_since: Instant,
@@ -162,6 +140,11 @@ enum TemporaryThawReason {
 }
 
 const USER_INTENT_THAW_SECONDS: u64 = 10;
+const MAX_SUSPENSION_DURATION_SECONDS: u64 = 3_600;
+
+fn bounded_suspension_duration(seconds: u64) -> Duration {
+    Duration::from_secs(seconds.min(MAX_SUSPENSION_DURATION_SECONDS))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TemporaryThawState {
@@ -260,7 +243,6 @@ impl AppSuspensionManager {
                 ActionLogFeature::AppSuspension,
                 None,
                 "",
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 "Skipped because Windows Job Object freeze is unsupported.",
             );
@@ -283,6 +265,7 @@ impl AppSuspensionManager {
             );
         };
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             return self.pause_without_clearing(
@@ -398,7 +381,7 @@ impl AppSuspensionManager {
         let mut last_error = None;
         let mut unsupported = false;
         let (network_snapshot, network_event_names) = if settings.network_wake_enabled
-            && network_wake_scan_needed(&network_target_process_names)
+            && !network_target_process_names.is_empty()
             && !self.is_action_suppressed(
                 NETWORK_DETECTION_FAILURE_KEY,
                 "network activity detection",
@@ -406,7 +389,8 @@ impl AppSuspensionManager {
             ) {
             match network_connection_snapshot(&network_target_processes) {
                 Ok(snapshot) => {
-                    self.clear_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+                    self.action_failure_suppression
+                        .clear_key_failure(NETWORK_DETECTION_FAILURE_KEY);
                     let wake_names = network_process_names_with_activity(
                         &self.network_snapshot,
                         &snapshot,
@@ -419,12 +403,12 @@ impl AppSuspensionManager {
                 }
                 Err(err) => {
                     failed_actions += 1;
-                    self.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+                    self.action_failure_suppression
+                        .record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         None,
                         "",
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         err.clone(),
                     );
@@ -447,17 +431,18 @@ impl AppSuspensionManager {
         {
             match audio_process_names_with_activity(&audio_target_processes) {
                 Ok(audio_event_names) => {
-                    self.clear_action_failure(AUDIO_DETECTION_FAILURE_KEY);
+                    self.action_failure_suppression
+                        .clear_key_failure(AUDIO_DETECTION_FAILURE_KEY);
                     self.extend_audio_wake_windows(settings, &audio_event_names, now);
                 }
                 Err(err) => {
                     failed_actions += 1;
-                    self.record_action_failure(AUDIO_DETECTION_FAILURE_KEY);
+                    self.action_failure_suppression
+                        .record_key_failure(AUDIO_DETECTION_FAILURE_KEY);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         None,
                         "",
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         err.clone(),
                     );
@@ -506,7 +491,6 @@ impl AppSuspensionManager {
                     ActionLogFeature::AppSuspension,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogAction::Apply,
                     ActionLogResult::Applied,
                     "Manual freeze requested.",
                 );
@@ -518,12 +502,12 @@ impl AppSuspensionManager {
 
             match self.apply_suspend_action(process_id, process_name.clone(), now) {
                 Ok(()) => {
-                    self.clear_process_failure(&process_name);
+                    self.failure_suppression
+                        .clear_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
                         process_name.clone(),
-                        ActionLogAction::Apply,
                         ActionLogResult::Applied,
                         if lifecycle.is_manual_freeze() {
                             "Manually froze background process."
@@ -542,7 +526,6 @@ impl AppSuspensionManager {
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because the process cannot be frozen.",
                     );
@@ -555,7 +538,6 @@ impl AppSuspensionManager {
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Skip,
                         ActionLogResult::Skipped,
                         "Skipped because Windows Job Object freeze is unsupported.",
                     );
@@ -563,17 +545,13 @@ impl AppSuspensionManager {
                     break;
                 }
                 Err(SuspensionError::Failed(err)) => {
-                    if is_process_exited_message(&err) {
-                        skipped_processes += 1;
-                        continue;
-                    }
                     failed_actions += 1;
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .record_process_failure(&process_name);
                     action_log.record(
                         ActionLogFeature::AppSuspension,
                         Some(process_id),
                         process_name,
-                        ActionLogAction::Fail,
                         ActionLogResult::Failed,
                         err.clone(),
                     );
@@ -671,7 +649,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(*process_id),
                             process_name,
-                            ActionLogAction::Restore,
                             ActionLogResult::Restored,
                             reason.to_owned(),
                         );
@@ -685,7 +662,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(*process_id),
                             process_name,
-                            ActionLogAction::Fail,
                             ActionLogResult::Failed,
                             suspension_error_message(err),
                         );
@@ -725,7 +701,6 @@ impl AppSuspensionManager {
                                 ActionLogFeature::AppSuspension,
                                 Some(*process_id),
                                 process_name,
-                                ActionLogAction::Restore,
                                 ActionLogResult::Restored,
                                 reason.to_owned(),
                             );
@@ -740,7 +715,6 @@ impl AppSuspensionManager {
                                 ActionLogFeature::AppSuspension,
                                 Some(*process_id),
                                 process_name,
-                                ActionLogAction::Fail,
                                 ActionLogResult::Failed,
                                 suspension_error_message(err),
                             );
@@ -803,7 +777,6 @@ impl AppSuspensionManager {
                                 ActionLogFeature::AppSuspension,
                                 Some(*process_id),
                                 process_name.clone(),
-                                ActionLogAction::Restore,
                                 ActionLogResult::Restored,
                                 "Thawed because the user interacted with the window.",
                             );
@@ -818,7 +791,6 @@ impl AppSuspensionManager {
                                 ActionLogFeature::AppSuspension,
                                 Some(*process_id),
                                 process_name,
-                                ActionLogAction::Fail,
                                 ActionLogResult::Failed,
                                 suspension_error_message(err),
                             );
@@ -862,7 +834,10 @@ impl AppSuspensionManager {
         process_name: Option<&str>,
     ) -> BTreeSet<u32> {
         let mut process_ids = BTreeSet::new();
-        if self.is_controlled_process_id(process_id) {
+        if self.suspended.contains_key(&process_id)
+            || self.temporary_thawed.contains_key(&process_id)
+            || self.freezers.contains_key(&process_id)
+        {
             process_ids.insert(process_id);
         }
 
@@ -876,12 +851,6 @@ impl AppSuspensionManager {
 
         process_ids.extend(self.controlled_process_ids_by_name(&process_name));
         process_ids
-    }
-
-    fn is_controlled_process_id(&self, process_id: u32) -> bool {
-        self.suspended.contains_key(&process_id)
-            || self.temporary_thawed.contains_key(&process_id)
-            || self.freezers.contains_key(&process_id)
     }
 
     fn controlled_process_name(&self, process_id: u32) -> Option<&str> {
@@ -939,7 +908,7 @@ impl AppSuspensionManager {
         }
 
         let interval = Duration::from_secs(settings.temporary_thaw_interval_seconds);
-        let duration = Duration::from_secs(settings.temporary_thaw_duration_seconds);
+        let duration = bounded_suspension_duration(settings.temporary_thaw_duration_seconds);
         let process_ids = self
             .suspended
             .iter()
@@ -961,7 +930,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(process_id),
                             process_name.clone(),
-                            ActionLogAction::Restore,
                             ActionLogResult::Restored,
                             "Temporary thaw interval elapsed.",
                         );
@@ -1022,7 +990,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(process_id),
                             process_name,
-                            ActionLogAction::Fail,
                             ActionLogResult::Failed,
                             suspension_error_message(err),
                         );
@@ -1038,7 +1005,6 @@ impl AppSuspensionManager {
                     ActionLogFeature::AppSuspension,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogAction::Restore,
                     ActionLogResult::Restored,
                     "Network activity woke the suspended process.",
                 );
@@ -1089,7 +1055,6 @@ impl AppSuspensionManager {
                             ActionLogFeature::AppSuspension,
                             Some(process_id),
                             process_name,
-                            ActionLogAction::Fail,
                             ActionLogResult::Failed,
                             suspension_error_message(err),
                         );
@@ -1105,7 +1070,6 @@ impl AppSuspensionManager {
                     ActionLogFeature::AppSuspension,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogAction::Restore,
                     ActionLogResult::Restored,
                     "Audio activity woke the suspended process.",
                 );
@@ -1245,20 +1209,6 @@ impl AppSuspensionManager {
         (now < window.wake_until).then_some(window.wake_until)
     }
 
-    fn network_wake_process_count(&self) -> usize {
-        self.temporary_thawed
-            .values()
-            .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
-            .count()
-    }
-
-    fn audio_wake_process_count(&self) -> usize {
-        self.temporary_thawed
-            .values()
-            .filter(|process| process.reason == TemporaryThawReason::AudioWake)
-            .count()
-    }
-
     fn temporary_thaw_state(
         &mut self,
         process_id: u32,
@@ -1381,8 +1331,16 @@ impl AppSuspensionManager {
             grace_apps: self.tracked.len(),
             suspended_processes: self.suspended.len(),
             temporary_thawed_processes: self.temporary_thawed.len(),
-            network_wake_processes: self.network_wake_process_count(),
-            audio_wake_processes: self.audio_wake_process_count(),
+            network_wake_processes: self
+                .temporary_thawed
+                .values()
+                .filter(|process| process.reason == TemporaryThawReason::NetworkWake)
+                .count(),
+            audio_wake_processes: self
+                .temporary_thawed
+                .values()
+                .filter(|process| process.reason == TemporaryThawReason::AudioWake)
+                .count(),
             background_grace_apps: unique_app_names(
                 self.tracked
                     .values()
@@ -1438,7 +1396,6 @@ impl AppSuspensionManager {
                 ActionLogFeature::AppSuspension,
                 Some(process_id),
                 process_name.to_owned(),
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying App Suspension after {} failed attempts.",
@@ -1448,15 +1405,6 @@ impl AppSuspensionManager {
         }
 
         true
-    }
-
-    fn record_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression
-            .record_process_failure(process_name);
-    }
-
-    fn clear_process_failure(&mut self, process_name: &str) {
-        self.failure_suppression.clear_process_failure(process_name);
     }
 
     fn is_action_suppressed(
@@ -1475,7 +1423,6 @@ impl AppSuspensionManager {
                 ActionLogFeature::AppSuspension,
                 None,
                 "",
-                ActionLogAction::Skip,
                 ActionLogResult::Skipped,
                 format!(
                     "Stopped retrying App Suspension {action_label} after {} failed attempts.",
@@ -1485,14 +1432,6 @@ impl AppSuspensionManager {
         }
 
         true
-    }
-
-    fn record_action_failure(&mut self, key: &str) {
-        self.action_failure_suppression.record_key_failure(key);
-    }
-
-    fn clear_action_failure(&mut self, key: &str) {
-        self.action_failure_suppression.clear_key_failure(key);
     }
 }
 
@@ -1546,688 +1485,6 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
 
 pub fn contains_process(list: &[String], process_name: &str) -> bool {
     contains_process_name(list, process_name)
-}
-
-fn network_wake_duration(settings: &AppSuspensionSettings) -> Option<Duration> {
-    (settings.network_wake_enabled && settings.network_wake_duration_seconds > 0)
-        .then(|| Duration::from_secs(settings.network_wake_duration_seconds))
-}
-
-fn audio_wake_duration(settings: &AppSuspensionSettings) -> Option<Duration> {
-    (settings.audio_wake_enabled && settings.audio_wake_duration_seconds > 0)
-        .then(|| Duration::from_secs(settings.audio_wake_duration_seconds))
-}
-
-fn audio_process_names_with_activity(
-    target_processes: &BTreeMap<u32, String>,
-) -> Result<BTreeSet<String>, String> {
-    if target_processes.is_empty() {
-        return Ok(BTreeSet::new());
-    }
-
-    let active_process_ids = active_audio_process_ids()?;
-    Ok(target_processes
-        .iter()
-        .filter(|(process_id, _process_name)| active_process_ids.contains(process_id))
-        .map(|(_process_id, process_name)| process_name_key(process_name))
-        .collect())
-}
-
-fn network_connection_snapshot(
-    target_processes: &BTreeMap<u32, String>,
-) -> Result<NetworkConnectionSnapshot, String> {
-    let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
-    let mut connections_by_pid: NetworkConnectionsByProcess = BTreeMap::new();
-
-    add_tcp_connections(&mut connections_by_pid, &target_ids, AF_INET as u32)?;
-    add_tcp_connections(&mut connections_by_pid, &target_ids, AF_INET6 as u32)?;
-    add_udp_connections(&mut connections_by_pid, &target_ids, AF_INET as u32)?;
-    add_udp_connections(&mut connections_by_pid, &target_ids, AF_INET6 as u32)?;
-
-    let mut snapshot = target_processes
-        .values()
-        .map(|process_name| (process_name_key(process_name), BTreeMap::new()))
-        .collect::<NetworkConnectionSnapshot>();
-    for (process_id, connections) in connections_by_pid {
-        let Some(process_name) = target_processes.get(&process_id) else {
-            continue;
-        };
-
-        snapshot
-            .entry(process_name_key(process_name))
-            .or_insert_with(BTreeMap::new)
-            .extend(connections);
-    }
-
-    Ok(snapshot)
-}
-
-fn network_process_names_with_activity(
-    previous: &NetworkConnectionSnapshot,
-    current: &NetworkConnectionSnapshot,
-    thresholds_by_process: &NetworkActivityThresholdsByProcess,
-) -> BTreeSet<String> {
-    current
-        .iter()
-        .filter(|(process_name, connections)| {
-            let Some(thresholds) = thresholds_by_process.get(*process_name) else {
-                return false;
-            };
-            previous
-                .get(*process_name)
-                .is_some_and(|previous_connections| {
-                    connections.iter().any(|(connection, activity)| {
-                        match previous_connections.get(connection) {
-                            Some(Some(previous_activity)) => activity.is_some_and(|activity| {
-                                activity.exceeds_threshold_since(*previous_activity, *thresholds)
-                            }),
-                            Some(None) => false,
-                            None => false,
-                        }
-                    })
-                })
-        })
-        .map(|(process_name, _connections)| process_name.clone())
-        .collect()
-}
-
-fn network_activity_thresholds(
-    settings: &AppSuspensionSettings,
-    target_processes: &BTreeMap<u32, String>,
-) -> NetworkActivityThresholdsByProcess {
-    target_processes
-        .values()
-        .filter_map(|process_name| {
-            let (bytes_in, bytes_out) = settings.network_wake_thresholds_for(process_name)?;
-            Some((
-                process_name_key(process_name),
-                NetworkActivityThresholds {
-                    bytes_in,
-                    bytes_out,
-                },
-            ))
-        })
-        .collect()
-}
-
-fn eligible_network_wake_names(
-    network_process_names: &BTreeSet<String>,
-    network_target_process_names: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    network_process_names
-        .iter()
-        .filter(|process_name| network_target_process_names.contains(*process_name))
-        .cloned()
-        .collect()
-}
-
-fn network_wake_scan_needed(network_target_process_names: &BTreeSet<String>) -> bool {
-    !network_target_process_names.is_empty()
-}
-
-fn manual_freeze_app_names(process_names: &[String]) -> BTreeSet<String> {
-    process_names
-        .iter()
-        .map(|process_name| process_name_key(process_name))
-        .filter(|process_name| !process_name.is_empty())
-        .collect()
-}
-
-fn add_tcp_connections(
-    connections_by_pid: &mut NetworkConnectionsByProcess,
-    target_ids: &BTreeSet<u32>,
-    address_family: u32,
-) -> Result<(), String> {
-    let buffer = query_ip_helper_table(|table, size| unsafe {
-        GetExtendedTcpTable(
-            table,
-            size,
-            0,
-            address_family,
-            TCP_TABLE_OWNER_PID_CONNECTIONS,
-            0,
-        )
-    })?;
-
-    if address_family == AF_INET as u32 {
-        for row in table_rows::<MIB_TCPROW_OWNER_PID>(&buffer) {
-            if target_ids.contains(&row.dwOwningPid) {
-                let Some(connection) = tcp4_connection_key(&row) else {
-                    continue;
-                };
-                let activity = tcp4_connection_activity(&row);
-
-                connections_by_pid
-                    .entry(row.dwOwningPid)
-                    .or_default()
-                    .insert(connection, activity);
-            }
-        }
-    } else {
-        for row in table_rows::<MIB_TCP6ROW_OWNER_PID>(&buffer) {
-            if target_ids.contains(&row.dwOwningPid) {
-                let Some(connection) = tcp6_connection_key(&row) else {
-                    continue;
-                };
-                let activity = tcp6_connection_activity(&row);
-
-                connections_by_pid
-                    .entry(row.dwOwningPid)
-                    .or_default()
-                    .insert(connection, activity);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn tcp4_connection_key(row: &MIB_TCPROW_OWNER_PID) -> Option<String> {
-    is_network_intent_tcp_state(row.dwState).then(|| {
-        format!(
-            "tcp4:{}:{}:{}:{}",
-            row.dwLocalAddr, row.dwLocalPort, row.dwRemoteAddr, row.dwRemotePort
-        )
-    })
-}
-
-fn tcp6_connection_key(row: &MIB_TCP6ROW_OWNER_PID) -> Option<String> {
-    is_network_intent_tcp_state(row.dwState).then(|| {
-        format!(
-            "tcp6:{:?}:{}:{:?}:{}:{}:{}",
-            row.ucLocalAddr,
-            row.dwLocalScopeId,
-            row.ucRemoteAddr,
-            row.dwRemoteScopeId,
-            row.dwLocalPort,
-            row.dwRemotePort
-        )
-    })
-}
-
-fn tcp4_connection_activity(row: &MIB_TCPROW_OWNER_PID) -> Option<NetworkActivityCounters> {
-    let tcp_row = MIB_TCPROW_LH {
-        Anonymous: MIB_TCPROW_LH_0 {
-            dwState: row.dwState,
-        },
-        dwLocalAddr: row.dwLocalAddr,
-        dwLocalPort: row.dwLocalPort,
-        dwRemoteAddr: row.dwRemoteAddr,
-        dwRemotePort: row.dwRemotePort,
-    };
-    enable_tcp4_data_stats(&tcp_row);
-    tcp4_data_stats(&tcp_row)
-}
-
-fn tcp6_connection_activity(row: &MIB_TCP6ROW_OWNER_PID) -> Option<NetworkActivityCounters> {
-    let tcp_row = MIB_TCP6ROW {
-        State: row.dwState as i32,
-        LocalAddr: IN6_ADDR {
-            u: IN6_ADDR_0 {
-                Byte: row.ucLocalAddr,
-            },
-        },
-        dwLocalScopeId: row.dwLocalScopeId,
-        dwLocalPort: row.dwLocalPort,
-        RemoteAddr: IN6_ADDR {
-            u: IN6_ADDR_0 {
-                Byte: row.ucRemoteAddr,
-            },
-        },
-        dwRemoteScopeId: row.dwRemoteScopeId,
-        dwRemotePort: row.dwRemotePort,
-    };
-    enable_tcp6_data_stats(&tcp_row);
-    tcp6_data_stats(&tcp_row)
-}
-
-fn enable_tcp4_data_stats(row: &MIB_TCPROW_LH) {
-    let rw = TCP_ESTATS_DATA_RW_v0 {
-        EnableCollection: true,
-    };
-    unsafe {
-        SetPerTcpConnectionEStats(
-            row,
-            TcpConnectionEstatsData,
-            &rw as *const _ as *const u8,
-            0,
-            mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
-            0,
-        );
-    }
-}
-
-fn enable_tcp6_data_stats(row: &MIB_TCP6ROW) {
-    let rw = TCP_ESTATS_DATA_RW_v0 {
-        EnableCollection: true,
-    };
-    unsafe {
-        SetPerTcp6ConnectionEStats(
-            row,
-            TcpConnectionEstatsData,
-            &rw as *const _ as *const u8,
-            0,
-            mem::size_of::<TCP_ESTATS_DATA_RW_v0>() as u32,
-            0,
-        );
-    }
-}
-
-fn tcp4_data_stats(row: &MIB_TCPROW_LH) -> Option<NetworkActivityCounters> {
-    let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
-    let status = unsafe {
-        GetPerTcpConnectionEStats(
-            row,
-            TcpConnectionEstatsData,
-            null_mut(),
-            0,
-            0,
-            null_mut(),
-            0,
-            0,
-            &mut rod as *mut _ as *mut u8,
-            0,
-            mem::size_of::<TCP_ESTATS_DATA_ROD_v0>() as u32,
-        )
-    };
-
-    (status == NO_ERROR).then_some(NetworkActivityCounters {
-        bytes_in: rod.DataBytesIn,
-        bytes_out: rod.DataBytesOut,
-    })
-}
-
-fn tcp6_data_stats(row: &MIB_TCP6ROW) -> Option<NetworkActivityCounters> {
-    let mut rod = TCP_ESTATS_DATA_ROD_v0::default();
-    let status = unsafe {
-        GetPerTcp6ConnectionEStats(
-            row,
-            TcpConnectionEstatsData,
-            null_mut(),
-            0,
-            0,
-            null_mut(),
-            0,
-            0,
-            &mut rod as *mut _ as *mut u8,
-            0,
-            mem::size_of::<TCP_ESTATS_DATA_ROD_v0>() as u32,
-        )
-    };
-
-    (status == NO_ERROR).then_some(NetworkActivityCounters {
-        bytes_in: rod.DataBytesIn,
-        bytes_out: rod.DataBytesOut,
-    })
-}
-
-fn is_network_intent_tcp_state(state: u32) -> bool {
-    matches!(
-        state,
-        TCP_STATE_SYN_SENT | TCP_STATE_SYN_RECEIVED | TCP_STATE_ESTABLISHED
-    )
-}
-
-fn add_udp_connections(
-    connections_by_pid: &mut NetworkConnectionsByProcess,
-    target_ids: &BTreeSet<u32>,
-    address_family: u32,
-) -> Result<(), String> {
-    let buffer = query_ip_helper_table(|table, size| unsafe {
-        GetExtendedUdpTable(table, size, 0, address_family, UDP_TABLE_OWNER_PID, 0)
-    })?;
-
-    if address_family == AF_INET as u32 {
-        for row in table_rows::<MIB_UDPROW_OWNER_PID>(&buffer) {
-            if target_ids.contains(&row.dwOwningPid) {
-                connections_by_pid
-                    .entry(row.dwOwningPid)
-                    .or_default()
-                    .insert(
-                        format!("udp4:{}:{}", row.dwLocalAddr, row.dwLocalPort),
-                        None,
-                    );
-            }
-        }
-    } else {
-        for row in table_rows::<MIB_UDP6ROW_OWNER_PID>(&buffer) {
-            if target_ids.contains(&row.dwOwningPid) {
-                connections_by_pid
-                    .entry(row.dwOwningPid)
-                    .or_default()
-                    .insert(
-                        format!(
-                            "udp6:{:?}:{}:{}",
-                            row.ucLocalAddr, row.dwLocalScopeId, row.dwLocalPort
-                        ),
-                        None,
-                    );
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn query_ip_helper_table(
-    mut query: impl FnMut(*mut c_void, *mut u32) -> u32,
-) -> Result<Vec<u8>, String> {
-    let mut size = 0;
-    let first_status = query(null_mut(), &mut size);
-    if first_status != ERROR_INSUFFICIENT_BUFFER && first_status != NO_ERROR {
-        return Err(format!(
-            "Network intent detection failed to size IP Helper table with error {first_status}."
-        ));
-    }
-
-    if size == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut buffer = vec![0u8; size as usize];
-    let mut status = query(buffer.as_mut_ptr() as *mut c_void, &mut size);
-    while status == ERROR_INSUFFICIENT_BUFFER && size as usize > buffer.len() {
-        buffer.resize(size as usize, 0);
-        status = query(buffer.as_mut_ptr() as *mut c_void, &mut size);
-    }
-    if status != NO_ERROR {
-        return Err(format!(
-            "Network intent detection failed to read IP Helper table with error {status}."
-        ));
-    }
-
-    Ok(buffer)
-}
-
-fn table_rows<T: Copy>(buffer: &[u8]) -> Vec<T> {
-    if buffer.len() < mem::size_of::<u32>() {
-        return Vec::new();
-    }
-
-    let count = unsafe { ptr::read_unaligned(buffer.as_ptr() as *const u32) as usize };
-    if count == 0 {
-        return Vec::new();
-    }
-
-    let rows_offset = mem::size_of::<u32>();
-    let row_size = mem::size_of::<T>();
-    let Some(rows_len) = count.checked_mul(row_size) else {
-        return Vec::new();
-    };
-    let Some(required_len) = rows_offset.checked_add(rows_len) else {
-        return Vec::new();
-    };
-    if row_size == 0 || buffer.len() < required_len {
-        return Vec::new();
-    }
-
-    let rows_ptr = unsafe { buffer.as_ptr().add(rows_offset) as *const T };
-    (0..count)
-        .map(|index| unsafe { ptr::read_unaligned(rows_ptr.add(index)) })
-        .collect()
-}
-
-fn should_skip_foreground_process(
-    process_id: u32,
-    process_name: &str,
-    foreground_process_id: u32,
-    foreground_process_name: Option<&str>,
-) -> bool {
-    process_id == foreground_process_id
-        || foreground_process_name
-            .is_some_and(|name| process_name_key(name) == process_name_key(process_name))
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum SuspensionError {
-    AccessDenied,
-    ProcessExited,
-    NotSupported,
-    Unsupported,
-    Failed(String),
-}
-
-fn suspension_error_message(error: SuspensionError) -> String {
-    match error {
-        SuspensionError::AccessDenied => "Access denied.".to_owned(),
-        SuspensionError::ProcessExited => "Process exited.".to_owned(),
-        SuspensionError::NotSupported => "Operation not supported for this process.".to_owned(),
-        SuspensionError::Unsupported => "Windows Job Object freeze is unsupported.".to_owned(),
-        SuspensionError::Failed(message) => message,
-    }
-}
-
-const JOB_OBJECT_FREEZE_INFORMATION_CLASS: i32 = 18;
-const JOB_OBJECT_FREEZE_OPERATION: u32 = 1;
-
-#[repr(C)]
-struct JobObjectFreezeInformation {
-    flags: u32,
-    freeze: u8,
-    swap: u8,
-    spare: u16,
-    wake_filter_high: u32,
-    wake_filter_low: u32,
-}
-
-impl JobObjectFreezeInformation {
-    fn new(frozen: bool) -> Self {
-        Self {
-            flags: JOB_OBJECT_FREEZE_OPERATION,
-            freeze: u8::from(frozen),
-            swap: 0,
-            spare: 0,
-            wake_filter_high: 0,
-            wake_filter_low: 0,
-        }
-    }
-}
-
-struct ProcessFreezer {
-    job_handle: Option<WinHandle>,
-    process_handle: Option<WinHandle>,
-    process_creation_time: Option<u64>,
-    can_wait_for_process: bool,
-}
-
-impl ProcessFreezer {
-    fn assign(process_id: u32) -> Result<Self, SuspensionError> {
-        let (process_handle, can_wait_for_process) = open_process_for_job_assignment(process_id)?;
-
-        let job_handle = unsafe { CreateJobObjectW(null(), null()) };
-        if job_handle.is_null() {
-            let error = last_error();
-            return Err(SuspensionError::Failed(format!(
-                "CreateJobObjectW failed with error {error}."
-            )));
-        }
-        let job_handle = WinHandle::new(job_handle);
-
-        let assigned =
-            unsafe { AssignProcessToJobObject(job_handle.raw(), process_handle.raw()) != 0 };
-        if !assigned {
-            let error = last_error();
-            let assignment_error =
-                assign_process_to_job_error_with_context(process_id, process_handle.raw(), error);
-            return Err(assignment_error);
-        }
-
-        Ok(Self {
-            job_handle: Some(job_handle),
-            process_creation_time: process_creation_time(process_handle.raw()),
-            process_handle: Some(process_handle),
-            can_wait_for_process,
-        })
-    }
-
-    fn set_frozen(&self, frozen: bool) -> Result<(), SuspensionError> {
-        let mut info = JobObjectFreezeInformation::new(frozen);
-        let Some(job_handle) = &self.job_handle else {
-            return Ok(());
-        };
-
-        let ok = unsafe {
-            SetInformationJobObject(
-                job_handle.raw(),
-                JOB_OBJECT_FREEZE_INFORMATION_CLASS,
-                &mut info as *mut _ as *mut c_void,
-                std::mem::size_of::<JobObjectFreezeInformation>() as u32,
-            )
-        };
-
-        if ok == 0 {
-            Err(job_freeze_error(frozen, last_error()))
-        } else {
-            Ok(())
-        }
-    }
-
-    fn is_process_alive(&self) -> bool {
-        !self.can_wait_for_process
-            || self
-                .process_handle
-                .as_ref()
-                .is_some_and(|process_handle| unsafe {
-                    WaitForSingleObject(process_handle.raw(), 0) == WAIT_TIMEOUT
-                })
-    }
-
-    fn matches_process_id(&self, process_id: u32) -> bool {
-        self.is_process_alive()
-            && (self.can_wait_for_process
-                || process_creation_time_matches(
-                    self.process_creation_time,
-                    current_process_creation_time(process_id),
-                ))
-    }
-
-    fn close(&mut self) {
-        self.job_handle = None;
-        self.process_handle = None;
-    }
-}
-
-impl Drop for ProcessFreezer {
-    fn drop(&mut self) {
-        if self.job_handle.is_some() {
-            let _ = self.set_frozen(false);
-        }
-        self.close();
-    }
-}
-
-fn null_mut_handle() -> HANDLE {
-    std::ptr::null_mut()
-}
-
-fn open_process_for_job_assignment(process_id: u32) -> Result<(WinHandle, bool), SuspensionError> {
-    let access_masks = [
-        PROCESS_SET_QUOTA
-            | PROCESS_TERMINATE
-            | PROCESS_SYNCHRONIZE
-            | PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
-        PROCESS_SET_QUOTA | PROCESS_TERMINATE,
-    ];
-
-    let mut last_open_error = 0;
-    for access in access_masks {
-        let handle = unsafe { OpenProcess(access, 0, process_id) };
-        if !handle.is_null() {
-            return Ok((WinHandle::new(handle), access & PROCESS_SYNCHRONIZE != 0));
-        }
-        last_open_error = last_error();
-    }
-
-    Err(open_process_error(process_id, last_open_error))
-}
-
-fn current_process_creation_time(process_id: u32) -> Option<u64> {
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
-    if handle.is_null() {
-        return None;
-    }
-    let handle = WinHandle::new(handle);
-    process_creation_time(handle.raw())
-}
-
-fn process_creation_time(process_handle: HANDLE) -> Option<u64> {
-    let mut creation_time = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let mut exit_time = creation_time;
-    let mut kernel_time = creation_time;
-    let mut user_time = creation_time;
-
-    let ok = unsafe {
-        GetProcessTimes(
-            process_handle,
-            &mut creation_time,
-            &mut exit_time,
-            &mut kernel_time,
-            &mut user_time,
-        )
-    };
-    (ok != 0).then(|| filetime_to_u64(creation_time))
-}
-
-fn process_creation_time_matches(recorded: Option<u64>, current: Option<u64>) -> bool {
-    match recorded {
-        Some(recorded) => current == Some(recorded),
-        None => true,
-    }
-}
-
-fn open_process_error(process_id: u32, error: u32) -> SuspensionError {
-    match error {
-        ERROR_ACCESS_DENIED => SuspensionError::AccessDenied,
-        ERROR_INVALID_PARAMETER => SuspensionError::ProcessExited,
-        ERROR_NOT_SUPPORTED => SuspensionError::NotSupported,
-        _ => SuspensionError::Failed(format!(
-            "OpenProcess({process_id}) failed with error {error}."
-        )),
-    }
-}
-
-fn assign_process_to_job_error(process_id: u32, error: u32) -> SuspensionError {
-    match error {
-        ERROR_ACCESS_DENIED => SuspensionError::AccessDenied,
-        ERROR_NOT_SUPPORTED => SuspensionError::NotSupported,
-        _ => SuspensionError::Failed(format!(
-            "AssignProcessToJobObject({process_id}) failed with error {error}."
-        )),
-    }
-}
-
-fn assign_process_to_job_error_with_context(
-    process_id: u32,
-    process_handle: HANDLE,
-    error: u32,
-) -> SuspensionError {
-    if process_is_in_job(process_handle) == Some(true) {
-        return SuspensionError::Failed(format!(
-            "AssignProcessToJobObject({process_id}) failed with error {error}; process is already in a job object."
-        ));
-    }
-
-    assign_process_to_job_error(process_id, error)
-}
-
-fn process_is_in_job(process_handle: HANDLE) -> Option<bool> {
-    let mut in_job = 0;
-    let ok = unsafe { IsProcessInJob(process_handle, null_mut_handle(), &mut in_job) };
-    (ok != 0).then_some(in_job != 0)
-}
-
-fn job_freeze_error(frozen: bool, error: u32) -> SuspensionError {
-    match error {
-        ERROR_INVALID_PARAMETER | ERROR_NOT_SUPPORTED => SuspensionError::Unsupported,
-        _ => SuspensionError::Failed(format!(
-            "SetInformationJobObject freeze={frozen} failed with error {error}."
-        )),
-    }
 }
 
 #[cfg(test)]
@@ -2328,19 +1585,24 @@ mod tests {
         let mut manager = AppSuspensionManager::default();
         let mut log = ActionLog::new(8);
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
+        manager
+            .failure_suppression
+            .record_process_failure("APP.exe");
+        manager
+            .failure_suppression
+            .record_process_failure("app.exe");
         assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
         assert!(log.entries().is_empty());
 
-        manager.record_process_failure("app.exe");
+        manager
+            .failure_suppression
+            .record_process_failure("app.exe");
         assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
         assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].process_name, "app.exe");
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 
@@ -2349,8 +1611,12 @@ mod tests {
         let mut manager = AppSuspensionManager::default();
         let mut log = ActionLog::new(8);
 
-        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
-        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+        manager
+            .action_failure_suppression
+            .record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
+        manager
+            .action_failure_suppression
+            .record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
         assert!(!manager.is_action_suppressed(
             NETWORK_DETECTION_FAILURE_KEY,
             "network activity detection",
@@ -2358,7 +1624,9 @@ mod tests {
         ));
         assert!(log.entries().is_empty());
 
-        manager.record_action_failure(NETWORK_DETECTION_FAILURE_KEY);
+        manager
+            .action_failure_suppression
+            .record_key_failure(NETWORK_DETECTION_FAILURE_KEY);
         assert!(manager.is_action_suppressed(
             NETWORK_DETECTION_FAILURE_KEY,
             "network activity detection",
@@ -2372,7 +1640,6 @@ mod tests {
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].action, ActionLogAction::Skip);
         assert_eq!(entries[0].result, ActionLogResult::Skipped);
     }
 
@@ -2811,6 +2078,12 @@ mod tests {
             Some(Duration::from_secs(30))
         );
 
+        settings.network_wake_duration_seconds = u64::MAX;
+        assert_eq!(
+            network_wake_duration(&settings),
+            Some(Duration::from_secs(MAX_SUSPENSION_DURATION_SECONDS))
+        );
+
         settings.network_wake_duration_seconds = 0;
         assert_eq!(network_wake_duration(&settings), None);
     }
@@ -3042,15 +2315,6 @@ mod tests {
     }
 
     #[test]
-    fn network_wake_scan_is_needed_only_for_network_wake_targets() {
-        let empty = BTreeSet::new();
-        let target = BTreeSet::from(["chat.exe".to_owned()]);
-
-        assert!(!network_wake_scan_needed(&empty));
-        assert!(network_wake_scan_needed(&target));
-    }
-
-    #[test]
     fn tcp_connection_key_ignores_state_transitions_and_listeners() {
         let established = MIB_TCPROW_OWNER_PID {
             dwState: TCP_STATE_ESTABLISHED,
@@ -3179,6 +2443,8 @@ mod tests {
         let mut buffer = Vec::new();
         buffer.extend_from_slice(&(rows.len() as u32).to_ne_bytes());
         for row in rows {
+            // SAFETY: row is a fully initialized plain Win32 record and the slice is limited to
+            // its exact in-memory size for immediate copying.
             let bytes = unsafe {
                 std::slice::from_raw_parts(
                     &row as *const MIB_UDPROW_OWNER_PID as *const u8,

@@ -38,6 +38,8 @@ impl ControllerActivityDetector {
 fn any_xinput_controller_active() -> bool {
     (0..XUSER_MAX_COUNT).any(|index| {
         let mut state = XINPUT_STATE::default();
+        // SAFETY: state is writable for the duration of the call and index is within
+        // XInput's documented user range.
         let result = unsafe { XInputGetState(index, &mut state) };
         result == ERROR_SUCCESS && gamepad_has_activity(&state.Gamepad)
     })

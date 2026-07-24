@@ -18,6 +18,8 @@ impl WinHandle {
         let mut exit = FILETIME::default();
         let mut kernel = FILETIME::default();
         let mut user = FILETIME::default();
+        // SAFETY: self owns a live process handle and all FILETIME outputs are writable for the
+        // duration of the call.
         let ok =
             unsafe { GetProcessTimes(self.0, &mut creation, &mut exit, &mut kernel, &mut user) };
         (ok != 0).then(|| filetime_to_u64(creation))
@@ -26,6 +28,7 @@ impl WinHandle {
 
 impl Drop for WinHandle {
     fn drop(&mut self) {
+        // SAFETY: self.0 is an owned non-null Win32 handle and is closed exactly once.
         unsafe {
             CloseHandle(self.0);
         }
@@ -33,6 +36,7 @@ impl Drop for WinHandle {
 }
 
 pub(crate) fn last_error() -> u32 {
+    // SAFETY: GetLastError takes no arguments and reads thread-local state.
     unsafe { GetLastError() }
 }
 

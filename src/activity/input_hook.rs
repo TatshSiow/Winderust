@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
     sync::{
         atomic::{AtomicU8, Ordering},
@@ -81,7 +82,10 @@ impl InputHook {
                 let _ = thread.join();
                 Err(err)
             }
-            Err(err) => Err(format!("Input hooks did not start: {err}")),
+            Err(err) => {
+                let _ = thread.join();
+                Err(format!("Input hooks did not start: {err}"))
+            }
         }
     }
 
@@ -92,6 +96,7 @@ impl InputHook {
 
 impl Drop for InputHook {
     fn drop(&mut self) {
+        // SAFETY: thread_id identifies the live hook thread, and WM_QUIT carries no pointers.
         unsafe {
             PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
         }
@@ -106,6 +111,7 @@ fn hook_thread(
     callback: EventCallback,
     sender: mpsc::Sender<Result<u32, String>>,
 ) {
+    // SAFETY: GetCurrentThreadId takes no arguments and has no caller requirements.
     let thread_id = unsafe { GetCurrentThreadId() };
     let mut msg = MSG::default();
 
@@ -113,13 +119,18 @@ fn hook_thread(
         *slot.borrow_mut() = Some(callback);
     });
 
+    // SAFETY: msg is valid writable storage; PM_NOREMOVE creates this thread's message queue
+    // without consuming a message.
     unsafe {
         PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_NOREMOVE);
     }
 
+    // SAFETY: A null module name asks Windows for the current process module.
     let module = unsafe { GetModuleHandleW(null()) };
     let mut keyboard_hook = std::ptr::null_mut();
     if config.keyboard {
+        // SAFETY: keyboard_proc has the required static callback ABI, module belongs to this
+        // process, and a zero thread id requests the documented global low-level hook.
         keyboard_hook =
             unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), module, 0) };
         if keyboard_hook.is_null() {
@@ -133,8 +144,12 @@ fn hook_thread(
 
     let mut mouse_hook = std::ptr::null_mut();
     if config.mouse {
+        // SAFETY: mouse_proc has the required static callback ABI, module belongs to this
+        // process, and a zero thread id requests the documented global low-level hook.
         mouse_hook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), module, 0) };
         if mouse_hook.is_null() {
+            // SAFETY: keyboard_hook, when non-null, is owned by this thread and has not yet
+            // been unhooked.
             unsafe {
                 if !keyboard_hook.is_null() {
                     UnhookWindowsHookEx(keyboard_hook);
@@ -150,6 +165,8 @@ fn hook_thread(
 
     let _ = sender.send(Ok(thread_id));
 
+    // SAFETY: msg remains valid for the loop; Windows owns callback dispatch, and both hook
+    // handles are unhooked exactly once by their owning thread after the loop.
     unsafe {
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
@@ -171,8 +188,12 @@ fn hook_thread(
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
-        let kb_event = &*(lparam as *const KBDLLHOOKSTRUCT);
+        // SAFETY: Windows supplies a valid KBDLLHOOKSTRUCT pointer for HC_ACTION callbacks, and
+        // the reference does not escape this callback.
+        let kb_event = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
         if kb_event.flags & (LLKHF_INJECTED | LLKHF_INJECTED_LOWER_IL) != 0 {
+            // SAFETY: Forwarding the unchanged callback arguments is required by the hook
+            // contract; a null hook handle is accepted for low-level hooks.
             return unsafe {
                 CallNextHookEx(
                     std::ptr::null_mut::<std::ffi::c_void>() as HHOOK,
@@ -189,6 +210,8 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         }
         record_input_event(event);
     }
+    // SAFETY: Forwarding the unchanged callback arguments is required by the hook contract; a
+    // null hook handle is accepted for low-level hooks.
     unsafe {
         CallNextHookEx(
             std::ptr::null_mut::<std::ffi::c_void>() as HHOOK,
@@ -201,8 +224,12 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code == HC_ACTION as i32 {
-        let mouse_event = &*(lparam as *const MSLLHOOKSTRUCT);
+        // SAFETY: Windows supplies a valid MSLLHOOKSTRUCT pointer for HC_ACTION callbacks, and
+        // the reference does not escape this callback.
+        let mouse_event = unsafe { &*(lparam as *const MSLLHOOKSTRUCT) };
         if mouse_event.flags & (LLMHF_INJECTED | LLMHF_INJECTED_LOWER_IL) != 0 {
+            // SAFETY: Forwarding the unchanged callback arguments is required by the hook
+            // contract; a null hook handle is accepted for low-level hooks.
             return unsafe {
                 CallNextHookEx(
                     std::ptr::null_mut::<std::ffi::c_void>() as HHOOK,
@@ -219,6 +246,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         }
         record_input_event(event);
     }
+    // SAFETY: Forwarding the unchanged callback arguments is required by the hook contract; a
+    // null hook handle is accepted for low-level hooks.
     unsafe {
         CallNextHookEx(
             std::ptr::null_mut::<std::ffi::c_void>() as HHOOK,
@@ -234,7 +263,9 @@ fn record_input_event(event: u8) {
     let events = input_events_from_bits(event);
     INPUT_EVENT_CALLBACK.with(|slot| {
         if let Some(callback) = slot.borrow().as_ref() {
-            callback(events);
+            if catch_unwind(AssertUnwindSafe(|| callback(events))).is_err() {
+                eprintln!("Input hook callback panicked.");
+            }
         }
     });
 }
@@ -257,7 +288,7 @@ fn input_events_from_bits(events: u8) -> InputHookEvents {
     }
 }
 
-unsafe fn is_app_switch_key_event(wparam: WPARAM, event: &KBDLLHOOKSTRUCT) -> bool {
+fn is_app_switch_key_event(wparam: WPARAM, event: &KBDLLHOOKSTRUCT) -> bool {
     if wparam != WM_KEYDOWN as WPARAM && wparam != WM_SYSKEYDOWN as WPARAM {
         return false;
     }
@@ -297,14 +328,30 @@ fn is_taskbar_number_key(vk_code: u32) -> bool {
         || (u32::from(VK_NUMPAD0)..=u32::from(VK_NUMPAD9)).contains(&vk_code)
 }
 
-unsafe fn virtual_key_pressed(key: u16) -> bool {
-    GetAsyncKeyState(i32::from(key)) < 0
+fn virtual_key_pressed(key: u16) -> bool {
+    // SAFETY: The value is a Windows virtual-key code and GetAsyncKeyState has no pointer or
+    // lifetime requirements.
+    unsafe { GetAsyncKeyState(i32::from(key)) < 0 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_1, VK_NUMPAD1};
+
+    #[test]
+    fn callback_panic_does_not_escape_input_dispatch() {
+        INPUT_EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = Some(Arc::new(|_| panic!("callback failed")));
+        });
+
+        record_input_event(KEYBOARD_EVENT);
+
+        INPUT_EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+        take_pending_events();
+    }
 
     #[test]
     fn app_switch_virtual_key_matches_alt_or_win_tab() {

@@ -2,7 +2,6 @@ use std::time::Instant;
 
 use crate::{foreground::for_each_process_id, win_util::WinHandle};
 use windows_sys::Win32::{
-    Foundation::HANDLE,
     NetworkManagement::{
         IpHelper::{FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2},
         Ndis::{IfOperStatusUp, MediaConnectStateConnected},
@@ -39,9 +38,6 @@ pub struct NetworkUsageSnapshot {
 }
 
 #[derive(Debug, Default)]
-pub struct MemoryUsageMonitor;
-
-#[derive(Debug, Default)]
 pub struct IoUsageMonitor {
     previous: Option<IoCounterSample>,
 }
@@ -65,21 +61,19 @@ struct NetworkCounterSample {
     sampled_at: Instant,
 }
 
-impl MemoryUsageMonitor {
-    pub fn sample(&mut self) -> MemoryUsageSnapshot {
-        let Some(status) = system_memory_status() else {
-            return MemoryUsageSnapshot::default();
-        };
-        let total_physical_bytes = status.ullTotalPhys;
-        let available_physical_bytes = status.ullAvailPhys;
-        let used_physical_bytes = total_physical_bytes.saturating_sub(available_physical_bytes);
+pub fn sample_memory_usage() -> MemoryUsageSnapshot {
+    let Some(status) = system_memory_status() else {
+        return MemoryUsageSnapshot::default();
+    };
+    let total_physical_bytes = status.ullTotalPhys;
+    let available_physical_bytes = status.ullAvailPhys;
+    let used_physical_bytes = total_physical_bytes.saturating_sub(available_physical_bytes);
 
-        MemoryUsageSnapshot {
-            percent: Some(status.dwMemoryLoad.min(100) as f32),
-            used_physical_bytes: Some(used_physical_bytes),
-            total_physical_bytes: Some(total_physical_bytes),
-            cached_physical_bytes: system_cache_bytes(),
-        }
+    MemoryUsageSnapshot {
+        percent: Some(status.dwMemoryLoad.min(100) as f32),
+        used_physical_bytes: Some(used_physical_bytes),
+        total_physical_bytes: Some(total_physical_bytes),
+        cached_physical_bytes: system_cache_bytes(),
     }
 }
 
@@ -169,6 +163,7 @@ fn system_memory_status() -> Option<MEMORYSTATUSEX> {
         dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
         ..Default::default()
     };
+    // SAFETY: status declares its size and remains writable for the call.
     let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
     (ok != 0).then_some(status)
 }
@@ -178,6 +173,7 @@ fn system_cache_bytes() -> Option<u64> {
         cb: std::mem::size_of::<PERFORMANCE_INFORMATION>() as u32,
         ..Default::default()
     };
+    // SAFETY: info is writable and info.cb is exactly its initialized structure size.
     let ok = unsafe { GetPerformanceInfo(&mut info, info.cb) };
     if ok == 0 {
         return None;
@@ -221,29 +217,30 @@ fn process_io_counters(process_id: u32) -> Option<IO_COUNTERS> {
         return None;
     }
 
+    // SAFETY: process_id came from the system snapshot and no inherited handle is requested.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     if process.is_null() {
         return None;
     }
 
     let process = WinHandle::new(process);
-    process_io_counters_for_handle(process.raw())
-}
-
-fn process_io_counters_for_handle(process: HANDLE) -> Option<IO_COUNTERS> {
     let mut counters = IO_COUNTERS::default();
-    let ok = unsafe { GetProcessIoCounters(process, &mut counters) };
+    // SAFETY: process remains open through its owned handle and counters is writable for the call.
+    let ok = unsafe { GetProcessIoCounters(process.raw(), &mut counters) };
     (ok != 0).then_some(counters)
 }
 
 fn read_system_network_counters() -> Option<NetworkCounterSample> {
     let mut table = std::ptr::null_mut::<MIB_IF_TABLE2>();
+    // SAFETY: table is a writable out-pointer that is either left null or populated with a
+    // Windows-owned allocation released below with FreeMibTable.
     let result = unsafe { GetIfTable2(&mut table) };
     if result != 0 || table.is_null() {
         return None;
     }
 
     let counters = network_counters_from_table(table);
+    // SAFETY: table was allocated successfully by GetIfTable2 and is released exactly once.
     unsafe {
         FreeMibTable(table.cast());
     }
@@ -251,7 +248,10 @@ fn read_system_network_counters() -> Option<NetworkCounterSample> {
 }
 
 fn network_counters_from_table(table: *const MIB_IF_TABLE2) -> Option<NetworkCounterSample> {
+    // SAFETY: The only caller passes a non-null GetIfTable2 allocation that remains live until
+    // this function returns.
     let table = unsafe { &*table };
+    // SAFETY: GetIfTable2 allocated NumEntries contiguous table rows.
     let rows =
         unsafe { std::slice::from_raw_parts(table.Table.as_ptr(), table.NumEntries as usize) };
     let mut download_bytes = 0u64;
