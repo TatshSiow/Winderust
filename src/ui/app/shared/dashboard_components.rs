@@ -190,7 +190,7 @@ pub(in crate::ui::app) fn dashboard_graph_sample_tooltips(
 }
 
 pub(in crate::ui::app) fn dashboard_sample_age_label(index: usize) -> String {
-    let age = CPU_USAGE_HISTORY_LEN.saturating_sub(index + 1);
+    let age = DASHBOARD_HISTORY_LEN.saturating_sub(index + 1);
     if age == 0 {
         t!("common.latest_sample").to_string()
     } else {
@@ -202,8 +202,8 @@ pub(in crate::ui::app) fn dashboard_cpu_dual_line_points(
     values: &VecDeque<CpuUsageHistorySample>,
     base_frequency_mhz: Option<u32>,
 ) -> Vec<DashboardDualLinePoint> {
-    let sample_count = values.len().min(CPU_USAGE_HISTORY_LEN);
-    let missing_samples = CPU_USAGE_HISTORY_LEN - sample_count;
+    let sample_count = values.len().min(DASHBOARD_HISTORY_LEN);
+    let missing_samples = DASHBOARD_HISTORY_LEN - sample_count;
     let start_index = values.len().saturating_sub(sample_count);
     let base_frequency_mhz = base_frequency_mhz
         .or_else(|| {
@@ -221,8 +221,8 @@ pub(in crate::ui::app) fn dashboard_cpu_dual_line_points(
         .max()
         .filter(|peak| *peak > base_frequency_mhz);
 
-    let mut points = Vec::with_capacity(CPU_USAGE_HISTORY_LEN);
-    for index in 0..CPU_USAGE_HISTORY_LEN {
+    let mut points = Vec::with_capacity(DASHBOARD_HISTORY_LEN);
+    for index in 0..DASHBOARD_HISTORY_LEN {
         let sample = if index < missing_samples {
             None
         } else {
@@ -270,12 +270,12 @@ pub(in crate::ui::app) fn dashboard_dual_line_points(
     second_label: impl Fn(Option<f32>) -> String,
 ) -> Vec<DashboardDualLinePoint> {
     let value_count = values.len();
-    let sample_count = value_count.min(CPU_USAGE_HISTORY_LEN);
-    let missing_samples = CPU_USAGE_HISTORY_LEN - sample_count;
+    let sample_count = value_count.min(DASHBOARD_HISTORY_LEN);
+    let missing_samples = DASHBOARD_HISTORY_LEN - sample_count;
     let mut values = values.skip(value_count.saturating_sub(sample_count));
 
-    let mut points = Vec::with_capacity(CPU_USAGE_HISTORY_LEN);
-    for index in 0..CPU_USAGE_HISTORY_LEN {
+    let mut points = Vec::with_capacity(DASHBOARD_HISTORY_LEN);
+    for index in 0..DASHBOARD_HISTORY_LEN {
         let sample = if index < missing_samples {
             None
         } else {

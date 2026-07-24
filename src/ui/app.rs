@@ -135,10 +135,10 @@ const ADAPTIVE_ENGINE_APP_TICK_INTERVAL: Duration = Duration::from_secs(60);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DASHBOARD_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TIMER_RESOLUTION_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
-const CPU_USAGE_HISTORY_LEN: usize = 30;
+const DASHBOARD_HISTORY_LEN: usize = 30;
 const DASHBOARD_SUMMARY_CARD_HEIGHT: f32 = 196.0;
 const DASHBOARD_LINE_CHART_HEIGHT: f32 = 112.0;
-const DASHBOARD_LINE_CHART_TICK_MARGIN: usize = CPU_USAGE_HISTORY_LEN + 1;
+const DASHBOARD_LINE_CHART_TICK_MARGIN: usize = DASHBOARD_HISTORY_LEN + 1;
 const DASHBOARD_PERCENT_CHART_MAX: f64 = 100.0;
 const DASHBOARD_SPLIT_ITEM_WIDTH: f32 = 140.0;
 const DASHBOARD_SPLIT_VALUE_WIDTH: f32 = 90.0;
@@ -818,13 +818,13 @@ impl WinderustApp {
                 idle_for: None,
             },
             cpu_usage: CpuUsageSnapshot::default(),
-            cpu_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
+            cpu_usage_history: VecDeque::with_capacity(DASHBOARD_HISTORY_LEN),
             memory_usage: MemoryUsageSnapshot::default(),
-            memory_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
+            memory_usage_history: VecDeque::with_capacity(DASHBOARD_HISTORY_LEN),
             io_usage: IoUsageSnapshot::default(),
-            io_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
+            io_usage_history: VecDeque::with_capacity(DASHBOARD_HISTORY_LEN),
             network_usage: NetworkUsageSnapshot::default(),
-            network_usage_history: VecDeque::with_capacity(CPU_USAGE_HISTORY_LEN),
+            network_usage_history: VecDeque::with_capacity(DASHBOARD_HISTORY_LEN),
             background_efficiency_status: BackgroundEfficiencySnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
             core_limiter_status: CoreLimiterSnapshot::default(),
@@ -1505,17 +1505,17 @@ mod tests {
     #[test]
     fn dashboard_dual_line_points_pad_and_keep_latest_samples() {
         let points = dashboard_dual_line_points(
-            (0..(CPU_USAGE_HISTORY_LEN + 2)).map(|index| (index as f32, (index * 2) as f32)),
+            (0..(DASHBOARD_HISTORY_LEN + 2)).map(|index| (index as f32, (index * 2) as f32)),
             |value| format!("{:?}", value),
             |value| format!("{:?}", value),
         );
 
-        assert_eq!(points.len(), CPU_USAGE_HISTORY_LEN);
+        assert_eq!(points.len(), DASHBOARD_HISTORY_LEN);
         assert_eq!(points[0].first_value, 2.0);
         assert_eq!(points[0].second_value, 4.0);
         assert_eq!(
-            points[CPU_USAGE_HISTORY_LEN - 1].first_value,
-            (CPU_USAGE_HISTORY_LEN + 1) as f64
+            points[DASHBOARD_HISTORY_LEN - 1].first_value,
+            (DASHBOARD_HISTORY_LEN + 1) as f64
         );
 
         let padded = dashboard_dual_line_points(
@@ -1523,9 +1523,9 @@ mod tests {
             |value| format!("{:?}", value),
             |value| format!("{:?}", value),
         );
-        assert_eq!(padded.len(), CPU_USAGE_HISTORY_LEN);
-        assert_eq!(padded[CPU_USAGE_HISTORY_LEN - 2].first_value, 0.0);
-        assert_eq!(padded[CPU_USAGE_HISTORY_LEN - 1].first_value, 7.0);
+        assert_eq!(padded.len(), DASHBOARD_HISTORY_LEN);
+        assert_eq!(padded[DASHBOARD_HISTORY_LEN - 2].first_value, 0.0);
+        assert_eq!(padded[DASHBOARD_HISTORY_LEN - 1].first_value, 7.0);
     }
 
     #[test]

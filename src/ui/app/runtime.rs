@@ -223,7 +223,7 @@ impl WinderustApp {
             self.cpu_usage != previous_cpu_usage || self.memory_usage != previous_memory_usage;
 
         if let Some(percent) = self.cpu_usage.percent {
-            if self.cpu_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+            if self.cpu_usage_history.len() == DASHBOARD_HISTORY_LEN {
                 self.cpu_usage_history.pop_front();
             }
             self.cpu_usage_history.push_back(CpuUsageHistorySample {
@@ -233,7 +233,7 @@ impl WinderustApp {
             changed = true;
         }
         if let Some(percent) = self.memory_usage.percent {
-            if self.memory_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+            if self.memory_usage_history.len() == DASHBOARD_HISTORY_LEN {
                 self.memory_usage_history.pop_front();
             }
             self.memory_usage_history
@@ -252,7 +252,7 @@ impl WinderustApp {
                 self.io_usage != previous_io_usage || self.network_usage != previous_network_usage;
 
             if self.io_usage.bytes_per_second.is_some() {
-                if self.io_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+                if self.io_usage_history.len() == DASHBOARD_HISTORY_LEN {
                     self.io_usage_history.pop_front();
                 }
                 self.io_usage_history.push_back(IoUsageHistorySample {
@@ -272,7 +272,7 @@ impl WinderustApp {
                 changed = true;
             }
             if self.network_usage.bytes_per_second.is_some() {
-                if self.network_usage_history.len() == CPU_USAGE_HISTORY_LEN {
+                if self.network_usage_history.len() == DASHBOARD_HISTORY_LEN {
                     self.network_usage_history.pop_front();
                 }
                 self.network_usage_history
