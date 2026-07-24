@@ -81,7 +81,10 @@ impl InputHook {
                 let _ = thread.join();
                 Err(err)
             }
-            Err(err) => Err(format!("Input hooks did not start: {err}")),
+            Err(err) => {
+                let _ = thread.join();
+                Err(format!("Input hooks did not start: {err}"))
+            }
         }
     }
 
