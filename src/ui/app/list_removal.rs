@@ -20,7 +20,9 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) {
         if !ui_animations_enabled() {
+            self.pending_list_item_removals.remove(&target);
             self.commit_list_item_removal(target);
+            self.shift_pending_list_item_removals_after(target);
             cx.notify();
             return;
         }
