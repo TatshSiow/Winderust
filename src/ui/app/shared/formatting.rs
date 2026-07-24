@@ -156,6 +156,13 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
         "Core Limiter disabled." => "runtime_status.core_limiter_disabled",
         "Core Limiter active." => "runtime_status.core_limiter_active",
         "Timer resolution query failed." => "runtime_status.timer_resolution_query_failed",
+        "Timer resolution request update failed." => {
+            "runtime_status.timer_resolution_update_failed"
+        }
+        "Timer resolution request failed." => "runtime_status.timer_resolution_request_failed",
+        "Timer resolution request active." => "runtime_status.timer_resolution_active",
+        "Timer resolution control disabled." => "runtime_status.timer_resolution_disabled",
+        "Timer resolution status loaded." => "runtime_status.timer_resolution_loaded",
         "App Suspension disabled." => "runtime_status.app_suspension_disabled",
         "App Suspension unavailable: Windows Job Object freeze is not supported on this system." => {
             "runtime_status.app_suspension_unsupported"
