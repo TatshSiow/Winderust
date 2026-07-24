@@ -434,7 +434,7 @@ impl WorkloadEngineManager {
             .collect::<BTreeSet<_>>();
         failures.count += lower_background_affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
-            failures.last_error = lower_background_affinity_snapshot.last_error.clone();
+            failures.last_error = lower_background_affinity_snapshot.last_error;
         }
 
         let mut workload_engine_rules = Vec::new();
