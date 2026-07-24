@@ -653,10 +653,12 @@ impl WinderustApp {
         let settings = self.settings.clone();
         let processor_power_values = self.processor_power_values();
         self.editing_rule_title = None;
+        self.editing_numeric = None;
         self.expanded_rule_cards.clear();
         self.pending_list_item_removals.clear();
         self.inputs = UiInputs::new(window, cx, &settings, processor_power_values);
         self.rebuild_rule_title_input_subscriptions(window, cx);
+        self.subscribe_to_numeric_input(window, cx);
         self.subscribe_to_dashboard_search_input(window, cx);
         self.subscribe_to_processor_power_sliders(window, cx);
         self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
