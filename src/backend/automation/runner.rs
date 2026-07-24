@@ -38,7 +38,7 @@ pub(super) fn adaptive_processor_demand(
     usage: &[f32],
     processors: &[LogicalProcessorInfo],
 ) -> AdaptiveProcessorDemand {
-    pub(super) fn update_peak(peak: &mut Option<f32>, usage: f32) {
+    fn update_peak(peak: &mut Option<f32>, usage: f32) {
         *peak = Some(peak.map_or(usage, |current| current.max(usage)));
     }
 
