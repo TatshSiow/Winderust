@@ -141,6 +141,7 @@ impl WinderustApp {
         self.editing_rule_title = None;
         self.expanded_rule_cards.clear();
         self.rebuild_inputs(window, cx);
+        self.sync_background_settings();
         if had_unsaved_changes {
             self.start_unsaved_popup_vanish();
         }
