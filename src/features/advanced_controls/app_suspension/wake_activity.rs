@@ -30,12 +30,12 @@ pub(super) struct NetworkActivityThresholds {
 
 pub(super) fn network_wake_duration(settings: &AppSuspensionSettings) -> Option<Duration> {
     (settings.network_wake_enabled && settings.network_wake_duration_seconds > 0)
-        .then(|| Duration::from_secs(settings.network_wake_duration_seconds))
+        .then(|| bounded_suspension_duration(settings.network_wake_duration_seconds))
 }
 
 pub(super) fn audio_wake_duration(settings: &AppSuspensionSettings) -> Option<Duration> {
     (settings.audio_wake_enabled && settings.audio_wake_duration_seconds > 0)
-        .then(|| Duration::from_secs(settings.audio_wake_duration_seconds))
+        .then(|| bounded_suspension_duration(settings.audio_wake_duration_seconds))
 }
 
 pub(super) fn audio_process_names_with_activity(

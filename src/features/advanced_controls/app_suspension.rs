@@ -140,6 +140,11 @@ enum TemporaryThawReason {
 }
 
 const USER_INTENT_THAW_SECONDS: u64 = 10;
+const MAX_SUSPENSION_DURATION_SECONDS: u64 = 3_600;
+
+fn bounded_suspension_duration(seconds: u64) -> Duration {
+    Duration::from_secs(seconds.min(MAX_SUSPENSION_DURATION_SECONDS))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TemporaryThawState {
@@ -903,7 +908,7 @@ impl AppSuspensionManager {
         }
 
         let interval = Duration::from_secs(settings.temporary_thaw_interval_seconds);
-        let duration = Duration::from_secs(settings.temporary_thaw_duration_seconds);
+        let duration = bounded_suspension_duration(settings.temporary_thaw_duration_seconds);
         let process_ids = self
             .suspended
             .iter()
@@ -2071,6 +2076,12 @@ mod tests {
         assert_eq!(
             network_wake_duration(&settings),
             Some(Duration::from_secs(30))
+        );
+
+        settings.network_wake_duration_seconds = u64::MAX;
+        assert_eq!(
+            network_wake_duration(&settings),
+            Some(Duration::from_secs(MAX_SUSPENSION_DURATION_SECONDS))
         );
 
         settings.network_wake_duration_seconds = 0;
