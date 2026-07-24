@@ -7,6 +7,10 @@ Windows Performance & Power Manager. A system engine to improve your Windows exp
 
 ![Winderust Home dashboard](screenshots/Home.png)
 
+## Download
+
+[Download the latest release](https://github.com/TatshSiow/Winderust/releases).
+
 ## Features
 
 - Adaptive Engine that automatically adjust background process resource
@@ -16,6 +20,8 @@ Windows Performance & Power Manager. A system engine to improve your Windows exp
 - iOS inspired background app suspension
 - etc. 
 
+## Documentation
+(Soon)
 
 ## Benchmark
 - Although I do benchmarks for the presets, but the base entry is still too small for a nice experience.
