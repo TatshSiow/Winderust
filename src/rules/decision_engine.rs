@@ -203,6 +203,7 @@ mod tests {
 
     fn test_settings() -> Settings {
         let mut settings = Settings::default();
+        settings.by_activity.enabled = true;
         settings.by_activity.power_plans.power_save_guid = Some("idle-guid".to_owned());
         settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
         settings.by_time.enabled = false;

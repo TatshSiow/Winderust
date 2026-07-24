@@ -542,6 +542,7 @@ fn event_driven_power_checks_drop_idle_polling_for_foreground_only_rules() {
 #[test]
 fn hidden_activity_input_resume_waits_for_hook_event() {
     let mut settings = Settings::default();
+    settings.by_activity.enabled = true;
     settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
 
     assert!(power_plan_checks_required(&settings));
@@ -613,6 +614,7 @@ fn hidden_schedule_checks_cap_long_sleeps() {
 #[test]
 fn by_activity_polls_when_it_can_target_a_power_plan() {
     let mut settings = Settings::default();
+    settings.by_activity.enabled = true;
     settings.by_activity.power_plans.power_save_guid = Some("idle-guid".to_owned());
 
     assert!(power_plan_checks_required(&settings));
@@ -621,6 +623,7 @@ fn by_activity_polls_when_it_can_target_a_power_plan() {
 #[test]
 fn controller_activity_poll_requires_a_usable_plan() {
     let mut settings = Settings::default();
+    settings.by_activity.enabled = true;
     settings.by_activity.power_plans.power_save_guid = None;
     settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
     settings.by_activity.switch_to_performance_on_resume = false;

@@ -1635,6 +1635,7 @@ mod tests {
 
         assert!(!input_hook_required(&settings));
 
+        settings.by_activity.enabled = true;
         settings.by_activity.power_plans.performance_guid = Some("active-guid".to_owned());
         assert!(input_hook_required(&settings));
 

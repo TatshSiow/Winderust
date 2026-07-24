@@ -245,7 +245,7 @@ pub struct InputDetectionSettings {
     pub controller: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ByForegroundSettings {
     #[serde(default)]
     pub enabled: bool,
@@ -1420,7 +1420,7 @@ impl Default for Settings {
             advanced: AdvancedSettings::default(),
             adaptive_engine: AdaptiveEngineSettings::default(),
             by_activity: ByActivitySettings {
-                enabled: true,
+                enabled: false,
                 idle_timeout_seconds: 300,
                 switch_to_performance_on_resume: true,
                 input_detection: InputDetectionSettings::default(),
@@ -1488,15 +1488,6 @@ impl Default for InputDetectionSettings {
 
 const fn default_true() -> bool {
     true
-}
-
-impl Default for ByForegroundSettings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            rules: Vec::new(),
-        }
-    }
 }
 
 impl Default for ByCpuLoadSettings {
@@ -2441,6 +2432,36 @@ impl ByCpuLoadRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_run_rule_modules_are_disabled() {
+        let settings = Settings::default();
+
+        assert!(![
+            settings.adaptive_engine.enabled,
+            settings.by_activity.enabled,
+            settings.by_foreground.enabled,
+            settings.by_time.enabled,
+            settings.by_cpu_load.enabled,
+            settings.background_efficiency.enabled,
+            settings.app_suspension.enabled,
+            settings.core_steering.enabled,
+            settings.background_cpu_restriction.enabled,
+            settings.core_limiter.enabled,
+            settings.by_running_app.enabled,
+            settings.workload_engine.enabled,
+            settings.process_priority.enabled,
+            settings.thread_priority.enabled,
+            settings.dynamic_priority_boost.enabled,
+            settings.io_priority.enabled,
+            settings.gpu_priority.enabled,
+            settings.memory_priority.enabled,
+            settings.memory_trim.enabled,
+            settings.timer_resolution.enabled,
+        ]
+        .into_iter()
+        .any(|enabled| enabled));
+    }
 
     #[test]
     fn network_threshold_units_convert_to_canonical_bytes() {
