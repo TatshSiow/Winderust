@@ -126,7 +126,7 @@ pub(in crate::ui::app) fn begin_expandable_motion(id: impl Into<String>, expande
                 .clamp(MOTION_EXPAND_MIN_SECONDS, MOTION_EXPAND_SECONDS),
         );
         state.transitions.insert(
-            id.clone(),
+            id,
             ExpandableTransition {
                 from_progress,
                 to_progress,

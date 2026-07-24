@@ -139,7 +139,7 @@ pub(in crate::ui::app) fn nav_row(
     let (hovered, _) = card_hover_snapshot(&hover_id);
     let bg_layer = animated_nav_row_bg(&hover_id, selected);
     let content_opacity = if selected || hovered { 1.0 } else { 0.86 };
-    let hover_row_id = (!selected).then_some(hover_id.clone());
+    let hover_row_id = (!selected).then_some(hover_id);
 
     h_flex()
         .id(row_id)
@@ -154,7 +154,6 @@ pub(in crate::ui::app) fn nav_row(
         .rounded(px(BRAND_RADIUS_CONTROL))
         .text_color(cx.theme().sidebar_foreground)
         .on_hover({
-            let hover_row_id = hover_row_id.clone();
             move |hovered, _, cx| {
                 if let Some(hover_id) = hover_row_id.as_ref() {
                     set_card_hovered(hover_id.clone(), *hovered, cx);

@@ -150,7 +150,7 @@ pub(in crate::ui::app) fn checkbox_box(
     let border = lerp_rgb(unchecked_border, accent, progress);
     let bg = lerp_rgb(unchecked_bg, checked_bg, progress);
     let mut box_el = div()
-        .id(id.clone())
+        .id(id)
         .size(px(size))
         .flex()
         .items_center()

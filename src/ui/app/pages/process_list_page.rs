@@ -531,7 +531,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
     let process_id = process.id;
     let process_name = process.name.clone();
     let selected = edit_context.app.selected_process_id == Some(process_id);
-    let app_entity = cx.entity().clone();
+    let app_entity = cx.entity();
     let mut row = h_flex()
         .id(row_id)
         .w_full()
