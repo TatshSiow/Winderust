@@ -166,6 +166,19 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
         }
         "By Running App active." => "runtime_status.by_running_app_active",
         "GPU priority defaults disabled." => "runtime_status.gpu_priority_disabled",
+        "GPU priority defaults active." => "runtime_status.gpu_priority_active",
+        "GPU priority defaults active with failures." => {
+            "runtime_status.gpu_priority_active_with_failures"
+        }
+        "GPU priority defaults active; some protected processes were skipped." => {
+            "runtime_status.gpu_priority_protected_skipped"
+        }
+        "GPU priority defaults active; repeated failures are being suppressed." => {
+            "runtime_status.gpu_priority_failures_suppressed"
+        }
+        "GPU priority defaults active; waiting for GPU scheduling contexts." => {
+            "runtime_status.gpu_priority_waiting_for_contexts"
+        }
         "I/O priority defaults disabled." => "runtime_status.io_priority_disabled",
         "I/O priority defaults active." => "runtime_status.io_priority_active",
         "Background Efficiency disabled." => "runtime_status.background_efficiency_disabled",
