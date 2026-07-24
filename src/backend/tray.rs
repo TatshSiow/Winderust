@@ -5,6 +5,7 @@ use std::{
 };
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use rust_i18n::t;
 use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError, HWND, LPARAM, LRESULT, POINT, WPARAM},
     System::LibraryLoader::GetModuleHandleW,
@@ -259,8 +260,8 @@ fn show_tray_menu(hwnd: HWND) {
         return;
     }
 
-    let show = wide_null("Show Winderust");
-    let quit = wide_null("Quit");
+    let show = wide_null(&t!("tray.show_winderust"));
+    let quit = wide_null(&t!("tray.quit"));
     // SAFETY: menu is live, and both null-terminated labels remain valid for these calls.
     unsafe {
         AppendMenuW(menu, MF_STRING, MENU_SHOW, show.as_ptr());

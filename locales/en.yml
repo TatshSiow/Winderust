@@ -4,6 +4,10 @@ app:
   name: "Winderust"
   description: "Windows Performance & Power Manager"
 
+tray:
+  show_winderust: "Show Winderust"
+  quit: "Quit"
+
 nav:
   home: "Home"
   winderust_features: "Winderust Features"

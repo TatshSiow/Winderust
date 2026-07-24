@@ -4,6 +4,10 @@ app:
   name: "Winderust"
   description: "Windows Performance & Power Manager"
 
+tray:
+  show_winderust: "顯示 Winderust"
+  quit: "結束"
+
 nav:
   home: "首頁"
   winderust_features: "Winderust 功能"
