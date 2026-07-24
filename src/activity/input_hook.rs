@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    panic::{catch_unwind, AssertUnwindSafe},
     ptr::null,
     sync::{
         atomic::{AtomicU8, Ordering},
@@ -262,7 +263,9 @@ fn record_input_event(event: u8) {
     let events = input_events_from_bits(event);
     INPUT_EVENT_CALLBACK.with(|slot| {
         if let Some(callback) = slot.borrow().as_ref() {
-            callback(events);
+            if catch_unwind(AssertUnwindSafe(|| callback(events))).is_err() {
+                eprintln!("Input hook callback panicked.");
+            }
         }
     });
 }
@@ -335,6 +338,20 @@ fn virtual_key_pressed(key: u16) -> bool {
 mod tests {
     use super::*;
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{VK_1, VK_NUMPAD1};
+
+    #[test]
+    fn callback_panic_does_not_escape_input_dispatch() {
+        INPUT_EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = Some(Arc::new(|_| panic!("callback failed")));
+        });
+
+        record_input_event(KEYBOARD_EVENT);
+
+        INPUT_EVENT_CALLBACK.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+        take_pending_events();
+    }
 
     #[test]
     fn app_switch_virtual_key_matches_alt_or_win_tab() {
