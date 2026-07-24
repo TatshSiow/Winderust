@@ -70,13 +70,13 @@ fn main() {
 }
 
 struct SingleInstanceGuard {
-    _handle: win_util::WinHandle,
+    handle: win_util::WinHandle,
 }
 
 impl SingleInstanceGuard {
     fn acquire() -> Option<Self> {
         use windows_sys::Win32::{
-            Foundation::WAIT_TIMEOUT,
+            Foundation::{WAIT_ABANDONED, WAIT_OBJECT_0},
             System::Threading::{CreateMutexW, WaitForSingleObject},
         };
 
@@ -85,21 +85,26 @@ impl SingleInstanceGuard {
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
 
-        // SAFETY: name is terminated UTF-16, the mutex requests initial ownership, and the
-        // returned non-null handle is immediately placed in the owning WinHandle wrapper.
+        // SAFETY: name is terminated UTF-16 and the returned handle is owned by this process.
+        let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+        if handle.is_null() {
+            return None;
+        }
+
+        let handle = win_util::WinHandle::new(handle);
+        // SAFETY: handle owns a live mutex and a zero timeout does not retain pointers.
+        let wait_status = unsafe { WaitForSingleObject(handle.raw(), 0) };
+        matches!(wait_status, WAIT_OBJECT_0 | WAIT_ABANDONED).then_some(Self { handle })
+    }
+}
+
+impl Drop for SingleInstanceGuard {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Threading::ReleaseMutex;
+
+        // SAFETY: acquire only constructs the guard after this thread owns the mutex.
         unsafe {
-            let handle = CreateMutexW(std::ptr::null(), 1, name.as_ptr());
-            if handle.is_null() {
-                return None;
-            }
-
-            let handle = win_util::WinHandle::new(handle);
-            let wait_status = WaitForSingleObject(handle.raw(), 0);
-            if wait_status == WAIT_TIMEOUT || wait_status == 0xFFFFFFFF {
-                return None;
-            }
-
-            Some(Self { _handle: handle })
+            ReleaseMutex(self.handle.raw());
         }
     }
 }
