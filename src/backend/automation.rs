@@ -300,7 +300,6 @@ impl BackgroundAutomation {
         let mut settings_to_sync = None;
         if let Ok(mut state) = self.shared.state.lock() {
             state.app_suspension_freeze_requests.push(process_name);
-            state.pending_events.settings_changed = true;
             state.change_generation = state.change_generation.wrapping_add(1);
             settings_to_sync = Some(Arc::clone(&state.settings));
             self.shared.changed.notify_one();
