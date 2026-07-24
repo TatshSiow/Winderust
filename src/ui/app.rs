@@ -79,8 +79,8 @@ use crate::{
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
         capture_process_action_target, foreground_process_name, list_process_candidates,
-        list_processes, same_process_name, ProcessActionTarget, ProcessActionTargetError,
-        ProcessCandidateInfo, ProcessInfo,
+        list_processes, process_name_key, same_process_name, ProcessActionTarget,
+        ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo,
     },
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},

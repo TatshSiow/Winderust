@@ -122,7 +122,7 @@ pub(in crate::ui::app) fn new_foreground_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByForegroundRule {
-    let process_name = process.trim().to_ascii_lowercase();
+    let process_name = process_name_key(process);
     ByForegroundRule {
         enabled: true,
         name: process_name.clone(),
@@ -172,7 +172,7 @@ pub(in crate::ui::app) fn can_add_memory_trim_exclusion(
 
 pub(in crate::ui::app) fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
     ProcessExclusionRule {
-        process_name: process.trim().to_ascii_lowercase(),
+        process_name: process_name_key(process),
         ..Default::default()
     }
 }
@@ -182,7 +182,7 @@ pub(in crate::ui::app) fn new_background_efficiency_rule(
 ) -> BackgroundEfficiencyRule {
     BackgroundEfficiencyRule {
         enabled: true,
-        process_name: process.trim().to_ascii_lowercase(),
+        process_name: process_name_key(process),
     }
 }
 
@@ -429,7 +429,7 @@ pub(in crate::ui::app) fn can_add_by_running_app_process(
 pub(in crate::ui::app) fn new_app_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         enabled: true,
-        process_name: process.trim().to_ascii_lowercase(),
+        process_name: process_name_key(process),
         network_wake_enabled: true,
         audio_wake_enabled: true,
         network_download_threshold_bytes: 1,
@@ -443,7 +443,7 @@ pub(in crate::ui::app) fn new_core_steering_rule(process: &str) -> CoreSteeringR
     CoreSteeringRule {
         enabled: true,
         mode: CoreSteeringMode::Soft,
-        process_name: process.trim().to_ascii_lowercase(),
+        process_name: process_name_key(process),
         core_mask: default_affinity_mask(),
     }
 }
@@ -454,7 +454,7 @@ pub(in crate::ui::app) fn new_timer_resolution_rule(
 ) -> TimerResolutionRule {
     TimerResolutionRule {
         enabled: true,
-        process_name: process.trim().to_ascii_lowercase(),
+        process_name: process_name_key(process),
         desired_100ns,
     }
 }
@@ -487,7 +487,7 @@ pub(in crate::ui::app) fn set_timer_resolution_override(
 pub(in crate::ui::app) fn new_core_limiter_rule(process: &str) -> CoreLimiterRule {
     CoreLimiterRule {
         enabled: true,
-        process_name: process.trim().to_ascii_lowercase(),
+        process_name: process_name_key(process),
         threshold_percent: 75,
         sustain_seconds: 5,
         cooldown_seconds: 10,
@@ -649,7 +649,7 @@ pub(in crate::ui::app) fn new_by_running_app_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByRunningAppRule {
-    let process_name = process.trim().to_ascii_lowercase();
+    let process_name = process_name_key(process);
     ByRunningAppRule {
         enabled: true,
         name: process_name.clone(),
