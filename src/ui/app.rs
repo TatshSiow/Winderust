@@ -744,10 +744,10 @@ fn load_initial_processor_power_state() -> InitialProcessorPowerState {
 impl WinderustApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let hwnd = tray::hwnd_from_window(window);
-        let settings = config::storage::load().unwrap_or_else(|err| {
-            eprintln!("{err}");
-            Settings::default()
-        });
+        let (settings, settings_load_error) = match config::storage::load() {
+            Ok(settings) => (settings, None),
+            Err(error) => (Settings::default(), Some(error)),
+        };
         let window_activation_subscription =
             cx.observe_window_activation(window, |app, window, cx| {
                 if window.is_window_active() && tray::take_restore_requested() {
@@ -767,6 +767,9 @@ impl WinderustApp {
         if let Some(error) = adaptive_plan_recovery_error {
             initial_processor_power.status_message =
                 format!("Adaptive power-plan recovery failed: {error}");
+        }
+        if let Some(error) = settings_load_error {
+            initial_processor_power.status_message = error;
         }
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
         let (win32_priority_separation_value, win32_priority_separation_status) =
