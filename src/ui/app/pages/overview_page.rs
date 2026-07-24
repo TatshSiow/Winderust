@@ -188,7 +188,7 @@ impl WinderustApp {
             ))
             .child(dashboard_card_slot(
                 titled_status_list(
-                    &t!("home.enabled_rules"),
+                    &t!("home.enabled_features"),
                     Some(if settings.general.enabled {
                         status_pill(
                             t!("home.master_switch_enabled").to_string(),
@@ -203,7 +203,7 @@ impl WinderustApp {
                         )
                     }),
                     self.dashboard_enabled_function_items(settings),
-                    Some(t!("home.no_enabled_rules").to_string()),
+                    Some(t!("home.no_enabled_features").to_string()),
                 )
                 .into_any_element(),
             ));
