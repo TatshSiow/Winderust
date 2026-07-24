@@ -75,11 +75,14 @@ impl WinderustApp {
         true
     }
 
-    pub(in crate::ui::app) fn sync_adaptive_engine(&self, settings: &Settings) {
-        if settings.adaptive_engine.enabled {
-            let _ = self_power::enable_adaptive_engine();
+    pub(in crate::ui::app) fn sync_adaptive_engine(&mut self, settings: &Settings) {
+        let result = if settings.adaptive_engine.enabled {
+            self_power::enable_adaptive_engine()
         } else {
-            let _ = self_power::disable_adaptive_engine();
+            self_power::disable_adaptive_engine()
+        };
+        if let Err(err) = result {
+            self.status_message = err;
         }
     }
 
