@@ -1450,6 +1450,19 @@ mod tests {
     }
 
     #[test]
+    fn adaptive_engine_toggle_keeps_power_mode_preset() {
+        let mut settings = Settings::default();
+
+        for preset in PowerModePreset::ALL {
+            apply_power_mode_preset(&mut settings, preset);
+            let enabled = !settings.adaptive_engine.enabled;
+            apply_adaptive_engine(&mut settings, enabled);
+
+            assert!(power_mode_matches_preset(&settings, preset));
+        }
+    }
+
+    #[test]
     fn workload_engine_preset_match_ignores_hidden_preserve_flags() {
         let mut settings = WorkloadEngineSettings::default();
         apply_workload_engine_preset(&mut settings, WorkloadEnginePreset::ForegroundFirst);

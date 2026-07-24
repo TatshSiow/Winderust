@@ -2,16 +2,10 @@ use crate::ui::app::*;
 
 pub(in crate::ui::app) fn adaptive_engine_enabled(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled
-        || settings.background_efficiency.enabled
-        || settings.workload_engine.enabled
 }
 
 pub(in crate::ui::app) fn apply_adaptive_engine(settings: &mut Settings, enabled: bool) {
     settings.adaptive_engine.enabled = enabled;
-    if !enabled {
-        settings.background_efficiency.enabled = false;
-        settings.workload_engine.enabled = false;
-    }
 }
 
 pub(in crate::ui::app) fn power_mode_preset_label(preset: PowerModePreset) -> String {
@@ -99,8 +93,7 @@ pub(in crate::ui::app) fn power_mode_matches_preset(
 ) -> bool {
     match preset {
         PowerModePreset::PowerSave => {
-            settings.adaptive_engine.enabled
-                && settings.adaptive_engine.processor_policy_enabled
+            settings.adaptive_engine.processor_policy_enabled
                 && settings
                     .adaptive_engine
                     .processor_policy_values
@@ -115,8 +108,7 @@ pub(in crate::ui::app) fn power_mode_matches_preset(
                 )
         }
         PowerModePreset::Balanced => {
-            settings.adaptive_engine.enabled
-                && settings.adaptive_engine.processor_policy_enabled
+            settings.adaptive_engine.processor_policy_enabled
                 && settings
                     .adaptive_engine
                     .processor_policy_values
@@ -131,8 +123,7 @@ pub(in crate::ui::app) fn power_mode_matches_preset(
                 )
         }
         PowerModePreset::Performance => {
-            !settings.adaptive_engine.enabled
-                && !settings.background_efficiency.enabled
+            !settings.background_efficiency.enabled
                 && settings.adaptive_engine.processor_policy_enabled
                 && settings
                     .adaptive_engine
@@ -147,8 +138,7 @@ pub(in crate::ui::app) fn power_mode_matches_preset(
                 )
         }
         PowerModePreset::Speed => {
-            !settings.adaptive_engine.enabled
-                && !settings.background_efficiency.enabled
+            !settings.background_efficiency.enabled
                 && settings.adaptive_engine.processor_policy_enabled
                 && settings
                     .adaptive_engine
