@@ -19,10 +19,7 @@ pub(crate) enum FileDialogMode {
     Save,
 }
 
-pub(crate) fn choose_settings_file(
-    hwnd: Option<HWND>,
-    mode: FileDialogMode,
-) -> Result<Option<PathBuf>, String> {
+pub(crate) fn choose_settings_file(hwnd: Option<HWND>, mode: FileDialogMode) -> Option<PathBuf> {
     let default_path = match mode {
         FileDialogMode::Open => config::storage::config_path(),
         FileDialogMode::Save => config::storage::default_export_toml_path(),
@@ -40,19 +37,19 @@ pub(crate) fn choose_settings_file(
             FileDialogMode::Open => "Import settings",
             FileDialogMode::Save => "Export settings",
         });
-    Ok(match mode {
+    match mode {
         FileDialogMode::Open => dialog.pick_file(),
         FileDialogMode::Save => dialog.save_file(),
-    })
+    }
 }
 
-pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Result<Option<PathBuf>, String> {
+pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Option<PathBuf> {
     let filename = format!(
         "winderust_action_log_{}_{}.csv",
         env!("CARGO_PKG_VERSION"),
         Local::now().format("%Y-%m-%d")
     );
-    Ok(dialog(hwnd)
+    dialog(hwnd)
         .add_filter("CSV files", &["csv"])
         .set_directory(
             config::storage::config_path()
@@ -61,7 +58,7 @@ pub(crate) fn choose_action_log_export_file(hwnd: Option<HWND>) -> Result<Option
         )
         .set_file_name(filename)
         .set_title("Export log")
-        .save_file())
+        .save_file()
 }
 
 fn dialog(hwnd: Option<HWND>) -> FileDialog {

@@ -28,17 +28,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn export_settings_toml(&mut self) {
         match choose_settings_file(self.hwnd, FileDialogMode::Save) {
-            Ok(Some(path)) => match config::storage::export_toml_to(&path, &self.settings) {
+            Some(path) => match config::storage::export_toml_to(&path, &self.settings) {
                 Ok(()) => {
                     self.status_message =
                         t!("status.exported_settings", path = path.display()).to_string();
                 }
                 Err(err) => self.status_message = err,
             },
-            Ok(None) => {
+            None => {
                 self.status_message = t!("status.export_canceled").to_string();
             }
-            Err(err) => self.status_message = err,
         }
     }
 
@@ -49,7 +48,7 @@ impl WinderustApp {
         }
 
         match choose_action_log_export_file(self.hwnd) {
-            Ok(Some(path)) => {
+            Some(path) => {
                 match fs::write(
                     &path,
                     action_log_entries_to_csv(self.action_log_entries.as_slice()),
@@ -68,10 +67,9 @@ impl WinderustApp {
                     }
                 }
             }
-            Ok(None) => {
+            None => {
                 self.status_message = t!("status.action_log_export_canceled").to_string();
             }
-            Err(err) => self.status_message = err,
         }
     }
 
@@ -81,7 +79,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) {
         match choose_settings_file(self.hwnd, FileDialogMode::Open) {
-            Ok(Some(path)) => match config::storage::import_toml_from(&path) {
+            Some(path) => match config::storage::import_toml_from(&path) {
                 Ok(settings) => {
                     self.settings = settings;
                     apply_language(self.settings.general.language);
@@ -106,10 +104,9 @@ impl WinderustApp {
                 }
                 Err(err) => self.status_message = err,
             },
-            Ok(None) => {
+            None => {
                 self.status_message = t!("status.import_canceled").to_string();
             }
-            Err(err) => self.status_message = err,
         }
     }
 
