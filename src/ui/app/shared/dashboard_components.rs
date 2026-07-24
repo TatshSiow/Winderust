@@ -309,7 +309,7 @@ pub(in crate::ui::app) fn dashboard_secondary_series_color() -> Hsla {
 pub(in crate::ui::app) fn titled_status_list(
     title: &str,
     header_trailing: Option<AnyElement>,
-    items: Vec<(String, String)>,
+    items: Vec<(Option<Page>, String, String)>,
     empty_message: Option<String>,
 ) -> gpui::Div {
     let mut list = v_flex()
@@ -326,7 +326,7 @@ pub(in crate::ui::app) fn titled_status_list(
         }
     }
 
-    for (label, detail) in items {
+    for (page, label, detail) in items {
         let mut content = h_flex()
             .flex_1()
             .min_w(px(0.0))
@@ -353,13 +353,19 @@ pub(in crate::ui::app) fn titled_status_list(
                 .items_center()
                 .gap_2()
                 .py_1()
-                .child(
+                .child(if let Some(page) = page {
+                    Icon::new(nav_icon_name(page.section_landing_page()))
+                        .with_size(px(16.0))
+                        .text_color(rgb(accent_color()))
+                        .into_any_element()
+                } else {
                     div()
                         .size(px(6.0))
                         .rounded_full()
                         .flex_shrink_0()
-                        .bg(rgb(accent_color())),
-                )
+                        .bg(rgb(accent_color()))
+                        .into_any_element()
+                })
                 .child(content),
         );
     }

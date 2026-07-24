@@ -208,8 +208,13 @@ impl WinderustApp {
             &t!("adaptive_engine.status"),
             None,
             vec![
-                (t!("adaptive_engine.power_mode").to_string(), power_mode),
                 (
+                    None,
+                    t!("adaptive_engine.power_mode").to_string(),
+                    power_mode,
+                ),
+                (
+                    None,
                     t!("adaptive_engine.processor_policy").to_string(),
                     if let Some(profile) = &self.workload_engine_status.adaptive_power_profile {
                         t!(
@@ -231,6 +236,7 @@ impl WinderustApp {
                     },
                 ),
                 (
+                    None,
                     t!("adaptive_engine.background_efficiency").to_string(),
                     if self.settings.background_efficiency.enabled {
                         format!(
@@ -243,6 +249,7 @@ impl WinderustApp {
                     },
                 ),
                 (
+                    None,
                     t!("adaptive_engine.timer_ignored").to_string(),
                     format!(
                         "{} {}",
@@ -255,6 +262,7 @@ impl WinderustApp {
                     ),
                 ),
                 (
+                    None,
                     t!("adaptive_engine.workload_engine").to_string(),
                     if self.settings.workload_engine.enabled {
                         format!(
@@ -267,6 +275,7 @@ impl WinderustApp {
                     },
                 ),
                 (
+                    None,
                     t!("adaptive_engine.restrained").to_string(),
                     localized_runtime_status(&self.workload_engine_status.workload_engine_message),
                 ),

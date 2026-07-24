@@ -219,16 +219,18 @@ impl WinderustApp {
     pub(in crate::ui::app) fn dashboard_enabled_function_items(
         &self,
         settings: &Settings,
-    ) -> Vec<(String, String)> {
+    ) -> Vec<(Option<Page>, String, String)> {
         let mut items = Vec::with_capacity(16);
         if settings.by_foreground.enabled {
             items.push((
+                Some(Page::ByForeground),
                 t!("nav.by_foreground").to_string(),
                 rule_count_label(settings.by_foreground.rules.len()),
             ));
         }
         if settings.by_running_app.enabled {
             items.push((
+                Some(Page::ByRunningApp),
                 t!("nav.by_running_app").to_string(),
                 self.by_running_app_status
                     .active_process
@@ -238,21 +240,28 @@ impl WinderustApp {
         }
         if settings.by_cpu_load.enabled {
             items.push((
+                Some(Page::ByCpuLoad),
                 t!("nav.by_cpu_load").to_string(),
                 cpu_usage_label(self.cpu_usage.percent),
             ));
         }
         if settings.by_activity.enabled {
             items.push((
+                Some(Page::ByActivity),
                 t!("nav.by_activity").to_string(),
                 activity_state_label(self.activity.state),
             ));
         }
         if settings.by_time.enabled {
-            items.push((t!("nav.by_time").to_string(), self.next_schedule.clone()));
+            items.push((
+                Some(Page::ByTime),
+                t!("nav.by_time").to_string(),
+                self.next_schedule.clone(),
+            ));
         }
         if settings.core_limiter.enabled {
             items.push((
+                Some(Page::CoreLimiter),
                 t!("nav.core_limiter").to_string(),
                 t!(
                     "home.limited_count",
@@ -263,6 +272,7 @@ impl WinderustApp {
         }
         if settings.background_cpu_restriction.enabled {
             items.push((
+                Some(Page::BackgroundCpuRestriction),
                 t!("nav.background_cpu_restriction").to_string(),
                 t!(
                     "home.adjusted_count",
@@ -273,6 +283,7 @@ impl WinderustApp {
         }
         if settings.background_efficiency.enabled {
             items.push((
+                Some(Page::BackgroundEfficiency),
                 t!("nav.background_efficiency").to_string(),
                 t!(
                     "home.throttled_count",
@@ -283,6 +294,7 @@ impl WinderustApp {
         }
         if settings.app_suspension.enabled {
             items.push((
+                Some(Page::AppSuspension),
                 t!("nav.app_suspension").to_string(),
                 t!(
                     "home.suspended_count",
@@ -302,12 +314,14 @@ impl WinderustApp {
                 .to_string()
             };
             items.push((
+                Some(Page::AdaptiveEngine),
                 t!("nav.workload_engine").to_string(),
                 workload_engine_status,
             ));
         }
         if settings.io_priority.enabled {
             items.push((
+                Some(Page::IoPriority),
                 t!("nav.io_priority").to_string(),
                 t!(
                     "home.adjusted_count",
@@ -318,6 +332,7 @@ impl WinderustApp {
         }
         if settings.memory_priority.enabled {
             items.push((
+                Some(Page::MemoryPriority),
                 t!("nav.memory_priority").to_string(),
                 t!(
                     "home.adjusted_count",
@@ -328,6 +343,7 @@ impl WinderustApp {
         }
         if settings.memory_trim.enabled {
             items.push((
+                Some(Page::MemoryTrim),
                 t!("nav.memory_trim").to_string(),
                 t!(
                     "home.trimmed_count",
@@ -338,6 +354,7 @@ impl WinderustApp {
         }
         if settings.core_steering.enabled {
             items.push((
+                Some(Page::CoreSteering),
                 t!("nav.core_steering").to_string(),
                 t!(
                     "home.adjusted_count",
