@@ -654,6 +654,7 @@ impl WinderustApp {
         let processor_power_values = self.processor_power_values();
         self.editing_rule_title = None;
         self.expanded_rule_cards.clear();
+        self.pending_list_item_removals.clear();
         self.inputs = UiInputs::new(window, cx, &settings, processor_power_values);
         self.rebuild_rule_title_input_subscriptions(window, cx);
         self.subscribe_to_dashboard_search_input(window, cx);
