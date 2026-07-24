@@ -143,6 +143,7 @@ status:
   unsaved_canceled: "Unsaved settings changes canceled."
   switched_power_plan: "Switched power plan: %{reason}"
   admin_relaunch_failed: "Could not relaunch as administrator."
+  adaptive_power_plan_recovery_failed: "Adaptive power-plan recovery failed: %{error}"
 
 unsaved:
   title: "Unsaved settings"

@@ -764,7 +764,7 @@ impl WinderustApp {
         let mut initial_processor_power = load_initial_processor_power_state();
         if let Some(error) = adaptive_plan_recovery_error {
             initial_processor_power.status_message =
-                format!("Adaptive power-plan recovery failed: {error}");
+                t!("status.adaptive_power_plan_recovery_failed", error = error).to_string();
         }
         if let Some(error) = settings_load_error {
             initial_processor_power.status_message = error;

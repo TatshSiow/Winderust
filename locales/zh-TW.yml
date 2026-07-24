@@ -143,6 +143,7 @@ status:
   unsaved_canceled: "已取消未儲存的設定變更。"
   switched_power_plan: "已切換電源計畫：%{reason}"
   admin_relaunch_failed: "無法以系統管理員身分重新啟動。"
+  adaptive_power_plan_recovery_failed: "自適應電源計畫復原失敗：%{error}"
 
 unsaved:
   title: "未儲存的設定"
