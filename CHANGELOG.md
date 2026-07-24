@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## 0.3.0 - 2026-07-24
+
+### Added
+
+- Add clickable Enabled Features entries on Home with feature-section icons.
+- Add settings to pause dashboard metrics and process-list population.
+
+### Changed
+
+- Disable all automation rules by default on first run.
+- Rename and clarify the Home enabled-features summary.
+- Reorder Language and Appearance controls for a clearer setup flow.
+- Restructure UI, automation, and feature modules for easier maintenance.
+
+### Fixed
+
+- Preserve the selected Adaptive Engine profile when toggling the feature.
+- Harden settings loading, importing, cancellation, and validation behavior.
+- Improve power-plan rule timing, selection, cleanup, and process-state restoration.
+- Improve startup, input-hook, Windows-event, tray, update-check, and Action Log reliability.
+- Complete localization for system dialogs, tray actions, and runtime statuses.
+
 
 ## 0.2.0-alpha - 2026-07-22
 
