@@ -141,6 +141,13 @@ pub(in crate::ui::app) fn activity_state_label(state: ActivityState) -> String {
 }
 
 pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
+    if let Some(threshold) = message
+        .strip_prefix("Memory Trim waiting for system memory load >= ")
+        .and_then(|value| value.strip_suffix("%."))
+    {
+        return t!("runtime_status.memory_trim_waiting", threshold = threshold).to_string();
+    }
+
     let key = match message {
         "Automation disabled." => "runtime_status.automation_disabled",
         "Paused: foreground app is unknown." => "runtime_status.foreground_unknown",
@@ -170,6 +177,8 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
             "runtime_status.dynamic_priority_boost_active"
         }
         "Memory Trim disabled." => "runtime_status.memory_trim_disabled",
+        "Memory Trim active." => "runtime_status.memory_trim_active",
+        "Manual Memory Trim pass completed." => "runtime_status.memory_trim_manual_completed",
         "Thread Priority disabled." => "runtime_status.thread_priority_disabled",
         "Thread Priority active." => "runtime_status.thread_priority_active",
         "Process priority defaults disabled." => "runtime_status.process_priority_disabled",

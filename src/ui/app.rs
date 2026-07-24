@@ -1144,6 +1144,10 @@ mod tests {
             localized_runtime_status("Automation disabled."),
             t!("runtime_status.automation_disabled").to_string()
         );
+        assert_eq!(
+            localized_runtime_status("Memory Trim waiting for system memory load >= 80%."),
+            t!("runtime_status.memory_trim_waiting", threshold = "80").to_string()
+        );
         assert_eq!(localized_runtime_status("Win32 error 5"), "Win32 error 5");
     }
 
