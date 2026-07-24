@@ -131,7 +131,6 @@ use shared::*;
 
 const ACTIVE_PLAN_REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const APP_TICK_INTERVAL: Duration = Duration::from_secs(1);
-const ADAPTIVE_ENGINE_APP_TICK_INTERVAL: Duration = Duration::from_secs(60);
 const CPU_USAGE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const DASHBOARD_IO_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const TIMER_RESOLUTION_STATUS_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -1448,19 +1447,6 @@ mod tests {
             &settings.workload_engine,
             WorkloadEnginePreset::ForegroundFirst
         ));
-    }
-
-    #[test]
-    fn adaptive_engine_uses_low_power_app_tick() {
-        let mut settings = Settings::default();
-
-        assert_eq!(app_tick_interval(&settings, true), APP_TICK_INTERVAL);
-        settings.adaptive_engine.enabled = true;
-        assert_eq!(app_tick_interval(&settings, false), APP_TICK_INTERVAL);
-        assert_eq!(
-            app_tick_interval(&settings, true),
-            ADAPTIVE_ENGINE_APP_TICK_INTERVAL
-        );
     }
 
     #[test]

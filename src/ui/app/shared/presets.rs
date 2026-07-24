@@ -6,17 +6,6 @@ pub(in crate::ui::app) fn adaptive_engine_enabled(settings: &Settings) -> bool {
         || settings.workload_engine.enabled
 }
 
-pub(in crate::ui::app) fn app_tick_interval(
-    settings: &Settings,
-    start_minimized_applied: bool,
-) -> Duration {
-    if start_minimized_applied && settings.adaptive_engine.enabled {
-        ADAPTIVE_ENGINE_APP_TICK_INTERVAL
-    } else {
-        APP_TICK_INTERVAL
-    }
-}
-
 pub(in crate::ui::app) fn apply_adaptive_engine(settings: &mut Settings, enabled: bool) {
     settings.adaptive_engine.enabled = enabled;
     if !enabled {

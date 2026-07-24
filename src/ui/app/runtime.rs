@@ -6,9 +6,8 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let tick_interval = app_tick_interval(&self.saved_settings, self.start_minimized_applied);
         self._tick_task = cx.spawn_in(window, async move |this, cx| {
-            Timer::after(tick_interval).await;
+            Timer::after(APP_TICK_INTERVAL).await;
             let _ = cx.update(move |window, app_cx| {
                 if let Some(this) = this.upgrade() {
                     this.update(app_cx, |app, cx| match app.tick(window, cx) {
