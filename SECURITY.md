@@ -2,13 +2,13 @@
 
 ## Supported Versions
 
-Winderust is currently pre-release. Security fixes are applied to the latest
-code on the main branch and the latest 0.1.x release.
+Winderust is currently pre-release. All security flaws will be apply and fix to 
+the latest code on the main branch.
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Yes |
-| Older versions | No |
+| Latest Releases | Yes |
+| Older Releases | No |
 
 ## Reporting a Vulnerability
 
