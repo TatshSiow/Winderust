@@ -1,11 +1,11 @@
 > [!IMPORTANT]
-> Discuss with me on [Discord](discord.com/invite/M7nctFZUxX) !
+> Discuss with me on [Discord](discord.com/invite/M7nctFZUxX)!\
 > Join the community!
 
 
 
 > [!WARNING]  
-> Alpha state, expects things to be not so perfect or nicely handled.
+> Alpha state, expects things to break,imperfect or not nicely handled.
 
 # Winderust
 
