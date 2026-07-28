@@ -116,8 +116,8 @@ pub(super) fn network_activity_thresholds(
     target_processes: &BTreeMap<u32, TargetProcess>,
 ) -> NetworkActivityThresholdsByProcess {
     target_processes
-        .iter()
-        .filter_map(|(_process_id, process)| {
+        .values()
+        .filter_map(|process| {
             let (bytes_in, bytes_out) =
                 settings.network_wake_thresholds_for(&process.executable_path)?;
             Some((
