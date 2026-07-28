@@ -98,9 +98,12 @@ impl WinderustApp {
         } else if decision_settings.by_cpu_load.enabled {
             self.refresh_cpu_usage_sample(now);
         }
-        self.foreground_app = foreground_lookup_required(decision_settings)
-            .then(foreground_process_name)
+        let foreground_process = foreground_lookup_required(decision_settings)
+            .then(foreground_process)
             .flatten();
+        self.foreground_app = foreground_process
+            .as_ref()
+            .map(|process| process.name.clone());
         let by_time = current_by_time_decision(&decision_settings.by_time);
         let by_cpu_load = self
             .by_cpu_load_scheduler
@@ -111,7 +114,8 @@ impl WinderustApp {
             decision_settings,
             DecisionInput {
                 activity_state: self.activity.state,
-                foreground_process_name: self.foreground_app.clone(),
+                foreground_executable_path: foreground_process
+                    .map(|process| process.executable_path.to_string_lossy().into_owned()),
                 plugged_in: power_source::is_plugged_in(),
                 by_running_app: by_running_app_decision(&self.by_running_app_status),
                 by_time,
@@ -507,9 +511,9 @@ impl WinderustApp {
 
         if now >= self.next_process_refresh {
             if self.page == Page::ProcessList {
-                changed |= self.refresh_running_processes(false);
+                changed |= self.refresh_running_processes(false, cx);
             } else if self.page_uses_process_candidates() {
-                changed |= self.refresh_process_candidates(false);
+                changed |= self.refresh_process_candidates(false, cx);
             }
         }
 
@@ -548,135 +552,114 @@ impl WinderustApp {
         let mut changed = false;
 
         for process in pending.background_efficiency {
-            if can_add_background_efficiency_process(&self.settings.background_efficiency, &process)
-            {
-                self.settings
-                    .background_efficiency
-                    .custom_rules
-                    .push(new_background_efficiency_rule(&process));
-                changed = true;
-            }
+            changed |= upsert_rule_enabled(
+                &mut self.settings.background_efficiency.custom_rules,
+                &process,
+                true,
+                |rule| &rule.executable_path,
+                |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
+                || new_background_efficiency_rule(&process),
+            );
         }
 
         for process in pending.app_suspension {
-            if can_add_app_suspension_process(&self.settings.app_suspension, &process) {
-                let mut rule = new_app_suspension_rule(&process);
-                rule.enabled = false;
-                self.settings.app_suspension.suspendable_apps.push(rule);
-                changed = true;
-            }
+            changed |= upsert_rule_enabled(
+                &mut self.settings.app_suspension.suspendable_apps,
+                &process,
+                false,
+                |rule| &rule.executable_path,
+                |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
+                || {
+                    let mut rule = new_app_suspension_rule(&process);
+                    rule.enabled = false;
+                    rule
+                },
+            );
         }
 
         for process in pending.core_steering {
-            if can_add_core_steering_process(&self.settings.core_steering, &process) {
-                let mut rule = new_core_steering_rule(&process);
-                rule.enabled = false;
-                self.settings.core_steering.rules.push(rule);
-                changed = true;
-            }
+            changed |= upsert_rule_enabled(
+                &mut self.settings.core_steering.rules,
+                &process,
+                false,
+                |rule| &rule.executable_path,
+                |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
+                || {
+                    let mut rule = new_core_steering_rule(&process);
+                    rule.enabled = false;
+                    rule
+                },
+            );
         }
 
         for process in pending.background_cpu_restriction {
-            if can_add_background_cpu_exclusion(&self.settings.background_cpu_restriction, &process)
-            {
-                self.settings
-                    .background_cpu_restriction
-                    .exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            changed |= upsert_rule_enabled(
+                &mut self.settings.background_cpu_restriction.exclusions,
+                &process,
+                true,
+                |rule| &rule.executable_path,
+                |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
+                || new_process_exclusion_rule(&process),
+            );
         }
 
         for process in pending.core_limiter {
-            if can_add_core_limiter_process(&self.settings.core_limiter, &process) {
-                let mut rule = new_core_limiter_rule(&process);
-                rule.enabled = false;
-                self.settings.core_limiter.rules.push(rule);
-                changed = true;
-            }
+            changed |= upsert_rule_enabled(
+                &mut self.settings.core_limiter.rules,
+                &process,
+                false,
+                |rule| &rule.executable_path,
+                |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
+                || {
+                    let mut rule = new_core_limiter_rule(&process);
+                    rule.enabled = false;
+                    rule
+                },
+            );
         }
 
         for process in pending.workload_engine {
-            if can_add_workload_engine_exclusion(&self.settings.workload_engine, &process) {
-                self.settings
-                    .workload_engine
-                    .workload_engine_exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            changed |= enable_process_exclusion(
+                &mut self.settings.workload_engine.workload_engine_exclusions,
+                &process,
+            );
         }
 
         for process in pending.io_priority {
-            if can_add_io_priority_exclusion(&self.settings.io_priority, &process) {
-                self.settings
-                    .io_priority
-                    .exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            changed |=
+                enable_process_exclusion(&mut self.settings.io_priority.exclusions, &process);
         }
 
         for process in pending.process_priority {
-            if can_add_process_priority_exclusion(&self.settings.process_priority, &process) {
-                self.settings
-                    .process_priority
-                    .exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            changed |=
+                enable_process_exclusion(&mut self.settings.process_priority.exclusions, &process);
         }
 
         for process in pending.thread_priority {
-            if can_add_thread_priority_exclusion(&self.settings.thread_priority, &process) {
-                self.settings
-                    .thread_priority
-                    .exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            changed |=
+                enable_process_exclusion(&mut self.settings.thread_priority.exclusions, &process);
         }
 
         for process in pending.dynamic_priority_boost {
-            if can_add_dynamic_priority_boost_exclusion(
-                &self.settings.dynamic_priority_boost,
+            changed |= enable_process_exclusion(
+                &mut self.settings.dynamic_priority_boost.exclusions,
                 &process,
-            ) {
-                self.settings
-                    .dynamic_priority_boost
-                    .exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            );
         }
 
         for process in pending.gpu_priority {
-            if can_add_gpu_priority_exclusion(&self.settings.gpu_priority, &process) {
-                self.settings
-                    .gpu_priority
-                    .exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            changed |=
+                enable_process_exclusion(&mut self.settings.gpu_priority.exclusions, &process);
         }
 
         for process in pending.memory_priority {
-            if can_add_memory_priority_exclusion(&self.settings.memory_priority, &process) {
-                self.settings
-                    .memory_priority
-                    .exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            changed |=
+                enable_process_exclusion(&mut self.settings.memory_priority.exclusions, &process);
         }
 
         for process in pending.memory_trim {
-            if can_add_memory_trim_exclusion(&self.settings.memory_trim, &process) {
-                self.settings
-                    .memory_trim
-                    .exclusions
-                    .push(new_process_exclusion_rule(&process));
-                changed = true;
-            }
+            changed |=
+                enable_process_exclusion(&mut self.settings.memory_trim.exclusions, &process);
         }
 
         if changed {
@@ -684,5 +667,79 @@ impl WinderustApp {
         }
 
         changed
+    }
+}
+
+fn upsert_rule_enabled<T>(
+    rules: &mut Vec<T>,
+    executable_path: &str,
+    enabled: bool,
+    rule_path: impl Fn(&T) -> &str,
+    set_enabled: impl Fn(&mut T, bool) -> bool,
+    new_rule: impl FnOnce() -> T,
+) -> bool {
+    if let Some(rule) = rules
+        .iter_mut()
+        .find(|rule| same_executable_path(Path::new(rule_path(rule)), Path::new(executable_path)))
+    {
+        return set_enabled(rule, enabled);
+    }
+
+    rules.push(new_rule());
+    true
+}
+
+fn set_enabled_value(current: &mut bool, enabled: bool) -> bool {
+    if *current == enabled {
+        return false;
+    }
+    *current = enabled;
+    true
+}
+
+fn enable_process_exclusion(rules: &mut Vec<ProcessExclusionRule>, executable_path: &str) -> bool {
+    upsert_rule_enabled(
+        rules,
+        executable_path,
+        true,
+        |rule| &rule.executable_path,
+        |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
+        || {
+            let mut rule = new_process_exclusion_rule(executable_path);
+            rule.enabled = true;
+            rule
+        },
+    )
+}
+
+#[cfg(test)]
+mod auto_exclusion_tests {
+    use super::*;
+
+    #[test]
+    fn broad_auto_exclusion_reenables_matching_rule() {
+        let mut rule = new_process_exclusion_rule(r"C:\Apps\worker.exe");
+        rule.enabled = false;
+        let mut rules = vec![rule];
+
+        assert!(enable_process_exclusion(&mut rules, r"C:\Apps\worker.exe"));
+        assert!(rules[0].enabled);
+        assert_eq!(rules.len(), 1);
+    }
+
+    #[test]
+    fn target_auto_exclusion_disables_matching_rule() {
+        let mut rules = vec![new_core_steering_rule(r"C:\Apps\worker.exe")];
+
+        assert!(upsert_rule_enabled(
+            &mut rules,
+            r"C:\Apps\worker.exe",
+            false,
+            |rule| &rule.executable_path,
+            |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
+            || unreachable!("matching rule should be updated"),
+        ));
+        assert!(!rules[0].enabled);
+        assert_eq!(rules.len(), 1);
     }
 }

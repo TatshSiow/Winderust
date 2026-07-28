@@ -3,7 +3,7 @@ use std::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-use crate::foreground::process_name_key;
+use crate::foreground::process_failure_key as normalize_process_failure_key;
 
 pub const DEFAULT_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD: u8 = 3;
 pub const MIN_EXECUTION_FAILURE_SUPPRESSION_THRESHOLD: u8 = 1;
@@ -138,9 +138,9 @@ impl ExecutionSuppression {
     }
 }
 
-fn process_failure_key(process_name: &str) -> Option<String> {
-    let process_name = process_name_key(process_name);
-    (!process_name.is_empty()).then_some(process_name)
+fn process_failure_key(process_identity: &str) -> Option<String> {
+    let key = normalize_process_failure_key(process_identity);
+    (!key.is_empty()).then_some(key)
 }
 
 #[cfg(test)]
@@ -168,18 +168,21 @@ mod tests {
     }
 
     #[test]
-    fn tracker_normalizes_process_names() {
+    fn tracker_keeps_exact_paths_and_same_named_binaries_separate() {
         let mut tracker = ExecutionFailureTracker::default();
 
-        tracker.record_process_failure("APP.exe");
-        tracker.record_process_failure("app.exe");
-        assert!(!tracker.process_suppression("app.exe").suppressed);
+        tracker.record_process_failure(r"C:\Games\app.exe");
+        tracker.record_process_failure(r"C:/Games/app.exe");
+        assert!(tracker.record_process_failure(r"C:\Tools\app.exe"));
+        assert!(!tracker.process_suppression(r"C:\Games\app.exe").suppressed);
 
-        tracker.record_process_failure("app.exe");
-        let first = tracker.process_suppression("APP.exe");
-        let second = tracker.process_suppression("app.exe");
+        tracker.record_process_failure(r"C:\Games\app.exe");
+        let first = tracker.process_suppression(r"C:\Games\app.exe");
+        let second = tracker.process_suppression(r"C:/Games/app.exe");
 
         assert_eq!(first, ExecutionSuppression::active(true));
         assert_eq!(second, ExecutionSuppression::active(false));
+        assert!(!tracker.process_suppression(r"C:\Tools\app.exe").suppressed);
+        assert!(!tracker.process_suppression(r"C:\Games\APP.exe").suppressed);
     }
 }

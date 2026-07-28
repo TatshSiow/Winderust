@@ -421,10 +421,11 @@ pub(in crate::ui::app) fn dropdown_process_option_row(
     selected: bool,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
+    let executable_path = process.image_path.to_string_lossy().into_owned();
     h_flex()
         .id(id)
         .relative()
-        .min_h(px(40.0))
+        .min_h(px(DROPDOWN_OPTION_ROW_HEIGHT))
         .items_center()
         .gap_2()
         .pl_3()
@@ -448,7 +449,19 @@ pub(in crate::ui::app) fn dropdown_process_option_row(
         .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
         .cursor_pointer()
         .child(process_icon_cell(process.icon.as_ref(), cx))
-        .child(div().min_w(px(0.0)).truncate().child(process.name.clone()))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(div().truncate().child(process.name.clone()))
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(TEXT_LABEL_SIZE))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(executable_path),
+                ),
+        )
 }
 
 pub(in crate::ui::app) fn process_icon_cell(

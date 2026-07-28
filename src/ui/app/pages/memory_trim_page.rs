@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .memory_trim_exclusion
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::MemoryTrim,
+            &self.inputs.memory_trim_exclusion,
+            cx,
+        );
         let settings = &self.settings.memory_trim;
         let enabled = settings.enabled;
 
@@ -118,12 +117,11 @@ impl WinderustApp {
                                     )
                                     .on_click(cx.listener(
                                         |app, _, window, cx| {
-                                            let process = app
-                                                .inputs
-                                                .memory_trim_exclusion
-                                                .read(cx)
-                                                .value()
-                                                .to_string();
+                                            let process = app.process_picker_path(
+                                                SuggestionTarget::MemoryTrim,
+                                                &app.inputs.memory_trim_exclusion,
+                                                cx,
+                                            );
                                             if can_add_memory_trim_exclusion(
                                                 &app.settings.memory_trim,
                                                 &process,

@@ -106,7 +106,8 @@ pub(in crate::ui::app) fn rule_table_action_cell(action: AnyElement) -> AnyEleme
 pub(in crate::ui::app) fn process_rule_table_headers() -> Vec<AnyElement> {
     vec![
         rule_table_active_header(),
-        rule_table_title_header(t!("process_list.process_name").to_string()),
+        rule_table_title_header(t!("process_list.app_name").to_string()),
+        rule_table_title_header(t!("process_list.executable_path").to_string()),
         rule_table_action_header(),
     ]
 }

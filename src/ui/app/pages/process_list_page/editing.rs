@@ -1,18 +1,23 @@
 use super::*;
 
 impl WinderustApp {
-    pub(in crate::ui::app) fn is_process_list_group_collapsed(&self, process_name: &str) -> bool {
+    pub(in crate::ui::app) fn is_process_list_group_collapsed(
+        &self,
+        executable_path: &str,
+    ) -> bool {
         !self
             .expanded_process_list_groups
-            .contains(&process_list_group_key(process_name))
+            .contains(&process_list_executable_path_group_key(Path::new(
+                executable_path,
+            )))
     }
 
     pub(in crate::ui::app) fn toggle_process_list_group(
         &mut self,
-        process_name: String,
+        executable_path: String,
         cx: &mut Context<Self>,
     ) {
-        let key = process_list_group_key(&process_name);
+        let key = process_list_executable_path_group_key(Path::new(&executable_path));
         let expanded = if self.expanded_process_list_groups.remove(&key) {
             false
         } else {

@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .background_cpu_exclusion
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::BackgroundCpu,
+            &self.inputs.background_cpu_exclusion,
+            cx,
+        );
         let settings = &self.settings.background_cpu_restriction;
         let enabled = settings.enabled;
         let processors = core_steering::logical_processors();
@@ -296,12 +295,11 @@ impl WinderustApp {
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .background_cpu_exclusion
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
+                                let process = app.process_picker_path(
+                                    SuggestionTarget::BackgroundCpu,
+                                    &app.inputs.background_cpu_exclusion,
+                                    cx,
+                                );
                                 if can_add_background_cpu_exclusion(
                                     &app.settings.background_cpu_restriction,
                                     &process,

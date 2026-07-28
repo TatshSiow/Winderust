@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .background_efficiency_process
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::BackgroundEfficiency,
+            &self.inputs.background_efficiency_process,
+            cx,
+        );
         let enabled = self.settings.background_efficiency.enabled;
         let body = feature_body(enabled)
             .child(feature_toggle_switch_with_help(
@@ -54,12 +53,11 @@ impl WinderustApp {
                                 ),
                         )
                         .on_click(cx.listener(|app, _, window, cx| {
-                            let process = app
-                                .inputs
-                                .background_efficiency_process
-                                .read(cx)
-                                .value()
-                                .to_string();
+                            let process = app.process_picker_path(
+                                SuggestionTarget::BackgroundEfficiency,
+                                &app.inputs.background_efficiency_process,
+                                cx,
+                            );
                             if can_add_background_efficiency_process(
                                 &app.settings.background_efficiency,
                                 &process,
@@ -208,7 +206,7 @@ impl WinderustApp {
             .iter()
             .enumerate()
         {
-            let process = rule.process_name.clone();
+            let process = rule.executable_path.clone();
             let row = compact_rule_row(format!("background-efficiency-exclusion-row-{index}"))
                 .child(rule_active_cell(
                     format!("background-efficiency-exclusion-enabled-{index}"),

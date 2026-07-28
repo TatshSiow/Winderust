@@ -1,7 +1,8 @@
 use chrono::{NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
-use crate::foreground::same_process_name;
+use crate::foreground::same_executable_path;
 use crate::power::plan::{ProcessorBoostMode, ProcessorPowerValues};
 use crate::rules::{
     normalize_execution_failure_suppression_threshold,
@@ -260,7 +261,7 @@ pub struct ByForegroundRule {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
-    pub process_name: String,
+    pub executable_path: String,
     #[serde(default)]
     pub power_plan_guid: Option<String>,
 }
@@ -329,7 +330,7 @@ fn default_adaptive_engine_processor_policy_values() -> ProcessorPowerValues {
 pub struct BackgroundEfficiencyRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub process_name: String,
+    pub executable_path: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,7 +436,7 @@ pub struct BackgroundCpuRestrictionSettings {
 pub struct ProcessExclusionRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub process_name: String,
+    pub executable_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_foreground_priority: Option<ProcessPrioritySetting>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -466,7 +467,7 @@ impl Default for ProcessExclusionRule {
     fn default() -> Self {
         Self {
             enabled: true,
-            process_name: String::new(),
+            executable_path: String::new(),
             process_foreground_priority: None,
             process_background_priority: None,
             thread_foreground_priority: None,
@@ -639,7 +640,7 @@ pub struct CoreSteeringRule {
     pub enabled: bool,
     #[serde(default)]
     pub mode: CoreSteeringMode,
-    pub process_name: String,
+    pub executable_path: String,
     pub core_mask: u64,
 }
 
@@ -656,7 +657,7 @@ pub struct CoreLimiterSettings {
 pub struct CoreLimiterRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub process_name: String,
+    pub executable_path: String,
     #[serde(default = "default_core_limiter_threshold_percent")]
     pub threshold_percent: u8,
     #[serde(default = "default_core_limiter_sustain_seconds")]
@@ -680,7 +681,7 @@ pub struct ByRunningAppRule {
     pub enabled: bool,
     #[serde(default)]
     pub name: String,
-    pub process_name: String,
+    pub executable_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_plan_guid: Option<String>,
 }
@@ -876,7 +877,7 @@ pub struct MemoryTrimSettings {
 pub struct TimerResolutionRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub process_name: String,
+    pub executable_path: String,
     #[serde(default = "default_timer_resolution_100ns")]
     pub desired_100ns: u32,
 }
@@ -1289,7 +1290,7 @@ impl ProcessDynamicPriorityBoostSetting {
 pub struct PriorityRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub process_name: String,
+    pub executable_path: String,
     pub priority: ProcessPriority,
 }
 
@@ -1332,7 +1333,7 @@ impl CoreSteeringMode {
 pub struct AppSuspensionRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    pub process_name: String,
+    pub executable_path: String,
     #[serde(default = "default_true")]
     pub network_wake_enabled: bool,
     #[serde(default = "default_true")]
@@ -2003,7 +2004,7 @@ impl IoPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
@@ -2034,7 +2035,7 @@ impl ProcessPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn override_for(
@@ -2055,7 +2056,7 @@ impl ThreadPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn override_for(
@@ -2076,7 +2077,7 @@ impl DynamicPriorityBoostSettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn override_for(
@@ -2097,7 +2098,7 @@ impl GpuPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
@@ -2128,7 +2129,7 @@ impl MemoryPrioritySettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
@@ -2156,7 +2157,7 @@ impl MemoryPrioritySettings {
 }
 
 fn process_exclusion_rule_matches(rule: &ProcessExclusionRule, process_name: &str) -> bool {
-    rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+    rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
 }
 
 fn process_custom_rule_override<T>(
@@ -2183,23 +2184,23 @@ impl TimerResolutionSettings {
             .iter()
             .find(|rule| {
                 rule.enabled
-                    && !rule.process_name.trim().is_empty()
-                    && process_name_matches_pattern(&rule.process_name, process_name)
+                    && !rule.executable_path.trim().is_empty()
+                    && same_rule_executable_path(&rule.executable_path, process_name)
             })
-            .map(|rule| (rule.process_name.clone(), rule.desired_100ns))
+            .map(|rule| (rule.executable_path.clone(), rule.desired_100ns))
     }
 
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 }
 
 impl MemoryTrimSettings {
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
         self.exclusions.iter().any(|rule| {
-            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
         })
     }
 }
@@ -2208,13 +2209,13 @@ impl AppSuspensionSettings {
     pub fn contains_suspendable_app(&self, process_name: &str) -> bool {
         self.suspendable_apps
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn suspendable_app_enabled_for(&self, process_name: &str) -> bool {
-        self.suspendable_apps
-            .iter()
-            .any(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
+        self.suspendable_apps.iter().any(|rule| {
+            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
+        })
     }
 
     pub fn network_wake_enabled_for(&self, process_name: &str) -> bool {
@@ -2222,7 +2223,7 @@ impl AppSuspensionSettings {
             && self.suspendable_apps.iter().any(|rule| {
                 rule.enabled
                     && rule.network_wake_enabled
-                    && same_process_name(&rule.process_name, process_name)
+                    && same_rule_executable_path(&rule.executable_path, process_name)
             })
     }
 
@@ -2231,7 +2232,7 @@ impl AppSuspensionSettings {
             && self.suspendable_apps.iter().any(|rule| {
                 rule.enabled
                     && rule.audio_wake_enabled
-                    && same_process_name(&rule.process_name, process_name)
+                    && same_rule_executable_path(&rule.executable_path, process_name)
             })
     }
 
@@ -2240,7 +2241,7 @@ impl AppSuspensionSettings {
         self.suspendable_apps.iter().find_map(|rule| {
             (rule.enabled
                 && rule.network_wake_enabled
-                && same_process_name(&rule.process_name, process_name))
+                && same_rule_executable_path(&rule.executable_path, process_name))
             .then_some((
                 rule.network_download_threshold_bytes,
                 rule.network_upload_threshold_bytes,
@@ -2253,13 +2254,13 @@ impl BackgroundEfficiencySettings {
     pub fn contains_custom_rule(&self, process_name: &str) -> bool {
         self.custom_rules
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn custom_rule_enabled_for(&self, process_name: &str) -> bool {
-        self.custom_rules
-            .iter()
-            .any(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
+        self.custom_rules.iter().any(|rule| {
+            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
+        })
     }
 }
 
@@ -2267,13 +2268,13 @@ impl BackgroundCpuRestrictionSettings {
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.exclusions
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
+        self.exclusions.iter().any(|rule| {
+            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
+        })
     }
 }
 
@@ -2281,7 +2282,7 @@ impl CoreSteeringSettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 }
 
@@ -2289,61 +2290,26 @@ impl WorkloadEngineSettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn contains_exclusion(&self, process_name: &str) -> bool {
         self.workload_engine_exclusions
             .iter()
-            .any(|rule| same_process_name(&rule.process_name, process_name))
+            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
     }
 
     pub fn workload_engine_exclusion_enabled_for(&self, process_name: &str) -> bool {
         self.workload_engine_exclusions.iter().any(|rule| {
-            rule.enabled && process_name_matches_pattern(&rule.process_name, process_name)
+            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
         })
     }
 }
 
-fn process_name_matches_pattern(pattern: &str, process_name: &str) -> bool {
-    wildcard_match(
-        &pattern.trim().to_ascii_lowercase(),
-        &process_name.trim().to_ascii_lowercase(),
-    )
-}
-
-fn wildcard_match(pattern: &str, value: &str) -> bool {
-    let pattern = pattern.as_bytes();
-    let value = value.as_bytes();
-    let mut pattern_index = 0;
-    let mut value_index = 0;
-    let mut star_index = None;
-    let mut star_value_index = 0;
-
-    while value_index < value.len() {
-        if pattern_index < pattern.len()
-            && (pattern[pattern_index] == b'?' || pattern[pattern_index] == value[value_index])
-        {
-            pattern_index += 1;
-            value_index += 1;
-        } else if pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
-            star_index = Some(pattern_index);
-            pattern_index += 1;
-            star_value_index = value_index;
-        } else if let Some(star) = star_index {
-            pattern_index = star + 1;
-            star_value_index += 1;
-            value_index = star_value_index;
-        } else {
-            return false;
-        }
-    }
-
-    while pattern_index < pattern.len() && pattern[pattern_index] == b'*' {
-        pattern_index += 1;
-    }
-
-    pattern_index == pattern.len()
+fn same_rule_executable_path(left: &str, right: &str) -> bool {
+    let left = left.trim();
+    let right = right.trim();
+    !left.is_empty() && !right.is_empty() && same_executable_path(Path::new(left), Path::new(right))
 }
 
 impl InputDetectionSettings {
@@ -2492,32 +2458,27 @@ mod tests {
     }
 
     #[test]
-    fn workload_engine_exclusions_support_wildcards() {
+    fn workload_engine_exclusions_match_only_the_configured_executable_path() {
         let settings = WorkloadEngineSettings {
             workload_engine_exclusions: vec![
                 ProcessExclusionRule {
                     enabled: true,
-                    process_name: "game*.exe".to_owned(),
-                    ..Default::default()
-                },
-                ProcessExclusionRule {
-                    enabled: true,
-                    process_name: "worker?.exe".to_owned(),
+                    executable_path: "C:\\Games\\game.exe".to_owned(),
                     ..Default::default()
                 },
                 ProcessExclusionRule {
                     enabled: false,
-                    process_name: "disabled.exe".to_owned(),
+                    executable_path: "C:\\Apps\\disabled.exe".to_owned(),
                     ..Default::default()
                 },
             ],
             ..Default::default()
         };
 
-        assert!(settings.workload_engine_exclusion_enabled_for("GameClient.exe"));
-        assert!(settings.workload_engine_exclusion_enabled_for("worker1.exe"));
-        assert!(!settings.workload_engine_exclusion_enabled_for("worker12.exe"));
-        assert!(!settings.workload_engine_exclusion_enabled_for("disabled.exe"));
+        assert!(settings.workload_engine_exclusion_enabled_for("c:/games/GAME.exe"));
+        assert!(!settings.workload_engine_exclusion_enabled_for("C:\\Other\\game.exe"));
+        assert!(!settings.workload_engine_exclusion_enabled_for("C:\\Games\\game*.exe"));
+        assert!(!settings.workload_engine_exclusion_enabled_for("C:\\Apps\\disabled.exe"));
     }
 
     #[test]
@@ -2577,30 +2538,34 @@ mod tests {
     }
 
     #[test]
-    fn timer_resolution_rules_match_foreground_process_names() {
+    fn timer_resolution_rules_match_only_the_foreground_executable_path() {
         let settings = TimerResolutionSettings {
             enabled: true,
             desired_100ns: 10_000,
             rules: vec![
                 TimerResolutionRule {
                     enabled: true,
-                    process_name: "game*.exe".to_owned(),
+                    executable_path: "C:\\Games\\game.exe".to_owned(),
                     desired_100ns: 20_000,
                 },
                 TimerResolutionRule {
                     enabled: false,
-                    process_name: "disabled.exe".to_owned(),
+                    executable_path: "C:\\Apps\\disabled.exe".to_owned(),
                     desired_100ns: 10_000,
                 },
             ],
         };
 
         assert_eq!(
-            settings.desired_resolution_for_foreground("GameClient.exe"),
-            Some(("game*.exe".to_owned(), 20_000))
+            settings.desired_resolution_for_foreground("c:/games/GAME.exe"),
+            Some(("C:\\Games\\game.exe".to_owned(), 20_000))
         );
         assert_eq!(
-            settings.desired_resolution_for_foreground("disabled.exe"),
+            settings.desired_resolution_for_foreground("C:\\Other\\game.exe"),
+            None
+        );
+        assert_eq!(
+            settings.desired_resolution_for_foreground("C:\\Apps\\disabled.exe"),
             None
         );
     }
@@ -2619,7 +2584,7 @@ mod tests {
             audio_wake_duration_seconds: default_audio_wake_duration_seconds(),
             suspendable_apps: vec![AppSuspensionRule {
                 enabled: false,
-                process_name: "chat.exe".to_owned(),
+                executable_path: "chat.exe".to_owned(),
                 network_wake_enabled: true,
                 audio_wake_enabled: true,
                 network_download_threshold_bytes: 1,

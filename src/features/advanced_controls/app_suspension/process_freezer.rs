@@ -53,8 +53,17 @@ pub(super) struct ProcessFreezer {
 }
 
 impl ProcessFreezer {
-    pub(super) fn assign(process_id: u32) -> Result<Self, SuspensionError> {
+    pub(super) fn assign(
+        process_id: u32,
+        expected_executable_path: &Path,
+    ) -> Result<Self, SuspensionError> {
         let (process_handle, can_wait_for_process) = open_process_for_job_assignment(process_id)?;
+        if !process_handle_matches_executable_path(&process_handle, expected_executable_path) {
+            return Err(SuspensionError::ProcessExited);
+        }
+        let process_creation_time = process_handle
+            .process_creation_time()
+            .ok_or(SuspensionError::ProcessExited)?;
 
         // SAFETY: Null security attributes and name request a private job object owned by the
         // returned handle.
@@ -80,7 +89,7 @@ impl ProcessFreezer {
 
         Ok(Self {
             job_handle: Some(job_handle),
-            process_creation_time: process_handle.process_creation_time(),
+            process_creation_time: Some(process_creation_time),
             process_handle: Some(process_handle),
             can_wait_for_process,
         })
@@ -155,8 +164,6 @@ pub(super) fn open_process_for_job_assignment(
             | PROCESS_SYNCHRONIZE
             | PROCESS_QUERY_LIMITED_INFORMATION,
         PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION,
-        PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE,
-        PROCESS_SET_QUOTA | PROCESS_TERMINATE,
     ];
 
     let mut last_open_error = 0;

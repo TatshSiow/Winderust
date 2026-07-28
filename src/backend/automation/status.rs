@@ -127,16 +127,19 @@ pub(super) fn update_background_cpu_restriction_status(
     );
 }
 
-pub(super) fn append_unique_process_names(target: &mut Vec<String>, names: &[String]) -> bool {
+pub(super) fn append_unique_executable_paths(
+    target: &mut Vec<String>,
+    executable_paths: &[String],
+) -> bool {
     let old_len = target.len();
-    for name in names {
-        let name = process_name_key(name);
-        if !name.is_empty()
-            && !target
-                .iter()
-                .any(|existing| existing.eq_ignore_ascii_case(&name))
+    for executable_path in executable_paths {
+        let executable_path = executable_path_key(Path::new(executable_path));
+        if Path::new(&executable_path).is_absolute()
+            && !target.iter().any(|existing| {
+                same_executable_path(Path::new(existing), Path::new(&executable_path))
+            })
         {
-            target.push(name);
+            target.push(executable_path);
         }
     }
     target.len() != old_len
@@ -293,7 +296,7 @@ pub(super) fn update_status_with_auto_exclusions<T: PartialEq>(
     status_field: impl for<'a> FnOnce(&'a mut AutomationWorkerState) -> &'a mut T,
 ) {
     if let Ok(mut state) = shared.state.lock() {
-        if append_unique_process_names(
+        if append_unique_executable_paths(
             pending_field(&mut state.pending_auto_exclusions),
             auto_excluded_processes,
         ) {

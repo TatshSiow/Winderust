@@ -8,11 +8,13 @@ fn process_list_column_layout_fits_headers_and_values() {
             id: 1234,
             parent_id: None,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 12345,
             parent_id: None,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
     ];
     let groups = process_list_groups(&processes);
@@ -38,10 +40,10 @@ fn process_list_column_layout_fits_headers_and_values() {
 fn process_icon_cache_drops_stale_paths() {
     let kept_path = PathBuf::from("C:\\Apps\\kept.exe");
     let stale_path = PathBuf::from("C:\\Apps\\stale.exe");
-    let mut cache = HashMap::from([(kept_path.clone(), None), (stale_path.clone(), None)]);
+    let mut cache = HashMap::from([(kept_path.clone(), ()), (stale_path.clone(), ())]);
     let candidates = vec![ProcessCandidate {
         name: "kept.exe".to_owned(),
-        image_path: Some(kept_path.clone()),
+        image_path: kept_path.clone(),
         icon: None,
     }];
 
@@ -52,17 +54,61 @@ fn process_icon_cache_drops_stale_paths() {
 }
 
 #[test]
+fn process_list_icon_lookup_handles_mixed_case_windows_path() {
+    let executable_path = PathBuf::from(r"C:\Apps\MixedCase\Editor.EXE");
+    let processes = vec![ProcessInfo {
+        id: 1,
+        parent_id: None,
+        name: "Editor.EXE".to_owned(),
+        image_path: Some(executable_path.clone()),
+    }];
+    let groups = process_list_groups(&processes);
+    assert_eq!(
+        groups[0].executable_path,
+        executable_path.to_string_lossy().as_ref()
+    );
+    assert_ne!(
+        process_list_executable_path_group_key(&executable_path),
+        process_list_executable_path_group_key(Path::new(r"c:\apps\mixedcase\editor.exe"))
+    );
+    let rows = groups
+        .into_iter()
+        .map(|group| (group, default_process_policy_summary()))
+        .collect::<Vec<_>>();
+    let icon = Arc::new(Image::empty());
+    let candidates = vec![ProcessCandidate {
+        name: "Editor.EXE".to_owned(),
+        image_path: executable_path,
+        icon: Some(Arc::clone(&icon)),
+    }];
+    let icons_by_path = process_list_icons_by_path(&candidates);
+
+    let rendered = process_list_rendered_rows(&rows, &icons_by_path, |_| true);
+
+    let Some(ProcessListRenderedRow::Entry {
+        icon: Some(rendered_icon),
+        ..
+    }) = rendered.first()
+    else {
+        panic!("expected a process row with an icon");
+    };
+    assert!(Arc::ptr_eq(rendered_icon, &icon));
+}
+
+#[test]
 fn process_list_sort_orders_groups_by_name_direction() {
     let processes = vec![
         ProcessInfo {
             id: 1,
             parent_id: None,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 2,
             parent_id: None,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
     ];
     let groups = process_list_groups(&processes);
@@ -81,6 +127,30 @@ fn process_list_sort_orders_groups_by_name_direction() {
 
     assert_eq!(rows[0].0.display_name, "worker.exe");
     assert_eq!(rows[1].0.display_name, "editor.exe");
+}
+
+#[test]
+fn process_list_keeps_same_named_executables_in_separate_groups() {
+    let processes = vec![
+        ProcessInfo {
+            id: 1,
+            parent_id: None,
+            name: "game.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Games\game.exe")),
+        },
+        ProcessInfo {
+            id: 2,
+            parent_id: None,
+            name: "game.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Other\game.exe")),
+        },
+    ];
+
+    let groups = process_list_groups(&processes);
+
+    assert_eq!(groups.len(), 2);
+    assert_ne!(groups[0].executable_path, groups[1].executable_path);
+    assert_ne!(groups[0].display_name, groups[1].display_name);
 }
 
 #[test]
@@ -105,16 +175,19 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             id: 30,
             parent_id: None,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 10,
             parent_id: None,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
         ProcessInfo {
             id: 20,
             parent_id: None,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
     ];
     let sort = ProcessListSort {
@@ -163,11 +236,13 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
             id: 1,
             parent_id: None,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 2,
             parent_id: None,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
     ];
     let groups = process_list_groups(&processes);
@@ -237,7 +312,7 @@ fn process_policy_summary_matches_exact_process_rule() {
     settings.core_steering.rules.push(CoreSteeringRule {
         enabled: true,
         mode: CoreSteeringMode::Soft,
-        process_name: "Editor.EXE".to_owned(),
+        executable_path: "Editor.EXE".to_owned(),
         core_mask: 0b1011,
     });
 
@@ -292,20 +367,20 @@ fn process_policy_summary_reports_process_rule_columns() {
     settings.by_foreground.rules.push(ByForegroundRule {
         enabled: true,
         name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         power_plan_guid: Some("balanced-guid".to_owned()),
     });
     settings.by_running_app.enabled = true;
     settings.by_running_app.rules.push(ByRunningAppRule {
         enabled: true,
         name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         power_plan_guid: Some("performance-guid".to_owned()),
     });
     settings.core_limiter.enabled = true;
     settings.core_limiter.rules.push(CoreLimiterRule {
         enabled: true,
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         threshold_percent: 80,
         sustain_seconds: 5,
         cooldown_seconds: 30,
@@ -317,7 +392,7 @@ fn process_policy_summary_reports_process_rule_columns() {
         .suspendable_apps
         .push(AppSuspensionRule {
             enabled: true,
-            process_name: "editor.exe".to_owned(),
+            executable_path: "editor.exe".to_owned(),
             network_wake_enabled: true,
             audio_wake_enabled: true,
             network_download_threshold_bytes: 1,
@@ -328,7 +403,7 @@ fn process_policy_summary_reports_process_rule_columns() {
     settings.timer_resolution.enabled = true;
     settings.timer_resolution.rules.push(TimerResolutionRule {
         enabled: true,
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         desired_100ns: 10_000,
     });
     let plans = vec![
@@ -377,7 +452,7 @@ fn process_policy_summary_reports_include_exclude_columns() {
         .suspendable_apps
         .push(AppSuspensionRule {
             enabled: true,
-            process_name: "editor.exe".to_owned(),
+            executable_path: "editor.exe".to_owned(),
             network_wake_enabled: true,
             audio_wake_enabled: true,
             network_download_threshold_bytes: 1,
@@ -483,14 +558,14 @@ fn process_policy_summary_reports_default_power_plan_when_unset() {
     settings.by_foreground.rules.push(ByForegroundRule {
         enabled: true,
         name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         power_plan_guid: None,
     });
     settings.by_running_app.enabled = true;
     settings.by_running_app.rules.push(ByRunningAppRule {
         enabled: true,
         name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         power_plan_guid: None,
     });
 
@@ -511,20 +586,20 @@ fn process_policy_summary_reports_configured_rules_when_feature_disabled() {
     settings.by_foreground.rules.push(ByForegroundRule {
         enabled: true,
         name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         power_plan_guid: Some("balanced-guid".to_owned()),
     });
     settings.by_running_app.enabled = false;
     settings.by_running_app.rules.push(ByRunningAppRule {
         enabled: true,
         name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         power_plan_guid: Some("performance-guid".to_owned()),
     });
     settings.core_limiter.enabled = false;
     settings.core_limiter.rules.push(CoreLimiterRule {
         enabled: true,
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         threshold_percent: 80,
         sustain_seconds: 5,
         cooldown_seconds: 30,
@@ -533,7 +608,7 @@ fn process_policy_summary_reports_configured_rules_when_feature_disabled() {
     settings.timer_resolution.enabled = false;
     settings.timer_resolution.rules.push(TimerResolutionRule {
         enabled: true,
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         desired_100ns: 10_000,
     });
     let plans = vec![

@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+#[cfg(test)]
+use std::path::PathBuf;
 
 use windows_sys::Win32::System::Threading::GetCurrentProcessId;
 
@@ -6,8 +8,8 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ByRunningAppRule, ByRunningAppSettings},
     foreground::{
-        contains_process_name, list_processes, process_session_id, same_process_name, ProcessInfo,
-        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_matches_executable_path, process_session_id,
+        same_process_name, ProcessInfo, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
 };
 
@@ -166,7 +168,7 @@ fn matching_rule_process(
     processes: &[ProcessInfo],
 ) -> Option<ActiveByRunningApp> {
     for rule in &settings.rules {
-        if !rule.enabled || rule.process_name.trim().is_empty() {
+        if !rule.enabled || rule.executable_path.trim().is_empty() {
             continue;
         }
         let Some(target_guid) = rule.power_plan_guid.clone() else {
@@ -174,7 +176,7 @@ fn matching_rule_process(
         };
         let Some(process) = processes
             .iter()
-            .find(|process| same_process_name(&process.name, &rule.process_name))
+            .find(|process| process_matches_executable_path(process, &rule.executable_path))
         else {
             continue;
         };
@@ -193,7 +195,7 @@ fn matching_rule_process(
 fn performance_rule_name(rule: &ByRunningAppRule) -> String {
     let name = rule.name.trim();
     if name.is_empty() {
-        rule.process_name.trim().to_owned()
+        rule.executable_path.trim().to_owned()
     } else {
         name.to_owned()
     }
@@ -210,7 +212,7 @@ mod tests {
             rules: vec![ByRunningAppRule {
                 enabled: true,
                 name: "Game".to_owned(),
-                process_name: "Game.EXE".to_owned(),
+                executable_path: "Game.EXE".to_owned(),
                 power_plan_guid: Some("custom-guid".to_owned()),
             }],
         };
@@ -218,6 +220,7 @@ mod tests {
             id: 42,
             parent_id: None,
             name: "game.exe".to_owned(),
+            image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
 
         let matched = matching_rule_process(&settings, &processes).unwrap();
@@ -234,13 +237,13 @@ mod tests {
                 ByRunningAppRule {
                     enabled: false,
                     name: "Disabled".to_owned(),
-                    process_name: "game.exe".to_owned(),
+                    executable_path: "game.exe".to_owned(),
                     power_plan_guid: Some("disabled-guid".to_owned()),
                 },
                 ByRunningAppRule {
                     enabled: true,
                     name: "Missing plan".to_owned(),
-                    process_name: "game.exe".to_owned(),
+                    executable_path: "game.exe".to_owned(),
                     power_plan_guid: None,
                 },
             ],
@@ -249,6 +252,7 @@ mod tests {
             id: 42,
             parent_id: None,
             name: "game.exe".to_owned(),
+            image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
 
         assert!(matching_rule_process(&settings, &processes).is_none());
@@ -262,13 +266,13 @@ mod tests {
                 ByRunningAppRule {
                     enabled: true,
                     name: "Missing process".to_owned(),
-                    process_name: "missing.exe".to_owned(),
+                    executable_path: "missing.exe".to_owned(),
                     power_plan_guid: Some("missing-guid".to_owned()),
                 },
                 ByRunningAppRule {
                     enabled: true,
                     name: "Game".to_owned(),
-                    process_name: "game.exe".to_owned(),
+                    executable_path: "game.exe".to_owned(),
                     power_plan_guid: Some("game-guid".to_owned()),
                 },
             ],
@@ -277,6 +281,7 @@ mod tests {
             id: 42,
             parent_id: None,
             name: "game.exe".to_owned(),
+            image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
 
         let matched = matching_rule_process(&settings, &processes).unwrap();

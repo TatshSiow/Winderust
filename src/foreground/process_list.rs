@@ -1,5 +1,9 @@
 use std::{
-    collections::BTreeMap, ffi::OsString, fmt, os::windows::ffi::OsStringExt, path::PathBuf,
+    collections::BTreeMap,
+    ffi::OsString,
+    fmt,
+    os::windows::ffi::OsStringExt,
+    path::{Path, PathBuf},
 };
 
 use crate::win_util::WinHandle;
@@ -78,12 +82,14 @@ pub struct ProcessInfo {
     pub id: u32,
     pub parent_id: Option<u32>,
     pub name: String,
+    pub image_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessActionTarget {
     pub id: u32,
     pub name: String,
+    pub executable_path: PathBuf,
     pub creation_time: u64,
 }
 
@@ -92,8 +98,6 @@ pub enum ProcessActionTargetError {
     ProtectedProcess,
     CurrentSessionUnavailable,
     DifferentSession,
-    ProcessEnumeration(String),
-    ProcessExited,
     ProcessChanged,
     ProcessUnavailable(u32),
     IdentityUnavailable,
@@ -109,8 +113,6 @@ impl fmt::Display for ProcessActionTargetError {
             Self::DifferentSession => {
                 formatter.write_str("Processes in another Windows session cannot be modified.")
             }
-            Self::ProcessEnumeration(message) => formatter.write_str(message),
-            Self::ProcessExited => formatter.write_str("Process exited."),
             Self::ProcessChanged => {
                 formatter.write_str("The selected process instance has changed.")
             }
@@ -129,7 +131,7 @@ impl std::error::Error for ProcessActionTargetError {}
 
 pub fn capture_process_action_target(
     process_id: u32,
-    expected_name: &str,
+    expected_executable_path: &Path,
 ) -> Result<ProcessActionTarget, ProcessActionTargetError> {
     // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
     let current_process_id = unsafe { GetCurrentProcessId() };
@@ -141,15 +143,10 @@ pub fn capture_process_action_target(
     if process_session_id(process_id) != Some(current_session_id) {
         return Err(ProcessActionTargetError::DifferentSession);
     }
-    let process = list_processes()
-        .map_err(ProcessActionTargetError::ProcessEnumeration)?
-        .into_iter()
-        .find(|process| process.id == process_id)
-        .ok_or(ProcessActionTargetError::ProcessExited)?;
-    if !same_process_name(&process.name, expected_name) {
-        return Err(ProcessActionTargetError::ProcessChanged);
+    if !expected_executable_path.is_absolute() {
+        return Err(ProcessActionTargetError::IdentityUnavailable);
     }
-    // SAFETY: process_id was revalidated against the current snapshot and no inherited handle is
+    // SAFETY: process_id came from the current-session process list and no inherited handle is
     // requested.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     if handle.is_null() {
@@ -159,51 +156,55 @@ pub fn capture_process_action_target(
             GetLastError()
         }));
     }
-    let creation_time = WinHandle::new(handle)
+    let process = WinHandle::new(handle);
+    let executable_path = process_image_path_from_handle(&process)
+        .ok_or(ProcessActionTargetError::IdentityUnavailable)?;
+    if !same_executable_path(&executable_path, expected_executable_path) {
+        return Err(ProcessActionTargetError::ProcessChanged);
+    }
+    let name = executable_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or(ProcessActionTargetError::IdentityUnavailable)?
+        .to_ascii_lowercase();
+    let creation_time = process
         .process_creation_time()
         .ok_or(ProcessActionTargetError::IdentityUnavailable)?;
     Ok(ProcessActionTarget {
         id: process_id,
-        name: process.name,
+        name,
+        executable_path,
         creation_time,
     })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessCandidateInfo {
-    pub id: u32,
     pub name: String,
-    pub image_path: Option<PathBuf>,
+    pub image_path: PathBuf,
 }
 
 pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
-    let snapshot = process_snapshot()?;
-    let mut entry = PROCESSENTRY32W {
-        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
+    Ok(process_candidates_from_processes(
+        &list_processes_with_paths()?,
+    ))
+}
+
+pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<ProcessCandidateInfo> {
     let mut candidates = BTreeMap::new();
-
-    // SAFETY: snapshot is live and entry declares its size and remains writable.
-    let mut has_entry = unsafe { Process32FirstW(snapshot.raw(), &mut entry) != 0 };
-    while has_entry {
-        if let Some(name) = process_name_from_entry(&entry) {
-            candidates.entry(name).or_insert(entry.th32ProcessID);
-        }
-
-        // SAFETY: snapshot remains live and entry remains writable for the next record.
-        has_entry = unsafe { Process32NextW(snapshot.raw(), &mut entry) != 0 };
+    for process in processes {
+        let Some(image_path) = process.image_path.as_ref() else {
+            continue;
+        };
+        candidates
+            .entry(executable_path_key(image_path))
+            .or_insert(ProcessCandidateInfo {
+                name: process.name.clone(),
+                image_path: image_path.clone(),
+            });
     }
-    ensure_process_iteration_complete()?;
-
-    Ok(candidates
-        .into_iter()
-        .map(|(name, id)| ProcessCandidateInfo {
-            id,
-            name,
-            image_path: process_image_path(id),
-        })
-        .collect())
+    candidates.into_values().collect()
 }
 
 pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
@@ -222,6 +223,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
                 id: entry.th32ProcessID,
                 parent_id: (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID),
                 name,
+                image_path: None,
             });
         }
 
@@ -230,6 +232,14 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     }
     ensure_process_iteration_complete()?;
 
+    Ok(processes)
+}
+
+pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
+    let mut processes = list_processes()?;
+    for process in &mut processes {
+        process.image_path = process_image_path(process.id);
+    }
     Ok(processes)
 }
 
@@ -263,13 +273,6 @@ fn ensure_process_iteration_complete() -> Result<(), String> {
     }
 }
 
-pub fn process_names_by_id(processes: &[ProcessInfo]) -> BTreeMap<u32, String> {
-    processes
-        .iter()
-        .map(|process| (process.id, process.name.clone()))
-        .collect()
-}
-
 pub fn process_session_id(process_id: u32) -> Option<u32> {
     let mut session_id = 0;
     // SAFETY: session_id is writable and process_id is a value, not a borrowed handle.
@@ -279,37 +282,76 @@ pub fn process_session_id(process_id: u32) -> Option<u32> {
 
 pub fn is_foreground_process(
     process_id: u32,
-    process_name: &str,
+    executable_path: &Path,
     foreground_process_id: Option<u32>,
-    foreground_process_name: Option<&str>,
+    foreground_executable_path: Option<&Path>,
 ) -> bool {
     Some(process_id) == foreground_process_id
-        || foreground_process_name
-            .is_some_and(|foreground| same_process_name(foreground, process_name))
+        || foreground_executable_path
+            .is_some_and(|foreground| same_executable_path(foreground, executable_path))
 }
 
 pub fn should_ignore_foreground_process(
     exclude_foreground_app: bool,
     process_id: u32,
-    process_name: &str,
+    executable_path: &Path,
     foreground_process_id: Option<u32>,
-    foreground_process_name: Option<&str>,
+    foreground_executable_path: Option<&Path>,
 ) -> bool {
     exclude_foreground_app
         && is_foreground_process(
             process_id,
-            process_name,
+            executable_path,
             foreground_process_id,
-            foreground_process_name,
+            foreground_executable_path,
         )
-}
-
-pub fn process_name_key(process_name: &str) -> String {
-    process_name.trim().to_ascii_lowercase()
 }
 
 pub fn same_process_name(left: &str, right: &str) -> bool {
     left.trim().eq_ignore_ascii_case(right.trim())
+}
+
+pub fn executable_path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim()
+        .replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
+pub fn same_executable_path(left: &Path, right: &Path) -> bool {
+    let left_key = executable_path_key(left);
+    let right_key = executable_path_key(right);
+    if left_key == right_key {
+        return true;
+    }
+    if !left_key.eq_ignore_ascii_case(&right_key) {
+        return false;
+    }
+
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => executable_path_key(&left) == executable_path_key(&right),
+        (Err(_), Err(_)) => true,
+        _ => false,
+    }
+}
+
+pub fn process_matches_executable_path(process: &ProcessInfo, executable_path: &str) -> bool {
+    let executable_path = Path::new(executable_path.trim());
+    let Some(file_name) = executable_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if !same_process_name(&process.name, file_name) {
+        return false;
+    }
+
+    process_executable_path(process)
+        .is_some_and(|actual_path| same_executable_path(&actual_path, executable_path))
+}
+
+pub fn process_executable_path(process: &ProcessInfo) -> Option<PathBuf> {
+    process
+        .image_path
+        .clone()
+        .or_else(|| process_image_path(process.id))
 }
 
 pub fn contains_process_name<T: AsRef<str>>(list: &[T], process_name: &str) -> bool {
@@ -317,13 +359,13 @@ pub fn contains_process_name<T: AsRef<str>>(list: &[T], process_name: &str) -> b
         .any(|name| same_process_name(name.as_ref(), process_name))
 }
 
-pub fn process_failure_key(process_name: &str) -> String {
-    process_name_key(process_name)
+pub fn process_failure_key(process_identity: &str) -> String {
+    executable_path_key(Path::new(process_identity))
 }
 
 pub fn unique_app_names<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {
     names
-        .map(process_name_key)
+        .map(|name| name.trim().to_ascii_lowercase())
         .filter(|name| !name.is_empty())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
@@ -366,7 +408,7 @@ fn is_system_process_name(name: &str) -> bool {
     name.trim().eq_ignore_ascii_case("[system process]")
 }
 
-pub(super) fn process_image_path(process_id: u32) -> Option<PathBuf> {
+pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
     if process_id == 0 {
         return None;
     }
@@ -377,7 +419,10 @@ pub(super) fn process_image_path(process_id: u32) -> Option<PathBuf> {
         return None;
     }
 
-    let process = WinHandle::new(process);
+    process_image_path_from_handle(&WinHandle::new(process))
+}
+
+fn process_image_path_from_handle(process: &WinHandle) -> Option<PathBuf> {
     let mut buffer = vec![0u16; PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN];
     loop {
         let mut len = buffer.len() as u32;
@@ -407,6 +452,14 @@ pub(super) fn process_image_path(process_id: u32) -> Option<PathBuf> {
     }
 }
 
+pub(crate) fn process_handle_matches_executable_path(
+    process: &WinHandle,
+    expected_executable_path: &Path,
+) -> bool {
+    process_image_path_from_handle(process)
+        .is_some_and(|actual| same_executable_path(&actual, expected_executable_path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,12 +484,52 @@ mod tests {
     #[test]
     fn process_action_target_errors_keep_typed_failures_and_win32_codes() {
         assert_eq!(
-            ProcessActionTargetError::ProcessExited.to_string(),
-            "Process exited."
+            ProcessActionTargetError::ProcessChanged.to_string(),
+            "The selected process instance has changed."
         );
         assert_eq!(
             ProcessActionTargetError::ProcessUnavailable(5).to_string(),
             "The selected process is no longer available (Win32 error 5)."
+        );
+    }
+
+    #[test]
+    fn executable_path_matching_distinguishes_same_named_binaries() {
+        let process = ProcessInfo {
+            id: 42,
+            parent_id: None,
+            name: "game.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Games\game.exe")),
+        };
+
+        assert!(process_matches_executable_path(
+            &process,
+            "C:/Games/game.exe"
+        ));
+        assert!(process_matches_executable_path(
+            &process,
+            "c:/games/GAME.exe"
+        ));
+        assert!(!process_matches_executable_path(
+            &process,
+            r"C:\Other\game.exe"
+        ));
+        assert!(!process_matches_executable_path(&process, "game.exe"));
+    }
+
+    #[test]
+    fn process_failure_keys_preserve_exact_path_identity() {
+        assert_eq!(
+            process_failure_key(r"C:/Games/app.exe"),
+            process_failure_key(r"C:\Games\app.exe")
+        );
+        assert_ne!(
+            process_failure_key(r"C:\Games\APP.exe"),
+            process_failure_key(r"C:\Games\app.exe")
+        );
+        assert_ne!(
+            process_failure_key(r"C:\Games\app.exe"),
+            process_failure_key(r"C:\Tools\app.exe")
         );
     }
 

@@ -47,6 +47,10 @@ nav:
   about: "About"
 
 common:
+  loading: "Loading…"
+  loading_running_apps: "Loading running apps…"
+  running_apps_load_failed: "Could not load running apps: %{error}"
+  process_population_paused: "Running app loading is paused"
   add: "Add"
   create: "Create"
   clear: "Clear"
@@ -69,6 +73,8 @@ common:
   no_power_plans_loaded: "No power plans loaded"
   no_running_apps_loaded: "No running apps loaded"
   no_matching_apps: "No matching apps"
+  process_rule_running: "%{count} running"
+  process_rule_not_running: "Not currently running"
   search_running_apps: "Search running apps..."
   no_custom_rules: "No custom rules are configured."
   preserve_foreground_priority: "Ignore foreground if same or higher"
@@ -257,6 +263,7 @@ home:
   launch_boost: "Launch boost"
 
 process_list:
+  app_name: "App name"
   title: "Process List"
   count: "%{count} running processes"
   selected_summary: "%{name} · PID %{pid} · %{count} custom policies"
@@ -275,6 +282,7 @@ process_list:
   column_visibility: "Column visibility"
   default: "Default"
   process_name: "Process name"
+  executable_path: "Executable path"
   pid: "PID"
   power_plan_foreground: "Power plan by foreground"
   power_plan_running: "Power plan by running app"

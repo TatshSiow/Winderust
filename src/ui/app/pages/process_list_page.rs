@@ -30,12 +30,16 @@ impl WinderustApp {
             })
             .read(cx)
             .clone();
+        let refresh_in_progress = self.process_refresh_in_progress;
         let refresh_button = control_button(Button::new("refresh-process-list"))
-            .label(t!("settings.refresh").to_string())
+            .label(if refresh_in_progress {
+                t!("common.loading").to_string()
+            } else {
+                t!("settings.refresh").to_string()
+            })
+            .disabled(refresh_in_progress)
             .on_click(cx.listener(|app, _, _, cx| {
-                let changed_candidates = app.refresh_process_candidates(false);
-                let changed_processes = app.refresh_running_processes(true);
-                if changed_candidates || changed_processes {
+                if app.refresh_running_processes(true, cx) {
                     cx.notify();
                 }
             }));
@@ -50,10 +54,10 @@ impl WinderustApp {
             cx,
         ));
         let rows = if rendered_rows.is_empty() {
+            let message = process_load_state_message(&self.running_process_load_state)
+                .unwrap_or_else(|| t!("common.no_running_apps_loaded").to_string());
             process_list_scroll_content(table_width)
-                .child(process_list_empty_row(
-                    t!("common.no_running_apps_loaded").to_string(),
-                ))
+                .child(process_list_empty_row(message))
                 .into_any_element()
         } else {
             let hidden_columns = self.hidden_process_list_columns.clone();
@@ -498,6 +502,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
         ),
         ProcessListRenderedRow::Group {
             process_name,
+            executable_path,
             process_count,
             summary,
             icon,
@@ -505,6 +510,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
         } => process_list_group_row(
             ProcessListGroupRowData {
                 process_name: process_name.as_str(),
+                executable_path: executable_path.as_str(),
                 process_count: *process_count,
             },
             summary.as_ref(),
@@ -530,6 +536,10 @@ pub(in crate::ui::app) fn process_list_entry_row(
     let row_id = SharedString::from(format!("process-list-entry-{}", process.id));
     let process_id = process.id;
     let process_name = process.name.clone();
+    let executable_path = process
+        .image_path
+        .as_deref()
+        .map(|path| path.to_string_lossy().into_owned());
     let selected = edit_context.app.selected_process_id == Some(process_id);
     let app_entity = cx.entity();
     let mut row = h_flex()
@@ -555,7 +565,10 @@ pub(in crate::ui::app) fn process_list_entry_row(
         }))
         .context_menu(move |menu, _, _| {
             let mut menu = menu;
-            let action_target = capture_process_action_target(process_id, &process_name);
+            let action_target = executable_path
+                .as_deref()
+                .ok_or(ProcessActionTargetError::IdentityUnavailable)
+                .and_then(|path| capture_process_action_target(process_id, Path::new(path)));
             for priority in [
                 ProcessPrioritySetting::BelowNormal,
                 ProcessPrioritySetting::Normal,
@@ -582,25 +595,27 @@ pub(in crate::ui::app) fn process_list_entry_row(
                     }),
                 );
             }
-            for priority in [
-                ProcessPrioritySetting::BelowNormal,
-                ProcessPrioritySetting::Normal,
-                ProcessPrioritySetting::AboveNormal,
-            ] {
-                let app_entity = app_entity.clone();
-                let process_name = process_name.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(t!(
-                        "process_list.save_rule_priority",
-                        priority = process_priority_setting_label(priority)
-                    ))
-                    .on_click(move |_, _, cx| {
-                        app_entity.update(cx, |app, cx| {
-                            app.selected_process_id = Some(process_id);
-                            app.save_process_priority_rule(&process_name, priority, cx);
-                        });
-                    }),
-                );
+            if let Some(executable_path) = executable_path.clone() {
+                for priority in [
+                    ProcessPrioritySetting::BelowNormal,
+                    ProcessPrioritySetting::Normal,
+                    ProcessPrioritySetting::AboveNormal,
+                ] {
+                    let app_entity = app_entity.clone();
+                    let executable_path = executable_path.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(t!(
+                            "process_list.save_rule_priority",
+                            priority = process_priority_setting_label(priority)
+                        ))
+                        .on_click(move |_, _, cx| {
+                            app_entity.update(cx, |app, cx| {
+                                app.selected_process_id = Some(process_id);
+                                app.save_process_priority_rule(&executable_path, priority, cx);
+                            });
+                        }),
+                    );
+                }
             }
             for priority in [
                 ProcessMemoryPrioritySetting::Low,
@@ -627,24 +642,26 @@ pub(in crate::ui::app) fn process_list_entry_row(
                     }),
                 );
             }
-            for priority in [
-                ProcessMemoryPrioritySetting::Low,
-                ProcessMemoryPrioritySetting::Normal,
-            ] {
-                let app_entity = app_entity.clone();
-                let process_name = process_name.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(t!(
-                        "process_list.save_rule_memory",
-                        priority = process_memory_priority_setting_label(priority)
-                    ))
-                    .on_click(move |_, _, cx| {
-                        app_entity.update(cx, |app, cx| {
-                            app.selected_process_id = Some(process_id);
-                            app.save_memory_priority_rule(&process_name, priority, cx);
-                        });
-                    }),
-                );
+            if let Some(executable_path) = executable_path.clone() {
+                for priority in [
+                    ProcessMemoryPrioritySetting::Low,
+                    ProcessMemoryPrioritySetting::Normal,
+                ] {
+                    let app_entity = app_entity.clone();
+                    let executable_path = executable_path.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(t!(
+                            "process_list.save_rule_memory",
+                            priority = process_memory_priority_setting_label(priority)
+                        ))
+                        .on_click(move |_, _, cx| {
+                            app_entity.update(cx, |app, cx| {
+                                app.selected_process_id = Some(process_id);
+                                app.save_memory_priority_rule(&executable_path, priority, cx);
+                            });
+                        }),
+                    );
+                }
             }
             menu
         })
@@ -663,11 +680,15 @@ pub(in crate::ui::app) fn process_list_entry_row(
         ));
     }
 
+    let executable_path = process
+        .image_path
+        .as_deref()
+        .map(|path| path.to_string_lossy());
     row.children(process_list_policy_cells(
-        &process.name,
+        executable_path.as_deref().unwrap_or_default(),
         summary,
         layout,
-        state.editable,
+        state.editable && executable_path.is_some(),
         edit_context,
         cx,
     ))
@@ -684,11 +705,12 @@ pub(in crate::ui::app) fn process_list_group_row(
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let process_name = data.process_name.to_string();
+    let executable_path = data.executable_path.to_string();
     let row_id = SharedString::from(format!(
         "process-list-group-{}",
-        process_list_group_key(&process_name)
+        process_list_executable_path_group_key(Path::new(&executable_path))
     ));
-    let toggle_name = process_name.clone();
+    let toggle_name = executable_path.clone();
 
     let mut row = h_flex()
         .id(row_id)
@@ -711,6 +733,7 @@ pub(in crate::ui::app) fn process_list_group_row(
         }))
         .child(process_list_group_name_cell(
             &process_name,
+            &executable_path,
             data.process_count,
             icon,
             state.collapsed,
@@ -726,7 +749,7 @@ pub(in crate::ui::app) fn process_list_group_row(
     }
 
     row.children(process_list_policy_cells(
-        &process_name,
+        &executable_path,
         summary,
         layout,
         true,
@@ -756,6 +779,7 @@ pub(in crate::ui::app) fn process_list_name_cell(
 
 pub(in crate::ui::app) fn process_list_group_name_cell(
     process_name: &str,
+    executable_path: &str,
     process_count: usize,
     icon: Option<&Arc<Image>>,
     collapsed: bool,
@@ -775,7 +799,7 @@ pub(in crate::ui::app) fn process_list_group_name_cell(
                 .child(collapsible_chevron_icon(
                     format!(
                         "process-list-group-{}",
-                        process_list_group_key(process_name)
+                        process_list_executable_path_group_key(Path::new(executable_path))
                     ),
                     collapsed,
                 )),
@@ -1103,7 +1127,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_id(
 ) -> String {
     format!(
         "process-list-cell-editor-{}-{}",
-        process_list_group_key(process_name),
+        process_list_executable_path_group_key(Path::new(process_name)),
         process_list_sort_column_id(ProcessListSortColumn::Column(column))
     )
 }
@@ -1495,9 +1519,18 @@ pub(in crate::ui::app) fn process_list_toolbar_label(
     }) else {
         return process_list_count_label(process_count);
     };
-    let custom_count = process_policy_summary(&app.settings, &app.plans, &process.name)
-        .custom_columns
-        .len();
+    let custom_count = process_policy_summary(
+        &app.settings,
+        &app.plans,
+        process
+            .image_path
+            .as_deref()
+            .map(|path| path.to_string_lossy())
+            .as_deref()
+            .unwrap_or_default(),
+    )
+    .custom_columns
+    .len();
 
     t!(
         "process_list.selected_summary",

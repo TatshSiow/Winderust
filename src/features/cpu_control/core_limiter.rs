@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -17,9 +18,9 @@ use crate::{
     config::{CoreLimiterRule, CoreLimiterSettings},
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, list_processes, process_failure_key, process_names_by_id,
-        process_session_id, same_process_name, should_ignore_foreground_process, unique_app_names,
-        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_executable_path, process_failure_key,
+        process_handle_matches_executable_path, process_session_id, same_executable_path,
+        same_process_name, should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
@@ -49,7 +50,8 @@ pub struct CoreLimiterManager {
 
 #[derive(Clone)]
 struct TrackedProcess {
-    process_name: String,
+    executable_path: String,
+    creation_time: u64,
     previous_cpu_time: Option<ProcessCpuSample>,
     high_since: Option<Instant>,
     below_since: Option<Instant>,
@@ -58,6 +60,7 @@ struct TrackedProcess {
 #[derive(Clone)]
 struct LimitedProcess {
     process_name: String,
+    executable_path: String,
     creation_time: u64,
     previous_affinity: usize,
     applied_affinity: usize,
@@ -91,6 +94,27 @@ impl CoreLimiterManager {
                 enabled: false,
                 failed_processes: failed.count,
                 message: "Core Limiter disabled.".to_owned(),
+                last_error: failed.last_error,
+                ..Default::default()
+            };
+        }
+
+        let enabled_process_names = settings
+            .rules
+            .iter()
+            .filter(|rule| rule.enabled && Path::new(rule.executable_path.trim()).is_absolute())
+            .filter_map(|rule| Path::new(rule.executable_path.trim()).file_name())
+            .filter_map(|name| name.to_str())
+            .map(str::to_ascii_lowercase)
+            .collect::<BTreeSet<_>>();
+        if enabled_process_names.is_empty() {
+            let failed = self.clear_all(action_log, "no Core Limiter rules configured");
+            self.failure_suppression.clear();
+            self.tracked.clear();
+            return CoreLimiterSnapshot {
+                enabled: true,
+                failed_processes: failed.count,
+                message: "No Core Limiter rules configured.".to_owned(),
                 last_error: failed.last_error,
                 ..Default::default()
             };
@@ -135,13 +159,12 @@ impl CoreLimiterManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = process_names_by_id(&processes);
-        let foreground_process_name = if settings.exclude_foreground_app {
+        let foreground_executable_path = if settings.exclude_foreground_app {
             foreground_process_id.and_then(|id| {
                 processes
                     .iter()
                     .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
+                    .and_then(process_executable_path)
             })
         } else {
             None
@@ -152,15 +175,22 @@ impl CoreLimiterManager {
             if process.id == 0
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
-                || should_ignore_foreground_process(
-                    settings.exclude_foreground_app,
-                    process.id,
-                    &process.name,
-                    foreground_process_id,
-                    foreground_process_name.as_deref(),
-                )
+                || !enabled_process_names.contains(&process.name.to_ascii_lowercase())
                 || process_session_id(process.id) != Some(current_session_id)
             {
+                continue;
+            }
+
+            let Some(executable_path) = process_executable_path(&process) else {
+                continue;
+            };
+            if should_ignore_foreground_process(
+                settings.exclude_foreground_app,
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            ) {
                 continue;
             }
 
@@ -177,20 +207,26 @@ impl CoreLimiterManager {
                 continue;
             }
 
-            if let Some(rule) = matching_rule(settings, &process.name) {
-                target_processes.insert(process.id, (process.name, rule.clone()));
+            if let Some(rule) = matching_rule(settings, &executable_path) {
+                target_processes.insert(
+                    process.id,
+                    (
+                        process.name,
+                        executable_path.to_string_lossy().into_owned(),
+                        rule.clone(),
+                    ),
+                );
             }
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(name, _rule)| process_failure_key(name))
+            .map(|(_name, path, _rule)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
         let mut failures = self.release_non_targets(
             &target_ids,
-            &current_process_names,
             action_log,
             "process no longer matches a Core Limiter rule",
         );
@@ -200,11 +236,13 @@ impl CoreLimiterManager {
         let mut skipped_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
         let now = Instant::now();
-        for (process_id, (process_name, rule)) in target_processes {
+        for (process_id, (process_name, executable_path, rule)) in target_processes {
             let failure_process_name = process_name.clone();
+            let failure_executable_path = executable_path.clone();
             if self.is_process_suppressed(
                 process_id,
                 &failure_process_name,
+                &failure_executable_path,
                 action_log,
                 &mut auto_excluded_processes,
             ) {
@@ -212,16 +250,25 @@ impl CoreLimiterManager {
                 continue;
             }
 
-            match self.update_process(process_id, process_name, &rule, now, action_log) {
+            match self.update_process(
+                process_id,
+                process_name,
+                executable_path,
+                &rule,
+                now,
+                action_log,
+            ) {
                 Ok(()) => {
-                    self.clear_process_failure(&failure_process_name);
+                    self.clear_process_failure(&failure_executable_path);
                 }
                 Err(CoreLimiterError::ProcessExited) => {
                     skipped_processes += 1;
+                    self.tracked.remove(&process_id);
+                    self.limited.remove(&process_id);
                 }
                 Err(CoreLimiterError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&failure_process_name);
+                    self.record_process_failure(&failure_executable_path);
                     action_log.record(
                         ActionLogFeature::CoreLimiter,
                         Some(process_id),
@@ -231,7 +278,7 @@ impl CoreLimiterManager {
                     );
                 }
                 Err(CoreLimiterError::Failed(err)) => {
-                    self.record_process_failure(&failure_process_name);
+                    self.record_process_failure(&failure_executable_path);
                     failures.record_message(
                         "Limit",
                         process_id,
@@ -250,11 +297,13 @@ impl CoreLimiterManager {
             tracked_processes: self.tracked.len(),
             skipped_processes,
             failed_processes: failures.count,
-            limited_apps: unique_app_names(
-                self.limited
-                    .values()
-                    .map(|process| process.process_name.as_str()),
-            ),
+            limited_apps: self
+                .limited
+                .values()
+                .map(|process| process.executable_path.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "Core Limiter active.".to_owned(),
             last_error: failures.last_error,
@@ -265,21 +314,42 @@ impl CoreLimiterManager {
         &mut self,
         process_id: u32,
         process_name: String,
+        executable_path: String,
         rule: &CoreLimiterRule,
         now: Instant,
         action_log: &mut ActionLog,
     ) -> Result<(), CoreLimiterError> {
-        let current = process_cpu_sample(process_id)?;
+        let (current, creation_time) = process_cpu_sample(process_id, &executable_path)?;
+        let tracked_identity_changed = self.tracked.get(&process_id).is_some_and(|process| {
+            process.creation_time != creation_time
+                || !same_executable_path(
+                    Path::new(&process.executable_path),
+                    Path::new(&executable_path),
+                )
+        });
+        let limited_identity_changed = self.limited.get(&process_id).is_some_and(|process| {
+            process.creation_time != creation_time
+                || !same_executable_path(
+                    Path::new(&process.executable_path),
+                    Path::new(&executable_path),
+                )
+        });
+        if tracked_identity_changed || limited_identity_changed {
+            self.tracked.remove(&process_id);
+            self.limited.remove(&process_id);
+        }
         let state = self
             .tracked
             .entry(process_id)
             .or_insert_with(|| TrackedProcess {
-                process_name: process_name.clone(),
+                executable_path: executable_path.clone(),
+                creation_time,
                 previous_cpu_time: None,
                 high_since: None,
                 below_since: None,
             });
-        state.process_name = process_name.clone();
+        state.executable_path = executable_path.clone();
+        state.creation_time = creation_time;
 
         let usage = state
             .previous_cpu_time
@@ -299,6 +369,8 @@ impl CoreLimiterManager {
                 apply_cpu_limit_to_process(
                     process_id,
                     process_name,
+                    executable_path,
+                    creation_time,
                     rule.max_logical_processors,
                     &mut self.limited,
                     action_log,
@@ -311,7 +383,7 @@ impl CoreLimiterManager {
         if self.limited.contains_key(&process_id) {
             let below_since = *state.below_since.get_or_insert(now);
             if now.duration_since(below_since) >= Duration::from_secs(rule.cooldown_seconds) {
-                self.release_processes(&[process_id], None, action_log, "CPU usage cooled down")
+                self.release_processes(&[process_id], action_log, "CPU usage cooled down")
                     .into_result()?;
                 self.tracked.remove(&process_id);
             }
@@ -323,7 +395,6 @@ impl CoreLimiterManager {
     fn release_non_targets(
         &mut self,
         target_ids: &BTreeSet<u32>,
-        current_process_names: &BTreeMap<u32, String>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> CoreLimiterFailures {
@@ -334,34 +405,25 @@ impl CoreLimiterManager {
             .filter(|process_id| !target_ids.contains(process_id))
             .collect::<Vec<_>>();
 
-        self.release_processes(
-            &process_ids,
-            Some(current_process_names),
-            action_log,
-            reason,
-        )
+        self.release_processes(&process_ids, action_log, reason)
     }
 
     fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> CoreLimiterFailures {
         self.tracked.clear();
         let process_ids = self.limited.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids, None, action_log, reason)
+        self.release_processes(&process_ids, action_log, reason)
     }
 
     fn release_processes(
         &mut self,
         process_ids: &[u32],
-        current_process_names: Option<&BTreeMap<u32, String>>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> CoreLimiterFailures {
         let mut failures = CoreLimiterFailures::default();
         for process_id in process_ids {
             if let Some(process) = self.limited.get(process_id).cloned() {
-                let process_name = current_process_names
-                    .and_then(|names| names.get(process_id))
-                    .cloned()
-                    .unwrap_or_else(|| process.process_name.clone());
+                let process_name = process.process_name.clone();
                 if let Err(err) = restore_affinity(*process_id, &process) {
                     if matches!(err, CoreLimiterError::ProcessExited) {
                         self.limited.remove(process_id);
@@ -393,16 +455,19 @@ impl CoreLimiterManager {
         &mut self,
         process_id: u32,
         process_name: &str,
+        executable_path: &str,
         action_log: &mut ActionLog,
         auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
-        let suppression = self.failure_suppression.process_suppression(process_name);
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
         if !suppression.suppressed {
             return false;
         }
 
         if suppression.newly_suppressed {
-            auto_excluded_processes.insert(process_failure_key(process_name));
+            auto_excluded_processes.insert(executable_path.to_owned());
             action_log.record(
                 ActionLogFeature::CoreLimiter,
                 Some(process_id),
@@ -453,17 +518,21 @@ impl Default for CoreLimiterSnapshot {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
+    let process_name = std::path::Path::new(process_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(process_name);
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
 }
 
 fn matching_rule<'a>(
     settings: &'a CoreLimiterSettings,
-    process_name: &str,
+    executable_path: &Path,
 ) -> Option<&'a CoreLimiterRule> {
     settings.rules.iter().find(|rule| {
         rule.enabled
-            && !rule.process_name.trim().is_empty()
-            && same_process_name(&rule.process_name, process_name)
+            && !rule.executable_path.trim().is_empty()
+            && same_executable_path(Path::new(rule.executable_path.trim()), executable_path)
     })
 }
 
@@ -498,15 +567,23 @@ fn limited_affinity_mask(
 fn apply_cpu_limit_to_process(
     process_id: u32,
     process_name: String,
+    executable_path: String,
+    expected_creation_time: u64,
     max_logical_processors: u8,
     limited: &mut BTreeMap<u32, LimitedProcess>,
     action_log: &mut ActionLog,
 ) -> Result<(), CoreLimiterError> {
     let process = ProcessHandle::open(process_id)?;
+    if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
+        return Err(CoreLimiterError::ProcessExited);
+    }
     let creation_time = process
         .0
         .process_creation_time()
         .ok_or(CoreLimiterError::ProcessExited)?;
+    if creation_time != expected_creation_time {
+        return Err(CoreLimiterError::ProcessExited);
+    }
     let (current_affinity, system_affinity) = process.affinity_mask()?;
     let existing = limited
         .get(&process_id)
@@ -557,6 +634,7 @@ fn apply_cpu_limit_to_process(
         process_id,
         LimitedProcess {
             process_name,
+            executable_path,
             creation_time,
             previous_affinity: original_affinity,
             applied_affinity: target_affinity,
@@ -569,15 +647,30 @@ fn restore_affinity(
     process_state: &LimitedProcess,
 ) -> Result<(), CoreLimiterError> {
     let process = ProcessHandle::open(process_id)?;
-    if process.0.process_creation_time() != Some(process_state.creation_time) {
+    if process.0.process_creation_time() != Some(process_state.creation_time)
+        || !process_handle_matches_executable_path(
+            &process.0,
+            Path::new(&process_state.executable_path),
+        )
+    {
         return Err(CoreLimiterError::ProcessExited);
     }
     process.set_affinity_mask(process_state.previous_affinity)
 }
 
-fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, CoreLimiterError> {
+fn process_cpu_sample(
+    process_id: u32,
+    executable_path: &str,
+) -> Result<(ProcessCpuSample, u64), CoreLimiterError> {
     let process = ProcessHandle::open_query(process_id)?;
-    process.cpu_sample()
+    if !process_handle_matches_executable_path(&process.0, Path::new(executable_path)) {
+        return Err(CoreLimiterError::ProcessExited);
+    }
+    let creation_time = process
+        .0
+        .process_creation_time()
+        .ok_or(CoreLimiterError::ProcessExited)?;
+    Ok((process.cpu_sample()?, creation_time))
 }
 
 enum CoreLimiterError {
@@ -762,13 +855,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matching_rule_is_case_insensitive() {
+    fn matching_rule_requires_the_exact_executable_path() {
         let settings = CoreLimiterSettings {
             enabled: true,
             exclude_foreground_app: true,
             rules: vec![CoreLimiterRule {
                 enabled: true,
-                process_name: " Worker.EXE ".to_owned(),
+                executable_path: r"C:\Apps\Worker.EXE".to_owned(),
                 threshold_percent: 75,
                 sustain_seconds: 5,
                 cooldown_seconds: 10,
@@ -776,8 +869,8 @@ mod tests {
             }],
         };
 
-        assert!(matching_rule(&settings, "worker.exe").is_some());
-        assert!(matching_rule(&settings, "other.exe").is_none());
+        assert!(matching_rule(&settings, Path::new(r"C:\Apps\worker.exe")).is_some());
+        assert!(matching_rule(&settings, Path::new(r"D:\Tools\worker.exe")).is_none());
     }
 
     #[test]
@@ -788,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn foreground_skip_matches_pid_or_name() {
+    fn foreground_skip_matches_pid_or_executable_path() {
         let settings = CoreLimiterSettings {
             enabled: true,
             exclude_foreground_app: true,
@@ -798,39 +891,89 @@ mod tests {
         assert!(should_ignore_foreground_process(
             settings.exclude_foreground_app,
             42,
-            "helper.exe",
+            Path::new(r"C:\Apps\helper.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(Path::new(r"C:\Apps\app.exe")),
         ));
         assert!(should_ignore_foreground_process(
             settings.exclude_foreground_app,
             99,
-            "APP.EXE",
+            Path::new(r"c:/apps/APP.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(Path::new(r"C:\Apps\app.exe")),
         ));
         assert!(!should_ignore_foreground_process(
             settings.exclude_foreground_app,
             99,
-            "other.exe",
+            Path::new(r"C:\Other\app.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(Path::new(r"C:\Apps\app.exe")),
         ));
+    }
+
+    #[test]
+    fn affinity_apply_rejects_a_different_process_instance() {
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
+        let process_id = unsafe { GetCurrentProcessId() };
+        let executable_path = std::env::current_exe()
+            .expect("the test process executable path should be available")
+            .to_string_lossy()
+            .into_owned();
+        let process_name = Path::new(&executable_path)
+            .file_name()
+            .expect("the test executable should have a file name")
+            .to_string_lossy()
+            .into_owned();
+        let mut limited = BTreeMap::new();
+        let mut log = ActionLog::new(4);
+
+        let result = apply_cpu_limit_to_process(
+            process_id,
+            process_name,
+            executable_path,
+            u64::MAX,
+            1,
+            &mut limited,
+            &mut log,
+        );
+
+        assert!(matches!(result, Err(CoreLimiterError::ProcessExited)));
+        assert!(limited.is_empty());
+        assert!(log.entries().is_empty());
     }
 
     #[test]
     fn repeated_failures_suppress_future_core_limiter_attempts_once() {
         let mut manager = CoreLimiterManager::default();
         let mut log = ActionLog::new(8);
+        let executable_path = r"C:\Apps\app.exe";
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        manager.record_process_failure(executable_path);
+        manager.record_process_failure(executable_path);
+        assert!(!manager.is_process_suppressed(
+            42,
+            "app.exe",
+            executable_path,
+            &mut log,
+            &mut BTreeSet::new()
+        ));
         assert!(log.entries().is_empty());
 
-        manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
+        manager.record_process_failure(executable_path);
+        assert!(manager.is_process_suppressed(
+            42,
+            "app.exe",
+            executable_path,
+            &mut log,
+            &mut BTreeSet::new()
+        ));
+        assert!(manager.is_process_suppressed(
+            43,
+            "app.exe",
+            r"C:/Apps/app.exe",
+            &mut log,
+            &mut BTreeSet::new()
+        ));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
@@ -871,6 +1014,7 @@ mod tests {
             0,
             LimitedProcess {
                 process_name: "exited.exe".to_owned(),
+                executable_path: r"C:\Apps\exited.exe".to_owned(),
                 creation_time: 0,
                 previous_affinity: 0b1111,
                 applied_affinity: 0b0001,
@@ -878,7 +1022,7 @@ mod tests {
         );
         let mut log = ActionLog::new(8);
 
-        let failures = manager.release_processes(&[0], Some(&BTreeMap::new()), &mut log, "test");
+        let failures = manager.release_processes(&[0], &mut log, "test");
 
         assert_eq!(failures.count, 0);
         assert!(log.entries().is_empty());

@@ -68,11 +68,16 @@ impl WinderustApp {
                         app.settings.advanced.pause_process_population = *checked;
                         app.next_process_refresh = Instant::now();
                         if *checked {
+                            app.process_candidate_load_state = ProcessLoadState::Paused;
+                            app.running_process_load_state = ProcessLoadState::Paused;
                             app.process_candidates.clear();
                             app.running_processes.clear();
                             app.process_icon_cache.clear();
                             app.expanded_process_list_groups.clear();
                             app.active_power_plan_picker = None;
+                        } else {
+                            app.process_candidate_load_state = ProcessLoadState::Loading;
+                            app.running_process_load_state = ProcessLoadState::Loading;
                         }
                         cx.notify();
                     }),

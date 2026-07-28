@@ -6,7 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self.inputs.foreground_process.read(cx).value().to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::Foreground,
+            &self.inputs.foreground_process,
+            cx,
+        );
         let enabled = self.settings.by_foreground.enabled;
         let help = tooltip_lines(vec![
             t!("by_foreground.intro_1").to_string(),
@@ -52,8 +56,11 @@ impl WinderustApp {
                                 ),
                         )
                         .on_click(cx.listener(|app, _, window, cx| {
-                            let process =
-                                app.inputs.foreground_process.read(cx).value().to_string();
+                            let process = app.process_picker_path(
+                                SuggestionTarget::Foreground,
+                                &app.inputs.foreground_process,
+                                cx,
+                            );
                             if can_add_foreground_process(&app.settings.by_foreground, &process) {
                                 app.settings
                                     .by_foreground
@@ -68,7 +75,8 @@ impl WinderustApp {
         );
         let mut rules = rule_list(vec![
             rule_table_active_header(),
-            rule_table_title_header(t!("process_list.process_name").to_string()),
+            rule_table_title_header(t!("process_list.app_name").to_string()),
+            rule_table_title_header(t!("process_list.executable_path").to_string()),
             priority_exclusion_table_cell(t!("by_running_app.power_plan").to_string()),
             rule_table_action_header(),
         ]);
@@ -111,7 +119,7 @@ impl WinderustApp {
                     cx.notify();
                 }),
             ))
-            .child(self.process_rule_title(&rule.process_name, cx))
+            .child(self.process_rule_title(&rule.executable_path, cx))
             .child(self.render_inline_power_plan_picker(
                 format!("by-foreground-plan-{index}"),
                 rule.power_plan_guid.clone(),

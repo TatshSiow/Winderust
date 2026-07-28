@@ -33,12 +33,11 @@ impl WinderustApp {
         if advanced_cards_progress.is_some() {
             window.request_animation_frame();
         }
-        let workload_engine_input = self
-            .inputs
-            .workload_engine_process
-            .read(cx)
-            .value()
-            .to_string();
+        let workload_engine_input = self.process_picker_path(
+            SuggestionTarget::WorkloadEngine,
+            &self.inputs.workload_engine_process,
+            cx,
+        );
         let workload_engine_tunables =
             self.render_workload_engine_tunables(window, cx, self.settings.workload_engine.enabled);
         let workload_engine_efficiency = feature_body(self.settings.workload_engine.enabled)
@@ -1512,12 +1511,11 @@ impl WinderustApp {
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .workload_engine_process
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
+                                let process = app.process_picker_path(
+                                    SuggestionTarget::WorkloadEngine,
+                                    &app.inputs.workload_engine_process,
+                                    cx,
+                                );
                                 if can_add_workload_engine_exclusion(
                                     &app.settings.workload_engine,
                                     &process,

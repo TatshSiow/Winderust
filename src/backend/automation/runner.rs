@@ -243,7 +243,7 @@ impl HiddenAutomationRunner {
                 foreground_process
                     .as_ref()
                     .filter(|process| process.id == process_id)
-                    .map(|process| process.name.as_str()),
+                    .map(|process| process.executable_path.as_path()),
                 &mut self.action_log,
             )
         }) {
@@ -260,7 +260,7 @@ impl HiddenAutomationRunner {
             cursor_process
                 .as_ref()
                 .filter(|process| process.id == cursor_process_id)
-                .map(|process| process.name.as_str()),
+                .map(|process| process.executable_path.as_path()),
             &mut self.action_log,
         )
     }
@@ -653,11 +653,14 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
     ) -> TimerResolutionSnapshot {
-        let foreground_process_name = foreground_process_name();
+        let foreground_executable_path = timer_resolution_required(settings)
+            .then(foreground_process)
+            .flatten()
+            .map(|process| process.executable_path.to_string_lossy().into_owned());
         self.timer_resolution_manager.update(
             &settings.timer_resolution,
             settings.general.enabled,
-            foreground_process_name.as_deref(),
+            foreground_executable_path.as_deref(),
             &mut self.action_log,
         )
     }
@@ -676,16 +679,17 @@ impl HiddenAutomationRunner {
 
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
-        let foreground_process_name = foreground_lookup_required(settings)
-            .then(foreground_process_name)
-            .flatten();
+        let foreground_executable_path = foreground_lookup_required(settings)
+            .then(foreground_process)
+            .flatten()
+            .map(|process| process.executable_path.to_string_lossy().into_owned());
         let by_time_decision = current_by_time_decision(&settings.by_time);
         let by_cpu_load_decision = self
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
         let decision_input = DecisionInput {
             activity_state: activity.state,
-            foreground_process_name,
+            foreground_executable_path,
             plugged_in: power_source::is_plugged_in(),
             by_running_app: self.by_running_app_manager.active_decision().map(
                 |(rule_name, process_name, power_plan_guid)| ByRunningAppDecision {

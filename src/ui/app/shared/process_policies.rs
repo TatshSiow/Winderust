@@ -63,7 +63,12 @@ pub(in crate::ui::app) fn can_add_process_candidate(
     is_builtin_excluded: impl FnOnce(&str) -> bool,
 ) -> bool {
     let process = process.trim();
-    !process.is_empty() && !contains_process(process) && !is_builtin_excluded(process)
+    let process_path = Path::new(process);
+    let process_name = process_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(process);
+    process_path.is_absolute() && !contains_process(process) && !is_builtin_excluded(process_name)
 }
 
 pub(in crate::ui::app) fn can_add_foreground_process(
@@ -76,7 +81,7 @@ pub(in crate::ui::app) fn can_add_foreground_process(
             settings
                 .rules
                 .iter()
-                .any(|rule| same_process_name(&rule.process_name, process))
+                .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         |_| false,
     )
@@ -89,7 +94,7 @@ pub(in crate::ui::app) fn foreground_power_plan_override_guid(
     settings
         .rules
         .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .find(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
         .and_then(|rule| rule.power_plan_guid.clone())
 }
 
@@ -102,7 +107,7 @@ pub(in crate::ui::app) fn set_foreground_power_plan_override(
         if let Some(rule) = settings
             .rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
             rule.power_plan_guid = Some(power_plan_guid);
@@ -114,7 +119,7 @@ pub(in crate::ui::app) fn set_foreground_power_plan_override(
     } else {
         settings
             .rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -122,11 +127,15 @@ pub(in crate::ui::app) fn new_foreground_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByForegroundRule {
-    let process_name = process_name_key(process);
+    let executable_path = executable_path_key(Path::new(process));
     ByForegroundRule {
         enabled: true,
-        name: process_name.clone(),
-        process_name,
+        name: Path::new(process)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(process)
+            .to_owned(),
+        executable_path,
         power_plan_guid,
     }
 }
@@ -164,7 +173,7 @@ pub(in crate::ui::app) fn can_add_memory_trim_exclusion(
                 || settings
                     .exclusions
                     .iter()
-                    .any(|rule| same_process_name(&rule.process_name, process))
+                    .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         memory_trim::is_builtin_excluded,
     )
@@ -172,7 +181,7 @@ pub(in crate::ui::app) fn can_add_memory_trim_exclusion(
 
 pub(in crate::ui::app) fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
     ProcessExclusionRule {
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         ..Default::default()
     }
 }
@@ -182,7 +191,7 @@ pub(in crate::ui::app) fn new_background_efficiency_rule(
 ) -> BackgroundEfficiencyRule {
     BackgroundEfficiencyRule {
         enabled: true,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
     }
 }
 
@@ -195,7 +204,7 @@ pub(in crate::ui::app) fn set_background_efficiency_custom_rule(
         if let Some(rule) = settings
             .custom_rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
         } else {
@@ -206,7 +215,7 @@ pub(in crate::ui::app) fn set_background_efficiency_custom_rule(
     } else {
         settings
             .custom_rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -218,14 +227,14 @@ pub(in crate::ui::app) fn set_process_exclusion(
     if excluded {
         if let Some(rule) = rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
         } else {
             rules.push(new_process_exclusion_rule(process_name));
         }
     } else {
-        rules.retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+        rules.retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -237,7 +246,7 @@ pub(in crate::ui::app) fn set_process_priority_rule(
     let rule = settings
         .exclusions
         .iter_mut()
-        .find(|rule| process_setting_matches(&rule.process_name, process_name));
+        .find(|rule| process_setting_matches(&rule.executable_path, process_name));
     let rule = if let Some(rule) = rule {
         rule
     } else {
@@ -259,7 +268,7 @@ pub(in crate::ui::app) fn set_memory_priority_rule(
     let rule = settings
         .exclusions
         .iter_mut()
-        .find(|rule| process_setting_matches(&rule.process_name, process_name));
+        .find(|rule| process_setting_matches(&rule.executable_path, process_name));
     let rule = if let Some(rule) = rule {
         rule
     } else {
@@ -404,7 +413,7 @@ pub(in crate::ui::app) fn can_add_core_limiter_process(
             settings
                 .rules
                 .iter()
-                .any(|rule| same_process_name(&rule.process_name, process))
+                .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         core_limiter::is_builtin_excluded,
     )
@@ -420,7 +429,7 @@ pub(in crate::ui::app) fn can_add_by_running_app_process(
             settings
                 .rules
                 .iter()
-                .any(|rule| same_process_name(&rule.process_name, process))
+                .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         crate::features::power_plan_control::by_running_app::is_builtin_excluded,
     )
@@ -429,7 +438,7 @@ pub(in crate::ui::app) fn can_add_by_running_app_process(
 pub(in crate::ui::app) fn new_app_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         enabled: true,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         network_wake_enabled: true,
         audio_wake_enabled: true,
         network_download_threshold_bytes: 1,
@@ -443,7 +452,7 @@ pub(in crate::ui::app) fn new_core_steering_rule(process: &str) -> CoreSteeringR
     CoreSteeringRule {
         enabled: true,
         mode: CoreSteeringMode::Soft,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         core_mask: default_affinity_mask(),
     }
 }
@@ -454,7 +463,7 @@ pub(in crate::ui::app) fn new_timer_resolution_rule(
 ) -> TimerResolutionRule {
     TimerResolutionRule {
         enabled: true,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         desired_100ns,
     }
 }
@@ -468,7 +477,7 @@ pub(in crate::ui::app) fn set_timer_resolution_override(
         if let Some(rule) = settings
             .rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
             rule.desired_100ns = desired_100ns;
@@ -480,14 +489,14 @@ pub(in crate::ui::app) fn set_timer_resolution_override(
     } else {
         settings
             .rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
 pub(in crate::ui::app) fn new_core_limiter_rule(process: &str) -> CoreLimiterRule {
     CoreLimiterRule {
         enabled: true,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         threshold_percent: 75,
         sustain_seconds: 5,
         cooldown_seconds: 10,
@@ -502,7 +511,7 @@ pub(in crate::ui::app) fn core_limiter_override_percent(
     settings
         .rules
         .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .find(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
         .map(|rule| rule.max_logical_processors.min(100))
 }
 
@@ -515,7 +524,7 @@ pub(in crate::ui::app) fn set_core_limiter_override(
         if let Some(rule) = settings
             .rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
             rule.max_logical_processors = max_logical_processors.min(100);
@@ -527,7 +536,7 @@ pub(in crate::ui::app) fn set_core_limiter_override(
     } else {
         settings
             .rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -540,7 +549,7 @@ pub(in crate::ui::app) fn set_app_suspension_override(
         if let Some(rule) = settings
             .suspendable_apps
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
         } else {
@@ -551,7 +560,7 @@ pub(in crate::ui::app) fn set_app_suspension_override(
     } else {
         settings
             .suspendable_apps
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -562,7 +571,7 @@ pub(in crate::ui::app) fn by_running_app_power_plan_override_guid(
     settings
         .rules
         .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .find(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
         .and_then(|rule| rule.power_plan_guid.clone())
 }
 
@@ -575,7 +584,7 @@ pub(in crate::ui::app) fn set_by_running_app_power_plan_override(
         if let Some(rule) = settings
             .rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
             rule.power_plan_guid = Some(power_plan_guid);
@@ -587,7 +596,7 @@ pub(in crate::ui::app) fn set_by_running_app_power_plan_override(
     } else {
         settings
             .rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -642,18 +651,22 @@ pub(in crate::ui::app) fn core_limiter_indicator(
 
 pub(in crate::ui::app) fn core_limiter_app_contains(apps: &[String], process: &str) -> bool {
     apps.iter()
-        .any(|app| app.trim().eq_ignore_ascii_case(process.trim()))
+        .any(|app| same_executable_path(Path::new(app), Path::new(process)))
 }
 
 pub(in crate::ui::app) fn new_by_running_app_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByRunningAppRule {
-    let process_name = process_name_key(process);
+    let executable_path = executable_path_key(Path::new(process));
     ByRunningAppRule {
         enabled: true,
-        name: process_name.clone(),
-        process_name,
+        name: Path::new(process)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(process)
+            .to_owned(),
+        executable_path,
         power_plan_guid,
     }
 }
@@ -699,7 +712,7 @@ pub(in crate::ui::app) fn process_policy_summary(
 
     for rule in
         settings.workload_engine.rules.iter().filter(|rule| {
-            rule.enabled && process_setting_matches(&rule.process_name, process_name)
+            rule.enabled && process_setting_matches(&rule.executable_path, process_name)
         })
     {
         summary.process_priority = process_priority_label(rule.priority);
@@ -708,7 +721,7 @@ pub(in crate::ui::app) fn process_policy_summary(
 
     for rule in
         settings.core_limiter.rules.iter().filter(|rule| {
-            rule.enabled && process_setting_matches(&rule.process_name, process_name)
+            rule.enabled && process_setting_matches(&rule.executable_path, process_name)
         })
     {
         summary.core_limiter =
@@ -728,7 +741,7 @@ pub(in crate::ui::app) fn process_policy_summary(
 
     for rule in
         settings.core_steering.rules.iter().filter(|rule| {
-            rule.enabled && process_setting_matches(&rule.process_name, process_name)
+            rule.enabled && process_setting_matches(&rule.executable_path, process_name)
         })
     {
         summary.core_steering = core_steering_rule_label(rule);
@@ -812,7 +825,21 @@ pub(in crate::ui::app) fn process_setting_matches(
     process_name: &str,
 ) -> bool {
     let configured_process = configured_process.trim();
-    !configured_process.is_empty() && same_process_name(configured_process, process_name)
+    !configured_process.is_empty()
+        && same_executable_path(
+            Path::new(configured_process),
+            Path::new(process_name.trim()),
+        )
+}
+
+pub(in crate::ui::app) fn process_path_matches_display_name(
+    executable_path: &str,
+    display_name: &str,
+) -> bool {
+    Path::new(executable_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(display_name.trim()))
 }
 
 pub(in crate::ui::app) fn foreground_power_plan_policy_label(
@@ -820,11 +847,10 @@ pub(in crate::ui::app) fn foreground_power_plan_policy_label(
     plans: &[PowerPlan],
     process_name: &str,
 ) -> String {
-    if let Some(rule) = settings
-        .by_foreground
-        .rules
-        .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+    if let Some(rule) =
+        settings.by_foreground.rules.iter().find(|rule| {
+            rule.enabled && process_setting_matches(&rule.executable_path, process_name)
+        })
     {
         return power_plan_policy_value_label(plans, rule.power_plan_guid.as_deref());
     }
@@ -840,7 +866,7 @@ pub(in crate::ui::app) fn foreground_power_plan_policy_is_custom(
         .by_foreground
         .rules
         .iter()
-        .any(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .any(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
 }
 
 pub(in crate::ui::app) fn running_app_power_plan_policy_label(
@@ -851,7 +877,7 @@ pub(in crate::ui::app) fn running_app_power_plan_policy_label(
     if let Some(rule) = settings
         .rules
         .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .find(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
     {
         return power_plan_policy_value_label(plans, rule.power_plan_guid.as_deref());
     }
@@ -866,7 +892,7 @@ pub(in crate::ui::app) fn running_app_power_plan_policy_is_custom(
     settings
         .rules
         .iter()
-        .any(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .any(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
 }
 
 pub(in crate::ui::app) fn power_plan_policy_value_label(
@@ -1164,5 +1190,22 @@ pub(in crate::ui::app) fn process_memory_priority_label(priority: ProcessMemoryP
             t!("workload_engine.memory_priority_below_normal").to_string()
         }
         ProcessMemoryPriority::Normal => t!("workload_engine.memory_priority_normal").to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_path_matches_display_name;
+
+    #[test]
+    fn selected_process_path_requires_its_display_name() {
+        assert!(process_path_matches_display_name(
+            r"C:\Apps\Example.exe",
+            "example.EXE"
+        ));
+        assert!(!process_path_matches_display_name(
+            r"C:\Apps\Example.exe",
+            "Other.exe"
+        ));
     }
 }

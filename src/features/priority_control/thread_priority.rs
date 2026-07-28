@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     mem::size_of,
+    path::Path,
 };
 
 use windows_sys::Win32::{
@@ -13,7 +14,8 @@ use windows_sys::Win32::{
             CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
         },
         Threading::{
-            GetCurrentProcessId, GetThreadPriority, GetThreadTimes, OpenThread, SetThreadPriority,
+            GetCurrentProcessId, GetProcessIdOfThread, GetThreadPriority, GetThreadTimes,
+            OpenProcess, OpenThread, SetThreadPriority, PROCESS_QUERY_LIMITED_INFORMATION,
             THREAD_PRIORITY_ABOVE_NORMAL, THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_HIGHEST,
             THREAD_PRIORITY_IDLE, THREAD_PRIORITY_LOWEST, THREAD_PRIORITY_NORMAL,
             THREAD_PRIORITY_TIME_CRITICAL, THREAD_QUERY_INFORMATION, THREAD_SET_INFORMATION,
@@ -25,8 +27,9 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ProcessThreadPrioritySetting, ThreadPrioritySettings},
     foreground::{
-        is_foreground_process, list_processes, process_failure_key, process_names_by_id,
-        process_session_id, same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        is_foreground_process, list_processes, process_executable_path, process_failure_key,
+        process_handle_matches_executable_path, process_session_id, same_executable_path,
+        same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
@@ -63,6 +66,8 @@ struct ThreadApplyOutcome {
 struct AdjustedThread {
     process_id: u32,
     process_name: String,
+    executable_path: String,
+    process_creation_time: u64,
     creation_time: u64,
     previous_priority: i32,
     applied_priority: i32,
@@ -148,9 +153,13 @@ impl ThreadPriorityManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = process_names_by_id(&processes);
-        let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
+        let foreground_executable_path = if settings.foreground_detection_enabled {
+            foreground_process_id.and_then(|id| {
+                processes
+                    .iter()
+                    .find(|process| process.id == id)
+                    .and_then(process_executable_path)
+            })
         } else {
             None
         };
@@ -165,14 +174,19 @@ impl ThreadPriorityManager {
                 continue;
             }
 
+            let Some(executable_path) = process_executable_path(&process) else {
+                continue;
+            };
             let foreground = settings.foreground_detection_enabled
                 && is_foreground_process(
                     process.id,
-                    &process.name,
+                    &executable_path,
                     foreground_process_id,
-                    foreground_process_name.as_deref(),
+                    foreground_executable_path.as_deref(),
                 );
-            let priority = match settings.override_for(&process.name, foreground) {
+            let configured_override =
+                settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+            let priority = match configured_override {
                 Some(Some(ProcessThreadPrioritySetting::Auto)) if foreground => {
                     settings.foreground_priority
                 }
@@ -183,20 +197,27 @@ impl ThreadPriorityManager {
                 None => settings.background_priority,
             };
             if let Some(priority) = thread_priority_value(priority) {
-                target_processes.insert(process.id, (process.name, priority, foreground));
+                target_processes.insert(
+                    process.id,
+                    (
+                        process.name,
+                        executable_path.to_string_lossy().into_owned(),
+                        priority,
+                        foreground,
+                    ),
+                );
             }
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(name, _priority, _foreground)| process_failure_key(name))
+            .map(|(_name, path, _priority, _foreground)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
         let mut failures = self.release_non_targets(
             &target_ids,
-            &current_process_names,
             action_log,
             "process is excluded or no longer matches Thread Priority defaults",
         );
@@ -204,10 +225,12 @@ impl ThreadPriorityManager {
         let mut applied_threads = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        for (process_id, (process_name, priority, foreground)) in target_processes {
+        for (process_id, (process_name, executable_path, priority, foreground)) in target_processes
+        {
             if self.is_process_suppressed(
                 process_id,
                 &process_name,
+                &executable_path,
                 action_log,
                 &mut auto_excluded_processes,
             ) {
@@ -216,8 +239,7 @@ impl ThreadPriorityManager {
             }
 
             match self.apply_process_threads(
-                process_id,
-                process_name.clone(),
+                (process_id, process_name.clone(), executable_path.clone()),
                 priority,
                 foreground,
                 settings.preserve_foreground_priority,
@@ -228,13 +250,17 @@ impl ThreadPriorityManager {
                     skipped_processes +=
                         usize::from(outcome.applied_threads == 0 && outcome.preserved_threads > 0);
                     self.failure_suppression
-                        .clear_process_failure(&process_name);
+                        .clear_process_failure(&executable_path);
                 }
-                Err(ThreadPriorityError::ProcessExited) => skipped_processes += 1,
+                Err(ThreadPriorityError::ProcessExited) => {
+                    skipped_processes += 1;
+                    self.adjusted
+                        .retain(|_, adjusted| adjusted.process_id != process_id);
+                }
                 Err(ThreadPriorityError::AccessDenied) => {
                     skipped_processes += 1;
                     self.failure_suppression
-                        .record_process_failure(&process_name);
+                        .record_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::ThreadPriority,
                         Some(process_id),
@@ -245,7 +271,7 @@ impl ThreadPriorityManager {
                 }
                 Err(err) => {
                     self.failure_suppression
-                        .record_process_failure(&process_name);
+                        .record_process_failure(&executable_path);
                     failures.record("Apply", process_id, &process_name, err, action_log);
                 }
             }
@@ -285,13 +311,22 @@ impl ThreadPriorityManager {
 
     fn apply_process_threads(
         &mut self,
-        process_id: u32,
-        process_name: String,
+        (process_id, process_name, executable_path): (u32, String, String),
         priority: i32,
         foreground: bool,
         preserve_foreground: bool,
         preserve_background: bool,
     ) -> Result<ThreadApplyOutcome, ThreadPriorityError> {
+        let expected_executable_path = Path::new(&executable_path);
+        let process = VerifiedProcess::open(process_id, expected_executable_path)?;
+        self.adjusted.retain(|_, adjusted| {
+            adjusted.process_id != process_id
+                || (adjusted.process_creation_time == process.creation_time
+                    && same_executable_path(
+                        Path::new(&adjusted.executable_path),
+                        expected_executable_path,
+                    ))
+        });
         let mut applied = 0;
         let mut preserved = 0;
         for thread_id in process_thread_ids(process_id)? {
@@ -300,8 +335,12 @@ impl ThreadPriorityManager {
             let current_priority = thread.priority()?;
             let reusable_existing = self.adjusted.get(&thread_id).filter(|adjusted| {
                 adjusted.process_id == process_id
+                    && adjusted.process_creation_time == process.creation_time
                     && adjusted.creation_time == creation_time
-                    && same_process_name(&adjusted.process_name, &process_name)
+                    && same_executable_path(
+                        Path::new(&adjusted.executable_path),
+                        expected_executable_path,
+                    )
             });
             let baseline_priority = reusable_existing
                 .map(|adjusted| adjusted.previous_priority)
@@ -314,7 +353,11 @@ impl ThreadPriorityManager {
                 priority,
             ) {
                 if let Some(adjusted) = reusable_existing.cloned() {
-                    thread.set_priority(adjusted.previous_priority)?;
+                    thread.set_priority(
+                        adjusted.previous_priority,
+                        &process,
+                        expected_executable_path,
+                    )?;
                     self.adjusted.remove(&thread_id);
                 }
                 preserved += 1;
@@ -326,7 +369,7 @@ impl ThreadPriorityManager {
                 continue;
             }
             if current_priority != priority {
-                thread.set_priority(priority)?;
+                thread.set_priority(priority, &process, expected_executable_path)?;
                 if thread.priority()? != priority {
                     return Err(ThreadPriorityError::Failed(format!(
                         "Thread priority remained {} after requesting {}.",
@@ -341,6 +384,8 @@ impl ThreadPriorityManager {
                 AdjustedThread {
                     process_id,
                     process_name: process_name.clone(),
+                    executable_path: executable_path.clone(),
+                    process_creation_time: process.creation_time,
                     creation_time,
                     previous_priority: baseline_priority,
                     applied_priority: priority,
@@ -356,7 +401,6 @@ impl ThreadPriorityManager {
     fn release_non_targets(
         &mut self,
         target_ids: &BTreeSet<u32>,
-        current_process_names: &BTreeMap<u32, String>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> ThreadPriorityFailures {
@@ -367,18 +411,17 @@ impl ThreadPriorityManager {
                 (!target_ids.contains(&thread.process_id)).then_some(*thread_id)
             })
             .collect::<Vec<_>>();
-        self.release_threads(&thread_ids, Some(current_process_names), action_log, reason)
+        self.release_threads(&thread_ids, action_log, reason)
     }
 
     fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> ThreadPriorityFailures {
         let thread_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        self.release_threads(&thread_ids, None, action_log, reason)
+        self.release_threads(&thread_ids, action_log, reason)
     }
 
     fn release_threads(
         &mut self,
         thread_ids: &[u32],
-        current_process_names: Option<&BTreeMap<u32, String>>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> ThreadPriorityFailures {
@@ -388,19 +431,22 @@ impl ThreadPriorityManager {
             let Some(thread_state) = self.adjusted.get(thread_id).cloned() else {
                 continue;
             };
-            let log_name = current_process_names
-                .and_then(|names| names.get(&thread_state.process_id))
-                .cloned()
-                .unwrap_or_else(|| thread_state.process_name.clone());
+            let log_name = thread_state.process_name.clone();
             match restore_thread(*thread_id, &thread_state) {
                 Ok(()) => {
                     self.adjusted.remove(thread_id);
+                    self.failure_suppression
+                        .clear_process_failure(&thread_state.executable_path);
                     restored_threads += 1;
                 }
                 Err(ThreadPriorityError::ProcessExited) => {
                     self.adjusted.remove(thread_id);
                 }
-                Err(err) => failures.record("Restore", *thread_id, &log_name, err, action_log),
+                Err(err) => {
+                    self.failure_suppression
+                        .record_process_failure(&thread_state.executable_path);
+                    failures.record("Restore", *thread_id, &log_name, err, action_log);
+                }
             }
         }
         if restored_threads > 0 {
@@ -419,16 +465,19 @@ impl ThreadPriorityManager {
         &mut self,
         process_id: u32,
         process_name: &str,
+        executable_path: &str,
         action_log: &mut ActionLog,
         auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
-        let suppression = self.failure_suppression.process_suppression(process_name);
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
         if !suppression.suppressed {
             return false;
         }
 
         if suppression.newly_suppressed {
-            auto_excluded_processes.insert(process_failure_key(process_name));
+            auto_excluded_processes.insert(executable_path.to_owned());
             action_log.record(
                 ActionLogFeature::ThreadPriority,
                 Some(process_id),
@@ -479,6 +528,51 @@ impl Drop for ThreadPriorityManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
         self.clear_all(&mut action_log, stringify!(ThreadPriorityManager));
+    }
+}
+
+struct VerifiedProcess {
+    id: u32,
+    creation_time: u64,
+    _handle: WinHandle,
+}
+
+impl VerifiedProcess {
+    fn open(process_id: u32, expected_path: &Path) -> Result<Self, ThreadPriorityError> {
+        // SAFETY: process_id came from a current process snapshot or previously verified state,
+        // and no inherited handle is requested.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+        if handle.is_null() {
+            return Err(open_process_error(process_id, last_error()));
+        }
+        let handle = WinHandle::new(handle);
+        if !process_handle_matches_executable_path(&handle, expected_path) {
+            return Err(ThreadPriorityError::ProcessExited);
+        }
+        let creation_time = handle
+            .process_creation_time()
+            .ok_or(ThreadPriorityError::ProcessExited)?;
+        Ok(Self {
+            id: process_id,
+            creation_time,
+            _handle: handle,
+        })
+    }
+
+    fn verify_thread_owner(
+        &self,
+        thread: &ThreadHandle,
+        expected_path: &Path,
+    ) -> Result<Self, ThreadPriorityError> {
+        let owner_process_id = thread.owner_process_id()?;
+        if owner_process_id != self.id {
+            return Err(ThreadPriorityError::ProcessExited);
+        }
+        let owner = Self::open(owner_process_id, expected_path)?;
+        if owner.creation_time != self.creation_time {
+            return Err(ThreadPriorityError::ProcessExited);
+        }
+        Ok(owner)
     }
 }
 
@@ -544,16 +638,41 @@ impl ThreadHandle {
         }
     }
 
-    fn set_priority(&self, priority: i32) -> Result<(), ThreadPriorityError> {
-        // SAFETY: self owns a live thread handle and priority is selected from documented Win32
-        // thread-priority constants.
-        if unsafe { SetThreadPriority(self.0.raw(), priority) } != 0 {
-            Ok(())
+    fn owner_process_id(&self) -> Result<u32, ThreadPriorityError> {
+        // SAFETY: self owns a live thread handle opened with query access.
+        let process_id = unsafe { GetProcessIdOfThread(self.0.raw()) };
+        if process_id != 0 {
+            Ok(process_id)
         } else {
-            Err(ThreadPriorityError::Failed(format!(
-                "SetThreadPriority failed with error {}.",
-                last_error()
-            )))
+            match last_error() {
+                ERROR_ACCESS_DENIED => Err(ThreadPriorityError::AccessDenied),
+                ERROR_INVALID_PARAMETER => Err(ThreadPriorityError::ProcessExited),
+                error => Err(ThreadPriorityError::Failed(format!(
+                    "GetProcessIdOfThread failed with error {error}."
+                ))),
+            }
+        }
+    }
+
+    fn set_priority(
+        &self,
+        priority: i32,
+        process: &VerifiedProcess,
+        expected_path: &Path,
+    ) -> Result<(), ThreadPriorityError> {
+        let owner = process.verify_thread_owner(self, expected_path)?;
+        // SAFETY: self owns a live thread handle, its owner was revalidated against the pinned
+        // process instance immediately above, and priority is a documented Win32 constant.
+        let changed = unsafe { SetThreadPriority(self.0.raw(), priority) };
+        let error = (changed == 0).then(last_error);
+        drop(owner);
+        match error {
+            None => Ok(()),
+            Some(ERROR_ACCESS_DENIED) => Err(ThreadPriorityError::AccessDenied),
+            Some(ERROR_INVALID_PARAMETER) => Err(ThreadPriorityError::ProcessExited),
+            Some(error) => Err(ThreadPriorityError::Failed(format!(
+                "SetThreadPriority failed with error {error}."
+            ))),
         }
     }
 }
@@ -596,12 +715,27 @@ fn restore_thread(
     thread_id: u32,
     thread_state: &AdjustedThread,
 ) -> Result<(), ThreadPriorityError> {
+    let expected_path = Path::new(&thread_state.executable_path);
+    let process = VerifiedProcess::open(thread_state.process_id, expected_path)?;
+    if process.creation_time != thread_state.process_creation_time {
+        return Err(ThreadPriorityError::ProcessExited);
+    }
     let thread = ThreadHandle::open(thread_id)?;
     if thread.creation_time()? != thread_state.creation_time {
         return Err(ThreadPriorityError::ProcessExited);
     }
-    thread.set_priority(thread_state.previous_priority)?;
+    thread.set_priority(thread_state.previous_priority, &process, expected_path)?;
     Ok(())
+}
+
+fn open_process_error(process_id: u32, error: u32) -> ThreadPriorityError {
+    match error {
+        ERROR_ACCESS_DENIED => ThreadPriorityError::AccessDenied,
+        ERROR_INVALID_PARAMETER => ThreadPriorityError::ProcessExited,
+        _ => ThreadPriorityError::Failed(format!(
+            "OpenProcess({process_id}) failed with error {error}."
+        )),
+    }
 }
 
 fn open_thread_error(thread_id: u32, error: u32) -> ThreadPriorityError {
@@ -686,5 +820,29 @@ mod tests {
             thread_priority_value(ProcessThreadPrioritySetting::TimeCritical),
             Some(THREAD_PRIORITY_TIME_CRITICAL)
         );
+    }
+
+    #[test]
+    fn foreground_matching_uses_pid_or_same_executable_path() {
+        let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
+
+        assert!(is_foreground_process(
+            7,
+            Path::new(r"D:\Other\app.exe"),
+            Some(7),
+            Some(foreground),
+        ));
+        assert!(is_foreground_process(
+            8,
+            foreground,
+            Some(7),
+            Some(foreground),
+        ));
+        assert!(!is_foreground_process(
+            8,
+            Path::new(r"D:\Other\app.exe"),
+            Some(7),
+            Some(foreground),
+        ));
     }
 }

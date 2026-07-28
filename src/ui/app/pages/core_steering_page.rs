@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .core_steering_process
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::CoreSteering,
+            &self.inputs.core_steering_process,
+            cx,
+        );
         let enabled = self.settings.core_steering.enabled;
         let body = feature_body(enabled)
             .child(feature_toggle_switch_with_help(
@@ -51,12 +50,11 @@ impl WinderustApp {
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .core_steering_process
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
+                                let process = app.process_picker_path(
+                                    SuggestionTarget::CoreSteering,
+                                    &app.inputs.core_steering_process,
+                                    cx,
+                                );
                                 if can_add_core_steering_process(
                                     &app.settings.core_steering,
                                     &process,
@@ -106,7 +104,7 @@ impl WinderustApp {
     ) -> AnyElement {
         let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in self.settings.core_steering.rules.iter().enumerate() {
-            let process = rule.process_name.clone();
+            let process = rule.executable_path.clone();
             let indicator = core_steering_indicator(&self.core_steering_status, &process);
             let card_target = RuleCardTarget::CoreSteering(process.clone());
             let collapsed = self.is_rule_card_collapsed(&card_target);

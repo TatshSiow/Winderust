@@ -54,6 +54,7 @@ impl Default for ProcessListSort {
 
 pub(in crate::ui::app) struct ProcessListGroup<'a> {
     pub(in crate::ui::app) display_name: String,
+    pub(in crate::ui::app) executable_path: String,
     pub(in crate::ui::app) processes: Vec<&'a ProcessInfo>,
 }
 
@@ -94,6 +95,7 @@ pub(in crate::ui::app) struct ProcessListEntryRowState {
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) struct ProcessListGroupRowData<'a> {
     pub(in crate::ui::app) process_name: &'a str,
+    pub(in crate::ui::app) executable_path: &'a str,
     pub(in crate::ui::app) process_count: usize,
 }
 
@@ -107,6 +109,7 @@ pub(in crate::ui::app) enum ProcessListRenderedRow {
     },
     Group {
         process_name: String,
+        executable_path: String,
         process_count: usize,
         summary: Arc<ProcessPolicySummary>,
         icon: Option<Arc<Image>>,
@@ -142,15 +145,43 @@ pub(in crate::ui::app) fn process_list_groups(
     let mut group_indexes = HashMap::<String, usize>::with_capacity(processes.len());
 
     for process in processes {
-        let key = process_list_group_key(&process.name);
+        let (executable_path, key) = match process.image_path.as_deref() {
+            Some(path) => (
+                executable_path_key(path),
+                process_list_executable_path_group_key(path),
+            ),
+            None => {
+                let executable_path = format!("{}#{}", process.name, process.id);
+                let key = process_list_group_key(&executable_path);
+                (executable_path, key)
+            }
+        };
         if let Some(index) = group_indexes.get(&key).copied() {
             groups[index].processes.push(process);
         } else {
             group_indexes.insert(key, groups.len());
             groups.push(ProcessListGroup {
                 display_name: process.name.clone(),
+                executable_path,
                 processes: vec![process],
             });
+        }
+    }
+
+    let mut name_counts = HashMap::new();
+    for group in &groups {
+        *name_counts
+            .entry(group.display_name.to_ascii_lowercase())
+            .or_insert(0usize) += 1;
+    }
+    for group in &mut groups {
+        if name_counts
+            .get(&group.display_name.to_ascii_lowercase())
+            .is_some_and(|count| *count > 1)
+        {
+            if let Some(parent) = Path::new(&group.executable_path).parent() {
+                group.display_name = format!("{} — {}", group.display_name, parent.display());
+            }
         }
     }
 
@@ -174,7 +205,7 @@ pub(in crate::ui::app) fn process_list_sorted_rows<'a>(
 
 pub(in crate::ui::app) fn process_list_rendered_rows(
     rows: &[(ProcessListGroup<'_>, ProcessPolicySummary)],
-    process_icons_by_name: &HashMap<&str, &Arc<Image>>,
+    process_icons_by_path: &HashMap<String, &Arc<Image>>,
     is_group_collapsed: impl Fn(&str) -> bool,
 ) -> Vec<ProcessListRenderedRow> {
     let max_rendered_rows = rows
@@ -191,8 +222,10 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
     let mut row_index = 0usize;
 
     for (group, summary) in rows {
-        let icon = process_icons_by_name
-            .get(group.display_name.as_str())
+        let icon = process_icons_by_path
+            .get(&process_list_executable_path_group_key(Path::new(
+                &group.executable_path,
+            )))
             .copied()
             .map(Arc::clone);
         let summary = Arc::new(summary.clone());
@@ -213,9 +246,10 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
             continue;
         }
 
-        let collapsed = is_group_collapsed(&group.display_name);
+        let collapsed = is_group_collapsed(&group.executable_path);
         rendered_rows.push(ProcessListRenderedRow::Group {
             process_name: group.display_name.clone(),
+            executable_path: group.executable_path.clone(),
             process_count: group.processes.len(),
             summary: Arc::clone(&summary),
             icon: icon.clone(),
@@ -254,7 +288,7 @@ pub(in crate::ui::app) fn process_list_render_data(app: &WinderustApp) -> Proces
         process_summaries.push(process_policy_summary(
             &app.settings,
             &app.plans,
-            &group.display_name,
+            &group.executable_path,
         ));
     }
     let column_layout =
@@ -262,19 +296,11 @@ pub(in crate::ui::app) fn process_list_render_data(app: &WinderustApp) -> Proces
     let process_rows =
         process_list_sorted_rows(process_groups, process_summaries, app.process_list_sort);
     let table_width = process_list_table_width(&app.hidden_process_list_columns, &column_layout);
-    let process_icons_by_name = app
-        .process_candidates
-        .iter()
-        .filter_map(|candidate| {
-            candidate
-                .icon
-                .as_ref()
-                .map(|icon| (candidate.name.as_str(), icon))
-        })
-        .collect::<HashMap<_, _>>();
-    let rows = process_list_rendered_rows(&process_rows, &process_icons_by_name, |process_name| {
-        app.is_process_list_group_collapsed(process_name)
-    });
+    let process_icons_by_path = process_list_icons_by_path(&app.process_candidates);
+    let rows =
+        process_list_rendered_rows(&process_rows, &process_icons_by_path, |executable_path| {
+            app.is_process_list_group_collapsed(executable_path)
+        });
     let item_sizes = Rc::new(vec![
         size(table_width, px(PROCESS_LIST_ROW_HEIGHT));
         rows.len()
@@ -287,6 +313,22 @@ pub(in crate::ui::app) fn process_list_render_data(app: &WinderustApp) -> Proces
         rows: Rc::new(rows),
         item_sizes,
     }
+}
+
+pub(in crate::ui::app) fn process_list_icons_by_path(
+    candidates: &[ProcessCandidate],
+) -> HashMap<String, &Arc<Image>> {
+    candidates
+        .iter()
+        .filter_map(|candidate| {
+            candidate.icon.as_ref().map(|icon| {
+                (
+                    process_list_executable_path_group_key(&candidate.image_path),
+                    icon,
+                )
+            })
+        })
+        .collect()
 }
 
 pub(in crate::ui::app) fn process_list_sort_group_processes(
@@ -384,6 +426,10 @@ pub(in crate::ui::app) fn process_list_text_sort_cmp(left: &str, right: &str) ->
 
 pub(in crate::ui::app) fn process_list_group_key(process_name: &str) -> String {
     process_name.trim().to_ascii_lowercase()
+}
+
+pub(in crate::ui::app) fn process_list_executable_path_group_key(path: &Path) -> String {
+    executable_path_key(path)
 }
 
 pub(in crate::ui::app) fn process_list_column_visible(

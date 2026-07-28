@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use windows_sys::Win32::{
     Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE},
@@ -15,8 +18,8 @@ use crate::{
     config::{IoPrioritySettings, ProcessIoPriority, ProcessIoPrioritySetting},
     foreground::{
         contains_process_name, is_foreground_process, list_processes, process_count_label,
-        process_failure_key, process_names_by_id, process_session_id, same_process_name,
-        unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_executable_path, process_failure_key, process_handle_matches_executable_path,
+        process_session_id, same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -46,6 +49,7 @@ pub struct IoPriorityManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    executable_path: String,
     creation_time: u64,
     previous_priority: ProcessIoPriority,
     applied_priority: ProcessIoPriority,
@@ -131,9 +135,13 @@ impl IoPriorityManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = process_names_by_id(&processes);
-        let foreground_process_name = if foreground_sensitive {
-            foreground_process_id.and_then(|id| current_process_names.get(&id).cloned())
+        let foreground_executable_path = if settings.foreground_detection_enabled {
+            foreground_process_id.and_then(|id| {
+                processes
+                    .iter()
+                    .find(|process| process.id == id)
+                    .and_then(process_executable_path)
+            })
         } else {
             None
         };
@@ -148,14 +156,19 @@ impl IoPriorityManager {
                 continue;
             }
 
+            let Some(executable_path) = process_executable_path(&process) else {
+                continue;
+            };
             let foreground = settings.foreground_detection_enabled
                 && is_foreground_process(
                     process.id,
-                    &process.name,
+                    &executable_path,
                     foreground_process_id,
-                    foreground_process_name.as_deref(),
+                    foreground_executable_path.as_deref(),
                 );
-            let priority = match settings.override_for(&process.name, foreground) {
+            let configured_override =
+                settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+            let priority = match configured_override {
                 Some(Some(ProcessIoPrioritySetting::Auto)) if foreground => {
                     settings.foreground_priority
                 }
@@ -166,20 +179,27 @@ impl IoPriorityManager {
                 None => settings.background_priority,
             };
             if let Some(priority) = priority.priority() {
-                target_processes.insert(process.id, (process.name, priority, foreground));
+                target_processes.insert(
+                    process.id,
+                    (
+                        process.name,
+                        executable_path.to_string_lossy().into_owned(),
+                        priority,
+                        foreground,
+                    ),
+                );
             }
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(name, _priority, _foreground)| process_failure_key(name))
+            .map(|(_name, path, _priority, _foreground)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
         let mut failures = self.release_non_targets(
             &target_ids,
-            &current_process_names,
             action_log,
             "process is excluded or no longer matches I/O priority defaults",
         );
@@ -187,10 +207,12 @@ impl IoPriorityManager {
         let mut applied_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        for (process_id, (process_name, priority, foreground)) in target_processes {
-            if self.is_process_suppressed(
+        for (process_id, (process_name, executable_path, priority, foreground)) in target_processes
+        {
+            if self.is_executable_path_suppressed(
                 process_id,
                 &process_name,
+                &executable_path,
                 action_log,
                 &mut auto_excluded_processes,
             ) {
@@ -199,8 +221,7 @@ impl IoPriorityManager {
             }
 
             match self.apply_process(
-                process_id,
-                process_name.clone(),
+                (process_id, process_name.clone(), executable_path.clone()),
                 priority,
                 foreground,
                 settings.preserve_foreground_priority,
@@ -210,21 +231,22 @@ impl IoPriorityManager {
                     if loggable {
                         applied_processes += 1;
                     }
-                    self.clear_process_failure(&process_name);
+                    self.clear_process_failure(&executable_path);
                 }
                 Ok(ApplyOutcome::AlreadyApplied) => {
-                    self.clear_process_failure(&process_name);
+                    self.clear_process_failure(&executable_path);
                 }
                 Ok(ApplyOutcome::Preserved) => {
                     skipped_processes += 1;
-                    self.clear_process_failure(&process_name);
+                    self.clear_process_failure(&executable_path);
                 }
                 Err(IoPriorityError::ProcessExited) => {
                     skipped_processes += 1;
+                    self.adjusted.remove(&process_id);
                 }
                 Err(IoPriorityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&process_name);
+                    self.record_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::IoPriority,
                         Some(process_id),
@@ -234,7 +256,7 @@ impl IoPriorityManager {
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&process_name);
+                    self.record_process_failure(&executable_path);
                     failures.record("Apply", process_id, &process_name, err, action_log);
                 }
             }
@@ -268,14 +290,16 @@ impl IoPriorityManager {
 
     fn apply_process(
         &mut self,
-        process_id: u32,
-        process_name: String,
+        (process_id, process_name, executable_path): (u32, String, String),
         priority: ProcessIoPriority,
         foreground: bool,
         preserve_foreground: bool,
         preserve_background: bool,
     ) -> Result<ApplyOutcome, IoPriorityError> {
         let process = ProcessHandle::open(process_id)?;
+        if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
+            return Err(IoPriorityError::ProcessExited);
+        }
         let creation_time = process
             .0
             .process_creation_time()
@@ -325,6 +349,7 @@ impl IoPriorityManager {
             process_id,
             AdjustedProcess {
                 process_name,
+                executable_path,
                 creation_time,
                 previous_priority: baseline_priority,
                 applied_priority: priority,
@@ -338,7 +363,6 @@ impl IoPriorityManager {
     fn release_non_targets(
         &mut self,
         target_ids: &BTreeSet<u32>,
-        current_process_names: &BTreeMap<u32, String>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> IoPriorityFailures {
@@ -348,23 +372,17 @@ impl IoPriorityManager {
             .copied()
             .filter(|process_id| !target_ids.contains(process_id))
             .collect::<Vec<_>>();
-        self.release_processes(
-            &process_ids,
-            Some(current_process_names),
-            action_log,
-            reason,
-        )
+        self.release_processes(&process_ids, action_log, reason)
     }
 
     fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> IoPriorityFailures {
         let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids, None, action_log, reason)
+        self.release_processes(&process_ids, action_log, reason)
     }
 
     fn release_processes(
         &mut self,
         process_ids: &[u32],
-        current_process_names: Option<&BTreeMap<u32, String>>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> IoPriorityFailures {
@@ -374,21 +392,18 @@ impl IoPriorityManager {
             let Some(process_state) = self.adjusted.get(process_id).cloned() else {
                 continue;
             };
-            let log_name = current_process_names
-                .and_then(|names| names.get(process_id))
-                .cloned()
-                .unwrap_or_else(|| process_state.process_name.clone());
+            let log_name = process_state.process_name.clone();
             match restore_process(*process_id, &process_state) {
                 Ok(()) => {
                     self.adjusted.remove(process_id);
-                    self.clear_process_failure(&log_name);
+                    self.clear_process_failure(&process_state.executable_path);
                     restored_processes += 1;
                 }
                 Err(IoPriorityError::ProcessExited) => {
                     self.adjusted.remove(process_id);
                 }
                 Err(err) => {
-                    self.record_process_failure(&log_name);
+                    self.record_process_failure(&process_state.executable_path);
                     failures.record("Restore", *process_id, &log_name, err, action_log);
                 }
             }
@@ -405,20 +420,23 @@ impl IoPriorityManager {
         failures
     }
 
-    fn is_process_suppressed(
+    fn is_executable_path_suppressed(
         &mut self,
         process_id: u32,
         process_name: &str,
+        executable_path: &str,
         action_log: &mut ActionLog,
         auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
-        let suppression = self.failure_suppression.process_suppression(process_name);
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
         if !suppression.suppressed {
             return false;
         }
 
         if suppression.newly_suppressed {
-            auto_excluded_processes.insert(process_failure_key(process_name));
+            auto_excluded_processes.insert(executable_path.to_owned());
             action_log.record(
                 ActionLogFeature::IoPriority,
                 Some(process_id),
@@ -432,6 +450,23 @@ impl IoPriorityManager {
         }
 
         true
+    }
+
+    #[cfg(test)]
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
+    ) -> bool {
+        self.is_executable_path_suppressed(
+            process_id,
+            process_name,
+            process_name,
+            action_log,
+            auto_excluded_processes,
+        )
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
@@ -675,13 +710,28 @@ mod tests {
         let mut manager = IoPriorityManager::default();
         let mut log = ActionLog::new(8);
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        manager.record_process_failure(r"C:\Apps\app.exe");
+        manager.record_process_failure(r"C:/Apps/app.exe");
+        assert!(!manager.is_process_suppressed(
+            42,
+            r"C:\Apps\app.exe",
+            &mut log,
+            &mut BTreeSet::new()
+        ));
 
-        manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
+        manager.record_process_failure(r"C:\Apps\app.exe");
+        assert!(manager.is_process_suppressed(
+            42,
+            r"C:\Apps\app.exe",
+            &mut log,
+            &mut BTreeSet::new()
+        ));
+        assert!(manager.is_process_suppressed(
+            43,
+            r"C:/Apps/app.exe",
+            &mut log,
+            &mut BTreeSet::new()
+        ));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
@@ -695,13 +745,23 @@ mod tests {
         let mut manager = IoPriorityManager::default();
         let mut log = ActionLog::new(8);
 
-        manager.record_process_failure("app.exe");
-        manager.record_process_failure("app.exe");
-        manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        manager.record_process_failure(r"C:\Apps\app.exe");
+        manager.record_process_failure(r"C:\Apps\app.exe");
+        manager.record_process_failure(r"C:\Apps\app.exe");
+        assert!(manager.is_process_suppressed(
+            42,
+            r"C:\Apps\app.exe",
+            &mut log,
+            &mut BTreeSet::new()
+        ));
 
-        manager.clear_process_failure("APP.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        manager.clear_process_failure(r"C:/Apps/app.exe");
+        assert!(!manager.is_process_suppressed(
+            42,
+            r"C:\Apps\app.exe",
+            &mut log,
+            &mut BTreeSet::new()
+        ));
     }
 
     #[test]

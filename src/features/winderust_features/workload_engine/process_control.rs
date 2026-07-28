@@ -13,6 +13,7 @@ pub(super) fn apply_priority(
     let ApplyPriorityRequest {
         process_id,
         process_name,
+        executable_path,
         priority_class,
         existing,
         source,
@@ -24,15 +25,22 @@ pub(super) fn apply_priority(
     } = request;
     let mut changed = false;
     let process = ProcessHandle::open(process_id)?;
+    if !process.matches_executable_path(executable_path) {
+        return Err(PriorityError::ProcessExited);
+    }
     let creation_time = process.creation_time_100ns()?;
     let reusable_existing = existing
         .filter(|adjusted| adjusted.creation_time == creation_time)
-        .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name));
+        .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name))
+        .filter(|adjusted| {
+            same_executable_path(
+                Path::new(&adjusted.executable_path),
+                Path::new(executable_path),
+            )
+        });
 
     if let Some(adjusted) = existing {
-        if adjusted.creation_time == creation_time
-            && !same_process_name(&adjusted.process_name, &process_name)
-        {
+        if adjusted.creation_time == creation_time && reusable_existing.is_none() {
             restore_adjusted_process(&process, adjusted)?;
             action_log.record(
                 ActionLogFeature::WorkloadEngine,
@@ -176,6 +184,7 @@ pub(super) fn apply_priority(
     Ok(ApplyPriorityOutcome {
         adjusted: Some(AdjustedProcess {
             process_name,
+            executable_path: executable_path.to_owned(),
             creation_time,
             previous_priority,
             applied_priority,
@@ -195,7 +204,9 @@ pub(super) fn restore_adjusted_priority(
     process_state: &AdjustedProcess,
 ) -> Result<(), PriorityError> {
     let process = ProcessHandle::open(process_id)?;
-    if process.creation_time_100ns()? != process_state.creation_time {
+    if process.creation_time_100ns()? != process_state.creation_time
+        || !process.matches_executable_path(&process_state.executable_path)
+    {
         return Err(PriorityError::ProcessExited);
     }
     restore_adjusted_process(&process, process_state)
@@ -236,7 +247,9 @@ pub(super) fn restore_boosted_priority(
     process_state: &BoostedProcess,
 ) -> Result<(), PriorityError> {
     let process = ProcessHandle::open(process_state.process_id)?;
-    if process.creation_time_100ns()? != process_state.creation_time {
+    if process.creation_time_100ns()? != process_state.creation_time
+        || !process.matches_executable_path(&process_state.executable_path)
+    {
         return Err(PriorityError::ProcessExited);
     }
     process.set_priority_class(process_state.previous_priority)
@@ -245,6 +258,29 @@ pub(super) fn restore_boosted_priority(
 pub(super) fn process_cpu_sample(process_id: u32) -> Result<ProcessCpuSample, PriorityError> {
     let process = ProcessHandle::open_query(process_id)?;
     process.cpu_sample()
+}
+
+pub(super) fn process_cpu_sample_with_identity(
+    process_id: u32,
+    executable_path: &str,
+) -> Result<(ProcessCpuSample, u64), PriorityError> {
+    let process = ProcessHandle::open_query(process_id)?;
+    if !process.matches_executable_path(executable_path) {
+        return Err(PriorityError::ProcessExited);
+    }
+    let creation_time = process.creation_time_100ns()?;
+    Ok((process.cpu_sample()?, creation_time))
+}
+
+pub(super) fn process_identity(
+    process_id: u32,
+    executable_path: &str,
+) -> Result<u64, PriorityError> {
+    let process = ProcessHandle::open_query(process_id)?;
+    if !process.matches_executable_path(executable_path) {
+        return Err(PriorityError::ProcessExited);
+    }
+    process.creation_time_100ns()
 }
 
 pub(super) fn process_age(process_id: u32) -> Option<Duration> {
@@ -488,6 +524,10 @@ impl ProcessHandle {
         } else {
             Err(open_process_error(process_id, last_error()))
         }
+    }
+
+    pub(super) fn matches_executable_path(&self, expected: &str) -> bool {
+        process_handle_matches_executable_path(&self.0, Path::new(expected))
     }
 
     pub(super) fn priority_class(&self) -> Result<u32, PriorityError> {

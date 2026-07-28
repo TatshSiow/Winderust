@@ -77,9 +77,10 @@ use crate::{
     },
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
-        capture_process_action_target, foreground_process_name, list_process_candidates,
-        list_processes, process_name_key, same_process_name, ProcessActionTarget,
-        ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo,
+        capture_process_action_target, executable_path_key, foreground_process,
+        list_process_candidates, list_processes_with_paths, process_candidates_from_processes,
+        same_executable_path, ProcessActionTarget, ProcessActionTargetError, ProcessCandidateInfo,
+        ProcessInfo,
     },
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
@@ -120,6 +121,7 @@ mod list_removal;
 mod navigation_state;
 mod pages;
 mod process_refresh;
+pub(in crate::ui::app) use process_refresh::process_load_state_message;
 mod runtime;
 mod settings_io;
 mod shared;
@@ -276,20 +278,11 @@ static UI_ANIMATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 const NAV_HISTORY_LIMIT: usize = 64;
 
-#[derive(Clone)]
 struct ProcessCandidate {
     name: String,
-    image_path: Option<PathBuf>,
+    image_path: PathBuf,
     icon: Option<Arc<Image>>,
 }
-
-impl PartialEq for ProcessCandidate {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.image_path == other.image_path
-    }
-}
-
-impl Eq for ProcessCandidate {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProcessPolicySummary {
@@ -357,6 +350,15 @@ struct MemoryCapacityParts {
     unit: &'static str,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum ProcessLoadState {
+    #[default]
+    Loading,
+    Loaded,
+    Failed(String),
+    Paused,
+}
+
 pub struct WinderustApp {
     settings: Settings,
     saved_settings: Settings,
@@ -422,7 +424,11 @@ pub struct WinderustApp {
     tray_icon: Option<TrayIcon>,
     status_message: String,
     process_candidates: Vec<ProcessCandidate>,
+    process_candidate_load_state: ProcessLoadState,
+    selected_process_paths: HashMap<SuggestionTarget, String>,
     running_processes: Vec<ProcessInfo>,
+    running_process_load_state: ProcessLoadState,
+    process_refresh_in_progress: bool,
     app_icon: Option<Arc<Image>>,
     process_icon_cache: HashMap<PathBuf, Option<Arc<Image>>>,
     active_power_plan_picker: Option<String>,
@@ -467,6 +473,7 @@ pub struct WinderustApp {
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     accent_color_picker: Entity<ColorPickerState>,
     _rule_title_input_subscriptions: Vec<Subscription>,
+    _process_picker_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
     _dashboard_search_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
@@ -622,8 +629,6 @@ struct UiInputs {
     by_time_rule_names: Vec<Entity<InputState>>,
     schedule_start_times: Vec<Entity<InputState>>,
     schedule_end_times: Vec<Entity<InputState>>,
-    foreground_rule_names: Vec<Entity<InputState>>,
-    foreground_rule_processes: Vec<Entity<InputState>>,
     foreground_process: Entity<InputState>,
     background_efficiency_process: Entity<InputState>,
     background_cpu_exclusion: Entity<InputState>,
@@ -769,6 +774,11 @@ impl WinderustApp {
             initial_processor_power.status_message = error;
         }
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
+        let initial_process_load_state = if settings.advanced.pause_process_population {
+            ProcessLoadState::Paused
+        } else {
+            ProcessLoadState::Loading
+        };
         let (win32_priority_separation_value, win32_priority_separation_status) =
             read_win32_priority_separation_with_status();
         let win32_priority_separation_edit_value = win32_priority_separation_value
@@ -876,7 +886,11 @@ impl WinderustApp {
             tray_icon: None,
             status_message: initial_processor_power.status_message,
             process_candidates: Vec::new(),
+            process_candidate_load_state: initial_process_load_state.clone(),
+            selected_process_paths: HashMap::new(),
             running_processes: Vec::new(),
+            running_process_load_state: initial_process_load_state,
+            process_refresh_in_progress: false,
             app_icon,
             process_icon_cache: HashMap::new(),
             active_power_plan_picker: None,
@@ -929,6 +943,7 @@ impl WinderustApp {
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             accent_color_picker,
             _rule_title_input_subscriptions: Vec::new(),
+            _process_picker_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
             _dashboard_search_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
@@ -941,6 +956,7 @@ impl WinderustApp {
         };
 
         app.rebuild_rule_title_input_subscriptions(window, cx);
+        app.rebuild_process_picker_input_subscriptions(window, cx);
         app.subscribe_to_numeric_input(window, cx);
         app.subscribe_to_dashboard_search_input(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);

@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .thread_priority_process
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::ThreadPriority,
+            &self.inputs.thread_priority_process,
+            cx,
+        );
         let enabled = self.settings.thread_priority.enabled;
         let help = tooltip_lines(vec![
             t!("thread_priority.intro_1").to_string(),
@@ -140,12 +139,11 @@ impl WinderustApp {
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .thread_priority_process
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
+                                let process = app.process_picker_path(
+                                    SuggestionTarget::ThreadPriority,
+                                    &app.inputs.thread_priority_process,
+                                    cx,
+                                );
                                 if can_add_thread_priority_exclusion(
                                     &app.settings.thread_priority,
                                     &process,

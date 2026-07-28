@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Condvar, Mutex,
@@ -33,8 +34,8 @@ use crate::{
         current_by_time_decision, next_by_time_change_delay, ByCpuLoadScheduler,
     },
     foreground::{
-        cursor_is_shell_window, cursor_process, cursor_process_id, foreground_process,
-        foreground_process_id, foreground_process_name, list_processes, process_name_key,
+        cursor_is_shell_window, cursor_process, cursor_process_id, executable_path_key,
+        foreground_process, foreground_process_id, list_processes, same_executable_path,
         shell_window_mouse_pressed, top_level_window_process_ids,
     },
     gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
@@ -218,7 +219,7 @@ impl BackgroundAutomation {
             thread: Mutex::new(None),
             event_watcher: Mutex::new(None),
         };
-        automation.sync_worker(settings);
+        automation.sync_worker(settings, false);
         automation.sync_windows_event_watcher(settings);
         automation
     }
@@ -237,7 +238,7 @@ impl BackgroundAutomation {
         }
 
         if changed {
-            self.sync_worker(settings);
+            self.sync_worker(settings, false);
             self.sync_windows_event_watcher(settings);
         }
     }
@@ -291,37 +292,44 @@ impl BackgroundAutomation {
         })
     }
 
-    pub fn request_app_suspension_freeze(&self, process_name: &str) {
-        let process_name = process_name_key(process_name);
-        if process_name.is_empty() {
+    pub fn request_app_suspension_freeze(&self, executable_path: &str) {
+        let executable_path = executable_path_key(Path::new(executable_path));
+        if !Path::new(&executable_path).is_absolute() {
             return;
         }
 
-        let mut settings_to_sync = None;
-        if let Ok(mut state) = self.shared.state.lock() {
-            state.app_suspension_freeze_requests.push(process_name);
+        let settings = {
+            let Ok(mut state) = self.shared.state.lock() else {
+                return;
+            };
+            if !state.app_suspension_freeze_requests.iter().any(|existing| {
+                same_executable_path(Path::new(existing), Path::new(&executable_path))
+            }) {
+                state.app_suspension_freeze_requests.push(executable_path);
+            }
             state.change_generation = state.change_generation.wrapping_add(1);
-            settings_to_sync = Some(Arc::clone(&state.settings));
             self.shared.changed.notify_one();
-        }
+            Arc::clone(&state.settings)
+        };
 
-        if let Some(settings) = settings_to_sync {
-            self.sync_worker(settings.as_ref());
-        }
+        self.sync_worker(
+            settings.as_ref(),
+            settings.general.enabled && settings.app_suspension.enabled,
+        );
     }
 
     pub fn request_memory_trim_now(&self) {
-        let mut settings_to_sync = None;
-        if let Ok(mut state) = self.shared.state.lock() {
+        let settings = {
+            let Ok(mut state) = self.shared.state.lock() else {
+                return;
+            };
             state.memory_trim_now_requested = true;
             state.change_generation = state.change_generation.wrapping_add(1);
-            settings_to_sync = Some(Arc::clone(&state.settings));
             self.shared.changed.notify_one();
-        }
+            Arc::clone(&state.settings)
+        };
 
-        if let Some(settings) = settings_to_sync {
-            self.sync_worker(settings.as_ref());
-        }
+        self.sync_worker(settings.as_ref(), false);
     }
 
     pub fn input_event_callback(&self) -> Arc<dyn Fn(InputHookEvents) + Send + Sync> {
@@ -329,7 +337,7 @@ impl BackgroundAutomation {
         Arc::new(move |events| notify_input_event(&shared, events))
     }
 
-    fn sync_worker(&self, settings: &Settings) {
+    fn sync_worker(&self, settings: &Settings, start_requested: bool) {
         let Ok(mut thread) = self.thread.lock() else {
             return;
         };
@@ -340,7 +348,7 @@ impl BackgroundAutomation {
             }
         }
 
-        if automation_worker_required(settings) && thread.is_none() {
+        if (start_requested || automation_worker_required(settings)) && thread.is_none() {
             let thread_shared = Arc::clone(&self.shared);
             *thread = Some(thread::spawn(move || {
                 run_background_automation(thread_shared)
@@ -599,17 +607,17 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let background_efficiency_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.background_efficiency.enabled);
         let app_suspension_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.app_suspension.enabled)
+            || feature_refresh_required(&settings, app_suspension_required(&settings))
             || !app_suspension_freeze_requests.is_empty()
             || runner.app_suspension_manager.has_suspended_processes();
-        let core_steering_refresh_required =
-            settings_changed || feature_refresh_required(&settings, settings.core_steering.enabled);
+        let core_steering_refresh_required = settings_changed
+            || feature_refresh_required(&settings, core_steering_required(&settings));
         let background_cpu_restriction_refresh_required = settings_changed
             || feature_refresh_required(&settings, settings.background_cpu_restriction.enabled);
-        let core_limiter_refresh_required =
-            settings_changed || feature_refresh_required(&settings, settings.core_limiter.enabled);
+        let core_limiter_refresh_required = settings_changed
+            || feature_refresh_required(&settings, core_limiter_required(&settings));
         let by_running_app_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.by_running_app.enabled);
+            || feature_refresh_required(&settings, by_running_app_required(&settings));
         let workload_engine_refresh_required = settings_changed
             || feature_refresh_required(
                 &settings,
@@ -631,7 +639,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || memory_trim_now_requested
             || feature_refresh_required(&settings, settings.memory_trim.enabled);
         let timer_resolution_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.timer_resolution.enabled);
+            || feature_refresh_required(&settings, timer_resolution_required(&settings));
         if !app_suspension_freeze_requests.is_empty() {
             next_app_suspension_refresh = now;
         }

@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use windows_sys::Win32::{
     Foundation::{ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER},
@@ -18,8 +21,9 @@ use crate::{
     config::{MemoryPrioritySettings, ProcessMemoryPriority, ProcessMemoryPrioritySetting},
     foreground::{
         contains_process_name, is_foreground_process, list_processes, process_count_label,
-        process_failure_key, process_session_id, same_process_name, unique_app_names,
-        ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_executable_path, process_failure_key, process_handle_matches_executable_path,
+        process_session_id, same_process_name, unique_app_names, ProcessActionTarget,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -45,6 +49,7 @@ pub struct MemoryPriorityManager {
 pub struct MemoryPriorityTarget {
     pub process_id: u32,
     pub process_name: String,
+    pub executable_path: String,
     pub priority: ProcessMemoryPriority,
     pub foreground: bool,
     pub preserve_foreground_priority: bool,
@@ -54,6 +59,7 @@ pub struct MemoryPriorityTarget {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    executable_path: String,
     creation_time: u64,
     previous_priority: ProcessMemoryPriority,
     applied_priority: ProcessMemoryPriority,
@@ -153,12 +159,12 @@ impl MemoryPriorityManager {
             }
         };
 
-        let foreground_process_name = if foreground_sensitive {
+        let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
                 processes
                     .iter()
                     .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
+                    .and_then(process_executable_path)
             })
         } else {
             None
@@ -176,14 +182,17 @@ impl MemoryPriorityManager {
                     return None;
                 }
 
+                let executable_path = process_executable_path(&process)?;
                 let foreground = settings.foreground_detection_enabled
                     && is_foreground_process(
                         process.id,
-                        &process.name,
+                        &executable_path,
                         foreground_process_id,
-                        foreground_process_name.as_deref(),
+                        foreground_executable_path.as_deref(),
                     );
-                let priority = match settings.override_for(&process.name, foreground) {
+                let configured_override =
+                    settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+                let priority = match configured_override {
                     Some(Some(ProcessMemoryPrioritySetting::Auto)) if foreground => {
                         settings.foreground_priority
                     }
@@ -197,6 +206,7 @@ impl MemoryPriorityManager {
                 priority.priority().map(|priority| MemoryPriorityTarget {
                     process_id: process.id,
                     process_name: process.name,
+                    executable_path: executable_path.to_string_lossy().into_owned(),
                     priority,
                     foreground,
                     preserve_foreground_priority: settings.preserve_foreground_priority,
@@ -234,17 +244,12 @@ impl MemoryPriorityManager {
             .collect::<BTreeSet<_>>();
         let target_names = targets
             .iter()
-            .map(|target| process_failure_key(&target.process_name))
+            .map(|target| process_failure_key(&target.executable_path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&target_names);
 
-        let current_process_names = targets
-            .iter()
-            .map(|target| (target.process_id, target.process_name.clone()))
-            .collect::<BTreeMap<_, _>>();
         let mut failures = self.release_non_targets(
             &target_ids,
-            &current_process_names,
             action_log_feature,
             action_log,
             "process no longer matches a memory priority target",
@@ -254,9 +259,10 @@ impl MemoryPriorityManager {
         let mut auto_excluded_processes = BTreeSet::new();
 
         for target in targets {
-            if self.is_process_suppressed(
+            if self.is_executable_path_suppressed(
                 target.process_id,
                 &target.process_name,
+                &target.executable_path,
                 action_log_feature,
                 action_log,
                 &mut auto_excluded_processes,
@@ -266,8 +272,11 @@ impl MemoryPriorityManager {
             }
 
             match self.apply_process(
-                target.process_id,
-                target.process_name.clone(),
+                (
+                    target.process_id,
+                    target.process_name.clone(),
+                    target.executable_path.clone(),
+                ),
                 target.priority,
                 target.foreground,
                 target.preserve_foreground_priority,
@@ -277,21 +286,22 @@ impl MemoryPriorityManager {
                     if loggable {
                         applied_processes += 1;
                     }
-                    self.clear_process_failure(&target.process_name);
+                    self.clear_process_failure(&target.executable_path);
                 }
                 Ok(ApplyOutcome::AlreadyApplied) => {
-                    self.clear_process_failure(&target.process_name);
+                    self.clear_process_failure(&target.executable_path);
                 }
                 Ok(ApplyOutcome::Preserved) => {
                     skipped_processes += 1;
-                    self.clear_process_failure(&target.process_name);
+                    self.clear_process_failure(&target.executable_path);
                 }
                 Err(MemoryPriorityError::ProcessExited) => {
                     skipped_processes += 1;
+                    self.adjusted.remove(&target.process_id);
                 }
                 Err(MemoryPriorityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&target.process_name);
+                    self.record_process_failure(&target.executable_path);
                     action_log.record(
                         action_log_feature,
                         Some(target.process_id),
@@ -301,7 +311,7 @@ impl MemoryPriorityManager {
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&target.process_name);
+                    self.record_process_failure(&target.executable_path);
                     failures.record(
                         "Apply",
                         target.process_id,
@@ -340,14 +350,16 @@ impl MemoryPriorityManager {
 
     fn apply_process(
         &mut self,
-        process_id: u32,
-        process_name: String,
+        (process_id, process_name, executable_path): (u32, String, String),
         priority: ProcessMemoryPriority,
         foreground: bool,
         preserve_foreground: bool,
         preserve_background: bool,
     ) -> Result<ApplyOutcome, MemoryPriorityError> {
         let process = ProcessHandle::open(process_id)?;
+        if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
+            return Err(MemoryPriorityError::ProcessExited);
+        }
         let creation_time = process
             .0
             .process_creation_time()
@@ -397,6 +409,7 @@ impl MemoryPriorityManager {
             process_id,
             AdjustedProcess {
                 process_name,
+                executable_path,
                 creation_time,
                 previous_priority: baseline_priority,
                 applied_priority: priority,
@@ -410,7 +423,6 @@ impl MemoryPriorityManager {
     fn release_non_targets(
         &mut self,
         target_ids: &BTreeSet<u32>,
-        current_process_names: &BTreeMap<u32, String>,
         action_log_feature: ActionLogFeature,
         action_log: &mut ActionLog,
         reason: &str,
@@ -421,13 +433,7 @@ impl MemoryPriorityManager {
             .copied()
             .filter(|process_id| !target_ids.contains(process_id))
             .collect::<Vec<_>>();
-        self.release_processes(
-            &process_ids,
-            Some(current_process_names),
-            action_log_feature,
-            action_log,
-            reason,
-        )
+        self.release_processes(&process_ids, action_log_feature, action_log, reason)
     }
 
     fn clear_all(
@@ -437,13 +443,12 @@ impl MemoryPriorityManager {
         reason: &str,
     ) -> MemoryPriorityFailures {
         let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids, None, action_log_feature, action_log, reason)
+        self.release_processes(&process_ids, action_log_feature, action_log, reason)
     }
 
     fn release_processes(
         &mut self,
         process_ids: &[u32],
-        current_process_names: Option<&BTreeMap<u32, String>>,
         action_log_feature: ActionLogFeature,
         action_log: &mut ActionLog,
         reason: &str,
@@ -454,21 +459,18 @@ impl MemoryPriorityManager {
             let Some(process_state) = self.adjusted.get(process_id).cloned() else {
                 continue;
             };
-            let log_name = current_process_names
-                .and_then(|names| names.get(process_id))
-                .cloned()
-                .unwrap_or_else(|| process_state.process_name.clone());
+            let log_name = process_state.process_name.clone();
             match restore_process(*process_id, &process_state) {
                 Ok(()) => {
                     self.adjusted.remove(process_id);
-                    self.clear_process_failure(&log_name);
+                    self.clear_process_failure(&process_state.executable_path);
                     restored_processes += 1;
                 }
                 Err(MemoryPriorityError::ProcessExited) => {
                     self.adjusted.remove(process_id);
                 }
                 Err(MemoryPriorityError::AccessDenied) => {
-                    self.record_process_failure(&log_name);
+                    self.record_process_failure(&process_state.executable_path);
                     action_log.record(
                         action_log_feature,
                         Some(*process_id),
@@ -480,7 +482,7 @@ impl MemoryPriorityManager {
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&log_name);
+                    self.record_process_failure(&process_state.executable_path);
                     failures.record(
                         "Restore",
                         *process_id,
@@ -504,21 +506,24 @@ impl MemoryPriorityManager {
         failures
     }
 
-    fn is_process_suppressed(
+    fn is_executable_path_suppressed(
         &mut self,
         process_id: u32,
         process_name: &str,
+        executable_path: &str,
         action_log_feature: ActionLogFeature,
         action_log: &mut ActionLog,
         auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
-        let suppression = self.failure_suppression.process_suppression(process_name);
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
         if !suppression.suppressed {
             return false;
         }
 
         if suppression.newly_suppressed {
-            auto_excluded_processes.insert(process_failure_key(process_name));
+            auto_excluded_processes.insert(executable_path.to_owned());
             action_log.record(
                 action_log_feature,
                 Some(process_id),
@@ -532,6 +537,25 @@ impl MemoryPriorityManager {
         }
 
         true
+    }
+
+    #[cfg(test)]
+    fn is_process_suppressed(
+        &mut self,
+        process_id: u32,
+        process_name: &str,
+        action_log_feature: ActionLogFeature,
+        action_log: &mut ActionLog,
+        auto_excluded_processes: &mut BTreeSet<String>,
+    ) -> bool {
+        self.is_executable_path_suppressed(
+            process_id,
+            process_name,
+            process_name,
+            action_log_feature,
+            action_log,
+            auto_excluded_processes,
+        )
     }
 
     fn record_process_failure(&mut self, process_name: &str) {
@@ -670,7 +694,9 @@ pub(crate) fn apply_once(
         return Err("Built-in Windows processes cannot be modified.".to_owned());
     }
     let process = ProcessHandle::open(target.id).map_err(memory_priority_error_message)?;
-    if process.0.process_creation_time() != Some(target.creation_time) {
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
         return Err("The selected process instance has changed.".to_owned());
     }
     process
@@ -836,27 +862,27 @@ mod tests {
         let mut manager = MemoryPriorityManager::default();
         let mut log = ActionLog::new(8);
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
+        manager.record_process_failure(r"C:\Apps\app.exe");
+        manager.record_process_failure(r"C:/Apps/app.exe");
         assert!(!manager.is_process_suppressed(
             42,
-            "app.exe",
+            r"C:\Apps\app.exe",
             ActionLogFeature::WorkloadEngine,
             &mut log,
             &mut BTreeSet::new()
         ));
 
-        manager.record_process_failure("app.exe");
+        manager.record_process_failure(r"C:\Apps\app.exe");
         assert!(manager.is_process_suppressed(
             42,
-            "app.exe",
+            r"C:\Apps\app.exe",
             ActionLogFeature::WorkloadEngine,
             &mut log,
             &mut BTreeSet::new()
         ));
         assert!(manager.is_process_suppressed(
             43,
-            "APP.exe",
+            r"C:/Apps/app.exe",
             ActionLogFeature::WorkloadEngine,
             &mut log,
             &mut BTreeSet::new()

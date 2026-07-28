@@ -47,6 +47,10 @@ nav:
   about: "關於"
 
 common:
+  loading: "載入中…"
+  loading_running_apps: "正在載入執行中的應用程式…"
+  running_apps_load_failed: "無法載入執行中的應用程式：%{error}"
+  process_population_paused: "執行中應用程式載入已暫停"
   add: "新增"
   create: "建立"
   clear: "清除"
@@ -69,6 +73,8 @@ common:
   no_power_plans_loaded: "尚未載入電源計畫"
   no_running_apps_loaded: "尚未載入執行中的應用程式"
   no_matching_apps: "沒有相符的應用程式"
+  process_rule_running: "%{count} 個執行中"
+  process_rule_not_running: "目前未執行"
   search_running_apps: "搜尋執行中的應用程式..."
   no_custom_rules: "尚未設定自訂規則。"
   preserve_foreground_priority: "相同或較高時忽略前景程序"
@@ -257,6 +263,7 @@ home:
   launch_boost: "啟動提升"
 
 process_list:
+  app_name: "應用程式名稱"
   selected_summary: "%{name} · PID %{pid} · %{count} 個自訂原則"
   apply_once_priority: "僅套用一次：%{priority} 優先順序"
   save_rule_priority: "儲存規則：%{priority} 優先順序"
@@ -275,6 +282,7 @@ process_list:
   title: "程序清單"
   count: "%{count} 個執行中的程序"
   process_name: "程序名稱"
+  executable_path: "執行檔路徑"
   pid: "PID"
   power_plan_foreground: "前景電源計畫"
   power_plan_running: "執行中應用程式電源計畫"
