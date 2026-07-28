@@ -1,5 +1,5 @@
 > [!IMPORTANT]
-> Discuss with me on [Discord](discord.com/invite/M7nctFZUxX)!\
+> Discuss with me on [Discord](http://discord.com/invite/M7nctFZUxX)!\
 > Join the community!
 
 
