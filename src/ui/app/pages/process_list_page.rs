@@ -1,4 +1,5 @@
 use crate::ui::app::*;
+use gpui::rgba;
 
 mod editing;
 mod table_model;
@@ -11,7 +12,7 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let render_data = process_list_render_data(self);
+        let render_data = process_list_render_data(self, window);
         let process_count = render_data.process_count;
         let table_scroll_height = process_list_scroll_height(window);
         let column_layout = render_data.column_layout;
@@ -43,12 +44,17 @@ impl WinderustApp {
                     cx.notify();
                 }
             }));
-        let column_visibility_button =
-            self.render_process_list_column_visibility_dropdown(window, cx);
-
+        let hide_limited_access = checkbox(
+            "hide-limited-access-processes",
+            t!("process_list.hide_limited_access_items").to_string(),
+            self.hide_limited_access_processes,
+            cx.listener(|app, checked, _, cx| {
+                app.hide_limited_access_processes = *checked;
+                cx.notify();
+            }),
+        );
         let header = process_list_scroll_content(table_width).child(process_list_header_row(
             &self.settings,
-            &self.hidden_process_list_columns,
             &column_layout,
             self.process_list_sort,
             cx,
@@ -60,7 +66,6 @@ impl WinderustApp {
                 .child(process_list_empty_row(message))
                 .into_any_element()
         } else {
-            let hidden_columns = self.hidden_process_list_columns.clone();
             let column_layout = column_layout.clone();
             let rows = Rc::clone(&rendered_rows);
 
@@ -70,7 +75,6 @@ impl WinderustApp {
                 item_sizes,
                 move |app, visible_range, window, cx| {
                     let row_layout = ProcessListRenderLayout {
-                        hidden_columns: &hidden_columns,
                         column_layout: &column_layout,
                     };
                     let edit_context = ProcessListEditContext { app, window };
@@ -88,7 +92,13 @@ impl WinderustApp {
             .into_any_element()
         };
 
+        let details_modal = self
+            .process_details
+            .as_ref()
+            .map(|_| self.render_process_details_modal(window, cx));
+
         self.page_shell(Page::ProcessList, cx)
+            .relative()
             .flex_1()
             .h_full()
             .min_h(px(0.0))
@@ -109,8 +119,14 @@ impl WinderustApp {
                             .truncate()
                             .child(text_muted(process_list_toolbar_label(self, process_count))),
                     )
-                    .child(column_visibility_button)
-                    .child(refresh_button),
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .items_center()
+                            .gap_2()
+                            .child(div().flex_none().child(hide_limited_access))
+                            .child(refresh_button),
+                    ),
             )
             .child(
                 div()
@@ -180,66 +196,172 @@ impl WinderustApp {
                             .child(Scrollbar::horizontal(&horizontal_scroll_handle)),
                     ),
             )
+            .when_some(details_modal, |page, modal| page.child(modal))
             .into_any_element()
     }
 
-    pub(in crate::ui::app) fn render_process_list_column_visibility_dropdown(
+    fn render_process_details_modal(
         &self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let id = PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_ID;
-        let is_open = self.active_power_plan_picker.as_deref() == Some(id);
-        let placement = self.dropdown_placement(
-            id,
-            dropdown_list_height(PROCESS_LIST_OPTIONAL_COLUMNS.len()),
-            window,
-        );
-        let phase = dropdown_popup_phase(id, is_open, cx);
-        let button_id = SharedString::from(format!("{id}-button"));
-        let toggle_id = id.to_owned();
-        let button = dropdown_select_control(
-            button_id,
-            t!("process_list.column_visibility").to_string(),
-            true,
-            is_open,
-            phase,
-            cx,
-        )
-        .on_click(cx.listener(move |app, _, _, cx| {
-            app.active_power_plan_picker = (app.active_power_plan_picker.as_deref()
-                != Some(toggle_id.as_str()))
-            .then_some(toggle_id.clone());
-            cx.stop_propagation();
-            cx.notify();
-        }));
-        let options = process_list_column_visibility_dropdown_options(
-            &self.hidden_process_list_columns,
-            &self.settings,
-            placement.max_height,
-            cx,
+        let details = self
+            .process_details
+            .as_ref()
+            .expect("details view requires a draft");
+        let path = details.executable_path.clone();
+        let summary = process_policy_summary(&self.settings, &self.plans, &path);
+        let icon = self
+            .process_icon_cache
+            .get(Path::new(&path))
+            .and_then(Option::as_ref);
+        let groups = [
+            (
+                t!("process_list.details_exclusions").to_string(),
+                &[
+                    ProcessListColumn::AdaptiveEngine,
+                    ProcessListColumn::BackgroundEfficiency,
+                ][..],
+            ),
+            (
+                t!("process_list.details_power").to_string(),
+                &[
+                    ProcessListColumn::PowerPlanForeground,
+                    ProcessListColumn::PowerPlanRunning,
+                ][..],
+            ),
+            (
+                t!("process_list.details_priority").to_string(),
+                &[
+                    ProcessListColumn::ProcessPriority,
+                    ProcessListColumn::ThreadPriority,
+                    ProcessListColumn::DynamicPriorityBoost,
+                    ProcessListColumn::IoPriority,
+                    ProcessListColumn::GpuPriority,
+                    ProcessListColumn::MemoryPriority,
+                ][..],
+            ),
+        ];
+
+        let mut content = page_body_shell().gap_4().p_4();
+        for (title, columns) in groups {
+            let mut group = page_body_shell().child(section_title_text(title));
+            for column in columns {
+                let value = process_list_column_value(&summary, *column);
+                let dropdown_id = process_list_cell_editor_id(&path, *column);
+                let dropdown = self.render_dropdown_select(
+                    dropdown_id.clone(),
+                    value,
+                    true,
+                    DropdownSelectWidth::Standard,
+                    process_list_cell_editor_option_count(*column, self),
+                    window,
+                    cx,
+                    |max_height, cx| {
+                        process_list_cell_editor_options(&path, *column, self, max_height, cx)
+                    },
+                );
+                group = group.child(
+                    setting_action_card(
+                        format!("{dropdown_id}-card"),
+                        process_list_column_label(*column, &self.settings),
+                        dropdown,
+                    )
+                    .into_any_element(),
+                );
+            }
+            content = content.child(group);
+        }
+
+        let modal = v_flex()
+            .w_full()
+            .max_w(px(760.0))
+            .h_full()
+            .max_h(px(680.0))
+            .overflow_hidden()
+            .rounded(px(BRAND_RADIUS_OVERLAY))
+            .border_1()
+            .border_color(rgb(border_color()))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .on_any_mouse_down(|_, _, cx| {
+                cx.stop_propagation();
+            })
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .p_4()
+                    .border_b_1()
+                    .border_color(rgb(border_color()))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .gap_3()
+                            .child(process_icon_cell(icon, cx))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .child(section_title_text(details.display_name.clone()))
+                                    .child(text_muted(path.clone()).truncate()),
+                            ),
+                    )
+                    .child(
+                        control_button(Button::new("close-process-details"))
+                            .icon(Icon::new(NavIcon::X).with_size(px(14.0)))
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.save_process_details(cx);
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("process-details-scroll")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scrollbar()
+                    .child(content),
+            );
+
+        let modal = with_optional_motion(
+            modal,
+            "process-details-modal-open",
+            MotionSpeed::Standard,
+            |modal| modal,
+            |modal, delta| {
+                modal
+                    .relative()
+                    .top(px(10.0 * (1.0 - delta)))
+                    .opacity(0.18 + 0.82 * delta)
+            },
         );
 
-        v_flex()
-            .w(px(PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_WIDTH))
-            .min_w(px(PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_WIDTH))
-            .max_w(px(PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_WIDTH))
-            .flex_shrink_0()
-            .relative()
-            .min_h(px(DROPDOWN_CONTROL_HEIGHT))
-            .child(button)
-            .child(dropdown_anchor_sensor(
-                id.to_owned(),
-                Rc::clone(&self.dropdown_anchor_bounds),
-            ))
-            .child(dropdown_popup_or_empty(
-                SharedString::from(id),
-                phase,
-                placement,
-                options,
-                cx,
-            ))
-            .into_any_element()
+        let backdrop = h_flex()
+            .absolute()
+            .inset_0()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .bg(rgba(0x0000008c))
+            .occlude()
+            .on_any_mouse_down(cx.listener(|app, _, _, cx| {
+                app.save_process_details(cx);
+            }))
+            .child(modal);
+
+        with_optional_motion(
+            backdrop,
+            "process-details-backdrop-open",
+            MotionSpeed::Fast,
+            |backdrop| backdrop,
+            |backdrop, delta| backdrop.opacity(delta),
+        )
     }
 }
 
@@ -273,7 +395,6 @@ pub(in crate::ui::app) fn process_list_scroll_content(table_width: Pixels) -> gp
 
 pub(in crate::ui::app) fn process_list_header_row(
     settings: &Settings,
-    hidden_columns: &HashSet<ProcessListColumn>,
     layout: &ProcessListColumnLayout,
     sort: ProcessListSort,
     cx: &mut Context<WinderustApp>,
@@ -297,16 +418,14 @@ pub(in crate::ui::app) fn process_list_header_row(
             cx,
         ));
 
-    for column in PROCESS_LIST_OPTIONAL_COLUMNS {
-        if process_list_column_visible(hidden_columns, column) {
-            row = row.child(process_list_header_cell(
-                layout.column_width(column),
-                process_list_column_label(column, settings),
-                ProcessListSortColumn::Column(column),
-                sort,
-                cx,
-            ));
-        }
+    for column in PROCESS_LIST_OVERVIEW_COLUMNS {
+        row = row.child(process_list_header_cell(
+            layout.column_width(column),
+            process_list_column_label(column, settings),
+            ProcessListSortColumn::Column(column),
+            sort,
+            cx,
+        ));
     }
 
     row
@@ -344,8 +463,12 @@ pub(in crate::ui::app) fn process_list_header_cell(
     cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let active = sort.column == column;
+    let numeric = matches!(
+        column,
+        ProcessListSortColumn::Column(ProcessListColumn::CpuUsage | ProcessListColumn::MemoryUsage)
+    );
 
-    h_flex()
+    let header = h_flex()
         .id(SharedString::from(format!(
             "process-list-sort-header-{}",
             process_list_sort_column_id(column)
@@ -365,10 +488,20 @@ pub(in crate::ui::app) fn process_list_header_cell(
         .hover(|style| style.text_color(rgb(primary_text_color())))
         .on_click(cx.listener(move |app, _, _, cx| {
             app.toggle_process_list_sort(column, cx);
-        }))
-        .child(div().flex_1().min_w(px(0.0)).truncate().child(label))
-        .child(process_list_sort_icon(active, sort.direction, cx))
-        .into_any_element()
+        }));
+    let label = div()
+        .flex_1()
+        .min_w(px(0.0))
+        .truncate()
+        .when(numeric, |label| label.text_right().pr_2())
+        .child(label);
+    let sort_icon = process_list_sort_icon(active, sort.direction, cx);
+
+    if numeric {
+        header.child(sort_icon).child(label).into_any_element()
+    } else {
+        header.child(label).child(sort_icon).into_any_element()
+    }
 }
 
 pub(in crate::ui::app) fn process_list_sort_column_id(
@@ -377,25 +510,25 @@ pub(in crate::ui::app) fn process_list_sort_column_id(
     match column {
         ProcessListSortColumn::ProcessName => "process-name",
         ProcessListSortColumn::Column(ProcessListColumn::Pid) => "pid",
+        ProcessListSortColumn::Column(ProcessListColumn::Status) => "status",
+        ProcessListSortColumn::Column(ProcessListColumn::CpuUsage) => "cpu-usage",
+        ProcessListSortColumn::Column(ProcessListColumn::MemoryUsage) => "memory-usage",
         ProcessListSortColumn::Column(ProcessListColumn::PowerPlanForeground) => {
             "power-plan-foreground"
         }
         ProcessListSortColumn::Column(ProcessListColumn::PowerPlanRunning) => "power-plan-running",
+        ProcessListSortColumn::Column(ProcessListColumn::AdaptiveEngine) => "adaptive-engine",
         ProcessListSortColumn::Column(ProcessListColumn::BackgroundEfficiency) => {
             "background-efficiency"
         }
-        ProcessListSortColumn::Column(ProcessListColumn::CoreLimiter) => "core-limiter",
-        ProcessListSortColumn::Column(ProcessListColumn::BackgroundCpuRestriction) => {
-            "background-cpu-restriction"
-        }
-        ProcessListSortColumn::Column(ProcessListColumn::CoreSteering) => "core-steering",
         ProcessListSortColumn::Column(ProcessListColumn::ProcessPriority) => "process-priority",
+        ProcessListSortColumn::Column(ProcessListColumn::ThreadPriority) => "thread-priority",
+        ProcessListSortColumn::Column(ProcessListColumn::DynamicPriorityBoost) => {
+            "dynamic-priority-boost"
+        }
         ProcessListSortColumn::Column(ProcessListColumn::IoPriority) => "io-priority",
         ProcessListSortColumn::Column(ProcessListColumn::GpuPriority) => "gpu-priority",
         ProcessListSortColumn::Column(ProcessListColumn::MemoryPriority) => "memory-priority",
-        ProcessListSortColumn::Column(ProcessListColumn::MemoryTrim) => "memory-trim",
-        ProcessListSortColumn::Column(ProcessListColumn::AppSuspension) => "app-suspension",
-        ProcessListSortColumn::Column(ProcessListColumn::TimerResolution) => "timer-resolution",
     }
 }
 
@@ -426,46 +559,6 @@ pub(in crate::ui::app) fn process_list_sort_icon(
     }
 
     icon
-}
-
-pub(in crate::ui::app) fn process_list_column_visibility_dropdown_options(
-    hidden_columns: &HashSet<ProcessListColumn>,
-    settings: &Settings,
-    max_height: Pixels,
-    cx: &mut Context<WinderustApp>,
-) -> Scrollable<gpui::Div> {
-    let mut options = dropdown_surface(cx, max_height);
-
-    for column in PROCESS_LIST_OPTIONAL_COLUMNS {
-        let checked = process_list_column_visible(hidden_columns, column);
-        let label = process_list_column_label(column, settings);
-
-        options = options.child(
-            h_flex()
-                .id(SharedString::from(format!(
-                    "process-list-column-visibility-option-{}",
-                    column as usize
-                )))
-                .min_h(px(DROPDOWN_OPTION_ROW_HEIGHT))
-                .items_center()
-                .px_2()
-                .rounded(px(BRAND_RADIUS_CONTROL))
-                .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
-                .child(checkbox(
-                    SharedString::from(format!(
-                        "process-list-column-visibility-{}",
-                        column as usize
-                    )),
-                    label,
-                    checked,
-                    cx.listener(move |app, checked, _, cx| {
-                        app.set_process_list_column_visible(column, *checked, cx);
-                    }),
-                )),
-        );
-    }
-
-    options
 }
 
 pub(in crate::ui::app) fn process_list_empty_row(message: impl Into<SharedString>) -> gpui::Div {
@@ -501,6 +594,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
             cx,
         ),
         ProcessListRenderedRow::Group {
+            process,
             process_name,
             executable_path,
             process_count,
@@ -509,6 +603,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
             state,
         } => process_list_group_row(
             ProcessListGroupRowData {
+                process,
                 process_name: process_name.as_str(),
                 executable_path: executable_path.as_str(),
                 process_count: *process_count,
@@ -522,6 +617,568 @@ pub(in crate::ui::app) fn process_list_rendered_row(
         )
         .into_any_element(),
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "menu construction needs the selected process snapshot"
+)]
+fn process_list_context_menu(
+    mut menu: PopupMenu,
+    app_entity: Entity<WinderustApp>,
+    process_id: u32,
+    process_name: String,
+    executable_path: String,
+    process_tree_snapshot: Vec<ProcessInfo>,
+    suspended: bool,
+    show_suspend: bool,
+    expose_all_priorities: bool,
+    hide_stop_process: bool,
+    window: &mut Window,
+    menu_cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let target = capture_process_action_target(process_id, Path::new(&executable_path));
+    let actions_disabled = target.is_err();
+
+    menu = menu.item({
+        let app_entity = app_entity.clone();
+        let process_name = process_name.clone();
+        let executable_path = executable_path.clone();
+        PopupMenuItem::new(t!("process_list.open_rule_details").to_string()).on_click(
+            move |_, _, cx| {
+                app_entity.update(cx, |app, cx| {
+                    app.selected_process_id = Some(process_id);
+                    app.open_process_details(process_name.clone(), executable_path.clone(), cx);
+                });
+            },
+        )
+    });
+    menu = menu.separator();
+    for (tree, label_key) in [
+        (false, "process_list.stop_process"),
+        (true, "process_list.stop_process_tree"),
+    ] {
+        if hide_stop_process && !tree {
+            continue;
+        }
+        let app_entity = app_entity.clone();
+        let process_name = process_name.clone();
+        let target = target.clone();
+        let process_tree_snapshot = process_tree_snapshot.clone();
+        menu = menu.item(
+            process_list_value_menu_item(
+                t!(label_key).to_string(),
+                ProcessListMenuItemTone::Danger,
+                actions_disabled,
+            )
+            .disabled(actions_disabled)
+            .on_click(move |_, window, cx| {
+                let description = t!(
+                    if tree {
+                        "process_list.stop_tree_confirm"
+                    } else {
+                        "process_list.stop_confirm"
+                    },
+                    name = process_name.as_str()
+                )
+                .to_string();
+                let answers = [
+                    PromptButton::ok(t!("common.yes").to_string()),
+                    PromptButton::cancel(t!("common.no").to_string()),
+                ];
+                let answer = window.prompt(
+                    PromptLevel::Warning,
+                    t!("process_list.stop_confirm_title").as_ref(),
+                    Some(&description),
+                    &answers,
+                    cx,
+                );
+                let app_entity = app_entity.clone();
+                let process_name = process_name.clone();
+                let target = target.clone();
+                let process_tree_snapshot = process_tree_snapshot.clone();
+                cx.spawn(async move |cx| {
+                    if answer.await != Ok(0) {
+                        return;
+                    }
+                    let _ = app_entity.update(cx, |app, cx| {
+                        let result = target
+                            .map_err(|error| error.to_string())
+                            .and_then(|target| {
+                                if tree {
+                                    terminate_process_tree(&target, &process_tree_snapshot)
+                                        .map(|_| ())
+                                } else {
+                                    terminate_process(&target)
+                                }
+                            });
+                        app.finish_process_quick_action(
+                            &process_name,
+                            t!(label_key).as_ref(),
+                            result,
+                            cx,
+                        );
+                    });
+                })
+                .detach();
+            }),
+        );
+    }
+
+    if show_suspend {
+        let app_entity = app_entity.clone();
+        let process_name = process_name.clone();
+        let target = target.clone();
+        let suspend = !suspended;
+        let label_key = if suspend {
+            "process_list.suspend_process"
+        } else {
+            "process_list.resume_process"
+        };
+        menu = menu.item(
+            process_list_value_menu_item(
+                t!(label_key).to_string(),
+                if suspend {
+                    ProcessListMenuItemTone::Warning
+                } else {
+                    ProcessListMenuItemTone::Default
+                },
+                actions_disabled,
+            )
+            .disabled(actions_disabled)
+            .on_click(move |_, _, cx| {
+                app_entity.update(cx, |app, cx| {
+                    let result = target
+                        .clone()
+                        .map_err(|error| error.to_string())
+                        .map(|target| {
+                            app.background_automation
+                                .request_app_suspension_process_action(target, suspend);
+                        });
+                    app.status_message = match result {
+                        Ok(()) => t!(
+                            "process_list.quick_action_queued",
+                            action = t!(label_key).as_ref(),
+                            name = process_name.as_str()
+                        )
+                        .to_string(),
+                        Err(error) => t!(
+                            "process_list.quick_action_failed",
+                            action = t!(label_key).as_ref(),
+                            name = process_name.as_str(),
+                            error = error
+                        )
+                        .to_string(),
+                    };
+                    cx.notify();
+                });
+            }),
+        );
+    }
+
+    let queried_efficiency = target
+        .as_ref()
+        .ok()
+        .and_then(|target| background_efficiency::current_efficiency_mode(target).ok());
+    let cached_efficiency = target.as_ref().ok().and_then(|target| {
+        app_entity
+            .read(menu_cx)
+            .process_efficiency_mode_overrides
+            .get(&target.id)
+            .filter(|(creation_time, _)| *creation_time == target.creation_time)
+            .map(|(_, enabled)| *enabled)
+    });
+    let efficiency_enabled = queried_efficiency.or(cached_efficiency).unwrap_or(false);
+    menu = menu.item({
+        let app_entity = app_entity.clone();
+        let process_name = process_name.clone();
+        let target = target.clone();
+        process_list_value_menu_item(
+            t!("process_list.efficiency_mode").to_string(),
+            if efficiency_enabled {
+                ProcessListMenuItemTone::Success
+            } else {
+                ProcessListMenuItemTone::Default
+            },
+            actions_disabled,
+        )
+        .disabled(actions_disabled)
+        .on_click(move |_, _, cx| {
+            app_entity.update(cx, |app, cx| {
+                let enabled = !efficiency_enabled;
+                let result = target
+                    .clone()
+                    .map_err(|error| error.to_string())
+                    .and_then(|target| {
+                        let result =
+                            background_efficiency::apply_efficiency_mode_once(&target, enabled);
+                        if result.is_ok() {
+                            app.process_efficiency_mode_overrides
+                                .insert(target.id, (target.creation_time, enabled));
+                        }
+                        result
+                    });
+                app.finish_process_quick_action(
+                    &process_name,
+                    t!("process_list.efficiency_mode").as_ref(),
+                    result,
+                    cx,
+                );
+            });
+        })
+    });
+
+    menu = process_list_priority_controls_submenu(
+        menu,
+        app_entity.clone(),
+        process_name.clone(),
+        target.clone(),
+        expose_all_priorities,
+        window,
+        menu_cx,
+    );
+    menu = menu.separator();
+    menu.item({
+        let app_entity = app_entity.clone();
+        let process_name = process_name.clone();
+        let target = target.clone();
+        process_list_value_menu_item(
+            t!("process_list.open_process_location").to_string(),
+            ProcessListMenuItemTone::Default,
+            actions_disabled,
+        )
+        .disabled(actions_disabled)
+        .on_click(move |_, _, cx| {
+            app_entity.update(cx, |app, cx| {
+                let result = target
+                    .clone()
+                    .map_err(|error| error.to_string())
+                    .and_then(|target| open_process_location(&target));
+                app.finish_process_quick_action(
+                    &process_name,
+                    t!("process_list.open_process_location").as_ref(),
+                    result,
+                    cx,
+                );
+            });
+        })
+    })
+}
+
+fn process_list_priority_controls_submenu(
+    menu: PopupMenu,
+    app_entity: Entity<WinderustApp>,
+    process_name: String,
+    target: Result<ProcessActionTarget, ProcessActionTargetError>,
+    expose_all_priorities: bool,
+    window: &mut Window,
+    menu_cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    if target.is_err() {
+        return menu.item(
+            process_list_value_menu_item(
+                t!("process_list.priority_controls").to_string(),
+                ProcessListMenuItemTone::Default,
+                true,
+            )
+            .disabled(true),
+        );
+    }
+    menu.submenu(
+        t!("process_list.priority_controls").to_string(),
+        window,
+        menu_cx,
+        move |menu, window, menu_cx| {
+            let current_process = target
+                .as_ref()
+                .ok()
+                .and_then(|target| process_priority::current_priority(target).ok());
+            let process_priority_available = current_process.is_some()
+                && current_process != Some(ProcessPrioritySetting::Realtime);
+            let process_options = if expose_all_priorities {
+                &ProcessPrioritySetting::ADVANCED_ALL[..]
+            } else {
+                &ProcessPrioritySetting::ALL[..]
+            }
+            .iter()
+            .copied()
+            .filter(|priority| *priority != ProcessPrioritySetting::Default)
+            .collect();
+            let menu = process_list_priority_value_submenu(
+                menu,
+                t!("process_list.process_priority").to_string(),
+                process_options,
+                current_process,
+                process_priority_available,
+                process_priority::can_apply_once,
+                app_entity.clone(),
+                process_name.clone(),
+                target.clone(),
+                process_priority_setting_label,
+                quick_apply_process_priority,
+                window,
+                menu_cx,
+            );
+
+            let current_thread = target
+                .as_ref()
+                .ok()
+                .and_then(|target| thread_priority::current_priority(target).ok());
+            let thread_priority_available = current_thread.is_some();
+            let current_thread = current_thread.flatten();
+            let thread_options = if expose_all_priorities {
+                &ProcessThreadPrioritySetting::ADVANCED_ALL[..]
+            } else {
+                &ProcessThreadPrioritySetting::ALL[..]
+            }
+            .iter()
+            .copied()
+            .filter(|priority| *priority != ProcessThreadPrioritySetting::Default)
+            .collect();
+            let menu = process_list_priority_value_submenu(
+                menu,
+                t!("process_list.thread_priority").to_string(),
+                thread_options,
+                current_thread,
+                thread_priority_available,
+                process_list_priority_option_available,
+                app_entity.clone(),
+                process_name.clone(),
+                target.clone(),
+                process_thread_priority_setting_label,
+                quick_apply_thread_priority,
+                window,
+                menu_cx,
+            );
+
+            let current_boost = target
+                .as_ref()
+                .ok()
+                .and_then(|target| dynamic_priority_boost::current_boost_disabled(target).ok());
+            let menu = process_list_priority_value_submenu(
+                menu,
+                t!("process_list.dynamic_priority_boost").to_string(),
+                vec![false, true],
+                current_boost,
+                current_boost.is_some(),
+                process_list_priority_option_available,
+                app_entity.clone(),
+                process_name.clone(),
+                target.clone(),
+                dynamic_boost_quick_label,
+                dynamic_priority_boost::apply_once,
+                window,
+                menu_cx,
+            );
+
+            let current_io = target
+                .as_ref()
+                .ok()
+                .and_then(|target| io_priority::current_priority(target).ok());
+            let io_options = if expose_all_priorities {
+                &ProcessIoPrioritySetting::ADVANCED_ALL[..]
+            } else {
+                &ProcessIoPrioritySetting::ALL[..]
+            }
+            .iter()
+            .filter_map(|priority| priority.priority())
+            .collect();
+            let menu = process_list_priority_value_submenu(
+                menu,
+                t!("process_list.io_priority").to_string(),
+                io_options,
+                current_io,
+                current_io.is_some(),
+                process_list_priority_option_available,
+                app_entity.clone(),
+                process_name.clone(),
+                target.clone(),
+                io_priority_quick_label,
+                io_priority::apply_once,
+                window,
+                menu_cx,
+            );
+
+            let current_gpu = target
+                .as_ref()
+                .ok()
+                .and_then(|target| gpu_priority::current_priority(target).ok());
+            let gpu_options = if expose_all_priorities {
+                &ProcessGpuPrioritySetting::ADVANCED_ALL[..]
+            } else {
+                &ProcessGpuPrioritySetting::ALL[..]
+            }
+            .iter()
+            .filter_map(|priority| priority.priority())
+            .collect();
+            let menu = process_list_priority_value_submenu(
+                menu,
+                t!("process_list.gpu_priority").to_string(),
+                gpu_options,
+                current_gpu,
+                current_gpu.is_some(),
+                process_list_priority_option_available,
+                app_entity.clone(),
+                process_name.clone(),
+                target.clone(),
+                gpu_priority_quick_label,
+                gpu_priority::apply_once,
+                window,
+                menu_cx,
+            );
+
+            let current_memory = target
+                .as_ref()
+                .ok()
+                .and_then(|target| memory_priority::current_priority(target).ok());
+            let memory_options = ProcessMemoryPrioritySetting::ALL
+                .into_iter()
+                .filter(|priority| *priority != ProcessMemoryPrioritySetting::Default)
+                .collect();
+            process_list_priority_value_submenu(
+                menu,
+                t!("process_list.memory_priority").to_string(),
+                memory_options,
+                current_memory,
+                current_memory.is_some(),
+                process_list_priority_option_available,
+                app_entity.clone(),
+                process_name.clone(),
+                target.clone(),
+                process_memory_priority_setting_label,
+                quick_apply_memory_priority,
+                window,
+                menu_cx,
+            )
+        },
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "submenu items need live process action context"
+)]
+fn process_list_priority_value_submenu<T: Copy + PartialEq + 'static>(
+    menu: PopupMenu,
+    title: String,
+    options: Vec<T>,
+    current: Option<T>,
+    available: bool,
+    option_available: fn(T) -> bool,
+    app_entity: Entity<WinderustApp>,
+    process_name: String,
+    target: Result<ProcessActionTarget, ProcessActionTargetError>,
+    label: fn(T) -> String,
+    apply: fn(&ProcessActionTarget, T) -> Result<(), String>,
+    window: &mut Window,
+    menu_cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    menu.submenu(title.clone(), window, menu_cx, move |mut menu, _, _| {
+        for option in &options {
+            let option = *option;
+            let disabled = !available || !option_available(option);
+            let app_entity = app_entity.clone();
+            let process_name = process_name.clone();
+            let target = target.clone();
+            let action = format!("{}: {}", title, label(option));
+            menu = menu.item(
+                process_list_value_menu_item(
+                    label(option),
+                    if current == Some(option) {
+                        ProcessListMenuItemTone::Success
+                    } else {
+                        ProcessListMenuItemTone::Muted
+                    },
+                    disabled,
+                )
+                .disabled(disabled)
+                .on_click(move |_, _, cx| {
+                    app_entity.update(cx, |app, cx| {
+                        let result = target
+                            .clone()
+                            .map_err(|error| error.to_string())
+                            .and_then(|target| apply(&target, option));
+                        app.finish_process_quick_action(&process_name, &action, result, cx);
+                    });
+                }),
+            );
+        }
+        menu
+    })
+}
+
+fn process_list_priority_option_available<T>(_: T) -> bool {
+    true
+}
+
+#[derive(Clone, Copy)]
+enum ProcessListMenuItemTone {
+    Default,
+    Muted,
+    Success,
+    Warning,
+    Danger,
+}
+
+fn process_list_value_menu_item(
+    label: String,
+    tone: ProcessListMenuItemTone,
+    disabled: bool,
+) -> PopupMenuItem {
+    PopupMenuItem::element(move |_, cx| {
+        div()
+            .flex_1()
+            .when(disabled, |item| item.opacity(0.48))
+            .text_color(if disabled {
+                cx.theme().muted_foreground
+            } else {
+                match tone {
+                    ProcessListMenuItemTone::Default => cx.theme().popover_foreground,
+                    ProcessListMenuItemTone::Muted => cx.theme().muted_foreground,
+                    ProcessListMenuItemTone::Success => cx.theme().success_foreground,
+                    ProcessListMenuItemTone::Warning => rgb(warning_text_color()).into(),
+                    ProcessListMenuItemTone::Danger => cx.theme().danger_foreground,
+                }
+            })
+            .child(label.clone())
+    })
+}
+
+fn quick_apply_process_priority(
+    target: &ProcessActionTarget,
+    priority: ProcessPrioritySetting,
+) -> Result<(), String> {
+    process_priority::apply_once(target, priority).map(|_| ())
+}
+
+fn quick_apply_thread_priority(
+    target: &ProcessActionTarget,
+    priority: ProcessThreadPrioritySetting,
+) -> Result<(), String> {
+    thread_priority::apply_once(target, priority).map(|_| ())
+}
+
+fn quick_apply_memory_priority(
+    target: &ProcessActionTarget,
+    priority: ProcessMemoryPrioritySetting,
+) -> Result<(), String> {
+    memory_priority::apply_once(target, priority).map(|_| ())
+}
+
+fn dynamic_boost_quick_label(disabled: bool) -> String {
+    if disabled {
+        t!("common.disabled").to_string()
+    } else {
+        t!("common.enabled").to_string()
+    }
+}
+
+fn io_priority_quick_label(priority: ProcessIoPriority) -> String {
+    io_priority::io_priority_label(priority).to_owned()
+}
+
+fn gpu_priority_quick_label(priority: ProcessGpuPriority) -> String {
+    gpu_priority::gpu_priority_label(priority).to_owned()
 }
 
 pub(in crate::ui::app) fn process_list_entry_row(
@@ -540,8 +1197,23 @@ pub(in crate::ui::app) fn process_list_entry_row(
         .image_path
         .as_deref()
         .map(|path| path.to_string_lossy().into_owned());
+    let details_name = process_name.clone();
+    let details_path = executable_path.clone();
     let selected = edit_context.app.selected_process_id == Some(process_id);
     let app_entity = cx.entity();
+    let limited_access = executable_path.is_none();
+    let process_tree_snapshot = edit_context.app.running_processes.clone();
+    let suspended = edit_context
+        .app
+        .app_suspension_status
+        .suspended_process_ids
+        .contains(&process_id);
+    let show_suspend = edit_context.app.settings.advanced.show_advanced_controls;
+    let expose_all_priorities = edit_context
+        .app
+        .settings
+        .advanced
+        .expose_all_priority_values;
     let mut row = h_flex()
         .id(row_id)
         .w_full()
@@ -557,113 +1229,40 @@ pub(in crate::ui::app) fn process_list_entry_row(
             row.border_t_1().border_color(rgb(border_color()))
         })
         .when(selected, |row| row.bg(rgb(panel_active_color())))
-        .hover(|style| style.bg(rgb(settings_card_hover_color())))
-        .cursor_pointer()
-        .on_click(cx.listener(move |app, _, _, cx| {
-            app.selected_process_id = Some(process_id);
-            cx.notify();
-        }))
-        .context_menu(move |menu, _, _| {
-            let mut menu = menu;
-            let action_target = executable_path
-                .as_deref()
-                .ok_or(ProcessActionTargetError::IdentityUnavailable)
-                .and_then(|path| capture_process_action_target(process_id, Path::new(path)));
-            for priority in [
-                ProcessPrioritySetting::BelowNormal,
-                ProcessPrioritySetting::Normal,
-                ProcessPrioritySetting::AboveNormal,
-            ] {
-                let app_entity = app_entity.clone();
-                let process_name = process_name.clone();
-                let action_target = action_target.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(t!(
-                        "process_list.apply_once_priority",
-                        priority = process_priority_setting_label(priority)
-                    ))
-                    .on_click(move |_, _, cx| {
-                        app_entity.update(cx, |app, cx| {
-                            app.selected_process_id = Some(process_id);
-                            app.apply_process_priority_once(
-                                action_target.clone(),
-                                &process_name,
-                                priority,
-                                cx,
-                            );
-                        });
-                    }),
-                );
+        .when(limited_access, |row| {
+            row.opacity(0.65).tooltip(|window, cx| {
+                Tooltip::new(t!("process_list.limited_access_help").to_string()).build(window, cx)
+            })
+        })
+        .when(!limited_access, |row| {
+            row.hover(|style| style.bg(rgb(settings_card_hover_color())))
+                .cursor_pointer()
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.selected_process_id = Some(process_id);
+                    let Some(executable_path) = details_path.clone() else {
+                        return;
+                    };
+                    app.open_process_details(details_name.clone(), executable_path, cx);
+                }))
+        })
+        .context_menu(move |menu, window, menu_cx| {
+            if executable_path.is_none() {
+                return menu;
             }
-            if let Some(executable_path) = executable_path.clone() {
-                for priority in [
-                    ProcessPrioritySetting::BelowNormal,
-                    ProcessPrioritySetting::Normal,
-                    ProcessPrioritySetting::AboveNormal,
-                ] {
-                    let app_entity = app_entity.clone();
-                    let executable_path = executable_path.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(t!(
-                            "process_list.save_rule_priority",
-                            priority = process_priority_setting_label(priority)
-                        ))
-                        .on_click(move |_, _, cx| {
-                            app_entity.update(cx, |app, cx| {
-                                app.selected_process_id = Some(process_id);
-                                app.save_process_priority_rule(&executable_path, priority, cx);
-                            });
-                        }),
-                    );
-                }
-            }
-            for priority in [
-                ProcessMemoryPrioritySetting::Low,
-                ProcessMemoryPrioritySetting::Normal,
-            ] {
-                let app_entity = app_entity.clone();
-                let process_name = process_name.clone();
-                let action_target = action_target.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(t!(
-                        "process_list.apply_once_memory",
-                        priority = process_memory_priority_setting_label(priority)
-                    ))
-                    .on_click(move |_, _, cx| {
-                        app_entity.update(cx, |app, cx| {
-                            app.selected_process_id = Some(process_id);
-                            app.apply_memory_priority_once(
-                                action_target.clone(),
-                                &process_name,
-                                priority,
-                                cx,
-                            );
-                        });
-                    }),
-                );
-            }
-            if let Some(executable_path) = executable_path.clone() {
-                for priority in [
-                    ProcessMemoryPrioritySetting::Low,
-                    ProcessMemoryPrioritySetting::Normal,
-                ] {
-                    let app_entity = app_entity.clone();
-                    let executable_path = executable_path.clone();
-                    menu = menu.item(
-                        PopupMenuItem::new(t!(
-                            "process_list.save_rule_memory",
-                            priority = process_memory_priority_setting_label(priority)
-                        ))
-                        .on_click(move |_, _, cx| {
-                            app_entity.update(cx, |app, cx| {
-                                app.selected_process_id = Some(process_id);
-                                app.save_memory_priority_rule(&executable_path, priority, cx);
-                            });
-                        }),
-                    );
-                }
-            }
-            menu
+            process_list_context_menu(
+                menu,
+                app_entity.clone(),
+                process_id,
+                process_name.clone(),
+                executable_path.clone().unwrap_or_default(),
+                process_tree_snapshot.clone(),
+                suspended,
+                show_suspend,
+                expose_all_priorities,
+                state.nested,
+                window,
+                menu_cx,
+            )
         })
         .child(process_list_name_cell(
             process.name.clone(),
@@ -673,20 +1272,38 @@ pub(in crate::ui::app) fn process_list_entry_row(
             cx,
         ));
 
-    if process_list_column_visible(layout.hidden_columns, ProcessListColumn::Pid) {
-        row = row.child(process_list_text_cell(
-            layout.column_layout.column_width(ProcessListColumn::Pid),
-            process.id.to_string(),
-        ));
-    }
+    row = row.child(process_list_text_cell(
+        layout.column_layout.column_width(ProcessListColumn::Pid),
+        process.id.to_string(),
+    ));
 
     let executable_path = process
         .image_path
         .as_deref()
         .map(|path| path.to_string_lossy());
+    let mut process_summary = summary.clone();
+    if executable_path.is_none() {
+        process_summary.status = t!("process_list.status_limited_access").to_string();
+    } else if let Some(usage) = edit_context.app.process_resource_usage.get(&process.id) {
+        process_summary.cpu_percent = usage.cpu_percent;
+        process_summary.memory_bytes = usage.working_set_bytes;
+        process_summary.status = process_list_status_label(
+            &edit_context.app.app_suspension_status,
+            Some(process.id),
+            executable_path.as_deref().unwrap_or_default(),
+            usage.efficiency_mode == Some(true),
+        );
+    } else {
+        process_summary.status = process_list_status_label(
+            &edit_context.app.app_suspension_status,
+            Some(process.id),
+            executable_path.as_deref().unwrap_or_default(),
+            false,
+        );
+    }
     row.children(process_list_policy_cells(
         executable_path.as_deref().unwrap_or_default(),
-        summary,
+        &process_summary,
         layout,
         state.editable && executable_path.is_some(),
         edit_context,
@@ -703,14 +1320,31 @@ pub(in crate::ui::app) fn process_list_group_row(
     layout: ProcessListRenderLayout<'_>,
     edit_context: ProcessListEditContext<'_>,
     cx: &mut Context<WinderustApp>,
-) -> gpui::Stateful<gpui::Div> {
+) -> AnyElement {
     let process_name = data.process_name.to_string();
     let executable_path = data.executable_path.to_string();
     let row_id = SharedString::from(format!(
         "process-list-group-{}",
         process_list_executable_path_group_key(Path::new(&executable_path))
     ));
-    let toggle_name = executable_path.clone();
+    let details_name = process_name.clone();
+    let details_path = executable_path.clone();
+    let menu_process_name = process_name.clone();
+    let menu_executable_path = executable_path.clone();
+    let process_id = data.process.id;
+    let process_tree_snapshot = edit_context.app.running_processes.clone();
+    let suspended = edit_context
+        .app
+        .app_suspension_status
+        .suspended_process_ids
+        .contains(&process_id);
+    let show_suspend = edit_context.app.settings.advanced.show_advanced_controls;
+    let expose_all_priorities = edit_context
+        .app
+        .settings
+        .advanced
+        .expose_all_priority_values;
+    let app_entity = cx.entity();
 
     let mut row = h_flex()
         .id(row_id)
@@ -729,8 +1363,24 @@ pub(in crate::ui::app) fn process_list_group_row(
         .hover(|style| style.bg(rgb(settings_card_hover_color())))
         .cursor_pointer()
         .on_click(cx.listener(move |app, _, _, cx| {
-            app.toggle_process_list_group(toggle_name.clone(), cx);
+            app.open_process_details(details_name.clone(), details_path.clone(), cx);
         }))
+        .context_menu(move |menu, window, menu_cx| {
+            process_list_context_menu(
+                menu,
+                app_entity.clone(),
+                process_id,
+                menu_process_name.clone(),
+                menu_executable_path.clone(),
+                process_tree_snapshot.clone(),
+                suspended,
+                show_suspend,
+                expose_all_priorities,
+                true,
+                window,
+                menu_cx,
+            )
+        })
         .child(process_list_group_name_cell(
             &process_name,
             &executable_path,
@@ -741,12 +1391,10 @@ pub(in crate::ui::app) fn process_list_group_row(
             cx,
         ));
 
-    if process_list_column_visible(layout.hidden_columns, ProcessListColumn::Pid) {
-        row = row.child(process_list_text_cell(
-            layout.column_layout.column_width(ProcessListColumn::Pid),
-            process_list_pid_count_label(data.process_count),
-        ));
-    }
+    row = row.child(process_list_text_cell(
+        layout.column_layout.column_width(ProcessListColumn::Pid),
+        process_list_pid_count_label(data.process_count),
+    ));
 
     row.children(process_list_policy_cells(
         &executable_path,
@@ -756,6 +1404,7 @@ pub(in crate::ui::app) fn process_list_group_row(
         edit_context,
         cx,
     ))
+    .into_any_element()
 }
 
 pub(in crate::ui::app) fn process_list_name_cell(
@@ -786,6 +1435,7 @@ pub(in crate::ui::app) fn process_list_group_name_cell(
     width: f32,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
+    let toggle_name = executable_path.to_owned();
     h_flex()
         .w(px(width))
         .min_w(px(0.0))
@@ -796,6 +1446,15 @@ pub(in crate::ui::app) fn process_list_group_name_cell(
             div()
                 .w(px(PROCESS_LIST_TREE_TOGGLE_WIDTH))
                 .flex_shrink_0()
+                .id(SharedString::from(format!(
+                    "process-list-group-toggle-{}",
+                    process_list_executable_path_group_key(Path::new(executable_path))
+                )))
+                .cursor_pointer()
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.toggle_process_list_group(toggle_name.clone(), cx);
+                    cx.stop_propagation();
+                }))
                 .child(collapsible_chevron_icon(
                     format!(
                         "process-list-group-{}",
@@ -827,11 +1486,10 @@ pub(in crate::ui::app) fn process_list_policy_cells(
     edit_context: ProcessListEditContext<'_>,
     cx: &mut Context<WinderustApp>,
 ) -> Vec<AnyElement> {
-    PROCESS_LIST_OPTIONAL_COLUMNS
+    PROCESS_LIST_OVERVIEW_COLUMNS
         .iter()
         .copied()
         .filter(|column| *column != ProcessListColumn::Pid)
-        .filter(|column| process_list_column_visible(layout.hidden_columns, *column))
         .map(|column| {
             process_list_policy_cell(
                 layout.column_layout.column_width(column),
@@ -855,21 +1513,37 @@ pub(in crate::ui::app) fn process_list_column_value(
 ) -> SharedString {
     match column {
         ProcessListColumn::Pid => SharedString::new_static(""),
+        ProcessListColumn::Status => summary.status.clone().into(),
+        ProcessListColumn::CpuUsage
+            if summary.status == t!("process_list.status_limited_access") =>
+        {
+            SharedString::new_static("\u{2014}")
+        }
+        ProcessListColumn::CpuUsage => summary
+            .cpu_percent
+            .map(|percent| format!("{percent:.1}%"))
+            .unwrap_or_else(|| t!("common.unknown").to_string())
+            .into(),
+        ProcessListColumn::MemoryUsage
+            if summary.status == t!("process_list.status_limited_access") =>
+        {
+            SharedString::new_static("\u{2014}")
+        }
+        ProcessListColumn::MemoryUsage => summary
+            .memory_bytes
+            .map(format_memory_capacity)
+            .unwrap_or_else(|| t!("common.unknown").to_string())
+            .into(),
         ProcessListColumn::PowerPlanForeground => summary.power_plan_foreground.clone().into(),
         ProcessListColumn::PowerPlanRunning => summary.power_plan_running.clone().into(),
+        ProcessListColumn::AdaptiveEngine => summary.adaptive_engine.clone().into(),
         ProcessListColumn::BackgroundEfficiency => summary.background_efficiency.clone().into(),
-        ProcessListColumn::CoreLimiter => summary.core_limiter.clone().into(),
-        ProcessListColumn::BackgroundCpuRestriction => {
-            summary.background_cpu_restriction.clone().into()
-        }
-        ProcessListColumn::CoreSteering => summary.core_steering.clone().into(),
         ProcessListColumn::ProcessPriority => summary.process_priority.clone().into(),
+        ProcessListColumn::ThreadPriority => summary.thread_priority.clone().into(),
+        ProcessListColumn::DynamicPriorityBoost => summary.dynamic_priority_boost.clone().into(),
         ProcessListColumn::IoPriority => summary.io_priority.clone().into(),
         ProcessListColumn::GpuPriority => summary.gpu_priority.clone().into(),
         ProcessListColumn::MemoryPriority => summary.memory_priority.clone().into(),
-        ProcessListColumn::MemoryTrim => summary.memory_trim.clone().into(),
-        ProcessListColumn::AppSuspension => summary.app_suspension.clone().into(),
-        ProcessListColumn::TimerResolution => summary.timer_resolution.clone().into(),
     }
 }
 
@@ -990,6 +1664,46 @@ pub(in crate::ui::app) fn process_list_policy_cell(
     cx: &mut Context<WinderustApp>,
 ) -> AnyElement {
     let value = value.into();
+    if target.column == ProcessListColumn::Status {
+        let limited_access = value == t!("process_list.status_limited_access").to_string();
+        let suspended = value == t!("process_list.status_suspended").to_string();
+        let efficiency_mode = value == t!("process_list.status_efficiency_mode").to_string();
+        let (icon, color) = if limited_access {
+            (NavIcon::OctagonMinus, muted_text_color())
+        } else if suspended {
+            (NavIcon::CirclePause, warning_text_color())
+        } else if efficiency_mode {
+            (NavIcon::Leaf, success_text_color())
+        } else {
+            (
+                NavIcon::Play,
+                if ui_is_dark() { 0x78b7ff } else { 0x1f5fae },
+            )
+        };
+        return h_flex()
+            .w(px(width))
+            .min_w(px(0.0))
+            .flex_shrink_0()
+            .gap_1()
+            .text_color(rgb(color))
+            .child(Icon::new(icon).with_size(px(14.0)))
+            .child(value)
+            .into_any_element();
+    }
+    if matches!(
+        target.column,
+        ProcessListColumn::CpuUsage | ProcessListColumn::MemoryUsage
+    ) {
+        return h_flex()
+            .w(px(width))
+            .min_w(px(0.0))
+            .flex_shrink_0()
+            .justify_end()
+            .pr_2()
+            .text_color(rgb(primary_text_color()))
+            .child(value)
+            .into_any_element();
+    }
     let text_color = if process_list_policy_value_active(value.as_ref(), emphasized) {
         success_text_color()
     } else {
@@ -1104,13 +1818,14 @@ pub(in crate::ui::app) fn process_list_column_editable(column: ProcessListColumn
         column,
         ProcessListColumn::PowerPlanForeground
             | ProcessListColumn::PowerPlanRunning
+            | ProcessListColumn::AdaptiveEngine
             | ProcessListColumn::BackgroundEfficiency
-            | ProcessListColumn::CoreLimiter
-            | ProcessListColumn::BackgroundCpuRestriction
+            | ProcessListColumn::ProcessPriority
+            | ProcessListColumn::ThreadPriority
+            | ProcessListColumn::DynamicPriorityBoost
+            | ProcessListColumn::IoPriority
             | ProcessListColumn::GpuPriority
-            | ProcessListColumn::MemoryTrim
-            | ProcessListColumn::AppSuspension
-            | ProcessListColumn::TimerResolution
+            | ProcessListColumn::MemoryPriority
     )
 }
 
@@ -1140,18 +1855,43 @@ pub(in crate::ui::app) fn process_list_cell_editor_option_count(
         ProcessListColumn::PowerPlanForeground | ProcessListColumn::PowerPlanRunning => {
             1 + app.plans.len()
         }
-        ProcessListColumn::BackgroundEfficiency
-        | ProcessListColumn::BackgroundCpuRestriction
-        | ProcessListColumn::GpuPriority
-        | ProcessListColumn::MemoryTrim
-        | ProcessListColumn::AppSuspension => 2,
-        ProcessListColumn::CoreLimiter => 5,
-        ProcessListColumn::TimerResolution => process_list_timer_resolution_options(app).len(),
+        ProcessListColumn::BackgroundEfficiency | ProcessListColumn::AdaptiveEngine => 2,
+        ProcessListColumn::ProcessPriority => {
+            if app.settings.advanced.expose_all_priority_values {
+                ProcessPrioritySetting::CUSTOM_RULE_ADVANCED_ALL.len()
+            } else {
+                ProcessPrioritySetting::CUSTOM_RULE_ALL.len()
+            }
+        }
+        ProcessListColumn::ThreadPriority => {
+            if app.settings.advanced.expose_all_priority_values {
+                ProcessThreadPrioritySetting::CUSTOM_RULE_ADVANCED_ALL.len()
+            } else {
+                ProcessThreadPrioritySetting::CUSTOM_RULE_ALL.len()
+            }
+        }
+        ProcessListColumn::DynamicPriorityBoost => {
+            ProcessDynamicPriorityBoostSetting::CUSTOM_RULE_ALL.len()
+        }
+        ProcessListColumn::IoPriority => {
+            if app.settings.advanced.expose_all_priority_values {
+                ProcessIoPrioritySetting::CUSTOM_RULE_ADVANCED_ALL.len()
+            } else {
+                ProcessIoPrioritySetting::CUSTOM_RULE_ALL.len()
+            }
+        }
+        ProcessListColumn::GpuPriority => {
+            if app.settings.advanced.expose_all_priority_values {
+                ProcessGpuPrioritySetting::CUSTOM_RULE_ADVANCED_ALL.len()
+            } else {
+                ProcessGpuPrioritySetting::CUSTOM_RULE_ALL.len()
+            }
+        }
+        ProcessListColumn::MemoryPriority => ProcessMemoryPrioritySetting::CUSTOM_RULE_ALL.len(),
         ProcessListColumn::Pid
-        | ProcessListColumn::CoreSteering
-        | ProcessListColumn::ProcessPriority
-        | ProcessListColumn::IoPriority
-        | ProcessListColumn::MemoryPriority => 0,
+        | ProcessListColumn::Status
+        | ProcessListColumn::CpuUsage
+        | ProcessListColumn::MemoryUsage => 0,
     }
 }
 
@@ -1162,6 +1902,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
     max_height: Pixels,
     cx: &mut Context<WinderustApp>,
 ) -> Scrollable<gpui::Div> {
+    let settings = &app.settings;
     let mut options = dropdown_surface(cx, max_height)
         .w(px(PROCESS_LIST_CELL_EDITOR_WIDTH))
         .min_w(px(PROCESS_LIST_CELL_EDITOR_WIDTH));
@@ -1170,7 +1911,7 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
     match column {
         ProcessListColumn::PowerPlanForeground => {
             let selected_guid =
-                foreground_power_plan_override_guid(&app.settings.by_foreground, &process_name);
+                foreground_power_plan_override_guid(&settings.by_foreground, &process_name);
             options = options.child(process_list_power_plan_editor_option(
                 &process_name,
                 column,
@@ -1195,10 +1936,8 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
             }
         }
         ProcessListColumn::PowerPlanRunning => {
-            let selected_guid = by_running_app_power_plan_override_guid(
-                &app.settings.by_running_app,
-                &process_name,
-            );
+            let selected_guid =
+                by_running_app_power_plan_override_guid(&settings.by_running_app, &process_name);
             options = options.child(process_list_power_plan_editor_option(
                 &process_name,
                 column,
@@ -1235,11 +1974,10 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
                 cx,
             );
         }
-        ProcessListColumn::BackgroundCpuRestriction => {
-            let included = !app
-                .settings
-                .background_cpu_restriction
-                .exclusion_enabled_for(&process_name);
+        ProcessListColumn::AdaptiveEngine => {
+            let included = !settings
+                .workload_engine
+                .workload_engine_exclusion_enabled_for(&process_name);
             options = process_list_include_exclude_editor_options(
                 options,
                 &process_name,
@@ -1248,82 +1986,132 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
                 cx,
             );
         }
-        ProcessListColumn::CoreLimiter => {
-            let selected = core_limiter_override_percent(&app.settings.core_limiter, &process_name);
-            options = options.child(process_list_core_limiter_editor_option(
+        ProcessListColumn::ProcessPriority => {
+            let selected = settings
+                .process_priority
+                .override_for(&process_name, true)
+                .flatten()
+                .unwrap_or_default();
+            let values = if app.settings.advanced.expose_all_priority_values {
+                &ProcessPrioritySetting::CUSTOM_RULE_ADVANCED_ALL[..]
+            } else {
+                &ProcessPrioritySetting::CUSTOM_RULE_ALL[..]
+            };
+            options = process_list_priority_editor_options(
+                options,
                 &process_name,
-                None,
-                selected.is_none(),
+                column,
+                selected,
+                values,
+                process_priority_setting_label,
+                WinderustApp::set_process_list_process_priority,
                 cx,
-            ));
-            for percent in [25_u8, 50, 75, 100] {
-                options = options.child(process_list_core_limiter_editor_option(
-                    &process_name,
-                    Some(percent),
-                    selected == Some(percent),
-                    cx,
-                ));
-            }
+            );
+        }
+        ProcessListColumn::ThreadPriority => {
+            let selected = settings
+                .thread_priority
+                .override_for(&process_name, true)
+                .flatten()
+                .unwrap_or_default();
+            let values = if app.settings.advanced.expose_all_priority_values {
+                &ProcessThreadPrioritySetting::CUSTOM_RULE_ADVANCED_ALL[..]
+            } else {
+                &ProcessThreadPrioritySetting::CUSTOM_RULE_ALL[..]
+            };
+            options = process_list_priority_editor_options(
+                options,
+                &process_name,
+                column,
+                selected,
+                values,
+                process_thread_priority_setting_label,
+                WinderustApp::set_process_list_thread_priority,
+                cx,
+            );
+        }
+        ProcessListColumn::DynamicPriorityBoost => {
+            let selected = settings
+                .dynamic_priority_boost
+                .override_for(&process_name, true)
+                .flatten()
+                .unwrap_or_default();
+            options = process_list_priority_editor_options(
+                options,
+                &process_name,
+                column,
+                selected,
+                &ProcessDynamicPriorityBoostSetting::CUSTOM_RULE_ALL,
+                process_dynamic_priority_boost_setting_label,
+                WinderustApp::set_process_list_dynamic_priority_boost,
+                cx,
+            );
+        }
+        ProcessListColumn::IoPriority => {
+            let selected = settings
+                .io_priority
+                .override_for(&process_name, true)
+                .flatten()
+                .unwrap_or_default();
+            let values = if app.settings.advanced.expose_all_priority_values {
+                &ProcessIoPrioritySetting::CUSTOM_RULE_ADVANCED_ALL[..]
+            } else {
+                &ProcessIoPrioritySetting::CUSTOM_RULE_ALL[..]
+            };
+            options = process_list_priority_editor_options(
+                options,
+                &process_name,
+                column,
+                selected,
+                values,
+                process_io_priority_setting_label,
+                WinderustApp::set_process_list_io_priority,
+                cx,
+            );
         }
         ProcessListColumn::GpuPriority => {
-            let included = !app
-                .settings
+            let selected = settings
                 .gpu_priority
-                .exclusion_enabled_for(&process_name);
-            options = process_list_include_exclude_editor_options(
+                .override_for(&process_name, true)
+                .flatten()
+                .unwrap_or_default();
+            let values = if app.settings.advanced.expose_all_priority_values {
+                &ProcessGpuPrioritySetting::CUSTOM_RULE_ADVANCED_ALL[..]
+            } else {
+                &ProcessGpuPrioritySetting::CUSTOM_RULE_ALL[..]
+            };
+            options = process_list_priority_editor_options(
                 options,
                 &process_name,
                 column,
-                included,
+                selected,
+                values,
+                process_gpu_priority_setting_label,
+                WinderustApp::set_process_list_gpu_priority,
                 cx,
             );
         }
-        ProcessListColumn::MemoryTrim => {
-            let included = !app
-                .settings
-                .memory_trim
-                .exclusion_enabled_for(&process_name);
-            options = process_list_include_exclude_editor_options(
+        ProcessListColumn::MemoryPriority => {
+            let selected = settings
+                .memory_priority
+                .override_for(&process_name, true)
+                .flatten()
+                .unwrap_or_default();
+            options = process_list_priority_editor_options(
                 options,
                 &process_name,
                 column,
-                included,
+                selected,
+                &ProcessMemoryPrioritySetting::CUSTOM_RULE_ALL,
+                process_memory_priority_setting_label,
+                WinderustApp::set_process_list_memory_priority,
                 cx,
             );
-        }
-        ProcessListColumn::AppSuspension => {
-            let included = app
-                .settings
-                .app_suspension
-                .suspendable_app_enabled_for(&process_name);
-            options = process_list_include_exclude_editor_options(
-                options,
-                &process_name,
-                column,
-                included,
-                cx,
-            );
-        }
-        ProcessListColumn::TimerResolution => {
-            let selected = app
-                .settings
-                .timer_resolution
-                .desired_resolution_for_foreground(&process_name)
-                .map(|(_, desired_100ns)| desired_100ns);
-            for desired_100ns in process_list_timer_resolution_options(app) {
-                options = options.child(process_list_timer_resolution_editor_option(
-                    &process_name,
-                    desired_100ns,
-                    selected == desired_100ns,
-                    cx,
-                ));
-            }
         }
         ProcessListColumn::Pid
-        | ProcessListColumn::CoreSteering
-        | ProcessListColumn::ProcessPriority
-        | ProcessListColumn::IoPriority
-        | ProcessListColumn::MemoryPriority => {}
+        | ProcessListColumn::Status
+        | ProcessListColumn::CpuUsage
+        | ProcessListColumn::MemoryUsage => {}
     }
 
     options
@@ -1350,6 +2138,39 @@ pub(in crate::ui::app) fn process_list_include_exclude_editor_options(
         !included,
         cx,
     ))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "keeps six typed priority selectors on one rendering path"
+)]
+pub(in crate::ui::app) fn process_list_priority_editor_options<T>(
+    mut options: Scrollable<gpui::Div>,
+    process_name: &str,
+    column: ProcessListColumn,
+    selected: T,
+    values: &[T],
+    label: fn(T) -> String,
+    apply: fn(&mut WinderustApp, String, T, &mut Context<WinderustApp>),
+    cx: &mut Context<WinderustApp>,
+) -> Scrollable<gpui::Div>
+where
+    T: Copy + PartialEq + 'static,
+{
+    for value in values.iter().copied() {
+        let process_name = process_name.to_owned();
+        let value_label = label(value);
+        let option_id = process_list_editor_option_id(&process_name, column, &value_label);
+        options = options.child(
+            dropdown_option_row(option_id, value_label, selected == value, cx).on_click(
+                cx.listener(move |app, _, _, cx| {
+                    apply(app, process_name.clone(), value, cx);
+                    cx.stop_propagation();
+                }),
+            ),
+        );
+    }
+    options
 }
 
 pub(in crate::ui::app) fn process_list_editor_option_id(
@@ -1402,23 +2223,11 @@ pub(in crate::ui::app) fn process_list_include_exclude_editor_option(
     dropdown_option_row(option_id, label, selected, cx)
         .on_click(cx.listener(move |app, _, _, cx| {
             match column {
+                ProcessListColumn::AdaptiveEngine => {
+                    app.set_process_list_adaptive_engine(process_name.clone(), included, cx)
+                }
                 ProcessListColumn::BackgroundEfficiency => {
                     app.set_process_list_background_efficiency(process_name.clone(), included, cx)
-                }
-                ProcessListColumn::BackgroundCpuRestriction => app
-                    .set_process_list_background_cpu_restriction(
-                        process_name.clone(),
-                        included,
-                        cx,
-                    ),
-                ProcessListColumn::GpuPriority => {
-                    app.set_process_list_gpu_priority_included(process_name.clone(), included, cx)
-                }
-                ProcessListColumn::MemoryTrim => {
-                    app.set_process_list_memory_trim(process_name.clone(), included, cx)
-                }
-                ProcessListColumn::AppSuspension => {
-                    app.set_process_list_app_suspension(process_name.clone(), included, cx)
                 }
                 _ => {}
             }
@@ -1426,57 +2235,6 @@ pub(in crate::ui::app) fn process_list_include_exclude_editor_option(
         }))
         .into_any_element()
 }
-
-pub(in crate::ui::app) fn process_list_core_limiter_editor_option(
-    process_name: &str,
-    percent: Option<u8>,
-    selected: bool,
-    cx: &mut Context<WinderustApp>,
-) -> AnyElement {
-    let process_name = process_name.to_owned();
-    let label = percent
-        .map(|percent| process_list_include_value_label(format!("{percent}%")))
-        .unwrap_or_else(process_list_exclude_label);
-    let option_id = process_list_editor_option_id(
-        &process_name,
-        ProcessListColumn::CoreLimiter,
-        percent
-            .map(|percent| percent.to_string())
-            .unwrap_or_else(|| "exclude".to_owned()),
-    );
-    dropdown_option_row(option_id, label, selected, cx)
-        .on_click(cx.listener(move |app, _, _, cx| {
-            app.set_process_list_core_limiter(process_name.clone(), percent, cx);
-            cx.stop_propagation();
-        }))
-        .into_any_element()
-}
-
-pub(in crate::ui::app) fn process_list_timer_resolution_editor_option(
-    process_name: &str,
-    desired_100ns: Option<u32>,
-    selected: bool,
-    cx: &mut Context<WinderustApp>,
-) -> AnyElement {
-    let process_name = process_name.to_owned();
-    let label = desired_100ns
-        .map(timer_resolution::format_resolution_ms)
-        .unwrap_or_else(process_list_default_label);
-    let option_id = process_list_editor_option_id(
-        &process_name,
-        ProcessListColumn::TimerResolution,
-        desired_100ns
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "default".to_owned()),
-    );
-    dropdown_option_row(option_id, label, selected, cx)
-        .on_click(cx.listener(move |app, _, _, cx| {
-            app.set_process_list_timer_resolution(process_name.clone(), desired_100ns, cx);
-            cx.stop_propagation();
-        }))
-        .into_any_element()
-}
-
 pub(in crate::ui::app) fn process_list_policy_value_active(value: &str, emphasized: bool) -> bool {
     if let Some(enabled) = process_list_state_enabled(value) {
         return enabled;

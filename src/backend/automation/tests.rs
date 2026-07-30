@@ -276,23 +276,6 @@ fn pending_auto_exclusions_are_taken_only_after_generation_change() {
         .take_pending_auto_exclusions_since(&mut generation)
         .is_none());
 
-    update_background_efficiency_status(
-        &automation.shared,
-        BackgroundEfficiencySnapshot {
-            auto_excluded_processes: vec![
-                "Editor.exe".to_owned(),
-                r"C:\Apps\Editor.exe".to_owned(),
-            ],
-            ..BackgroundEfficiencySnapshot::default()
-        },
-    );
-
-    let pending = automation
-        .take_pending_auto_exclusions_since(&mut generation)
-        .expect("new pending exclusions should be visible");
-    assert_eq!(pending.background_efficiency, vec![r"C:\Apps\Editor.exe"]);
-    assert!(pending.core_steering.is_empty());
-    assert!(pending.background_cpu_restriction.is_empty());
     update_core_steering_status(
         &automation.shared,
         CoreSteeringSnapshot {
@@ -711,8 +694,8 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
         .push(app_suspension_rule(r"C:\Apps\chat.exe"));
 
     assert!(automation_worker_required(&settings));
-    assert!(!windows_event_watcher_required(&settings));
-    assert!(!windows_event_wake_required(
+    assert!(windows_event_watcher_required(&settings));
+    assert!(windows_event_wake_required(
         &settings,
         WindowsAutomationEvent::WindowCreated
     ));
@@ -726,8 +709,8 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
         mouse_click: true,
         ..InputHookEvents::default()
     };
-    assert!(!input_hook_should_check_app_switch(&settings, input_events));
-    assert!(!input_hook_should_check_app_switch_mouse_click(
+    assert!(input_hook_should_check_app_switch(&settings, input_events));
+    assert!(input_hook_should_check_app_switch_mouse_click(
         &settings,
         input_events
     ));

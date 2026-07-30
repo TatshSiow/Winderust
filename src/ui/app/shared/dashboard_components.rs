@@ -408,6 +408,3 @@ pub(in crate::ui::app) const PROCESS_LIST_TOOLBAR_HEIGHT: f32 = 40.0;
 pub(in crate::ui::app) const PROCESS_LIST_VERTICAL_GAP_TOTAL: f32 = 8.0;
 pub(in crate::ui::app) const PROCESS_LIST_SCROLLBAR_GUTTER: f32 = 16.0;
 pub(in crate::ui::app) const PROCESS_LIST_TREE_TOGGLE_WIDTH: f32 = 16.0;
-pub(in crate::ui::app) const PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_ID: &str =
-    "process-list-column-visibility";
-pub(in crate::ui::app) const PROCESS_LIST_COLUMN_VISIBILITY_DROPDOWN_WIDTH: f32 = 360.0;

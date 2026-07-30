@@ -1,26 +1,36 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     fmt,
     os::windows::ffi::OsStringExt,
     path::{Path, PathBuf},
+    process::Command,
+    time::Instant,
 };
 
-use crate::win_util::WinHandle;
+use crate::{
+    cpu::ProcessCpuSample,
+    win_util::{filetime_to_u64, WinHandle},
+};
 
 use windows_sys::Win32::{
     Foundation::{
-        GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE,
+        GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, FILETIME,
+        INVALID_HANDLE_VALUE,
     },
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
             TH32CS_SNAPPROCESS,
         },
+        ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
         RemoteDesktop::ProcessIdToSessionId,
         Threading::{
-            GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-            PROCESS_QUERY_LIMITED_INFORMATION,
+            GetCurrentProcessId, GetProcessInformation, GetProcessTimes, OpenProcess,
+            ProcessPowerThrottling, QueryFullProcessImageNameW, TerminateProcess,
+            PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
         },
     },
 };
@@ -83,6 +93,88 @@ pub struct ProcessInfo {
     pub parent_id: Option<u32>,
     pub name: String,
     pub image_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessResourceSample {
+    pub cpu: ProcessCpuSample,
+    pub creation_time: u64,
+    pub working_set_bytes: Option<u64>,
+    pub efficiency_mode: Option<bool>,
+}
+
+pub fn sample_process_resources(processes: &[ProcessInfo]) -> BTreeMap<u32, ProcessResourceSample> {
+    processes
+        .iter()
+        .filter_map(|process| {
+            sample_process_resource(process.id).map(|sample| (process.id, sample))
+        })
+        .collect()
+}
+
+fn sample_process_resource(process_id: u32) -> Option<ProcessResourceSample> {
+    // SAFETY: process_id came from the current process snapshot and the handle is not inherited.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+    let handle = (!handle.is_null()).then(|| WinHandle::new(handle))?;
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    // SAFETY: handle is live and all FILETIME outputs are writable for the call.
+    if unsafe {
+        GetProcessTimes(
+            handle.raw(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return None;
+    }
+
+    let mut memory = PROCESS_MEMORY_COUNTERS {
+        cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: handle is live and memory is writable for the supplied structure size.
+    let working_set_bytes = (unsafe {
+        K32GetProcessMemoryInfo(
+            handle.raw(),
+            &mut memory,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        )
+    } != 0)
+        .then_some(memory.WorkingSetSize as u64);
+
+    let mut power_throttling = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ..Default::default()
+    };
+    // SAFETY: handle is live and power_throttling is writable for the supplied structure size.
+    let efficiency_mode = (unsafe {
+        GetProcessInformation(
+            handle.raw(),
+            ProcessPowerThrottling,
+            (&mut power_throttling as *mut PROCESS_POWER_THROTTLING_STATE).cast(),
+            std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+        )
+    } != 0)
+        .then_some(
+            power_throttling.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
+                && power_throttling.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0,
+        );
+
+    Some(ProcessResourceSample {
+        cpu: ProcessCpuSample {
+            cpu_time_100ns: filetime_to_u64(kernel).saturating_add(filetime_to_u64(user)),
+            sampled_at: Instant::now(),
+        },
+        creation_time: filetime_to_u64(creation),
+        working_set_bytes,
+        efficiency_mode,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +269,96 @@ pub fn capture_process_action_target(
         executable_path,
         creation_time,
     })
+}
+
+pub fn terminate_process(target: &ProcessActionTarget) -> Result<(), String> {
+    if contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &target.name) {
+        return Err("Built-in Windows processes cannot be modified.".to_owned());
+    }
+    let process = open_verified_action_process(target, PROCESS_TERMINATE)?;
+    // SAFETY: process is a verified live handle opened with PROCESS_TERMINATE.
+    if unsafe { TerminateProcess(process.raw(), 1) } == 0 {
+        // SAFETY: GetLastError has no caller requirements and is read immediately after the
+        // failing TerminateProcess call on this thread.
+        let error = unsafe { GetLastError() };
+        Err(format!("TerminateProcess failed with error {error}."))
+    } else {
+        Ok(())
+    }
+}
+
+pub fn terminate_process_tree(
+    root: &ProcessActionTarget,
+    processes: &[ProcessInfo],
+) -> Result<usize, String> {
+    let mut process_ids = vec![root.id];
+    let mut selected = BTreeSet::from([root.id]);
+    let mut index = 0;
+    while index < process_ids.len() {
+        let parent_id = process_ids[index];
+        for process in processes {
+            if process.parent_id == Some(parent_id) && selected.insert(process.id) {
+                process_ids.push(process.id);
+            }
+        }
+        index += 1;
+    }
+
+    let mut targets = Vec::with_capacity(process_ids.len());
+    for process_id in process_ids.into_iter().rev() {
+        if process_id == root.id {
+            targets.push(root.clone());
+            continue;
+        }
+        let process = processes
+            .iter()
+            .find(|process| process.id == process_id)
+            .ok_or_else(|| "A child process exited before it could be stopped.".to_owned())?;
+        let path = process
+            .image_path
+            .as_deref()
+            .ok_or_else(|| "A child process could not be identified safely.".to_owned())?;
+        targets.push(
+            capture_process_action_target(process_id, path).map_err(|error| error.to_string())?,
+        );
+    }
+    let count = targets.len();
+    for target in targets {
+        terminate_process(&target)?;
+    }
+    Ok(count)
+}
+
+pub fn open_process_location(target: &ProcessActionTarget) -> Result<(), String> {
+    open_verified_action_process(target, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    let mut argument = OsString::from("/select,");
+    argument.push(&target.executable_path);
+    Command::new("explorer.exe")
+        .arg(argument)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open the process location: {error}."))
+}
+
+fn open_verified_action_process(
+    target: &ProcessActionTarget,
+    access: u32,
+) -> Result<WinHandle, String> {
+    // SAFETY: target was captured from the current-session process list and the handle is not inherited.
+    let handle = unsafe { OpenProcess(access | PROCESS_QUERY_LIMITED_INFORMATION, 0, target.id) };
+    if handle.is_null() {
+        // SAFETY: GetLastError has no caller requirements and is read immediately after the
+        // failing OpenProcess call on this thread.
+        let error = unsafe { GetLastError() };
+        return Err(format!("OpenProcess failed with error {error}."));
+    }
+    let handle = WinHandle::new(handle);
+    if handle.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&handle, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    Ok(handle)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

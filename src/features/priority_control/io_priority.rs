@@ -19,7 +19,8 @@ use crate::{
     foreground::{
         contains_process_name, is_foreground_process, list_processes, process_count_label,
         process_executable_path, process_failure_key, process_handle_matches_executable_path,
-        process_session_id, same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_session_id, same_process_name, unique_app_names, ProcessActionTarget,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -667,6 +668,34 @@ fn io_priority_error_message(error: IoPriorityError) -> String {
         IoPriorityError::ProcessExited => "Process exited.".to_owned(),
         IoPriorityError::Failed(message) => message,
     }
+}
+
+pub(crate) fn current_priority(target: &ProcessActionTarget) -> Result<ProcessIoPriority, String> {
+    let process = ProcessHandle::open(target.id).map_err(io_priority_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    process.io_priority().map_err(io_priority_error_message)
+}
+
+pub(crate) fn apply_once(
+    target: &ProcessActionTarget,
+    priority: ProcessIoPriority,
+) -> Result<(), String> {
+    let process = ProcessHandle::open(target.id).map_err(io_priority_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    process
+        .set_io_priority(priority)
+        .map_err(io_priority_error_message)?;
+    (process.io_priority().map_err(io_priority_error_message)? == priority)
+        .then_some(())
+        .ok_or_else(|| "I/O priority did not change after request.".to_owned())
 }
 
 fn io_priority_restore_summary_message(count: usize, reason: &str) -> String {

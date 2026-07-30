@@ -1,6 +1,88 @@
 use super::*;
 
 #[test]
+fn process_resource_columns_format_usage() {
+    let mut summary = default_process_policy_summary();
+    summary.cpu_percent = Some(12.34);
+    summary.memory_bytes = Some(512 * 1024 * 1024);
+
+    assert_eq!(
+        process_list_column_value(&summary, ProcessListColumn::CpuUsage),
+        "12.3%"
+    );
+    assert_eq!(
+        process_list_column_value(&summary, ProcessListColumn::MemoryUsage),
+        "512.0 MB"
+    );
+}
+
+#[test]
+fn limited_access_process_uses_dash_for_unavailable_metrics() {
+    let mut summary = default_process_policy_summary();
+    summary.status = t!("process_list.status_limited_access").to_string();
+
+    assert_eq!(
+        process_list_column_value(&summary, ProcessListColumn::CpuUsage),
+        "\u{2014}"
+    );
+    assert_eq!(
+        process_list_column_value(&summary, ProcessListColumn::MemoryUsage),
+        "\u{2014}"
+    );
+}
+
+#[test]
+fn process_list_stretches_name_column_to_push_metrics_right() {
+    let mut layout = ProcessListColumnLayout {
+        name_width: 200.0,
+        column_widths: PROCESS_LIST_OVERVIEW_COLUMNS
+            .iter()
+            .map(|column| (*column, 100.0))
+            .collect(),
+    };
+
+    let memory_width = layout.column_width(ProcessListColumn::MemoryUsage);
+    stretch_process_list_layout(&mut layout, px(900.0));
+
+    assert_eq!(process_list_table_width(&layout), px(900.0));
+    assert!(layout.name_width > 200.0);
+    assert_eq!(
+        layout.column_width(ProcessListColumn::MemoryUsage),
+        memory_width
+    );
+}
+
+#[test]
+fn process_resource_columns_sort_busiest_first() {
+    let sort = ProcessListSort::default()
+        .toggled_for(ProcessListSortColumn::Column(ProcessListColumn::CpuUsage));
+
+    assert_eq!(sort.direction, ProcessListSortDirection::Descending);
+}
+
+#[test]
+fn process_status_reports_suspension_and_efficiency_mode() {
+    let snapshot = AppSuspensionSnapshot {
+        suspended_apps: vec![r"C:\Apps\editor.exe".to_owned()],
+        suspended_process_ids: vec![42],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        process_list_status_label(&snapshot, Some(42), r"c:\apps\EDITOR.exe", true),
+        t!("process_list.status_suspended").to_string()
+    );
+    assert_eq!(
+        process_list_status_label(&snapshot, Some(7), r"C:\Apps\active.exe", true),
+        t!("process_list.status_efficiency_mode").to_string()
+    );
+    assert_eq!(
+        process_list_status_label(&snapshot, Some(7), r"C:\Apps\active.exe", false),
+        t!("process_list.status_active").to_string()
+    );
+}
+
+#[test]
 fn process_list_column_layout_fits_headers_and_values() {
     let settings = Settings::default();
     let processes = vec![
@@ -26,14 +108,9 @@ fn process_list_column_layout_fits_headers_and_values() {
     let layout = process_list_column_layout(&settings, &groups, &summaries);
 
     assert!(layout.column_width(ProcessListColumn::Pid) < PROCESS_LIST_PID_MAX_WIDTH);
-    assert!(layout.column_width(ProcessListColumn::MemoryTrim) < 140.0);
-    assert!(
-        layout.column_width(ProcessListColumn::PowerPlanForeground)
-            >= process_list_estimated_cell_width(
-                &process_list_column_label(ProcessListColumn::PowerPlanForeground, &settings),
-                PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING,
-            )
-    );
+    assert!(layout.column_width(ProcessListColumn::Status) >= 120.0);
+    assert!(layout.column_width(ProcessListColumn::CpuUsage) >= 88.0);
+    assert!(layout.column_width(ProcessListColumn::MemoryUsage) >= 112.0);
 }
 
 #[test]
@@ -291,7 +368,7 @@ fn process_list_split_policy_value_parses_foreground_background_pairs() {
 
 #[test]
 fn process_list_policy_cell_editing_respects_row_editability() {
-    assert!(!process_list_policy_cell_editable(
+    assert!(process_list_policy_cell_editable(
         true,
         ProcessListColumn::ProcessPriority
     ));
@@ -301,42 +378,9 @@ fn process_list_policy_cell_editing_respects_row_editability() {
     ));
     assert!(!process_list_policy_cell_editable(
         true,
-        ProcessListColumn::CoreSteering
+        ProcessListColumn::Status
     ));
 }
-
-#[test]
-fn process_policy_summary_matches_exact_process_rule() {
-    let mut settings = Settings::default();
-    settings.core_steering.enabled = true;
-    settings.core_steering.rules.push(CoreSteeringRule {
-        enabled: true,
-        mode: CoreSteeringMode::Soft,
-        executable_path: "Editor.EXE".to_owned(),
-        core_mask: 0b1011,
-    });
-
-    let matching = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(matching.core_steering, "0-1, 3");
-    assert!(matching.uses_custom_rule(ProcessListColumn::CoreSteering));
-
-    let non_matching = process_policy_summary(&settings, &[], "browser.exe");
-    assert_eq!(
-        non_matching.power_plan_foreground,
-        process_list_default_label()
-    );
-    assert_eq!(
-        non_matching.power_plan_running,
-        process_list_default_label()
-    );
-    assert_eq!(non_matching.core_steering, default_core_steering_label());
-    assert_eq!(
-        non_matching.process_priority,
-        process_priority_setting_label(ProcessPrioritySetting::Default)
-    );
-    assert!(!non_matching.uses_custom_rule(ProcessListColumn::CoreSteering));
-}
-
 #[test]
 fn process_policy_summary_reports_priority_policy_values() {
     let mut settings = Settings::default();
@@ -377,35 +421,6 @@ fn process_policy_summary_reports_process_rule_columns() {
         executable_path: "editor.exe".to_owned(),
         power_plan_guid: Some("performance-guid".to_owned()),
     });
-    settings.core_limiter.enabled = true;
-    settings.core_limiter.rules.push(CoreLimiterRule {
-        enabled: true,
-        executable_path: "editor.exe".to_owned(),
-        threshold_percent: 80,
-        sustain_seconds: 5,
-        cooldown_seconds: 30,
-        max_logical_processors: 50,
-    });
-    settings.app_suspension.enabled = true;
-    settings
-        .app_suspension
-        .suspendable_apps
-        .push(AppSuspensionRule {
-            enabled: true,
-            executable_path: "editor.exe".to_owned(),
-            network_wake_enabled: true,
-            audio_wake_enabled: true,
-            network_download_threshold_bytes: 1,
-            network_download_threshold_unit: NetworkThresholdUnit::Bytes,
-            network_upload_threshold_bytes: 0,
-            network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
-        });
-    settings.timer_resolution.enabled = true;
-    settings.timer_resolution.rules.push(TimerResolutionRule {
-        enabled: true,
-        executable_path: "editor.exe".to_owned(),
-        desired_100ns: 10_000,
-    });
     let plans = vec![
         PowerPlan {
             guid: "balanced-guid".to_owned(),
@@ -423,17 +438,6 @@ fn process_policy_summary_reports_process_rule_columns() {
 
     assert_eq!(summary.power_plan_foreground, "Balanced");
     assert_eq!(summary.power_plan_running, "Performance");
-    assert_eq!(
-        summary.core_limiter,
-        process_list_include_value_label("50%")
-    );
-    assert_eq!(summary.app_suspension, process_list_include_label());
-    assert_eq!(summary.timer_resolution, "1.00 ms");
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanRunning));
-    assert!(summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-    assert!(summary.uses_custom_rule(ProcessListColumn::AppSuspension));
-    assert!(summary.uses_custom_rule(ProcessListColumn::TimerResolution));
 }
 
 #[test]
@@ -443,209 +447,11 @@ fn process_policy_summary_reports_include_exclude_columns() {
         .background_efficiency
         .custom_rules
         .push(new_background_efficiency_rule("editor.exe"));
-    settings
-        .memory_trim
-        .exclusions
-        .push(new_process_exclusion_rule("editor.exe"));
-    settings
-        .app_suspension
-        .suspendable_apps
-        .push(AppSuspensionRule {
-            enabled: true,
-            executable_path: "editor.exe".to_owned(),
-            network_wake_enabled: true,
-            audio_wake_enabled: true,
-            network_download_threshold_bytes: 1,
-            network_download_threshold_unit: NetworkThresholdUnit::Bytes,
-            network_upload_threshold_bytes: 0,
-            network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
-        });
 
     let summary = process_policy_summary(&settings, &[], "editor.exe");
 
     assert_eq!(summary.background_efficiency, process_list_exclude_label());
-    assert_eq!(summary.core_limiter, process_list_exclude_label());
-    assert_eq!(summary.memory_trim, process_list_exclude_label());
-    assert_eq!(summary.app_suspension, process_list_include_label());
-    assert_eq!(summary.timer_resolution, process_list_default_label());
-    assert!(summary.uses_custom_rule(ProcessListColumn::BackgroundEfficiency));
-    assert!(!summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-    assert!(summary.uses_custom_rule(ProcessListColumn::MemoryTrim));
-    assert!(summary.uses_custom_rule(ProcessListColumn::AppSuspension));
-    assert!(!summary.uses_custom_rule(ProcessListColumn::TimerResolution));
 }
-
-#[test]
-fn process_policy_summary_reports_priority_exclusions_as_exclude() {
-    let mut settings = Settings::default();
-    settings
-        .io_priority
-        .exclusions
-        .push(new_process_exclusion_rule("editor.exe"));
-    settings
-        .gpu_priority
-        .exclusions
-        .push(new_process_exclusion_rule("editor.exe"));
-    settings
-        .memory_priority
-        .exclusions
-        .push(new_process_exclusion_rule("editor.exe"));
-
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-
-    assert_eq!(summary.io_priority, process_list_exclude_label());
-    assert_eq!(summary.gpu_priority, process_list_exclude_label());
-    assert_eq!(summary.memory_priority, process_list_exclude_label());
-    assert!(summary.uses_custom_rule(ProcessListColumn::IoPriority));
-    assert!(summary.uses_custom_rule(ProcessListColumn::GpuPriority));
-    assert!(summary.uses_custom_rule(ProcessListColumn::MemoryPriority));
-}
-
-#[test]
-fn process_list_rule_edit_helpers_update_process_overrides() {
-    let mut settings = Settings::default();
-
-    set_foreground_power_plan_override(
-        &mut settings.by_foreground,
-        "Editor.EXE",
-        Some("balanced-guid".to_owned()),
-    );
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(summary.power_plan_foreground, "balanced-guid");
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-
-    set_foreground_power_plan_override(&mut settings.by_foreground, "editor.exe", None);
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(summary.power_plan_foreground, process_list_default_label());
-    assert!(!summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-
-    set_core_limiter_override(&mut settings.core_limiter, "editor.exe", Some(50));
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(
-        summary.core_limiter,
-        process_list_include_value_label("50%")
-    );
-    assert!(summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-
-    set_core_limiter_override(&mut settings.core_limiter, "editor.exe", None);
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(summary.core_limiter, process_list_exclude_label());
-    assert!(!summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-}
-
-#[test]
-fn process_list_rule_edit_helpers_update_timer_overrides() {
-    let mut settings = Settings::default();
-
-    set_timer_resolution_override(&mut settings.timer_resolution, "editor.exe", Some(20_000));
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(
-        summary.timer_resolution,
-        timer_resolution::format_resolution_ms(20_000)
-    );
-    assert!(summary.uses_custom_rule(ProcessListColumn::TimerResolution));
-
-    set_timer_resolution_override(&mut settings.timer_resolution, "editor.exe", None);
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(summary.timer_resolution, process_list_default_label());
-    assert!(!summary.uses_custom_rule(ProcessListColumn::TimerResolution));
-}
-
-#[test]
-fn process_policy_summary_reports_default_power_plan_when_unset() {
-    let mut settings = Settings::default();
-    settings.by_foreground.enabled = true;
-    settings.by_foreground.rules.push(ByForegroundRule {
-        enabled: true,
-        name: "Editor".to_owned(),
-        executable_path: "editor.exe".to_owned(),
-        power_plan_guid: None,
-    });
-    settings.by_running_app.enabled = true;
-    settings.by_running_app.rules.push(ByRunningAppRule {
-        enabled: true,
-        name: "Editor".to_owned(),
-        executable_path: "editor.exe".to_owned(),
-        power_plan_guid: None,
-    });
-
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-
-    assert_eq!(summary.power_plan_foreground, process_list_default_label());
-    assert_eq!(summary.power_plan_running, process_list_default_label());
-    assert_eq!(summary.timer_resolution, process_list_default_label());
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanRunning));
-    assert!(!summary.uses_custom_rule(ProcessListColumn::TimerResolution));
-}
-
-#[test]
-fn process_policy_summary_reports_configured_rules_when_feature_disabled() {
-    let mut settings = Settings::default();
-    settings.by_foreground.enabled = false;
-    settings.by_foreground.rules.push(ByForegroundRule {
-        enabled: true,
-        name: "Editor".to_owned(),
-        executable_path: "editor.exe".to_owned(),
-        power_plan_guid: Some("balanced-guid".to_owned()),
-    });
-    settings.by_running_app.enabled = false;
-    settings.by_running_app.rules.push(ByRunningAppRule {
-        enabled: true,
-        name: "Editor".to_owned(),
-        executable_path: "editor.exe".to_owned(),
-        power_plan_guid: Some("performance-guid".to_owned()),
-    });
-    settings.core_limiter.enabled = false;
-    settings.core_limiter.rules.push(CoreLimiterRule {
-        enabled: true,
-        executable_path: "editor.exe".to_owned(),
-        threshold_percent: 80,
-        sustain_seconds: 5,
-        cooldown_seconds: 30,
-        max_logical_processors: 25,
-    });
-    settings.timer_resolution.enabled = false;
-    settings.timer_resolution.rules.push(TimerResolutionRule {
-        enabled: true,
-        executable_path: "editor.exe".to_owned(),
-        desired_100ns: 10_000,
-    });
-    let plans = vec![
-        PowerPlan {
-            guid: "balanced-guid".to_owned(),
-            name: "Balanced".to_owned(),
-            active: false,
-        },
-        PowerPlan {
-            guid: "performance-guid".to_owned(),
-            name: "Performance".to_owned(),
-            active: false,
-        },
-    ];
-
-    let summary = process_policy_summary(&settings, &plans, "editor.exe");
-
-    assert_eq!(summary.power_plan_foreground, "Balanced");
-    assert_eq!(summary.power_plan_running, "Performance");
-    assert_eq!(
-        summary.core_limiter,
-        process_list_include_value_label("25%")
-    );
-    assert_eq!(summary.timer_resolution, "1.00 ms");
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanRunning));
-    assert!(summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-    assert!(summary.uses_custom_rule(ProcessListColumn::TimerResolution));
-}
-
-#[test]
-fn cpu_mask_formatter_uses_ranges() {
-    assert_eq!(format_cpu_mask(0), t!("common.none").to_string());
-    assert_eq!(format_cpu_mask(0b1111), "0-3");
-    assert_eq!(format_cpu_mask(0b101101), "0, 2-3, 5");
-}
-
 #[test]
 fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
     let processors = vec![

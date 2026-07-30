@@ -82,6 +82,9 @@ impl WinderustApp {
 
         self.page_shell(Page::BackgroundEfficiency, cx)
             .child(self.render_background_efficiency_enable_card(enabled, help, window, cx))
+            .when(enabled, |page| {
+                page.child(self.render_background_efficiency_status_card(cx))
+            })
             .child(disabled_feature_body(
                 "efficiency-exclusions-body",
                 body,
@@ -91,6 +94,45 @@ impl WinderustApp {
             .into_any_element()
     }
 
+    fn render_background_efficiency_status_card(&self, cx: &mut Context<Self>) -> AnyElement {
+        let status = &self.background_efficiency_status;
+        v_flex()
+            .gap_2()
+            .child(stat_grid(vec![
+                (
+                    t!("background_efficiency.applied_processes").to_string(),
+                    status.throttled_processes.to_string(),
+                ),
+                (
+                    t!("background_efficiency.access_denied_processes").to_string(),
+                    status.access_denied_processes.to_string(),
+                ),
+            ]))
+            .when(
+                status.access_denied_processes > 0 && !privilege::is_running_as_admin(),
+                |card| {
+                    card.child(
+                        h_flex().justify_end().child(
+                            primary_control_button(
+                                Button::new("background-efficiency-relaunch-admin"),
+                                cx,
+                            )
+                            .label(t!("admin_rights.relaunch").to_string())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                if privilege::relaunch_as_admin() {
+                                    cx.quit();
+                                } else {
+                                    app.status_message =
+                                        t!("status.admin_relaunch_failed").to_string();
+                                    cx.notify();
+                                }
+                            })),
+                        ),
+                    )
+                },
+            )
+            .into_any_element()
+    }
     pub(in crate::ui::app) fn render_background_efficiency_enable_card(
         &self,
         enabled: bool,

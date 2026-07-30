@@ -714,6 +714,27 @@ pub(crate) fn apply_once(
     Ok(memory_priority_label(applied))
 }
 
+pub(crate) fn current_priority(
+    target: &ProcessActionTarget,
+) -> Result<ProcessMemoryPrioritySetting, String> {
+    let process = ProcessHandle::open(target.id).map_err(memory_priority_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    process
+        .memory_priority()
+        .map_err(memory_priority_error_message)
+        .map(|priority| match priority {
+            ProcessMemoryPriority::VeryLow => ProcessMemoryPrioritySetting::VeryLow,
+            ProcessMemoryPriority::Low => ProcessMemoryPrioritySetting::Low,
+            ProcessMemoryPriority::Medium => ProcessMemoryPrioritySetting::Medium,
+            ProcessMemoryPriority::BelowNormal => ProcessMemoryPrioritySetting::BelowNormal,
+            ProcessMemoryPriority::Normal => ProcessMemoryPrioritySetting::Normal,
+        })
+}
+
 fn restore_process(
     process_id: u32,
     process_state: &AdjustedProcess,

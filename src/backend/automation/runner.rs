@@ -207,7 +207,15 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
         manual_freeze_processes: &[String],
+        process_requests: &[(ProcessActionTarget, bool)],
     ) -> AppSuspensionSnapshot {
+        for (target, suspend) in process_requests {
+            self.app_suspension_manager.apply_manual_process_action(
+                target,
+                *suspend,
+                &mut self.action_log,
+            );
+        }
         let foreground_process_id = foreground_process_id();
         self.app_suspension_manager.update(
             &settings.app_suspension,
@@ -226,10 +234,7 @@ impl HiddenAutomationRunner {
             self.last_app_suspension_shell_user_intent = Some(now);
             if let Some(status) = self
                 .app_suspension_manager
-                .release_window_owner_processes_for_user_intent(
-                    &top_level_window_process_ids(),
-                    &mut self.action_log,
-                )
+                .release_all_suspended_processes_for_user_intent(&mut self.action_log)
             {
                 return Some(status);
             }
@@ -282,7 +287,8 @@ impl HiddenAutomationRunner {
             return None;
         }
 
-        self.run_app_suspension_app_switch_release()
+        self.app_suspension_manager
+            .release_all_suspended_processes_for_user_intent(&mut self.action_log)
     }
 
     pub(super) fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {

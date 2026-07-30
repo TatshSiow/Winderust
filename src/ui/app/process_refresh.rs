@@ -5,6 +5,7 @@ type RunningProcessRefresh = (
     Vec<ProcessInfo>,
     Vec<ProcessCandidate>,
     HashMap<PathBuf, Option<Arc<Image>>>,
+    BTreeMap<u32, ProcessResourceSample>,
 );
 
 pub(in crate::ui::app) fn process_load_state_message(state: &ProcessLoadState) -> Option<String> {
@@ -146,7 +147,7 @@ impl WinderustApp {
         }
 
         self.process_refresh_in_progress = true;
-        self.next_process_refresh = Instant::now() + PROCESS_REFRESH_INTERVAL;
+        self.next_process_refresh = Instant::now() + PROCESS_LIST_REFRESH_INTERVAL;
         let show_loading = self.running_processes.is_empty() || report_status;
         if show_loading {
             self.running_process_load_state = ProcessLoadState::Loading;
@@ -157,7 +158,8 @@ impl WinderustApp {
             let candidate_info = process_candidates_from_processes(&processes);
             let (candidates, icon_cache) =
                 process_candidates_with_icons(candidate_info, icon_cache);
-            Ok((processes, candidates, icon_cache))
+            let resource_samples = sample_process_resources(&processes);
+            Ok((processes, candidates, icon_cache, resource_samples))
         });
         cx.spawn(async move |this, cx| {
             let result = scan.await;
@@ -181,7 +183,34 @@ impl WinderustApp {
             return;
         }
         match result {
-            Ok((mut processes, candidates, icon_cache)) => {
+            Ok((mut processes, candidates, icon_cache, resource_samples)) => {
+                self.process_efficiency_mode_overrides
+                    .retain(|process_id, (creation_time, _)| {
+                        resource_samples
+                            .get(process_id)
+                            .is_some_and(|sample| sample.creation_time == *creation_time)
+                    });
+                self.process_resource_usage = resource_samples
+                    .iter()
+                    .map(|(process_id, current)| {
+                        let cpu_percent = self
+                            .process_resource_samples
+                            .get(process_id)
+                            .filter(|previous| previous.creation_time == current.creation_time)
+                            .and_then(|previous| {
+                                process_cpu_usage_percent(previous.cpu, current.cpu)
+                            });
+                        (
+                            *process_id,
+                            ProcessResourceUsage {
+                                cpu_percent,
+                                working_set_bytes: current.working_set_bytes,
+                                efficiency_mode: current.efficiency_mode,
+                            },
+                        )
+                    })
+                    .collect();
+                self.process_resource_samples = resource_samples;
                 processes.sort_by(|left, right| {
                     left.name
                         .cmp(&right.name)

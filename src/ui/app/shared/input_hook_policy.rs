@@ -14,7 +14,7 @@ pub(in crate::ui::app) fn input_hook_config(settings: &Settings) -> InputHookCon
 }
 
 pub(in crate::ui::app) fn app_suspension_input_hook_required(settings: &Settings) -> bool {
-    settings.app_suspension.enabled && !settings.adaptive_engine.enabled
+    settings.app_suspension.enabled
 }
 
 pub(in crate::ui::app) fn activity_input_hook_required(settings: &Settings) -> bool {

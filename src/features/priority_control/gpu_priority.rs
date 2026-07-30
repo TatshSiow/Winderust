@@ -26,7 +26,8 @@ use crate::{
     foreground::{
         contains_process_name, is_foreground_process, list_processes, process_count_label,
         process_executable_path, process_failure_key, process_handle_matches_executable_path,
-        process_session_id, same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_session_id, same_process_name, unique_app_names, ProcessActionTarget,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::ExecutionFailureTracker,
 };
@@ -755,6 +756,52 @@ fn gpu_priority_error_message(error: GpuPriorityError) -> String {
             "GPU scheduling priority is not available yet for this process.".to_owned()
         }
         GpuPriorityError::Failed(message) => message,
+    }
+}
+
+pub(crate) fn current_priority(target: &ProcessActionTarget) -> Result<ProcessGpuPriority, String> {
+    let process = ProcessHandle::open(target.id).map_err(gpu_priority_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    process
+        .gpu_priority_raw()
+        .map(gpu_priority_from_raw)
+        .map_err(gpu_priority_error_message)
+}
+
+pub(crate) fn apply_once(
+    target: &ProcessActionTarget,
+    priority: ProcessGpuPriority,
+) -> Result<(), String> {
+    let process = ProcessHandle::open(target.id).map_err(gpu_priority_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    let priority_raw = gpu_priority_raw(priority);
+    process
+        .set_gpu_priority_raw(priority_raw)
+        .map_err(gpu_priority_error_message)?;
+    (process
+        .gpu_priority_raw()
+        .map_err(gpu_priority_error_message)?
+        == priority_raw)
+        .then_some(())
+        .ok_or_else(|| "GPU priority did not change after request.".to_owned())
+}
+
+fn gpu_priority_from_raw(priority: u32) -> ProcessGpuPriority {
+    match priority {
+        0 => ProcessGpuPriority::Idle,
+        1 => ProcessGpuPriority::BelowNormal,
+        3 => ProcessGpuPriority::AboveNormal,
+        4 => ProcessGpuPriority::High,
+        5 => ProcessGpuPriority::Realtime,
+        _ => ProcessGpuPriority::Normal,
     }
 }
 

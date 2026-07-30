@@ -7,6 +7,7 @@ impl WinderustApp {
         }
 
         clear_page_hovered();
+        self.process_details = None;
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
@@ -21,6 +22,7 @@ impl WinderustApp {
         };
 
         clear_page_hovered();
+        self.process_details = None;
         Self::push_navigation_page(&mut self.forward_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
@@ -34,6 +36,7 @@ impl WinderustApp {
         };
 
         clear_page_hovered();
+        self.process_details = None;
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;

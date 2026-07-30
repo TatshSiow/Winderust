@@ -19,7 +19,7 @@ use crate::{
     foreground::{
         is_foreground_process, list_processes, process_count_label, process_executable_path,
         process_failure_key, process_handle_matches_executable_path, process_session_id,
-        same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        same_process_name, unique_app_names, ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
@@ -580,6 +580,36 @@ fn dynamic_priority_boost_error_message(error: DynamicPriorityBoostError) -> Str
         DynamicPriorityBoostError::ProcessExited => "Process exited.".to_owned(),
         DynamicPriorityBoostError::Failed(message) => message,
     }
+}
+
+pub(crate) fn current_boost_disabled(target: &ProcessActionTarget) -> Result<bool, String> {
+    let process = ProcessHandle::open(target.id).map_err(dynamic_priority_boost_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    process
+        .dynamic_priority_boost_disabled()
+        .map_err(dynamic_priority_boost_error_message)
+}
+
+pub(crate) fn apply_once(target: &ProcessActionTarget, disabled: bool) -> Result<(), String> {
+    let process = ProcessHandle::open(target.id).map_err(dynamic_priority_boost_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    process
+        .set_dynamic_priority_boost_disabled(disabled)
+        .map_err(dynamic_priority_boost_error_message)?;
+    (process
+        .dynamic_priority_boost_disabled()
+        .map_err(dynamic_priority_boost_error_message)?
+        == disabled)
+        .then_some(())
+        .ok_or_else(|| "Dynamic priority boost did not change after request.".to_owned())
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {

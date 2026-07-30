@@ -36,7 +36,7 @@ use crate::{
     foreground::{
         cursor_is_shell_window, cursor_process, cursor_process_id, executable_path_key,
         foreground_process, foreground_process_id, list_processes, same_executable_path,
-        shell_window_mouse_pressed, top_level_window_process_ids,
+        shell_window_mouse_pressed, top_level_window_process_ids, ProcessActionTarget,
     },
     gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
     io_priority::{IoPriorityManager, IoPrioritySnapshot},
@@ -142,6 +142,7 @@ struct AutomationWorkerState {
 
     pending_auto_exclusions: PendingAutoExclusions,
     app_suspension_freeze_requests: Vec<String>,
+    app_suspension_process_requests: Vec<(ProcessActionTarget, bool)>,
     memory_trim_now_requested: bool,
     action_log_clear_requested: bool,
     pending_events: AutomationWakeEvents,
@@ -151,7 +152,6 @@ struct AutomationWorkerState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingAutoExclusions {
-    pub background_efficiency: Vec<String>,
     pub app_suspension: Vec<String>,
     pub core_steering: Vec<String>,
     pub background_cpu_restriction: Vec<String>,
@@ -204,6 +204,7 @@ impl BackgroundAutomation {
 
                 pending_auto_exclusions: PendingAutoExclusions::default(),
                 app_suspension_freeze_requests: Vec::new(),
+                app_suspension_process_requests: Vec::new(),
                 memory_trim_now_requested: false,
                 action_log_clear_requested: false,
                 pending_events: AutomationWakeEvents::default(),
@@ -318,6 +319,28 @@ impl BackgroundAutomation {
         );
     }
 
+    pub fn request_app_suspension_process_action(
+        &self,
+        target: ProcessActionTarget,
+        suspend: bool,
+    ) {
+        let settings = {
+            let Ok(mut state) = self.shared.state.lock() else {
+                return;
+            };
+            state
+                .app_suspension_process_requests
+                .retain(|(queued, _)| queued.id != target.id);
+            state
+                .app_suspension_process_requests
+                .push((target, suspend));
+            state.change_generation = state.change_generation.wrapping_add(1);
+            self.shared.changed.notify_one();
+            Arc::clone(&state.settings)
+        };
+        self.sync_worker(settings.as_ref(), true);
+    }
+
     pub fn request_memory_trim_now(&self) {
         let settings = {
             let Ok(mut state) = self.shared.state.lock() else {
@@ -422,6 +445,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let settings = snapshot.settings;
         let change_generation = snapshot.change_generation;
         let app_suspension_freeze_requests = snapshot.app_suspension_freeze_requests;
+        let app_suspension_process_requests = snapshot.app_suspension_process_requests;
         let memory_trim_now_requested = snapshot.memory_trim_now_requested;
         if snapshot.action_log_clear_requested {
             runner.action_log.clear();
@@ -609,6 +633,7 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
         let app_suspension_refresh_required = settings_changed
             || feature_refresh_required(&settings, app_suspension_required(&settings))
             || !app_suspension_freeze_requests.is_empty()
+            || !app_suspension_process_requests.is_empty()
             || runner.app_suspension_manager.has_suspended_processes();
         let core_steering_refresh_required = settings_changed
             || feature_refresh_required(&settings, core_steering_required(&settings));
@@ -640,7 +665,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || feature_refresh_required(&settings, settings.memory_trim.enabled);
         let timer_resolution_refresh_required = settings_changed
             || feature_refresh_required(&settings, timer_resolution_required(&settings));
-        if !app_suspension_freeze_requests.is_empty() {
+        if !app_suspension_freeze_requests.is_empty() || !app_suspension_process_requests.is_empty()
+        {
             next_app_suspension_refresh = now;
         }
         if memory_trim_now_requested {
@@ -734,8 +760,11 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             next_memory_priority_refresh = now + memory_priority_refresh_interval;
         }
         if app_suspension_refresh_required && now >= next_app_suspension_refresh {
-            let app_suspension_status =
-                runner.run_app_suspension_update(&settings, &app_suspension_freeze_requests);
+            let app_suspension_status = runner.run_app_suspension_update(
+                &settings,
+                &app_suspension_freeze_requests,
+                &app_suspension_process_requests,
+            );
             update_app_suspension_status(&shared, app_suspension_status);
             next_app_suspension_refresh = now + app_suspension_refresh_interval;
             if runner.app_suspension_manager.has_suspended_processes() {

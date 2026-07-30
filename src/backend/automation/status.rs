@@ -4,6 +4,7 @@ pub(super) struct AutomationSnapshot {
     pub(super) settings: Arc<Settings>,
     pub(super) change_generation: u64,
     pub(super) app_suspension_freeze_requests: Vec<String>,
+    pub(super) app_suspension_process_requests: Vec<(ProcessActionTarget, bool)>,
     pub(super) memory_trim_now_requested: bool,
     pub(super) action_log_clear_requested: bool,
     pub(super) wake_events: AutomationWakeEvents,
@@ -17,6 +18,9 @@ pub(super) fn automation_snapshot(shared: &SharedAutomationState) -> Option<Auto
             change_generation: state.change_generation,
             app_suspension_freeze_requests: std::mem::take(
                 &mut state.app_suspension_freeze_requests,
+            ),
+            app_suspension_process_requests: std::mem::take(
+                &mut state.app_suspension_process_requests,
             ),
             memory_trim_now_requested: std::mem::take(&mut state.memory_trim_now_requested),
             action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
@@ -79,13 +83,9 @@ pub(super) fn update_background_efficiency_status(
     shared: &SharedAutomationState,
     status: BackgroundEfficiencySnapshot,
 ) {
-    update_status_with_auto_exclusions(
-        shared,
-        status.clone(),
-        &status.auto_excluded_processes,
-        |pending| &mut pending.background_efficiency,
-        |state| &mut state.status.background_efficiency,
-    );
+    update_status(shared, status, |state| {
+        &mut state.status.background_efficiency
+    });
 }
 
 pub(super) fn update_app_suspension_status(

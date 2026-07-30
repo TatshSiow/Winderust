@@ -648,6 +648,28 @@ pub(crate) fn apply_once(
     Ok(priority_class_label(applied))
 }
 
+pub(crate) fn current_priority(
+    target: &ProcessActionTarget,
+) -> Result<ProcessPrioritySetting, String> {
+    let process = ProcessHandle::open(target.id).map_err(process_priority_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    process
+        .priority_class()
+        .map_err(process_priority_error_message)
+        .map(|priority| match priority {
+            REALTIME_PRIORITY_CLASS => ProcessPrioritySetting::Realtime,
+            HIGH_PRIORITY_CLASS => ProcessPrioritySetting::High,
+            ABOVE_NORMAL_PRIORITY_CLASS => ProcessPrioritySetting::AboveNormal,
+            BELOW_NORMAL_PRIORITY_CLASS => ProcessPrioritySetting::BelowNormal,
+            IDLE_PRIORITY_CLASS => ProcessPrioritySetting::Idle,
+            _ => ProcessPrioritySetting::Normal,
+        })
+}
+
 fn quick_apply_priority_class(priority: ProcessPrioritySetting) -> Option<u32> {
     match priority {
         ProcessPrioritySetting::Idle => Some(IDLE_PRIORITY_CLASS),
@@ -659,6 +681,10 @@ fn quick_apply_priority_class(priority: ProcessPrioritySetting) -> Option<u32> {
         | ProcessPrioritySetting::High
         | ProcessPrioritySetting::Realtime => None,
     }
+}
+
+pub(crate) fn can_apply_once(priority: ProcessPrioritySetting) -> bool {
+    quick_apply_priority_class(priority).is_some()
 }
 
 fn priority_class_label(priority_class: u32) -> &'static str {

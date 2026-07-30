@@ -144,7 +144,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 
 | API | Used for | Reference |
 | --- | --- | --- |
-| `OpenProcess` | Opens target processes with query and set-information access rights. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
+| `OpenProcess` | Opens target processes with query-only access for live EcoQoS state reads, and query plus set-information access for mutations. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
 | `QueryFullProcessImageNameW` | Reads executable paths through `src/foreground/process_list.rs` for process discovery, foreground/cursor identification, and exact executable-path matching across every user-configured process rule. Process mutation paths revalidate the expected executable path on the same opened handle immediately before the change; built-in Windows safety exclusions remain filename-based. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew |
 | Process handles and identifiers | Documents that a process ID is valid only until process termination and can be reused, while an open handle continues to identify that process object. Winderust pairs executable-path checks with creation-time checks wherever sampled state crosses into a later mutation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-handles-and-identifiers |
 | Process Security and Access Rights | Documents access flags such as `PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_INFORMATION`, and `PROCESS_SET_LIMITED_INFORMATION`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
@@ -345,3 +345,22 @@ Winderust-owned per-user backup before the first change.
 Treat the value layout as compatibility-sensitive. Keep reading, backup,
 writing, bit decoding, and tests aligned, and fail visibly if the machine value
 cannot be read or written.
+
+## Process List Resource Usage
+
+Implementation entry point: `src/foreground/process_list.rs`. Sampling runs on
+the existing Process List background refresh and treats inaccessible or exited
+processes as unavailable rather than failing the complete refresh.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `GetProcessTimes` | Samples per-process kernel and user time; consecutive samples are converted to total-system CPU percentage. Creation time prevents PID-reuse comparisons. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes |
+| `K32GetProcessMemoryInfo` | Reads the current working-set size displayed in the Process List. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
+| `GetProcessInformation(ProcessPowerThrottling)` | Reads the execution-speed control and state masks used to report Efficiency mode where supported. The query is unavailable before Windows 11 22H2 even though `SetProcessInformation` can still apply the state. Query failure therefore leaves status unavailable; managed application falls back to restoring the documented system-managed state (`ControlMask = 0`, `StateMask = 0`) instead of skipping every target. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation |
+| `TerminateProcess` | Implements the confirmed Stop Process and Stop Process Tree actions. Winderust requests only `PROCESS_TERMINATE` plus identity-query access, revalidates creation time and executable path before acting, and terminates children before the selected root. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess |
+| Process security and access rights | Defines the minimal `PROCESS_TERMINATE` right required by `TerminateProcess`; inaccessible processes remain unavailable rather than triggering privilege escalation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
+
+Windows exposes no documented process-wide suspension query. The Process List
+therefore reports suspension only for process IDs currently suspended and
+tracked by Winderust; it does not infer suspension from undocumented NT thread
+state.

@@ -551,17 +551,6 @@ impl WinderustApp {
         };
         let mut changed = false;
 
-        for process in pending.background_efficiency {
-            changed |= upsert_rule_enabled(
-                &mut self.settings.background_efficiency.custom_rules,
-                &process,
-                true,
-                |rule| &rule.executable_path,
-                |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
-                || new_background_efficiency_rule(&process),
-            );
-        }
-
         for process in pending.app_suspension {
             changed |= upsert_rule_enabled(
                 &mut self.settings.app_suspension.suspendable_apps,

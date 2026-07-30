@@ -29,7 +29,7 @@ use crate::{
     foreground::{
         is_foreground_process, list_processes, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_executable_path,
-        same_process_name, unique_app_names, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        same_process_name, unique_app_names, ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
@@ -793,6 +793,63 @@ fn thread_priority_error_message(error: ThreadPriorityError) -> String {
         ThreadPriorityError::AccessDenied => "Access denied.".to_owned(),
         ThreadPriorityError::ProcessExited => "Process exited.".to_owned(),
         ThreadPriorityError::Failed(message) => message,
+    }
+}
+
+pub(crate) fn current_priority(
+    target: &ProcessActionTarget,
+) -> Result<Option<ProcessThreadPrioritySetting>, String> {
+    let process = VerifiedProcess::open(target.id, &target.executable_path)
+        .map_err(thread_priority_error_message)?;
+    if process.creation_time != target.creation_time {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    let mut current = None;
+    for thread_id in process_thread_ids(target.id).map_err(thread_priority_error_message)? {
+        let priority = ThreadHandle::open(thread_id)
+            .and_then(|thread| thread.priority())
+            .map_err(thread_priority_error_message)?;
+        if current.is_some_and(|existing| existing != priority) {
+            return Ok(None);
+        }
+        current = Some(priority);
+    }
+    Ok(current.map(thread_priority_setting_from_value))
+}
+
+pub(crate) fn apply_once(
+    target: &ProcessActionTarget,
+    priority: ProcessThreadPrioritySetting,
+) -> Result<usize, String> {
+    let priority = thread_priority_value(priority)
+        .ok_or_else(|| "This thread priority is not available as a quick action.".to_owned())?;
+    if is_builtin_excluded(&target.name) {
+        return Err("Built-in Windows processes cannot be modified.".to_owned());
+    }
+    let process = VerifiedProcess::open(target.id, &target.executable_path)
+        .map_err(thread_priority_error_message)?;
+    if process.creation_time != target.creation_time {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    let thread_ids = process_thread_ids(target.id).map_err(thread_priority_error_message)?;
+    for thread_id in &thread_ids {
+        let thread = ThreadHandle::open(*thread_id).map_err(thread_priority_error_message)?;
+        thread
+            .set_priority(priority, &process, &target.executable_path)
+            .map_err(thread_priority_error_message)?;
+    }
+    Ok(thread_ids.len())
+}
+
+fn thread_priority_setting_from_value(priority: i32) -> ProcessThreadPrioritySetting {
+    match priority {
+        THREAD_PRIORITY_TIME_CRITICAL => ProcessThreadPrioritySetting::TimeCritical,
+        THREAD_PRIORITY_HIGHEST => ProcessThreadPrioritySetting::Highest,
+        THREAD_PRIORITY_ABOVE_NORMAL => ProcessThreadPrioritySetting::AboveNormal,
+        THREAD_PRIORITY_BELOW_NORMAL => ProcessThreadPrioritySetting::BelowNormal,
+        THREAD_PRIORITY_LOWEST => ProcessThreadPrioritySetting::Lowest,
+        THREAD_PRIORITY_IDLE => ProcessThreadPrioritySetting::Idle,
+        _ => ProcessThreadPrioritySetting::Normal,
     }
 }
 

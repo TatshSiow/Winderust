@@ -72,6 +72,8 @@ impl WinderustApp {
                             app.running_process_load_state = ProcessLoadState::Paused;
                             app.process_candidates.clear();
                             app.running_processes.clear();
+                            app.process_resource_samples.clear();
+                            app.process_resource_usage.clear();
                             app.process_icon_cache.clear();
                             app.expanded_process_list_groups.clear();
                             app.active_power_plan_picker = None;

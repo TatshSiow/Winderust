@@ -37,7 +37,16 @@ impl ProcessListSort {
         } else {
             Self {
                 column,
-                direction: ProcessListSortDirection::Ascending,
+                direction: if matches!(
+                    column,
+                    ProcessListSortColumn::Column(
+                        ProcessListColumn::CpuUsage | ProcessListColumn::MemoryUsage
+                    )
+                ) {
+                    ProcessListSortDirection::Descending
+                } else {
+                    ProcessListSortDirection::Ascending
+                },
             }
         }
     }
@@ -75,7 +84,6 @@ impl ProcessListColumnLayout {
 
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) struct ProcessListRenderLayout<'a> {
-    pub(in crate::ui::app) hidden_columns: &'a HashSet<ProcessListColumn>,
     pub(in crate::ui::app) column_layout: &'a ProcessListColumnLayout,
 }
 
@@ -94,6 +102,7 @@ pub(in crate::ui::app) struct ProcessListEntryRowState {
 
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) struct ProcessListGroupRowData<'a> {
+    pub(in crate::ui::app) process: &'a ProcessInfo,
     pub(in crate::ui::app) process_name: &'a str,
     pub(in crate::ui::app) executable_path: &'a str,
     pub(in crate::ui::app) process_count: usize,
@@ -108,6 +117,7 @@ pub(in crate::ui::app) enum ProcessListRenderedRow {
         state: ProcessListEntryRowState,
     },
     Group {
+        process: ProcessInfo,
         process_name: String,
         executable_path: String,
         process_count: usize,
@@ -248,6 +258,7 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
 
         let collapsed = is_group_collapsed(&group.executable_path);
         rendered_rows.push(ProcessListRenderedRow::Group {
+            process: group.processes[0].to_owned(),
             process_name: group.display_name.clone(),
             executable_path: group.executable_path.clone(),
             process_count: group.processes.len(),
@@ -277,25 +288,62 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
     rendered_rows
 }
 
-pub(in crate::ui::app) fn process_list_render_data(app: &WinderustApp) -> ProcessListRenderData {
-    let process_count = app.running_processes.len();
-    let mut process_groups = process_list_groups(&app.running_processes);
+pub(in crate::ui::app) fn process_list_render_data(
+    app: &WinderustApp,
+    window: &Window,
+) -> ProcessListRenderData {
+    let visible_processes = app
+        .running_processes
+        .iter()
+        .filter(|process| !app.hide_limited_access_processes || process.image_path.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let process_count = visible_processes.len();
+    let mut process_groups = process_list_groups(&visible_processes);
     for group in &mut process_groups {
         process_list_sort_group_processes(group, app.process_list_sort);
     }
     let mut process_summaries = Vec::with_capacity(process_groups.len());
     for group in &process_groups {
-        process_summaries.push(process_policy_summary(
-            &app.settings,
-            &app.plans,
+        let mut summary = process_policy_summary(&app.settings, &app.plans, &group.executable_path);
+        let usages = group
+            .processes
+            .iter()
+            .filter_map(|process| app.process_resource_usage.get(&process.id));
+        let (cpu_percent, memory_bytes, efficiency_mode) =
+            usages.fold((None, None, false), |totals, usage| {
+                (
+                    usage
+                        .cpu_percent
+                        .map(|value| totals.0.unwrap_or(0.0) + value)
+                        .or(totals.0),
+                    usage
+                        .working_set_bytes
+                        .map(|value| totals.1.unwrap_or(0_u64).saturating_add(value))
+                        .or(totals.1),
+                    totals.2 || usage.efficiency_mode == Some(true),
+                )
+            });
+        summary.status = process_list_status_label(
+            &app.app_suspension_status,
+            None,
             &group.executable_path,
-        ));
+            efficiency_mode,
+        );
+        summary.cpu_percent = cpu_percent.map(|percent| percent.clamp(0.0, 100.0));
+        summary.memory_bytes = memory_bytes;
+        process_summaries.push(summary);
     }
-    let column_layout =
+    let mut column_layout =
         process_list_column_layout(&app.settings, &process_groups, &process_summaries);
+    let available_width = (window.viewport_size().width
+        - px(NAV_PANE_WIDTH + 48.0 + PROCESS_LIST_SCROLLBAR_GUTTER))
+    .min(px(CONTENT_MAX_WIDTH - PROCESS_LIST_SCROLLBAR_GUTTER))
+    .max(Pixels::ZERO);
+    stretch_process_list_layout(&mut column_layout, available_width);
     let process_rows =
         process_list_sorted_rows(process_groups, process_summaries, app.process_list_sort);
-    let table_width = process_list_table_width(&app.hidden_process_list_columns, &column_layout);
+    let table_width = process_list_table_width(&column_layout);
     let process_icons_by_path = process_list_icons_by_path(&app.process_candidates);
     let rows =
         process_list_rendered_rows(&process_rows, &process_icons_by_path, |executable_path| {
@@ -354,6 +402,16 @@ pub(in crate::ui::app) fn process_list_group_sort_cmp(
         ProcessListSortColumn::Column(ProcessListColumn::Pid) => {
             process_list_group_sort_pid(left_group, sort.direction)
                 .cmp(&process_list_group_sort_pid(right_group, sort.direction))
+        }
+        ProcessListSortColumn::Column(ProcessListColumn::CpuUsage) => left_summary
+            .cpu_percent
+            .partial_cmp(&right_summary.cpu_percent)
+            .unwrap_or(CmpOrdering::Equal),
+        ProcessListSortColumn::Column(ProcessListColumn::MemoryUsage) => {
+            left_summary.memory_bytes.cmp(&right_summary.memory_bytes)
+        }
+        ProcessListSortColumn::Column(ProcessListColumn::Status) => {
+            process_list_text_sort_cmp(&left_summary.status, &right_summary.status)
         }
         ProcessListSortColumn::Column(column) => process_list_text_sort_cmp(
             process_list_column_value(left_summary, column).as_ref(),
@@ -424,6 +482,30 @@ pub(in crate::ui::app) fn process_list_text_sort_cmp(left: &str, right: &str) ->
         .then_with(|| left.cmp(right))
 }
 
+pub(in crate::ui::app) fn process_list_status_label(
+    snapshot: &AppSuspensionSnapshot,
+    process_id: Option<u32>,
+    executable_path: &str,
+    efficiency_mode: bool,
+) -> String {
+    let suspended = process_id.map_or_else(
+        || {
+            !executable_path.is_empty()
+                && snapshot.suspended_apps.iter().any(|suspended_path| {
+                    same_executable_path(Path::new(suspended_path), Path::new(executable_path))
+                })
+        },
+        |process_id| snapshot.suspended_process_ids.contains(&process_id),
+    );
+    if suspended {
+        t!("process_list.status_suspended").to_string()
+    } else if efficiency_mode {
+        t!("process_list.status_efficiency_mode").to_string()
+    } else {
+        t!("process_list.status_active").to_string()
+    }
+}
+
 pub(in crate::ui::app) fn process_list_group_key(process_name: &str) -> String {
     process_name.trim().to_ascii_lowercase()
 }
@@ -431,49 +513,22 @@ pub(in crate::ui::app) fn process_list_group_key(process_name: &str) -> String {
 pub(in crate::ui::app) fn process_list_executable_path_group_key(path: &Path) -> String {
     executable_path_key(path)
 }
-
-pub(in crate::ui::app) fn process_list_column_visible(
-    hidden_columns: &HashSet<ProcessListColumn>,
-    column: ProcessListColumn,
-) -> bool {
-    !hidden_columns.contains(&column)
-}
-
 pub(in crate::ui::app) fn process_list_column_min_width(column: ProcessListColumn) -> f32 {
     match column {
         ProcessListColumn::Pid => PROCESS_LIST_PID_MIN_WIDTH,
-        ProcessListColumn::CoreLimiter
-        | ProcessListColumn::CoreSteering
-        | ProcessListColumn::MemoryTrim => 86.0,
-        ProcessListColumn::BackgroundEfficiency
-        | ProcessListColumn::ProcessPriority
-        | ProcessListColumn::AppSuspension
-        | ProcessListColumn::TimerResolution => 112.0,
-        ProcessListColumn::PowerPlanForeground
-        | ProcessListColumn::PowerPlanRunning
-        | ProcessListColumn::BackgroundCpuRestriction
-        | ProcessListColumn::IoPriority
-        | ProcessListColumn::GpuPriority
-        | ProcessListColumn::MemoryPriority => PROCESS_LIST_COLUMN_MIN_WIDTH,
+        ProcessListColumn::Status => 120.0,
+        ProcessListColumn::CpuUsage => 88.0,
+        ProcessListColumn::MemoryUsage => 112.0,
+        _ => PROCESS_LIST_COLUMN_MIN_WIDTH,
     }
 }
-
 pub(in crate::ui::app) fn process_list_column_max_width(column: ProcessListColumn) -> f32 {
     match column {
         ProcessListColumn::Pid => PROCESS_LIST_PID_MAX_WIDTH,
-        ProcessListColumn::CoreLimiter
-        | ProcessListColumn::CoreSteering
-        | ProcessListColumn::ProcessPriority
-        | ProcessListColumn::MemoryTrim
-        | ProcessListColumn::AppSuspension
-        | ProcessListColumn::TimerResolution => 170.0,
-        ProcessListColumn::BackgroundEfficiency => 190.0,
-        ProcessListColumn::PowerPlanForeground
-        | ProcessListColumn::PowerPlanRunning
-        | ProcessListColumn::BackgroundCpuRestriction
-        | ProcessListColumn::IoPriority
-        | ProcessListColumn::GpuPriority
-        | ProcessListColumn::MemoryPriority => PROCESS_LIST_COLUMN_MAX_WIDTH,
+        ProcessListColumn::Status => 160.0,
+        ProcessListColumn::CpuUsage => 110.0,
+        ProcessListColumn::MemoryUsage => 150.0,
+        _ => PROCESS_LIST_COLUMN_MAX_WIDTH,
     }
 }
 
@@ -483,19 +538,22 @@ pub(in crate::ui::app) fn process_list_column_label(
 ) -> String {
     match column {
         ProcessListColumn::Pid => t!("process_list.pid").to_string(),
+        ProcessListColumn::Status => t!("process_list.status").to_string(),
+        ProcessListColumn::CpuUsage => t!("process_list.cpu_usage").to_string(),
+        ProcessListColumn::MemoryUsage => t!("process_list.memory_usage").to_string(),
         ProcessListColumn::PowerPlanForeground => {
             t!("process_list.power_plan_foreground").to_string()
         }
         ProcessListColumn::PowerPlanRunning => t!("process_list.power_plan_running").to_string(),
+        ProcessListColumn::AdaptiveEngine => t!("process_list.adaptive_engine").to_string(),
         ProcessListColumn::BackgroundEfficiency => {
             t!("process_list.background_efficiency").to_string()
         }
-        ProcessListColumn::CoreLimiter => t!("process_list.core_limiter").to_string(),
-        ProcessListColumn::BackgroundCpuRestriction => {
-            t!("process_list.background_cpu_restriction").to_string()
-        }
-        ProcessListColumn::CoreSteering => t!("process_list.core_steering").to_string(),
         ProcessListColumn::ProcessPriority => t!("process_list.process_priority").to_string(),
+        ProcessListColumn::ThreadPriority => t!("process_list.thread_priority").to_string(),
+        ProcessListColumn::DynamicPriorityBoost => {
+            t!("process_list.dynamic_priority_boost").to_string()
+        }
         ProcessListColumn::IoPriority => process_list_priority_header_label(
             t!("process_list.io_priority").to_string(),
             io_priority_has_foreground_background_split(&settings.io_priority),
@@ -508,9 +566,6 @@ pub(in crate::ui::app) fn process_list_column_label(
             t!("process_list.memory_priority").to_string(),
             memory_priority_has_foreground_background_split(&settings.memory_priority),
         ),
-        ProcessListColumn::MemoryTrim => t!("process_list.memory_trim").to_string(),
-        ProcessListColumn::AppSuspension => t!("process_list.app_suspension").to_string(),
-        ProcessListColumn::TimerResolution => t!("process_list.timer_resolution").to_string(),
     }
 }
 
@@ -545,7 +600,7 @@ pub(in crate::ui::app) fn process_list_column_layout(
     let name_width = name_width.clamp(PROCESS_LIST_NAME_MIN_WIDTH, PROCESS_LIST_NAME_MAX_WIDTH);
 
     let mut column_widths = HashMap::new();
-    for column in PROCESS_LIST_OPTIONAL_COLUMNS {
+    for column in PROCESS_LIST_OVERVIEW_COLUMNS {
         let mut width = process_list_estimated_cell_width(
             &process_list_column_label(column, settings),
             process_list_header_cell_non_text_width(),
@@ -638,18 +693,10 @@ pub(in crate::ui::app) fn process_list_estimated_char_width(character: char) -> 
     }
 }
 
-pub(in crate::ui::app) fn process_list_table_width(
-    hidden_columns: &HashSet<ProcessListColumn>,
-    layout: &ProcessListColumnLayout,
-) -> Pixels {
-    let visible_columns = PROCESS_LIST_OPTIONAL_COLUMNS
-        .iter()
-        .copied()
-        .filter(|column| process_list_column_visible(hidden_columns, *column))
-        .collect::<Vec<_>>();
-    let visible_column_count = 1 + visible_columns.len();
+pub(in crate::ui::app) fn process_list_table_width(layout: &ProcessListColumnLayout) -> Pixels {
+    let visible_column_count = 1 + PROCESS_LIST_OVERVIEW_COLUMNS.len();
     let data_width = layout.name_width
-        + visible_columns
+        + PROCESS_LIST_OVERVIEW_COLUMNS
             .iter()
             .copied()
             .map(|column| layout.column_width(column))
@@ -657,4 +704,15 @@ pub(in crate::ui::app) fn process_list_table_width(
     let gap_count = visible_column_count.saturating_sub(1) as f32;
 
     px(data_width + PROCESS_LIST_ROW_HORIZONTAL_PADDING + PROCESS_LIST_COLUMN_GAP * gap_count)
+}
+
+pub(in crate::ui::app) fn stretch_process_list_layout(
+    layout: &mut ProcessListColumnLayout,
+    available_width: Pixels,
+) {
+    let extra_width = available_width - process_list_table_width(layout);
+    if extra_width <= Pixels::ZERO {
+        return;
+    }
+    layout.name_width += extra_width / px(1.0);
 }

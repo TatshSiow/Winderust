@@ -300,8 +300,8 @@ pub(super) fn automation_windows_event_watcher_required(settings: &Settings) -> 
 }
 
 pub(super) fn event_driven_process_work_required(settings: &Settings) -> bool {
-    !settings.adaptive_engine.enabled
-        && (app_suspension_required(settings) || process_appearance_scan_required(settings))
+    app_suspension_required(settings)
+        || (!settings.adaptive_engine.enabled && process_appearance_scan_required(settings))
 }
 
 pub(super) fn windows_event_wake_required(

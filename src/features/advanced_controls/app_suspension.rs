@@ -41,9 +41,9 @@ use crate::{
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    contains_process_name, executable_path_key, list_processes, process_executable_path,
-    process_handle_matches_executable_path, process_session_id, same_executable_path,
-    EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+    capture_process_action_target, contains_process_name, executable_path_key, list_processes,
+    process_executable_path, process_handle_matches_executable_path, process_session_id,
+    same_executable_path, ProcessActionTarget, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -65,6 +65,7 @@ pub struct AppSuspensionSnapshot {
     pub unsupported: bool,
     pub grace_apps: usize,
     pub suspended_processes: usize,
+    pub suspended_process_ids: Vec<u32>,
     pub temporary_thawed_processes: usize,
     pub network_wake_processes: usize,
     pub audio_wake_processes: usize,
@@ -126,6 +127,7 @@ struct SuspendedProcess {
     process_name: String,
     executable_path: String,
     suspended_since: Instant,
+    manual: bool,
 }
 
 struct TemporaryThaw {
@@ -201,6 +203,64 @@ impl SuspensionLifecycleState {
 }
 
 impl AppSuspensionManager {
+    pub fn apply_manual_process_action(
+        &mut self,
+        target: &ProcessActionTarget,
+        suspend: bool,
+        action_log: &mut ActionLog,
+    ) {
+        let refreshed = capture_process_action_target(target.id, &target.executable_path);
+        if refreshed.is_err()
+            || refreshed
+                .as_ref()
+                .is_ok_and(|refreshed| refreshed.creation_time != target.creation_time)
+        {
+            action_log.record(
+                ActionLogFeature::AppSuspension,
+                Some(target.id),
+                target.name.clone(),
+                ActionLogResult::Failed,
+                "The selected process instance changed before the request was applied.",
+            );
+            return;
+        }
+        if contains_process_name(BUILT_IN_EXCLUSIONS, &target.name) {
+            action_log.record(
+                ActionLogFeature::AppSuspension,
+                Some(target.id),
+                target.name.clone(),
+                ActionLogResult::Failed,
+                "Built-in Windows processes cannot be suspended.",
+            );
+            return;
+        }
+
+        if suspend {
+            let result = self.suspend_process(
+                target.id,
+                target.name.clone(),
+                target.executable_path.to_string_lossy().into_owned(),
+                Instant::now(),
+                true,
+            );
+            action_log.record(
+                ActionLogFeature::AppSuspension,
+                Some(target.id),
+                target.name.clone(),
+                if result.is_ok() {
+                    ActionLogResult::Applied
+                } else {
+                    ActionLogResult::Failed
+                },
+                result.map_or_else(suspension_error_message, |()| {
+                    "Manually suspended process.".to_owned()
+                }),
+            );
+        } else {
+            self.thaw_processes_for_user_intent(&[target.id], Instant::now(), action_log);
+        }
+    }
+
     pub fn has_suspended_processes(&self) -> bool {
         !self.suspended.is_empty()
     }
@@ -243,27 +303,31 @@ impl AppSuspensionManager {
         let now = Instant::now();
 
         if !automation_enabled {
-            let failed = self.clear_all(action_log, "automation disabled");
+            let failed = self.clear_automatic(action_log, "automation disabled");
             self.failure_suppression.clear();
             self.action_failure_suppression.clear();
-            return AppSuspensionSnapshot {
-                enabled: false,
-                failed_actions: failed,
-                message: "Automation disabled.".to_owned(),
-                ..Default::default()
-            };
+            return self.snapshot(
+                false,
+                self.job_freeze_unsupported,
+                0,
+                failed,
+                "Automation disabled.".to_owned(),
+                None,
+            );
         }
 
         if !settings.enabled {
-            let failed = self.clear_all(action_log, "App Suspension disabled");
+            let failed = self.clear_automatic(action_log, "App Suspension disabled");
             self.failure_suppression.clear();
             self.action_failure_suppression.clear();
-            return AppSuspensionSnapshot {
-                enabled: false,
-                failed_actions: failed,
-                message: "App Suspension disabled.".to_owned(),
-                ..Default::default()
-            };
+            return self.snapshot(
+                false,
+                self.job_freeze_unsupported,
+                0,
+                failed,
+                "App Suspension disabled.".to_owned(),
+                None,
+            );
         }
 
         let enabled_process_names = settings
@@ -274,15 +338,17 @@ impl AppSuspensionManager {
             .filter_map(|name| name.to_str())
             .collect::<Vec<_>>();
         if enabled_process_names.is_empty() {
-            let failed = self.clear_all(action_log, "no App Suspension rules are enabled");
+            let failed = self.clear_automatic(action_log, "no App Suspension rules are enabled");
             self.failure_suppression.clear();
             self.action_failure_suppression.clear();
-            return AppSuspensionSnapshot {
-                enabled: true,
-                failed_actions: failed,
-                message: "No App Suspension rules configured.".to_owned(),
-                ..Default::default()
-            };
+            return self.snapshot(
+                true,
+                self.job_freeze_unsupported,
+                0,
+                failed,
+                "No App Suspension rules configured.".to_owned(),
+                None,
+            );
         }
 
         let mut failed_actions = 0;
@@ -294,15 +360,16 @@ impl AppSuspensionManager {
                 ActionLogResult::Skipped,
                 "Skipped because Windows Job Object freeze is unsupported.",
             );
-            failed_actions += self.clear_all(action_log, "Job Object freeze unsupported");
-            return AppSuspensionSnapshot {
-                enabled: true,
-                unsupported: true,
+            failed_actions += self.clear_automatic(action_log, "Job Object freeze unsupported");
+            return self.snapshot(
+                true,
+                true,
+                0,
                 failed_actions,
-                message: "App Suspension unavailable: Windows Job Object freeze is not supported on this system."
+                "App Suspension unavailable: Windows Job Object freeze is not supported on this system."
                     .to_owned(),
-                ..Default::default()
-            };
+                None,
+            );
         }
 
         let Some(foreground_process_id) = foreground_process_id else {
@@ -590,6 +657,7 @@ impl AppSuspensionManager {
                 process_name.clone(),
                 process.executable_path.clone(),
                 now,
+                false,
             ) {
                 Ok(()) => {
                     self.failure_suppression
@@ -632,7 +700,8 @@ impl AppSuspensionManager {
                         ActionLogResult::Skipped,
                         "Skipped because Windows Job Object freeze is unsupported.",
                     );
-                    failed_actions += self.clear_all(action_log, "Job Object freeze unsupported");
+                    failed_actions +=
+                        self.clear_automatic(action_log, "Job Object freeze unsupported");
                     break;
                 }
                 Err(SuspensionError::Failed(err)) => {
@@ -682,7 +751,13 @@ impl AppSuspensionManager {
         let process_ids = self
             .managed_process_ids()
             .into_iter()
-            .filter(|process_id| !target_ids.contains(process_id))
+            .filter(|process_id| {
+                !target_ids.contains(process_id)
+                    && !self
+                        .suspended
+                        .get(process_id)
+                        .is_some_and(|process| process.manual)
+            })
             .collect::<Vec<_>>();
 
         self.release_processes(&process_ids, action_log, reason)
@@ -695,6 +770,42 @@ impl AppSuspensionManager {
         self.audio_wake_windows.clear();
         self.running_apps.clear();
         let process_ids = self.managed_process_ids().into_iter().collect::<Vec<_>>();
+        let failed = self.release_processes(&process_ids, action_log, reason);
+        self.temporary_thawed.clear();
+        failed
+    }
+
+    fn clear_automatic(&mut self, action_log: &mut ActionLog, reason: &str) -> usize {
+        self.tracked.clear();
+        self.network_snapshot.clear();
+        self.network_wake_windows.clear();
+        self.audio_wake_windows.clear();
+        self.running_apps.clear();
+        let stale_manual_process_ids = self
+            .suspended
+            .iter()
+            .filter_map(|(process_id, process)| {
+                (process.manual
+                    && !self
+                        .freezers
+                        .get(process_id)
+                        .is_some_and(|freezer| freezer.matches_process_id(*process_id)))
+                .then_some(*process_id)
+            })
+            .collect::<Vec<_>>();
+        for process_id in stale_manual_process_ids {
+            self.forget_process_state(process_id);
+        }
+        let manual_process_ids = self
+            .suspended
+            .iter()
+            .filter_map(|(process_id, process)| process.manual.then_some(*process_id))
+            .collect::<BTreeSet<_>>();
+        let process_ids = self
+            .managed_process_ids()
+            .into_iter()
+            .filter(|process_id| !manual_process_ids.contains(process_id))
+            .collect::<Vec<_>>();
         let failed = self.release_processes(&process_ids, action_log, reason);
         self.temporary_thawed.clear();
         failed
@@ -834,6 +945,27 @@ impl AppSuspensionManager {
             .window_owner_suspended_process_ids(window_owner_process_ids)
             .into_iter()
             .collect::<Vec<_>>();
+        if process_ids.is_empty() {
+            return None;
+        }
+
+        let failed_actions =
+            self.thaw_processes_for_user_intent(&process_ids, Instant::now(), action_log);
+        Some(self.snapshot(
+            true,
+            self.job_freeze_unsupported,
+            0,
+            failed_actions,
+            "App Suspension active.".to_owned(),
+            None,
+        ))
+    }
+
+    pub fn release_all_suspended_processes_for_user_intent(
+        &mut self,
+        action_log: &mut ActionLog,
+    ) -> Option<AppSuspensionSnapshot> {
+        let process_ids = self.suspended.keys().copied().collect::<Vec<_>>();
         if process_ids.is_empty() {
             return None;
         }
@@ -1419,6 +1551,7 @@ impl AppSuspensionManager {
         process_name: String,
         executable_path: String,
         suspended_since: Instant,
+        manual: bool,
     ) -> Result<(), SuspensionError> {
         if self
             .freezers
@@ -1453,6 +1586,7 @@ impl AppSuspensionManager {
                 process_name,
                 executable_path,
                 suspended_since,
+                manual,
             },
         );
         self.temporary_thawed.remove(&process_id);
@@ -1481,6 +1615,7 @@ impl AppSuspensionManager {
             unsupported,
             grace_apps: self.tracked.len(),
             suspended_processes: self.suspended.len(),
+            suspended_process_ids: self.suspended.keys().copied().collect(),
             temporary_thawed_processes: self.temporary_thawed.len(),
             network_wake_processes: self
                 .temporary_thawed
@@ -1607,6 +1742,7 @@ impl Default for AppSuspensionSnapshot {
             unsupported: false,
             grace_apps: 0,
             suspended_processes: 0,
+            suspended_process_ids: Vec::new(),
             temporary_thawed_processes: 0,
             network_wake_processes: 0,
             audio_wake_processes: 0,
@@ -1677,6 +1813,94 @@ mod tests {
             process_creation_time: None,
             can_wait_for_process: false,
         }
+    }
+
+    #[test]
+    fn disabling_automation_preserves_only_manual_suspensions() {
+        let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
+        let now = Instant::now();
+        for (process_id, manual) in [(7, true), (8, false)] {
+            manager.freezers.insert(process_id, inert_freezer());
+            manager.suspended.insert(
+                process_id,
+                SuspendedProcess {
+                    process_name: format!("{process_id}.exe"),
+                    executable_path: format!("C:/Apps/{process_id}.exe"),
+                    suspended_since: now,
+                    manual,
+                },
+            );
+        }
+
+        let status = manager.update(
+            &AppSuspensionSettings::default(),
+            false,
+            None,
+            &[],
+            &mut log,
+        );
+
+        assert_eq!(status.suspended_process_ids, vec![7]);
+        assert!(manager.suspended.contains_key(&7));
+        assert!(!manager.suspended.contains_key(&8));
+        assert!(manager.freezers.contains_key(&7));
+        assert!(!manager.freezers.contains_key(&8));
+    }
+
+    #[test]
+    fn enabled_without_rules_preserves_only_manual_suspensions() {
+        let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
+        let now = Instant::now();
+        for (process_id, manual) in [(7, true), (8, false)] {
+            manager.freezers.insert(process_id, inert_freezer());
+            manager.suspended.insert(
+                process_id,
+                SuspendedProcess {
+                    process_name: format!("{process_id}.exe"),
+                    executable_path: format!("C:/Apps/{process_id}.exe"),
+                    suspended_since: now,
+                    manual,
+                },
+            );
+        }
+        let settings = AppSuspensionSettings {
+            enabled: true,
+            ..Default::default()
+        };
+
+        let status = manager.update(&settings, true, None, &[], &mut log);
+
+        assert_eq!(status.suspended_process_ids, vec![7]);
+        assert!(manager.suspended.contains_key(&7));
+        assert!(!manager.suspended.contains_key(&8));
+    }
+
+    #[test]
+    fn target_churn_does_not_release_manual_suspension() {
+        let mut manager = AppSuspensionManager::default();
+        let mut log = ActionLog::new(8);
+        let now = Instant::now();
+        for (process_id, manual) in [(7, true), (8, false)] {
+            manager.freezers.insert(process_id, inert_freezer());
+            manager.suspended.insert(
+                process_id,
+                SuspendedProcess {
+                    process_name: format!("{process_id}.exe"),
+                    executable_path: format!("C:/Apps/{process_id}.exe"),
+                    suspended_since: now,
+                    manual,
+                },
+            );
+        }
+
+        manager.release_non_targets(&BTreeSet::new(), &mut log, "test target churn");
+
+        assert!(manager.suspended.contains_key(&7));
+        assert!(!manager.suspended.contains_key(&8));
+        assert!(manager.freezers.contains_key(&7));
+        assert!(!manager.freezers.contains_key(&8));
     }
 
     #[test]
@@ -1851,7 +2075,7 @@ mod tests {
     }
 
     #[test]
-    fn user_intent_release_thaws_window_owner_processes_only() {
+    fn user_intent_release_supports_targeted_and_shell_fallback() {
         let mut manager = AppSuspensionManager::default();
         let mut log = ActionLog::new(8);
         let now = Instant::now();
@@ -1863,6 +2087,7 @@ mod tests {
                 process_name: "chat.exe".to_owned(),
                 executable_path: r"C:\Apps\chat.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
         manager.suspended.insert(
@@ -1871,6 +2096,7 @@ mod tests {
                 process_name: "mail.exe".to_owned(),
                 executable_path: r"C:\Mail\mail.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
 
@@ -1883,6 +2109,13 @@ mod tests {
         assert!(!manager.suspended.contains_key(&7));
         assert!(manager.suspended.contains_key(&8));
         assert!(manager.temporary_thawed.contains_key(&7));
+
+        let status = manager
+            .release_all_suspended_processes_for_user_intent(&mut log)
+            .unwrap();
+        assert_eq!(status.suspended_processes, 0);
+        assert!(manager.suspended.is_empty());
+        assert!(manager.temporary_thawed.contains_key(&8));
     }
 
     #[test]
@@ -2123,6 +2356,7 @@ mod tests {
                 process_name: "chat.exe".to_owned(),
                 executable_path: r"C:\Apps\chat.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
         manager.temporary_thawed.insert(
@@ -2272,6 +2506,7 @@ mod tests {
                 process_name: "chat.exe".to_owned(),
                 executable_path: r"C:\Apps\chat.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
 
@@ -2304,6 +2539,7 @@ mod tests {
                 process_name: "chat.exe".to_owned(),
                 executable_path: r"C:\Apps\chat.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
         manager.suspended.insert(
@@ -2312,6 +2548,7 @@ mod tests {
                 process_name: "CHAT.EXE".to_owned(),
                 executable_path: r"C:\Apps\chat.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
         manager.suspended.insert(
@@ -2320,6 +2557,7 @@ mod tests {
                 process_name: "mail.exe".to_owned(),
                 executable_path: r"C:\Mail\mail.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
 
@@ -2346,6 +2584,7 @@ mod tests {
                 process_name: "browser.exe".to_owned(),
                 executable_path: r"C:\Apps\browser.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
         manager.suspended.insert(
@@ -2354,6 +2593,7 @@ mod tests {
                 process_name: "BROWSER.EXE".to_owned(),
                 executable_path: r"C:\Apps\browser.exe".to_owned(),
                 suspended_since: now,
+                manual: false,
             },
         );
 

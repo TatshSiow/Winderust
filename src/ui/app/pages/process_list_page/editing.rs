@@ -1,6 +1,56 @@
 use super::*;
 
 impl WinderustApp {
+    pub(in crate::ui::app) fn finish_process_quick_action(
+        &mut self,
+        process_name: &str,
+        action: &str,
+        result: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.status_message = match result {
+            Ok(()) => t!(
+                "process_list.quick_action_applied",
+                action = action,
+                name = process_name
+            )
+            .to_string(),
+            Err(error) => t!(
+                "process_list.quick_action_failed",
+                action = action,
+                name = process_name,
+                error = error
+            )
+            .to_string(),
+        };
+        cx.notify();
+    }
+    pub(in crate::ui::app) fn open_process_details(
+        &mut self,
+        display_name: String,
+        executable_path: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.active_power_plan_picker = None;
+        self.process_details = Some(ProcessDetailsDraft {
+            display_name,
+            executable_path,
+        });
+        cx.notify();
+    }
+
+    pub(in crate::ui::app) fn save_process_details(&mut self, cx: &mut Context<Self>) {
+        let details = self.process_details.take();
+        if details.is_none() {
+            return;
+        }
+        if !self.save_settings() {
+            self.process_details = details;
+        }
+        self.active_power_plan_picker = None;
+        cx.notify();
+    }
+
     pub(in crate::ui::app) fn is_process_list_group_collapsed(
         &self,
         executable_path: &str,
@@ -26,29 +76,6 @@ impl WinderustApp {
         };
         begin_expandable_motion(format!("process-list-group-{key}"), expanded);
         cx.notify();
-    }
-
-    pub(in crate::ui::app) fn set_process_list_column_visible(
-        &mut self,
-        column: ProcessListColumn,
-        visible: bool,
-        cx: &mut Context<Self>,
-    ) {
-        let changed = if visible {
-            self.hidden_process_list_columns.remove(&column)
-        } else {
-            self.hidden_process_list_columns.insert(column)
-        };
-
-        let sort_changed =
-            !visible && self.process_list_sort.column == ProcessListSortColumn::Column(column);
-        if sort_changed {
-            self.process_list_sort = ProcessListSort::default();
-        }
-
-        if changed || sort_changed {
-            cx.notify();
-        }
     }
 
     pub(in crate::ui::app) fn toggle_process_list_sort(
@@ -107,183 +134,80 @@ impl WinderustApp {
         self.finish_process_list_edit(cx);
     }
 
-    pub(in crate::ui::app) fn set_process_list_background_cpu_restriction(
+    pub(in crate::ui::app) fn set_process_list_adaptive_engine(
         &mut self,
         process_name: String,
         included: bool,
         cx: &mut Context<Self>,
     ) {
         set_process_exclusion(
-            &mut self.settings.background_cpu_restriction.exclusions,
+            &mut self.settings.workload_engine.workload_engine_exclusions,
             &process_name,
             !included,
         );
         self.finish_process_list_edit(cx);
     }
-
-    pub(in crate::ui::app) fn set_process_list_core_limiter(
+    pub(in crate::ui::app) fn set_process_list_process_priority(
         &mut self,
         process_name: String,
-        max_logical_processors: Option<u8>,
-        cx: &mut Context<Self>,
-    ) {
-        set_core_limiter_override(
-            &mut self.settings.core_limiter,
-            &process_name,
-            max_logical_processors,
-        );
-        self.finish_process_list_edit(cx);
-    }
-
-    pub(in crate::ui::app) fn set_process_list_gpu_priority_included(
-        &mut self,
-        process_name: String,
-        included: bool,
-        cx: &mut Context<Self>,
-    ) {
-        set_process_exclusion(
-            &mut self.settings.gpu_priority.exclusions,
-            &process_name,
-            !included,
-        );
-        self.finish_process_list_edit(cx);
-    }
-
-    pub(in crate::ui::app) fn set_process_list_memory_trim(
-        &mut self,
-        process_name: String,
-        included: bool,
-        cx: &mut Context<Self>,
-    ) {
-        set_process_exclusion(
-            &mut self.settings.memory_trim.exclusions,
-            &process_name,
-            !included,
-        );
-        self.finish_process_list_edit(cx);
-    }
-
-    pub(in crate::ui::app) fn set_process_list_app_suspension(
-        &mut self,
-        process_name: String,
-        included: bool,
-        cx: &mut Context<Self>,
-    ) {
-        set_app_suspension_override(&mut self.settings.app_suspension, &process_name, included);
-        self.finish_process_list_edit(cx);
-    }
-
-    pub(in crate::ui::app) fn set_process_list_timer_resolution(
-        &mut self,
-        process_name: String,
-        desired_100ns: Option<u32>,
-        cx: &mut Context<Self>,
-    ) {
-        set_timer_resolution_override(
-            &mut self.settings.timer_resolution,
-            &process_name,
-            desired_100ns,
-        );
-        self.finish_process_list_edit(cx);
-    }
-
-    pub(in crate::ui::app) fn apply_process_priority_once(
-        &mut self,
-        target: Result<ProcessActionTarget, ProcessActionTargetError>,
-        process_name: &str,
         priority: ProcessPrioritySetting,
         cx: &mut Context<Self>,
     ) {
-        self.status_message = match target
-            .map_err(|error| error.to_string())
-            .and_then(|target| process_priority::apply_once(&target, priority))
-        {
-            Ok(priority) => t!(
-                "process_list.applied_once",
-                name = process_name,
-                priority = priority
-            )
-            .to_string(),
-            Err(error) => t!(
-                "process_list.apply_once_failed",
-                name = process_name,
-                error = error
-            )
-            .to_string(),
-        };
-        cx.notify();
+        set_process_priority_rule(&mut self.settings.process_priority, &process_name, priority);
+        self.finish_process_list_edit(cx);
     }
 
-    pub(in crate::ui::app) fn save_process_priority_rule(
+    pub(in crate::ui::app) fn set_process_list_thread_priority(
         &mut self,
-        process_name: &str,
-        priority: ProcessPrioritySetting,
+        process_name: String,
+        priority: ProcessThreadPrioritySetting,
         cx: &mut Context<Self>,
     ) {
-        set_process_priority_rule(&mut self.settings.process_priority, process_name, priority);
-        if self.save_settings() {
-            let key = if self.settings.process_priority.enabled {
-                "process_list.saved_priority_rule"
-            } else {
-                "process_list.saved_priority_rule_disabled"
-            };
-            self.status_message = t!(
-                key,
-                name = process_name,
-                priority = process_priority_setting_label(priority)
-            )
-            .to_string();
-        }
-        cx.notify();
+        set_thread_priority_rule(&mut self.settings.thread_priority, &process_name, priority);
+        self.finish_process_list_edit(cx);
     }
 
-    pub(in crate::ui::app) fn apply_memory_priority_once(
+    pub(in crate::ui::app) fn set_process_list_dynamic_priority_boost(
         &mut self,
-        target: Result<ProcessActionTarget, ProcessActionTargetError>,
-        process_name: &str,
+        process_name: String,
+        boost: ProcessDynamicPriorityBoostSetting,
+        cx: &mut Context<Self>,
+    ) {
+        set_dynamic_priority_boost_rule(
+            &mut self.settings.dynamic_priority_boost,
+            &process_name,
+            boost,
+        );
+        self.finish_process_list_edit(cx);
+    }
+
+    pub(in crate::ui::app) fn set_process_list_io_priority(
+        &mut self,
+        process_name: String,
+        priority: ProcessIoPrioritySetting,
+        cx: &mut Context<Self>,
+    ) {
+        set_io_priority_rule(&mut self.settings.io_priority, &process_name, priority);
+        self.finish_process_list_edit(cx);
+    }
+
+    pub(in crate::ui::app) fn set_process_list_gpu_priority(
+        &mut self,
+        process_name: String,
+        priority: ProcessGpuPrioritySetting,
+        cx: &mut Context<Self>,
+    ) {
+        set_gpu_priority_rule(&mut self.settings.gpu_priority, &process_name, priority);
+        self.finish_process_list_edit(cx);
+    }
+
+    pub(in crate::ui::app) fn set_process_list_memory_priority(
+        &mut self,
+        process_name: String,
         priority: ProcessMemoryPrioritySetting,
         cx: &mut Context<Self>,
     ) {
-        self.status_message = match target
-            .map_err(|error| error.to_string())
-            .and_then(|target| memory_priority::apply_once(&target, priority))
-        {
-            Ok(priority) => t!(
-                "process_list.applied_memory_once",
-                name = process_name,
-                priority = priority
-            )
-            .to_string(),
-            Err(error) => t!(
-                "process_list.apply_memory_once_failed",
-                name = process_name,
-                error = error
-            )
-            .to_string(),
-        };
-        cx.notify();
-    }
-
-    pub(in crate::ui::app) fn save_memory_priority_rule(
-        &mut self,
-        process_name: &str,
-        priority: ProcessMemoryPrioritySetting,
-        cx: &mut Context<Self>,
-    ) {
-        set_memory_priority_rule(&mut self.settings.memory_priority, process_name, priority);
-        if self.save_settings() {
-            let key = if self.settings.memory_priority.enabled {
-                "process_list.saved_memory_rule"
-            } else {
-                "process_list.saved_memory_rule_disabled"
-            };
-            self.status_message = t!(
-                key,
-                name = process_name,
-                priority = process_memory_priority_setting_label(priority)
-            )
-            .to_string();
-        }
-        cx.notify();
+        set_memory_priority_rule(&mut self.settings.memory_priority, &process_name, priority);
+        self.finish_process_list_edit(cx);
     }
 }
