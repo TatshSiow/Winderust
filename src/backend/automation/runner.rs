@@ -450,8 +450,7 @@ impl HiddenAutomationRunner {
             )
             .and_then(|()| set_active(&plan_guid))
             {
-                let _ = delete_plan(&plan_guid);
-                return Err(error);
+                return Err(adaptive_plan_setup_error(error, delete_plan(&plan_guid)));
             }
             self.current_guid = Some(plan_guid.clone());
             self.adaptive_power_plan = Some(ActiveAdaptivePowerPlan {
@@ -779,6 +778,18 @@ impl HiddenAutomationRunner {
     pub(super) fn clear_switch_failure(&mut self, target_guid: &str) {
         self.switch_failure_suppression
             .clear_key_failure(&switch_failure_key(target_guid));
+    }
+}
+
+pub(super) fn adaptive_plan_setup_error(
+    operation_error: String,
+    cleanup: Result<(), String>,
+) -> String {
+    match cleanup {
+        Ok(()) => operation_error,
+        Err(cleanup_error) => {
+            format!("{operation_error} Adaptive plan cleanup also failed: {cleanup_error}")
+        }
     }
 }
 

@@ -3,7 +3,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, MutexGuard,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
@@ -109,6 +109,7 @@ pub struct BackgroundAutomation {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutomationStatusSnapshot {
     pub generation: u64,
+    pub worker_error: Option<String>,
     pub background_efficiency: BackgroundEfficiencySnapshot,
     pub app_suspension: AppSuspensionSnapshot,
     pub core_steering: CoreSteeringSnapshot,
@@ -133,6 +134,12 @@ struct SharedAutomationState {
     changed: Condvar,
     status_generation: AtomicU64,
     pending_auto_exclusions_generation: AtomicU64,
+}
+
+fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 struct AutomationWorkerState {
@@ -226,8 +233,8 @@ impl BackgroundAutomation {
     }
 
     pub fn update_settings(&self, settings: &Settings) {
-        let mut changed = false;
-        if let Ok(mut state) = self.shared.state.lock() {
+        {
+            let mut state = lock_unpoisoned(&self.shared.state);
             if state.settings.as_ref() == settings {
                 return;
             }
@@ -235,13 +242,10 @@ impl BackgroundAutomation {
             state.pending_events.settings_changed = true;
             state.change_generation = state.change_generation.wrapping_add(1);
             self.shared.changed.notify_one();
-            changed = true;
         }
 
-        if changed {
-            self.sync_worker(settings, false);
-            self.sync_windows_event_watcher(settings);
-        }
+        self.sync_worker(settings, false);
+        self.sync_windows_event_watcher(settings);
     }
 
     pub fn status_snapshot_since(
@@ -252,18 +256,21 @@ impl BackgroundAutomation {
             return None;
         }
 
-        self.shared.state.lock().ok().and_then(|state| {
-            (state.status.generation != observed_generation).then(|| state.status.clone())
-        })
+        let mut state = lock_unpoisoned(&self.shared.state);
+        if state.status.generation == observed_generation {
+            return None;
+        }
+        let mut snapshot = state.status.clone();
+        snapshot.worker_error = state.status.worker_error.take();
+        Some(snapshot)
     }
 
     pub fn clear_action_log(&self) {
-        if let Ok(mut state) = self.shared.state.lock() {
-            state.status.action_log_entries = Arc::new(Vec::new());
-            state.action_log_clear_requested = true;
-            state.change_generation = state.change_generation.wrapping_add(1);
-            self.shared.changed.notify_one();
-        }
+        let mut state = lock_unpoisoned(&self.shared.state);
+        state.status.action_log_entries = Arc::new(Vec::new());
+        state.action_log_clear_requested = true;
+        state.change_generation = state.change_generation.wrapping_add(1);
+        self.shared.changed.notify_one();
     }
 
     pub fn take_pending_auto_exclusions_since(
@@ -279,18 +286,17 @@ impl BackgroundAutomation {
             return None;
         }
 
-        self.shared.state.lock().ok().and_then(|mut state| {
-            let generation = self
-                .shared
-                .pending_auto_exclusions_generation
-                .load(Ordering::Acquire);
-            if generation == *observed_generation {
-                return None;
-            }
+        let mut state = lock_unpoisoned(&self.shared.state);
+        let generation = self
+            .shared
+            .pending_auto_exclusions_generation
+            .load(Ordering::Acquire);
+        if generation == *observed_generation {
+            return None;
+        }
 
-            *observed_generation = generation;
-            Some(std::mem::take(&mut state.pending_auto_exclusions))
-        })
+        *observed_generation = generation;
+        Some(std::mem::take(&mut state.pending_auto_exclusions))
     }
 
     pub fn request_app_suspension_freeze(&self, executable_path: &str) {
@@ -300,9 +306,7 @@ impl BackgroundAutomation {
         }
 
         let settings = {
-            let Ok(mut state) = self.shared.state.lock() else {
-                return;
-            };
+            let mut state = lock_unpoisoned(&self.shared.state);
             if !state.app_suspension_freeze_requests.iter().any(|existing| {
                 same_executable_path(Path::new(existing), Path::new(&executable_path))
             }) {
@@ -325,9 +329,7 @@ impl BackgroundAutomation {
         suspend: bool,
     ) {
         let settings = {
-            let Ok(mut state) = self.shared.state.lock() else {
-                return;
-            };
+            let mut state = lock_unpoisoned(&self.shared.state);
             state
                 .app_suspension_process_requests
                 .retain(|(queued, _)| queued.id != target.id);
@@ -343,9 +345,7 @@ impl BackgroundAutomation {
 
     pub fn request_memory_trim_now(&self) {
         let settings = {
-            let Ok(mut state) = self.shared.state.lock() else {
-                return;
-            };
+            let mut state = lock_unpoisoned(&self.shared.state);
             state.memory_trim_now_requested = true;
             state.change_generation = state.change_generation.wrapping_add(1);
             self.shared.changed.notify_one();
@@ -361,14 +361,15 @@ impl BackgroundAutomation {
     }
 
     fn sync_worker(&self, settings: &Settings, start_requested: bool) {
-        let Ok(mut thread) = self.thread.lock() else {
-            return;
-        };
+        let mut thread = lock_unpoisoned(&self.thread);
 
-        if thread.as_ref().is_some_and(|thread| thread.is_finished()) {
-            if let Some(thread) = thread.take() {
-                let _ = thread.join();
-            }
+        if thread.as_ref().is_some_and(|thread| thread.is_finished())
+            && thread.take().is_some_and(|thread| thread.join().is_err())
+        {
+            update_worker_error(
+                &self.shared,
+                Some("Background automation worker stopped unexpectedly.".to_owned()),
+            );
         }
 
         if (start_requested || automation_worker_required(settings)) && thread.is_none() {
@@ -380,9 +381,7 @@ impl BackgroundAutomation {
     }
 
     fn sync_windows_event_watcher(&self, settings: &Settings) {
-        let Ok(mut watcher) = self.event_watcher.lock() else {
-            return;
-        };
+        let mut watcher = lock_unpoisoned(&self.event_watcher);
 
         if windows_event_watcher_required(settings) {
             if watcher.is_none() {
@@ -402,16 +401,14 @@ impl BackgroundAutomation {
 
 impl Drop for BackgroundAutomation {
     fn drop(&mut self) {
-        if let Ok(mut watcher) = self.event_watcher.lock() {
-            *watcher = None;
-        }
+        *lock_unpoisoned(&self.event_watcher) = None;
 
-        if let Ok(mut state) = self.shared.state.lock() {
-            state.stop_requested = true;
-            self.shared.changed.notify_one();
-        }
+        let mut state = lock_unpoisoned(&self.shared.state);
+        state.stop_requested = true;
+        self.shared.changed.notify_one();
+        drop(state);
 
-        let thread = self.thread.lock().ok().and_then(|mut thread| thread.take());
+        let thread = lock_unpoisoned(&self.thread).take();
         if let Some(thread) = thread {
             let _ = thread.join();
         }

@@ -12,71 +12,63 @@ pub(super) struct AutomationSnapshot {
 }
 
 pub(super) fn automation_snapshot(shared: &SharedAutomationState) -> Option<AutomationSnapshot> {
-    shared.state.lock().ok().and_then(|mut state| {
-        (!state.stop_requested).then(|| AutomationSnapshot {
-            settings: state.settings.clone(),
-            change_generation: state.change_generation,
-            app_suspension_freeze_requests: std::mem::take(
-                &mut state.app_suspension_freeze_requests,
-            ),
-            app_suspension_process_requests: std::mem::take(
-                &mut state.app_suspension_process_requests,
-            ),
-            memory_trim_now_requested: std::mem::take(&mut state.memory_trim_now_requested),
-            action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
-            wake_events: std::mem::take(&mut state.pending_events),
-            windows_event_watcher_active: state.windows_event_watcher_active,
-        })
+    let mut state = lock_unpoisoned(&shared.state);
+    (!state.stop_requested).then(|| AutomationSnapshot {
+        settings: state.settings.clone(),
+        change_generation: state.change_generation,
+        app_suspension_freeze_requests: std::mem::take(&mut state.app_suspension_freeze_requests),
+        app_suspension_process_requests: std::mem::take(&mut state.app_suspension_process_requests),
+        memory_trim_now_requested: std::mem::take(&mut state.memory_trim_now_requested),
+        action_log_clear_requested: std::mem::take(&mut state.action_log_clear_requested),
+        wake_events: std::mem::take(&mut state.pending_events),
+        windows_event_watcher_active: state.windows_event_watcher_active,
     })
 }
 
 pub(super) fn set_windows_event_watcher_active(shared: &SharedAutomationState, active: bool) {
-    if let Ok(mut state) = shared.state.lock() {
-        if state.windows_event_watcher_active == active {
-            return;
-        }
-
-        state.windows_event_watcher_active = active;
-        state.change_generation = state.change_generation.wrapping_add(1);
-        shared.changed.notify_one();
+    let mut state = lock_unpoisoned(&shared.state);
+    if state.windows_event_watcher_active == active {
+        return;
     }
+
+    state.windows_event_watcher_active = active;
+    state.change_generation = state.change_generation.wrapping_add(1);
+    shared.changed.notify_one();
 }
 
 pub(super) fn notify_windows_event(shared: &SharedAutomationState, event: WindowsAutomationEvent) {
-    if let Ok(mut state) = shared.state.lock() {
-        if state.stop_requested || !windows_event_wake_required(&state.settings, event) {
-            return;
-        }
-
-        if event == WindowsAutomationEvent::AppearanceChanged {
-            state.status.appearance_change_generation =
-                state.status.appearance_change_generation.wrapping_add(1);
-            bump_status_generation(shared, &mut state);
-        }
-        state.pending_events.insert_windows_event(event);
-        state.change_generation = state.change_generation.wrapping_add(1);
-        shared.changed.notify_one();
+    let mut state = lock_unpoisoned(&shared.state);
+    if state.stop_requested || !windows_event_wake_required(&state.settings, event) {
+        return;
     }
+
+    if event == WindowsAutomationEvent::AppearanceChanged {
+        state.status.appearance_change_generation =
+            state.status.appearance_change_generation.wrapping_add(1);
+        bump_status_generation(shared, &mut state);
+    }
+    state.pending_events.insert_windows_event(event);
+    state.change_generation = state.change_generation.wrapping_add(1);
+    shared.changed.notify_one();
 }
 
 pub(super) fn notify_input_event(shared: &SharedAutomationState, events: InputHookEvents) {
-    if let Ok(mut state) = shared.state.lock() {
-        if state.stop_requested || !input_hook_should_check(&state.settings, events) {
-            return;
-        }
-
-        if input_hook_should_check_activity(&state.settings, events) {
-            state.pending_events.input_activity = true;
-        }
-        if input_hook_should_check_app_switch(&state.settings, events) {
-            state.pending_events.app_switch = true;
-        }
-        if input_hook_should_check_app_switch_mouse_click(&state.settings, events) {
-            state.pending_events.app_switch_mouse_click = true;
-        }
-        state.change_generation = state.change_generation.wrapping_add(1);
-        shared.changed.notify_one();
+    let mut state = lock_unpoisoned(&shared.state);
+    if state.stop_requested || !input_hook_should_check(&state.settings, events) {
+        return;
     }
+
+    if input_hook_should_check_activity(&state.settings, events) {
+        state.pending_events.input_activity = true;
+    }
+    if input_hook_should_check_app_switch(&state.settings, events) {
+        state.pending_events.app_switch = true;
+    }
+    if input_hook_should_check_app_switch_mouse_click(&state.settings, events) {
+        state.pending_events.app_switch_mouse_click = true;
+    }
+    state.change_generation = state.change_generation.wrapping_add(1);
+    shared.changed.notify_one();
 }
 
 pub(super) fn update_background_efficiency_status(
@@ -276,15 +268,18 @@ pub(super) fn update_timer_resolution_status(
     update_status(shared, status, |state| &mut state.status.timer_resolution);
 }
 
+pub(super) fn update_worker_error(shared: &SharedAutomationState, error: Option<String>) {
+    update_status(shared, error, |state| &mut state.status.worker_error);
+}
+
 pub(super) fn update_status<T: PartialEq>(
     shared: &SharedAutomationState,
     status: T,
     field: impl for<'a> FnOnce(&'a mut AutomationWorkerState) -> &'a mut T,
 ) {
-    if let Ok(mut state) = shared.state.lock() {
-        if set_status(field(&mut state), status) {
-            bump_status_generation(shared, &mut state);
-        }
+    let mut state = lock_unpoisoned(&shared.state);
+    if set_status(field(&mut state), status) {
+        bump_status_generation(shared, &mut state);
     }
 }
 
@@ -295,18 +290,17 @@ pub(super) fn update_status_with_auto_exclusions<T: PartialEq>(
     pending_field: impl for<'a> FnOnce(&'a mut PendingAutoExclusions) -> &'a mut Vec<String>,
     status_field: impl for<'a> FnOnce(&'a mut AutomationWorkerState) -> &'a mut T,
 ) {
-    if let Ok(mut state) = shared.state.lock() {
-        if append_unique_executable_paths(
-            pending_field(&mut state.pending_auto_exclusions),
-            auto_excluded_processes,
-        ) {
-            shared
-                .pending_auto_exclusions_generation
-                .fetch_add(1, Ordering::Release);
-        }
-        if set_status(status_field(&mut state), status) {
-            bump_status_generation(shared, &mut state);
-        }
+    let mut state = lock_unpoisoned(&shared.state);
+    if append_unique_executable_paths(
+        pending_field(&mut state.pending_auto_exclusions),
+        auto_excluded_processes,
+    ) {
+        shared
+            .pending_auto_exclusions_generation
+            .fetch_add(1, Ordering::Release);
+    }
+    if set_status(status_field(&mut state), status) {
+        bump_status_generation(shared, &mut state);
     }
 }
 
@@ -314,12 +308,11 @@ pub(super) fn update_action_log_entries(
     shared: &SharedAutomationState,
     entries: Vec<ActionLogEntry>,
 ) {
-    if let Ok(mut state) = shared.state.lock() {
-        let entries = Arc::new(entries);
-        if state.status.action_log_entries != entries {
-            state.status.action_log_entries = entries;
-            bump_status_generation(shared, &mut state);
-        }
+    let mut state = lock_unpoisoned(&shared.state);
+    let entries = Arc::new(entries);
+    if state.status.action_log_entries != entries {
+        state.status.action_log_entries = entries;
+        bump_status_generation(shared, &mut state);
     }
 }
 

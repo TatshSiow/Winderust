@@ -58,6 +58,56 @@ fn repeated_power_plan_switch_failures_suppress_future_attempts() {
 }
 
 #[test]
+fn adaptive_plan_setup_error_preserves_cleanup_failure() {
+    assert_eq!(
+        adaptive_plan_setup_error(
+            "Applying the adaptive plan failed.".to_owned(),
+            Err("Deleting the adaptive plan failed.".to_owned()),
+        ),
+        "Applying the adaptive plan failed. Adaptive plan cleanup also failed: Deleting the adaptive plan failed."
+    );
+    assert_eq!(
+        adaptive_plan_setup_error("Applying the adaptive plan failed.".to_owned(), Ok(())),
+        "Applying the adaptive plan failed."
+    );
+}
+
+#[test]
+fn poisoned_automation_mutex_is_recovered() {
+    let mutex = Mutex::new(42);
+    let _ = std::panic::catch_unwind(|| {
+        let _guard = mutex.lock().expect("test mutex starts healthy");
+        panic!("poison test mutex");
+    });
+
+    assert_eq!(*lock_unpoisoned(&mutex), 42);
+}
+
+#[test]
+fn automation_worker_error_is_delivered_once() {
+    let automation = BackgroundAutomation::start(&Settings::default());
+    update_worker_error(
+        &automation.shared,
+        Some("Background automation worker stopped unexpectedly.".to_owned()),
+    );
+
+    let snapshot = automation
+        .status_snapshot_since(1)
+        .expect("worker failure advances status generation");
+    assert_eq!(
+        snapshot.worker_error.as_deref(),
+        Some("Background automation worker stopped unexpectedly.")
+    );
+    assert!(lock_unpoisoned(&automation.shared.state)
+        .status
+        .worker_error
+        .is_none());
+    assert!(automation
+        .status_snapshot_since(snapshot.generation)
+        .is_none());
+}
+
+#[test]
 fn process_appearance_detector_does_not_report_only_exits() {
     let mut known = BTreeSet::from([1, 2, 3]);
 

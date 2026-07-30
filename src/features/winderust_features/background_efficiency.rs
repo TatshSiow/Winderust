@@ -663,8 +663,10 @@ fn enable_background_efficiency(
     process.set_power_throttling_state(next_state)?;
     if manage_process_priority {
         if let Err(err) = process.set_priority_class(IDLE_PRIORITY_CLASS) {
-            let _ = process.set_power_throttling_state(restore_state);
-            return Err(err);
+            return Err(background_efficiency_rollback_error(
+                err,
+                process.set_power_throttling_state(restore_state),
+            ));
         }
     }
 
@@ -942,9 +944,46 @@ fn background_efficiency_error_message(error: BackgroundEfficiencyError) -> Stri
     }
 }
 
+fn background_efficiency_rollback_error(
+    operation_error: BackgroundEfficiencyError,
+    rollback: Result<(), BackgroundEfficiencyError>,
+) -> BackgroundEfficiencyError {
+    match rollback {
+        Ok(()) => operation_error,
+        Err(rollback_error) => BackgroundEfficiencyError::Failed(format!(
+            "{} Rollback also failed: {}",
+            background_efficiency_error_message(operation_error),
+            background_efficiency_error_message(rollback_error)
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rollback_failure_preserves_both_background_efficiency_errors() {
+        let error = background_efficiency_rollback_error(
+            BackgroundEfficiencyError::AccessDenied,
+            Err(BackgroundEfficiencyError::Failed(
+                "SetProcessInformation failed.".to_owned(),
+            )),
+        );
+
+        assert_eq!(
+            background_efficiency_error_message(error),
+            "Access denied. Rollback also failed: SetProcessInformation failed."
+        );
+    }
+
+    #[test]
+    fn successful_rollback_preserves_the_original_background_efficiency_error() {
+        let error =
+            background_efficiency_rollback_error(BackgroundEfficiencyError::AccessDenied, Ok(()));
+
+        assert_eq!(background_efficiency_error_message(error), "Access denied.");
+    }
 
     #[test]
     fn one_time_efficiency_mode_round_trips_on_live_process() {

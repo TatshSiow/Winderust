@@ -393,6 +393,13 @@ impl WinderustApp {
         {
             self.last_background_status_generation = background_status.generation;
 
+            if let Some(worker_error) = background_status.worker_error.as_ref() {
+                if self.status_message != *worker_error {
+                    self.status_message = worker_error.clone();
+                    changed = true;
+                }
+            }
+
             if self.background_efficiency_status != background_status.background_efficiency {
                 self.background_efficiency_status = background_status.background_efficiency;
                 changed = true;

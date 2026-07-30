@@ -5,9 +5,7 @@ pub(super) fn wait_for_wake(
     wait_for: Option<Duration>,
     observed_generation: u64,
 ) -> bool {
-    let Ok(state) = shared.state.lock() else {
-        return true;
-    };
+    let state = lock_unpoisoned(&shared.state);
     if state.stop_requested {
         return true;
     }
@@ -19,12 +17,15 @@ pub(super) fn wait_for_wake(
         shared
             .changed
             .wait_timeout(state, wait_for)
-            .map_or(true, |(state, _)| state.stop_requested)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+            .stop_requested
     } else {
         shared
             .changed
             .wait(state)
-            .map_or(true, |state| state.stop_requested)
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stop_requested
     }
 }
 pub(super) fn input_hook_should_check(settings: &Settings, events: InputHookEvents) -> bool {
