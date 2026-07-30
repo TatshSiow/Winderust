@@ -12,7 +12,6 @@ use windows_sys::Win32::{
         PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
         PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
         PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-        PROCESS_SET_LIMITED_INFORMATION,
     },
 };
 
@@ -23,9 +22,9 @@ use crate::{
     audio_activity::active_audio_process_ids,
     config::{BackgroundEfficiencyAggressiveness, BackgroundEfficiencySettings},
     foreground::{
-        contains_process_name, list_processes, process_executable_path, process_failure_key,
-        process_handle_matches_executable_path, process_session_id,
-        should_ignore_foreground_process, ProcessActionTarget,
+        contains_process_name, ensure_process_action_target_mutable, list_processes,
+        process_executable_path, process_failure_key, process_handle_matches_executable_path,
+        process_session_id, should_ignore_foreground_process, ProcessActionTarget,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -771,23 +770,15 @@ impl ProcessHandle {
     }
 
     fn open(process_id: u32) -> Result<Self, BackgroundEfficiencyError> {
-        let access_masks = [
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_LIMITED_INFORMATION,
-        ];
-
-        let mut last_open_error = 0;
-        for access in access_masks {
-            // SAFETY: process_id came from the current process snapshot, access is one of the two
-            // documented masks above, and no inherited handle is requested.
-            let handle = unsafe { OpenProcess(access, 0, process_id) };
-            if !handle.is_null() {
-                return Ok(Self(WinHandle::new(handle)));
-            }
-            last_open_error = last_error();
+        let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION;
+        // SAFETY: process_id came from the current process snapshot, the documented query and
+        // mutation rights are requested, and no inherited handle is requested.
+        let handle = unsafe { OpenProcess(access, 0, process_id) };
+        if handle.is_null() {
+            Err(open_process_error(process_id, last_error()))
+        } else {
+            Ok(Self(WinHandle::new(handle)))
         }
-
-        Err(open_process_error(process_id, last_open_error))
     }
 
     fn power_throttling_state(
@@ -907,6 +898,10 @@ pub(crate) fn apply_efficiency_mode_once(
     target: &ProcessActionTarget,
     enabled: bool,
 ) -> Result<(), String> {
+    ensure_process_action_target_mutable(target)?;
+    if is_builtin_excluded(&target.name) {
+        return Err("Built-in Windows processes cannot be modified.".to_owned());
+    }
     let process = ProcessHandle::open(target.id).map_err(background_efficiency_error_message)?;
     if process.0.process_creation_time() != Some(target.creation_time)
         || !process_handle_matches_executable_path(&process.0, &target.executable_path)

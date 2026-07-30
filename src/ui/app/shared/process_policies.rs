@@ -623,104 +623,111 @@ pub(in crate::ui::app) fn process_policy_summary(
 
     summary.power_plan_foreground =
         foreground_power_plan_policy_label(settings, plans, process_name);
-    if foreground_power_plan_policy_is_custom(settings, process_name) {
+    let foreground_power_plan_custom =
+        foreground_power_plan_policy_is_custom(settings, process_name);
+    if foreground_power_plan_custom {
         summary.mark_custom(ProcessListColumn::PowerPlanForeground);
     }
+    summary.set_active(
+        ProcessListColumn::PowerPlanForeground,
+        foreground_power_plan_override_guid(&settings.by_foreground, process_name).is_some(),
+    );
     summary.power_plan_running =
         running_app_power_plan_policy_label(&settings.by_running_app, plans, process_name);
-    if running_app_power_plan_policy_is_custom(&settings.by_running_app, process_name) {
+    let running_power_plan_custom =
+        running_app_power_plan_policy_is_custom(&settings.by_running_app, process_name);
+    if running_power_plan_custom {
         summary.mark_custom(ProcessListColumn::PowerPlanRunning);
     }
+    summary.set_active(
+        ProcessListColumn::PowerPlanRunning,
+        by_running_app_power_plan_override_guid(&settings.by_running_app, process_name).is_some(),
+    );
     let adaptive_engine_excluded = settings
         .workload_engine
         .workload_engine_exclusion_enabled_for(process_name);
     summary.adaptive_engine = process_list_include_exclude_label(!adaptive_engine_excluded);
+    summary.set_active(ProcessListColumn::AdaptiveEngine, !adaptive_engine_excluded);
     if adaptive_engine_excluded {
         summary.mark_custom(ProcessListColumn::AdaptiveEngine);
     }
-    summary.background_efficiency = process_list_include_exclude_label(
-        !settings
-            .background_efficiency
-            .custom_rule_enabled_for(process_name),
-    );
-    if settings
+    let background_efficiency_excluded = settings
         .background_efficiency
-        .custom_rule_enabled_for(process_name)
-    {
+        .custom_rule_enabled_for(process_name);
+    summary.background_efficiency =
+        process_list_include_exclude_label(!background_efficiency_excluded);
+    summary.set_active(
+        ProcessListColumn::BackgroundEfficiency,
+        !background_efficiency_excluded,
+    );
+    if background_efficiency_excluded {
         summary.mark_custom(ProcessListColumn::BackgroundEfficiency);
     }
 
-    let process_foreground = settings
-        .process_priority
-        .override_for(process_name, true)
-        .flatten()
-        .unwrap_or_default();
-    let process_background = settings
-        .process_priority
-        .override_for(process_name, false)
-        .flatten()
-        .unwrap_or_default();
+    let process_foreground_override = settings.process_priority.override_for(process_name, true);
+    let process_background_override = settings.process_priority.override_for(process_name, false);
+    let process_foreground = process_foreground_override.flatten().unwrap_or_default();
+    let process_background = process_background_override.flatten().unwrap_or_default();
     summary.process_priority = priority_pair_label(
         process_foreground,
         process_background,
         process_priority_setting_label,
     );
-    if settings.process_priority.contains_exclusion(process_name) {
+    if process_foreground_override.is_some() || process_background_override.is_some() {
         summary.mark_custom(ProcessListColumn::ProcessPriority);
     }
+    summary.set_active(
+        ProcessListColumn::ProcessPriority,
+        process_foreground_override.flatten().is_some()
+            || process_background_override.flatten().is_some(),
+    );
 
-    let thread_foreground = settings
-        .thread_priority
-        .override_for(process_name, true)
-        .flatten()
-        .unwrap_or_default();
-    let thread_background = settings
-        .thread_priority
-        .override_for(process_name, false)
-        .flatten()
-        .unwrap_or_default();
+    let thread_foreground_override = settings.thread_priority.override_for(process_name, true);
+    let thread_background_override = settings.thread_priority.override_for(process_name, false);
+    let thread_foreground = thread_foreground_override.flatten().unwrap_or_default();
+    let thread_background = thread_background_override.flatten().unwrap_or_default();
     summary.thread_priority = priority_pair_label(
         thread_foreground,
         thread_background,
         process_thread_priority_setting_label,
     );
-    if settings.thread_priority.contains_exclusion(process_name) {
+    if thread_foreground_override.is_some() || thread_background_override.is_some() {
         summary.mark_custom(ProcessListColumn::ThreadPriority);
     }
+    summary.set_active(
+        ProcessListColumn::ThreadPriority,
+        thread_foreground_override.flatten().is_some()
+            || thread_background_override.flatten().is_some(),
+    );
 
-    let boost_foreground = settings
+    let boost_foreground_override = settings
         .dynamic_priority_boost
-        .override_for(process_name, true)
-        .flatten()
-        .unwrap_or_default();
-    let boost_background = settings
+        .override_for(process_name, true);
+    let boost_background_override = settings
         .dynamic_priority_boost
-        .override_for(process_name, false)
-        .flatten()
-        .unwrap_or_default();
+        .override_for(process_name, false);
+    let boost_foreground = boost_foreground_override.flatten().unwrap_or_default();
+    let boost_background = boost_background_override.flatten().unwrap_or_default();
     summary.dynamic_priority_boost = priority_pair_label(
         boost_foreground,
         boost_background,
         process_dynamic_priority_boost_setting_label,
     );
-    if settings
-        .dynamic_priority_boost
-        .contains_exclusion(process_name)
-    {
+    if boost_foreground_override.is_some() || boost_background_override.is_some() {
         summary.mark_custom(ProcessListColumn::DynamicPriorityBoost);
     }
+    summary.set_active(
+        ProcessListColumn::DynamicPriorityBoost,
+        boost_foreground_override.flatten().is_some()
+            || boost_background_override.flatten().is_some(),
+    );
 
-    let io_foreground = settings
-        .io_priority
-        .override_for(process_name, true)
-        .flatten()
-        .unwrap_or_default();
-    let io_background = settings
-        .io_priority
-        .override_for(process_name, false)
-        .flatten()
-        .unwrap_or_default();
-    if settings.io_priority.contains_exclusion(process_name) {
+    let io_foreground_override = settings.io_priority.override_for(process_name, true);
+    let io_background_override = settings.io_priority.override_for(process_name, false);
+    let io_foreground = io_foreground_override.flatten().unwrap_or_default();
+    let io_background = io_background_override.flatten().unwrap_or_default();
+    let io_rule_active = io_foreground_override.is_some() || io_background_override.is_some();
+    if io_rule_active {
         summary.io_priority = if settings.io_priority.exclusion_enabled_for(process_name) {
             process_list_exclude_label()
         } else {
@@ -734,18 +741,17 @@ pub(in crate::ui::app) fn process_policy_summary(
     } else {
         summary.io_priority = io_priority_policy_label(&settings.io_priority);
     }
+    summary.set_active(
+        ProcessListColumn::IoPriority,
+        io_foreground_override.flatten().is_some() || io_background_override.flatten().is_some(),
+    );
 
-    let gpu_foreground = settings
-        .gpu_priority
-        .override_for(process_name, true)
-        .flatten()
-        .unwrap_or_default();
-    let gpu_background = settings
-        .gpu_priority
-        .override_for(process_name, false)
-        .flatten()
-        .unwrap_or_default();
-    if settings.gpu_priority.contains_exclusion(process_name) {
+    let gpu_foreground_override = settings.gpu_priority.override_for(process_name, true);
+    let gpu_background_override = settings.gpu_priority.override_for(process_name, false);
+    let gpu_foreground = gpu_foreground_override.flatten().unwrap_or_default();
+    let gpu_background = gpu_background_override.flatten().unwrap_or_default();
+    let gpu_rule_active = gpu_foreground_override.is_some() || gpu_background_override.is_some();
+    if gpu_rule_active {
         summary.gpu_priority = if settings.gpu_priority.exclusion_enabled_for(process_name) {
             process_list_exclude_label()
         } else {
@@ -759,18 +765,18 @@ pub(in crate::ui::app) fn process_policy_summary(
     } else {
         summary.gpu_priority = gpu_priority_policy_label(&settings.gpu_priority);
     }
+    summary.set_active(
+        ProcessListColumn::GpuPriority,
+        gpu_foreground_override.flatten().is_some() || gpu_background_override.flatten().is_some(),
+    );
 
-    let memory_foreground = settings
-        .memory_priority
-        .override_for(process_name, true)
-        .flatten()
-        .unwrap_or_default();
-    let memory_background = settings
-        .memory_priority
-        .override_for(process_name, false)
-        .flatten()
-        .unwrap_or_default();
-    if settings.memory_priority.contains_exclusion(process_name) {
+    let memory_foreground_override = settings.memory_priority.override_for(process_name, true);
+    let memory_background_override = settings.memory_priority.override_for(process_name, false);
+    let memory_foreground = memory_foreground_override.flatten().unwrap_or_default();
+    let memory_background = memory_background_override.flatten().unwrap_or_default();
+    let memory_rule_active =
+        memory_foreground_override.is_some() || memory_background_override.is_some();
+    if memory_rule_active {
         summary.memory_priority = if settings.memory_priority.exclusion_enabled_for(process_name) {
             process_list_exclude_label()
         } else {
@@ -784,6 +790,11 @@ pub(in crate::ui::app) fn process_policy_summary(
     } else {
         summary.memory_priority = memory_priority_policy_label(&settings.memory_priority);
     }
+    summary.set_active(
+        ProcessListColumn::MemoryPriority,
+        memory_foreground_override.flatten().is_some()
+            || memory_background_override.flatten().is_some(),
+    );
 
     summary
 }
@@ -810,6 +821,10 @@ pub(in crate::ui::app) fn default_process_policy_summary() -> ProcessPolicySumma
             ProcessMemoryPrioritySetting::Default,
         ),
         custom_columns: HashSet::new(),
+        active_columns: HashSet::from([
+            ProcessListColumn::AdaptiveEngine,
+            ProcessListColumn::BackgroundEfficiency,
+        ]),
     }
 }
 

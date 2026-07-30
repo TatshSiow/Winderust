@@ -341,16 +341,28 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
 }
 
 #[test]
-fn process_list_policy_value_active_tracks_state_and_custom_values() {
-    assert!(process_list_policy_value_active("Include", false));
-    assert!(process_list_policy_value_active("Include (50%)", false));
-    assert!(!process_list_policy_value_active("Exclude", true));
-    assert!(!process_list_policy_value_active(
-        process_list_default_label().as_str(),
-        true
-    ));
-    assert!(!process_list_policy_value_active("Balanced", false));
-    assert!(process_list_policy_value_active("Balanced", true));
+fn process_policy_summary_carries_typed_active_state() {
+    let mut settings = Settings::default();
+    let path = r"C:\Apps\editor.exe";
+
+    let summary = process_policy_summary(&settings, &[], path);
+    assert!(summary.value_is_active(ProcessListColumn::AdaptiveEngine));
+    assert!(summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
+    assert!(!summary.value_is_active(ProcessListColumn::ProcessPriority));
+
+    settings
+        .background_efficiency
+        .custom_rules
+        .push(new_background_efficiency_rule(path));
+    set_process_priority_rule(
+        &mut settings.process_priority,
+        path,
+        ProcessPrioritySetting::Idle,
+    );
+
+    let summary = process_policy_summary(&settings, &[], path);
+    assert!(!summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
+    assert!(summary.value_is_active(ProcessListColumn::ProcessPriority));
 }
 
 #[test]
@@ -390,6 +402,56 @@ fn process_policy_summary_reports_priority_policy_values() {
 
     let summary = process_policy_summary(&settings, &[], "editor.exe");
 
+    assert_eq!(
+        summary.io_priority,
+        io_priority_policy_label(&settings.io_priority)
+    );
+    assert_eq!(
+        summary.gpu_priority,
+        gpu_priority_policy_label(&settings.gpu_priority)
+    );
+    assert_eq!(
+        summary.memory_priority,
+        memory_priority_policy_label(&settings.memory_priority)
+    );
+}
+
+#[test]
+fn process_policy_summary_ignores_disabled_priority_rules() {
+    let mut settings = Settings::default();
+    let path = r"C:\Apps\editor.exe";
+    let mut rule = new_process_exclusion_rule(path);
+    rule.enabled = false;
+    rule.set_process_priority_override(true, ProcessPrioritySetting::Idle);
+    rule.set_thread_priority_override(true, ProcessThreadPrioritySetting::Lowest);
+    rule.set_dynamic_priority_boost_override(true, ProcessDynamicPriorityBoostSetting::Disabled);
+    rule.set_io_priority_override(true, ProcessIoPrioritySetting::Low);
+    rule.set_gpu_priority_override(true, ProcessGpuPrioritySetting::BelowNormal);
+    rule.set_memory_priority_override(true, ProcessMemoryPrioritySetting::Low);
+
+    settings.process_priority.exclusions.push(rule.clone());
+    settings.thread_priority.exclusions.push(rule.clone());
+    settings
+        .dynamic_priority_boost
+        .exclusions
+        .push(rule.clone());
+    settings.io_priority.exclusions.push(rule.clone());
+    settings.gpu_priority.exclusions.push(rule.clone());
+    settings.memory_priority.exclusions.push(rule);
+
+    let summary = process_policy_summary(&settings, &[], path);
+
+    for column in [
+        ProcessListColumn::ProcessPriority,
+        ProcessListColumn::ThreadPriority,
+        ProcessListColumn::DynamicPriorityBoost,
+        ProcessListColumn::IoPriority,
+        ProcessListColumn::GpuPriority,
+        ProcessListColumn::MemoryPriority,
+    ] {
+        assert!(!summary.uses_custom_rule(column));
+        assert!(!summary.value_is_active(column));
+    }
     assert_eq!(
         summary.io_priority,
         io_priority_policy_label(&settings.io_priority)

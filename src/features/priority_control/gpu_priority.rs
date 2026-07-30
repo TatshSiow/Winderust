@@ -24,10 +24,10 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{GpuPrioritySettings, ProcessGpuPriority, ProcessGpuPrioritySetting},
     foreground::{
-        contains_process_name, is_foreground_process, list_processes, process_count_label,
-        process_executable_path, process_failure_key, process_handle_matches_executable_path,
-        process_session_id, same_process_name, unique_app_names, ProcessActionTarget,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, ensure_process_action_target_mutable, is_foreground_process,
+        list_processes, process_count_label, process_executable_path, process_failure_key,
+        process_handle_matches_executable_path, process_session_id, same_process_name,
+        unique_app_names, ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::ExecutionFailureTracker,
 };
@@ -776,6 +776,7 @@ pub(crate) fn apply_once(
     target: &ProcessActionTarget,
     priority: ProcessGpuPriority,
 ) -> Result<(), String> {
+    ensure_process_action_target_mutable(target)?;
     let process = ProcessHandle::open(target.id).map_err(gpu_priority_error_message)?;
     if process.0.process_creation_time() != Some(target.creation_time)
         || !process_handle_matches_executable_path(&process.0, &target.executable_path)

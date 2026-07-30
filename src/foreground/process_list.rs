@@ -25,6 +25,7 @@ use windows_sys::Win32::{
         },
         ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
         RemoteDesktop::ProcessIdToSessionId,
+        SystemInformation::GetSystemWindowsDirectoryW,
         Threading::{
             GetCurrentProcessId, GetProcessInformation, GetProcessTimes, OpenProcess,
             ProcessPowerThrottling, QueryFullProcessImageNameW, TerminateProcess,
@@ -37,6 +38,7 @@ use windows_sys::Win32::{
 
 const PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN: usize = 512;
 const PROCESS_IMAGE_PATH_MAX_BUFFER_LEN: usize = 32_768;
+const WINDOWS_DIRECTORY_INITIAL_BUFFER_LEN: usize = 260;
 
 pub const CORE_BUILT_IN_PROCESS_EXCLUSIONS: &[&str] = &[
     "audiodg.exe",
@@ -272,9 +274,7 @@ pub fn capture_process_action_target(
 }
 
 pub fn terminate_process(target: &ProcessActionTarget) -> Result<(), String> {
-    if contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &target.name) {
-        return Err("Built-in Windows processes cannot be modified.".to_owned());
-    }
+    ensure_process_action_target_mutable(target)?;
     let process = open_verified_action_process(target, PROCESS_TERMINATE)?;
     // SAFETY: process is a verified live handle opened with PROCESS_TERMINATE.
     if unsafe { TerminateProcess(process.raw(), 1) } == 0 {
@@ -291,6 +291,7 @@ pub fn terminate_process_tree(
     root: &ProcessActionTarget,
     processes: &[ProcessInfo],
 ) -> Result<usize, String> {
+    ensure_process_action_target_mutable(root)?;
     let mut process_ids = vec![root.id];
     let mut selected = BTreeSet::from([root.id]);
     let mut index = 0;
@@ -323,21 +324,60 @@ pub fn terminate_process_tree(
         );
     }
     let count = targets.len();
+    for target in &targets {
+        ensure_process_action_target_mutable(target)?;
+    }
     for target in targets {
         terminate_process(&target)?;
     }
     Ok(count)
 }
 
-pub fn open_process_location(target: &ProcessActionTarget) -> Result<(), String> {
-    open_verified_action_process(target, PROCESS_QUERY_LIMITED_INFORMATION)?;
+pub(crate) fn ensure_process_action_target_mutable(
+    target: &ProcessActionTarget,
+) -> Result<(), String> {
+    if contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &target.name) {
+        Err("Built-in Windows processes cannot be modified.".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+pub fn open_process_location(executable_path: &Path) -> Result<(), String> {
+    if !executable_path.is_absolute() {
+        return Err("The process executable path is unavailable.".to_owned());
+    }
     let mut argument = OsString::from("/select,");
-    argument.push(&target.executable_path);
-    Command::new("explorer.exe")
+    argument.push(executable_path);
+    Command::new(windows_explorer_path()?)
         .arg(argument)
         .spawn()
         .map(|_| ())
         .map_err(|error| format!("Could not open the process location: {error}."))
+}
+
+fn windows_explorer_path() -> Result<PathBuf, String> {
+    let mut buffer = vec![0u16; WINDOWS_DIRECTORY_INITIAL_BUFFER_LEN];
+    loop {
+        // SAFETY: buffer is writable for its declared length and GetSystemWindowsDirectoryW
+        // writes at most that many UTF-16 code units.
+        let length =
+            unsafe { GetSystemWindowsDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) };
+        if length == 0 {
+            // SAFETY: GetLastError reads thread-local state immediately after the failed call.
+            let error = unsafe { GetLastError() };
+            return Err(format!(
+                "Could not locate Windows Explorer (Win32 error {error})."
+            ));
+        }
+        let length = length as usize;
+        if length < buffer.len() {
+            let mut path = PathBuf::from(OsString::from_wide(&buffer[..length]));
+            path.push("explorer.exe");
+            return Ok(path);
+        }
+        buffer.resize(length.saturating_add(1), 0);
+    }
 }
 
 fn open_verified_action_process(
@@ -673,6 +713,32 @@ mod tests {
             ProcessActionTargetError::ProcessUnavailable(5).to_string(),
             "The selected process is no longer available (Win32 error 5)."
         );
+    }
+
+    #[test]
+    fn mutable_process_targets_reject_built_in_windows_processes() {
+        let target = ProcessActionTarget {
+            id: 42,
+            name: "explorer.exe".to_owned(),
+            executable_path: PathBuf::from(r"C:\Windows\explorer.exe"),
+            creation_time: 1,
+        };
+
+        assert!(ensure_process_action_target_mutable(&target).is_err());
+
+        let target = ProcessActionTarget {
+            name: "editor.exe".to_owned(),
+            ..target
+        };
+        assert!(ensure_process_action_target_mutable(&target).is_ok());
+    }
+
+    #[test]
+    fn windows_explorer_path_is_absolute_and_trusted() {
+        let path = windows_explorer_path().expect("Windows directory is available");
+
+        assert!(path.is_absolute());
+        assert_eq!(path.file_name(), Some(std::ffi::OsStr::new("explorer.exe")));
     }
 
     #[test]

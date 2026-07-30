@@ -594,7 +594,6 @@ pub(in crate::ui::app) fn process_list_rendered_row(
             cx,
         ),
         ProcessListRenderedRow::Group {
-            process,
             process_name,
             executable_path,
             process_count,
@@ -603,7 +602,6 @@ pub(in crate::ui::app) fn process_list_rendered_row(
             state,
         } => process_list_group_row(
             ProcessListGroupRowData {
-                process,
                 process_name: process_name.as_str(),
                 executable_path: executable_path.as_str(),
                 process_count: *process_count,
@@ -621,7 +619,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "menu construction needs the selected process snapshot"
+    reason = "menu construction needs the selected process context"
 )]
 fn process_list_context_menu(
     mut menu: PopupMenu,
@@ -629,7 +627,6 @@ fn process_list_context_menu(
     process_id: u32,
     process_name: String,
     executable_path: String,
-    process_tree_snapshot: Vec<ProcessInfo>,
     suspended: bool,
     show_suspend: bool,
     expose_all_priorities: bool,
@@ -638,21 +635,24 @@ fn process_list_context_menu(
     menu_cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     let target = capture_process_action_target(process_id, Path::new(&executable_path));
-    let actions_disabled = target.is_err();
-
-    menu = menu.item({
-        let app_entity = app_entity.clone();
-        let process_name = process_name.clone();
-        let executable_path = executable_path.clone();
-        PopupMenuItem::new(t!("process_list.open_rule_details").to_string()).on_click(
-            move |_, _, cx| {
-                app_entity.update(cx, |app, cx| {
-                    app.selected_process_id = Some(process_id);
-                    app.open_process_details(process_name.clone(), executable_path.clone(), cx);
-                });
-            },
-        )
+    let mutations_disabled = target.as_ref().map_or(true, |target| {
+        ensure_process_action_target_mutable(target).is_err()
     });
+    let suspension_disabled = mutations_disabled
+        || target
+            .as_ref()
+            .is_ok_and(|target| app_suspension::is_builtin_excluded(&target.name));
+    let efficiency_disabled = mutations_disabled
+        || target
+            .as_ref()
+            .is_ok_and(|target| background_efficiency::is_builtin_excluded(&target.name));
+
+    menu = menu.item(process_list_rule_details_menu_item(
+        app_entity.clone(),
+        Some(process_id),
+        process_name.clone(),
+        executable_path.clone(),
+    ));
     menu = menu.separator();
     for (tree, label_key) in [
         (false, "process_list.stop_process"),
@@ -664,14 +664,13 @@ fn process_list_context_menu(
         let app_entity = app_entity.clone();
         let process_name = process_name.clone();
         let target = target.clone();
-        let process_tree_snapshot = process_tree_snapshot.clone();
         menu = menu.item(
             process_list_value_menu_item(
                 t!(label_key).to_string(),
                 ProcessListMenuItemTone::Danger,
-                actions_disabled,
+                mutations_disabled,
             )
-            .disabled(actions_disabled)
+            .disabled(mutations_disabled)
             .on_click(move |_, window, cx| {
                 let description = t!(
                     if tree {
@@ -696,7 +695,6 @@ fn process_list_context_menu(
                 let app_entity = app_entity.clone();
                 let process_name = process_name.clone();
                 let target = target.clone();
-                let process_tree_snapshot = process_tree_snapshot.clone();
                 cx.spawn(async move |cx| {
                     if answer.await != Ok(0) {
                         return;
@@ -706,7 +704,7 @@ fn process_list_context_menu(
                             .map_err(|error| error.to_string())
                             .and_then(|target| {
                                 if tree {
-                                    terminate_process_tree(&target, &process_tree_snapshot)
+                                    terminate_process_tree(&target, &app.running_processes)
                                         .map(|_| ())
                                 } else {
                                     terminate_process(&target)
@@ -743,9 +741,9 @@ fn process_list_context_menu(
                 } else {
                     ProcessListMenuItemTone::Default
                 },
-                actions_disabled,
+                suspension_disabled,
             )
-            .disabled(actions_disabled)
+            .disabled(suspension_disabled)
             .on_click(move |_, _, cx| {
                 app_entity.update(cx, |app, cx| {
                     let result = target
@@ -800,9 +798,9 @@ fn process_list_context_menu(
             } else {
                 ProcessListMenuItemTone::Default
             },
-            actions_disabled,
+            efficiency_disabled,
         )
-        .disabled(actions_disabled)
+        .disabled(efficiency_disabled)
         .on_click(move |_, _, cx| {
             app_entity.update(cx, |app, cx| {
                 let enabled = !efficiency_enabled;
@@ -838,31 +836,11 @@ fn process_list_context_menu(
         menu_cx,
     );
     menu = menu.separator();
-    menu.item({
-        let app_entity = app_entity.clone();
-        let process_name = process_name.clone();
-        let target = target.clone();
-        process_list_value_menu_item(
-            t!("process_list.open_process_location").to_string(),
-            ProcessListMenuItemTone::Default,
-            actions_disabled,
-        )
-        .disabled(actions_disabled)
-        .on_click(move |_, _, cx| {
-            app_entity.update(cx, |app, cx| {
-                let result = target
-                    .clone()
-                    .map_err(|error| error.to_string())
-                    .and_then(|target| open_process_location(&target));
-                app.finish_process_quick_action(
-                    &process_name,
-                    t!("process_list.open_process_location").as_ref(),
-                    result,
-                    cx,
-                );
-            });
-        })
-    })
+    menu.item(process_list_open_location_menu_item(
+        app_entity,
+        process_name,
+        executable_path,
+    ))
 }
 
 fn process_list_priority_controls_submenu(
@@ -874,7 +852,9 @@ fn process_list_priority_controls_submenu(
     window: &mut Window,
     menu_cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    if target.is_err() {
+    if target.as_ref().map_or(true, |target| {
+        ensure_process_action_target_mutable(target).is_err()
+    }) {
         return menu.item(
             process_list_value_menu_item(
                 t!("process_list.priority_controls").to_string(),
@@ -1054,6 +1034,45 @@ fn process_list_priority_controls_submenu(
     )
 }
 
+fn process_list_rule_details_menu_item(
+    app_entity: Entity<WinderustApp>,
+    process_id: Option<u32>,
+    process_name: String,
+    executable_path: String,
+) -> PopupMenuItem {
+    PopupMenuItem::new(t!("process_list.open_rule_details").to_string()).on_click(
+        move |_, _, cx| {
+            app_entity.update(cx, |app, cx| {
+                app.selected_process_id = process_id;
+                app.open_process_details(process_name.clone(), executable_path.clone(), cx);
+            });
+        },
+    )
+}
+
+fn process_list_open_location_menu_item(
+    app_entity: Entity<WinderustApp>,
+    process_name: String,
+    executable_path: String,
+) -> PopupMenuItem {
+    process_list_value_menu_item(
+        t!("process_list.open_process_location").to_string(),
+        ProcessListMenuItemTone::Default,
+        false,
+    )
+    .on_click(move |_, _, cx| {
+        app_entity.update(cx, |app, cx| {
+            let result = open_process_location(Path::new(&executable_path));
+            app.finish_process_quick_action(
+                &process_name,
+                t!("process_list.open_process_location").as_ref(),
+                result,
+                cx,
+            );
+        });
+    })
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "submenu items need live process action context"
@@ -1202,7 +1221,6 @@ pub(in crate::ui::app) fn process_list_entry_row(
     let selected = edit_context.app.selected_process_id == Some(process_id);
     let app_entity = cx.entity();
     let limited_access = executable_path.is_none();
-    let process_tree_snapshot = edit_context.app.running_processes.clone();
     let suspended = edit_context
         .app
         .app_suspension_status
@@ -1255,7 +1273,6 @@ pub(in crate::ui::app) fn process_list_entry_row(
                 process_id,
                 process_name.clone(),
                 executable_path.clone().unwrap_or_default(),
-                process_tree_snapshot.clone(),
                 suspended,
                 show_suspend,
                 expose_all_priorities,
@@ -1331,19 +1348,6 @@ pub(in crate::ui::app) fn process_list_group_row(
     let details_path = executable_path.clone();
     let menu_process_name = process_name.clone();
     let menu_executable_path = executable_path.clone();
-    let process_id = data.process.id;
-    let process_tree_snapshot = edit_context.app.running_processes.clone();
-    let suspended = edit_context
-        .app
-        .app_suspension_status
-        .suspended_process_ids
-        .contains(&process_id);
-    let show_suspend = edit_context.app.settings.advanced.show_advanced_controls;
-    let expose_all_priorities = edit_context
-        .app
-        .settings
-        .advanced
-        .expose_all_priority_values;
     let app_entity = cx.entity();
 
     let mut row = h_flex()
@@ -1365,21 +1369,19 @@ pub(in crate::ui::app) fn process_list_group_row(
         .on_click(cx.listener(move |app, _, _, cx| {
             app.open_process_details(details_name.clone(), details_path.clone(), cx);
         }))
-        .context_menu(move |menu, window, menu_cx| {
-            process_list_context_menu(
-                menu,
+        .context_menu(move |menu, _, _| {
+            menu.item(process_list_rule_details_menu_item(
                 app_entity.clone(),
-                process_id,
+                None,
                 menu_process_name.clone(),
                 menu_executable_path.clone(),
-                process_tree_snapshot.clone(),
-                suspended,
-                show_suspend,
-                expose_all_priorities,
-                true,
-                window,
-                menu_cx,
-            )
+            ))
+            .separator()
+            .item(process_list_open_location_menu_item(
+                app_entity.clone(),
+                menu_process_name.clone(),
+                menu_executable_path.clone(),
+            ))
         })
         .child(process_list_group_name_cell(
             &process_name,
@@ -1497,6 +1499,7 @@ pub(in crate::ui::app) fn process_list_policy_cells(
                     process_name,
                     column,
                     editable,
+                    active: summary.value_is_active(column),
                 },
                 process_list_column_value(summary, column),
                 summary.uses_custom_rule(column),
@@ -1704,7 +1707,7 @@ pub(in crate::ui::app) fn process_list_policy_cell(
             .child(value)
             .into_any_element();
     }
-    let text_color = if process_list_policy_value_active(value.as_ref(), emphasized) {
+    let text_color = if target.active {
         success_text_color()
     } else {
         dim_text_color()
@@ -2235,33 +2238,6 @@ pub(in crate::ui::app) fn process_list_include_exclude_editor_option(
         }))
         .into_any_element()
 }
-pub(in crate::ui::app) fn process_list_policy_value_active(value: &str, emphasized: bool) -> bool {
-    if let Some(enabled) = process_list_state_enabled(value) {
-        return enabled;
-    }
-
-    emphasized && !process_list_policy_value_inactive(value)
-}
-
-pub(in crate::ui::app) fn process_list_policy_value_inactive(value: &str) -> bool {
-    let value = value.trim();
-    value.is_empty()
-        || value == "Default"
-        || value == process_list_default_label().as_str()
-        || value == "Off"
-        || value == "Exclude"
-        || value == t!("common.none").to_string().as_str()
-}
-
-pub(in crate::ui::app) fn process_list_state_enabled(value: &str) -> Option<bool> {
-    match value {
-        "On" | "Include" => Some(true),
-        "Off" | "Exclude" => Some(false),
-        value if value.starts_with("Include (") => Some(true),
-        _ => None,
-    }
-}
-
 pub(in crate::ui::app) fn process_list_count_label(count: usize) -> String {
     t!("process_list.count", count = count).to_string()
 }

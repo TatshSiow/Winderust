@@ -102,7 +102,6 @@ pub(in crate::ui::app) struct ProcessListEntryRowState {
 
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) struct ProcessListGroupRowData<'a> {
-    pub(in crate::ui::app) process: &'a ProcessInfo,
     pub(in crate::ui::app) process_name: &'a str,
     pub(in crate::ui::app) executable_path: &'a str,
     pub(in crate::ui::app) process_count: usize,
@@ -117,7 +116,6 @@ pub(in crate::ui::app) enum ProcessListRenderedRow {
         state: ProcessListEntryRowState,
     },
     Group {
-        process: ProcessInfo,
         process_name: String,
         executable_path: String,
         process_count: usize,
@@ -146,6 +144,7 @@ pub(in crate::ui::app) struct ProcessListPolicyCellTarget<'a> {
     pub(in crate::ui::app) process_name: &'a str,
     pub(in crate::ui::app) column: ProcessListColumn,
     pub(in crate::ui::app) editable: bool,
+    pub(in crate::ui::app) active: bool,
 }
 
 pub(in crate::ui::app) fn process_list_groups(
@@ -258,7 +257,6 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
 
         let collapsed = is_group_collapsed(&group.executable_path);
         rendered_rows.push(ProcessListRenderedRow::Group {
-            process: group.processes[0].to_owned(),
             process_name: group.display_name.clone(),
             executable_path: group.executable_path.clone(),
             process_count: group.processes.len(),

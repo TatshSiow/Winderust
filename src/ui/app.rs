@@ -78,11 +78,11 @@ use crate::{
     },
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
-        capture_process_action_target, executable_path_key, foreground_process,
-        list_process_candidates, list_processes_with_paths, open_process_location,
-        process_candidates_from_processes, same_executable_path, sample_process_resources,
-        terminate_process, terminate_process_tree, ProcessActionTarget, ProcessActionTargetError,
-        ProcessCandidateInfo, ProcessInfo, ProcessResourceSample,
+        capture_process_action_target, ensure_process_action_target_mutable, executable_path_key,
+        foreground_process, list_process_candidates, list_processes_with_paths,
+        open_process_location, process_candidates_from_processes, same_executable_path,
+        sample_process_resources, terminate_process, terminate_process_tree, ProcessActionTarget,
+        ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo, ProcessResourceSample,
     },
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
@@ -303,6 +303,7 @@ struct ProcessPolicySummary {
     gpu_priority: String,
     memory_priority: String,
     custom_columns: HashSet<ProcessListColumn>,
+    active_columns: HashSet<ProcessListColumn>,
 }
 
 impl ProcessPolicySummary {
@@ -312,6 +313,18 @@ impl ProcessPolicySummary {
 
     fn uses_custom_rule(&self, column: ProcessListColumn) -> bool {
         self.custom_columns.contains(&column)
+    }
+
+    fn set_active(&mut self, column: ProcessListColumn, active: bool) {
+        if active {
+            self.active_columns.insert(column);
+        } else {
+            self.active_columns.remove(&column);
+        }
+    }
+
+    fn value_is_active(&self, column: ProcessListColumn) -> bool {
+        self.active_columns.contains(&column)
     }
 }
 
