@@ -509,6 +509,7 @@ pub struct WinderustApp {
     _process_picker_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
     _dashboard_search_subscription: Option<Subscription>,
+    _process_list_search_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
@@ -656,6 +657,7 @@ impl ListItemRemovalTarget {
 
 struct UiInputs {
     dashboard_search: Entity<InputState>,
+    process_list_search: Entity<InputState>,
     by_cpu_load_rule_names: Vec<Entity<InputState>>,
     cpu_rule_thresholds: Vec<Entity<SliderState>>,
     cpu_rule_upper_thresholds: Vec<Entity<SliderState>>,
@@ -983,6 +985,7 @@ impl WinderustApp {
             _process_picker_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
             _dashboard_search_subscription: None,
+            _process_list_search_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
@@ -996,6 +999,7 @@ impl WinderustApp {
         app.rebuild_process_picker_input_subscriptions(window, cx);
         app.subscribe_to_numeric_input(window, cx);
         app.subscribe_to_dashboard_search_input(window, cx);
+        app.subscribe_to_process_list_search_input(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
         app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         app.subscribe_to_activity_sliders(window, cx);

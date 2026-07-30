@@ -289,11 +289,13 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
 pub(in crate::ui::app) fn process_list_render_data(
     app: &WinderustApp,
     window: &Window,
+    search_query: &str,
 ) -> ProcessListRenderData {
     let visible_processes = app
         .running_processes
         .iter()
         .filter(|process| !app.hide_limited_access_processes || process.image_path.is_some())
+        .filter(|process| process_list_matches_search(process, search_query))
         .cloned()
         .collect::<Vec<_>>();
     let process_count = visible_processes.len();
@@ -359,6 +361,17 @@ pub(in crate::ui::app) fn process_list_render_data(
         rows: Rc::new(rows),
         item_sizes,
     }
+}
+
+pub(in crate::ui::app) fn process_list_matches_search(process: &ProcessInfo, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    query.is_empty()
+        || process.name.to_ascii_lowercase().contains(&query)
+        || process.id.to_string().contains(&query)
+        || process
+            .image_path
+            .as_ref()
+            .is_some_and(|path| path.to_string_lossy().to_ascii_lowercase().contains(&query))
 }
 
 pub(in crate::ui::app) fn process_list_icons_by_path(

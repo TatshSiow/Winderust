@@ -173,6 +173,21 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
 }
 
 #[test]
+fn process_list_search_matches_name_pid_and_path() {
+    let process = ProcessInfo {
+        id: 4242,
+        parent_id: None,
+        name: "Editor.EXE".to_owned(),
+        image_path: Some(PathBuf::from(r"C:\Apps\Editor\editor.exe")),
+    };
+
+    assert!(process_list_matches_search(&process, "editor"));
+    assert!(process_list_matches_search(&process, "4242"));
+    assert!(process_list_matches_search(&process, r"apps\editor"));
+    assert!(!process_list_matches_search(&process, "browser"));
+}
+
+#[test]
 fn process_list_sort_orders_groups_by_name_direction() {
     let processes = vec![
         ProcessInfo {

@@ -446,6 +446,7 @@ impl UiInputs {
         let processor_power_values = processor_power_values.normalized();
         Self {
             dashboard_search: make_input(window, cx, "", &t!("home.search_placeholder")),
+            process_list_search: make_input(window, cx, "", &t!("process_list.search_placeholder")),
             by_cpu_load_rule_names: settings
                 .by_cpu_load
                 .rules
@@ -627,6 +628,12 @@ impl UiInputs {
             window,
             cx,
         );
+        set_input_placeholder(
+            &self.process_list_search,
+            t!("process_list.search_placeholder"),
+            window,
+            cx,
+        );
         for target in SuggestionTarget::ALL {
             set_input_placeholder(
                 target.input(self),
@@ -663,6 +670,7 @@ impl WinderustApp {
         self.rebuild_process_picker_input_subscriptions(window, cx);
         self.subscribe_to_numeric_input(window, cx);
         self.subscribe_to_dashboard_search_input(window, cx);
+        self.subscribe_to_process_list_search_input(window, cx);
         self.subscribe_to_processor_power_sliders(window, cx);
         self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         self.subscribe_to_activity_sliders(window, cx);
@@ -793,6 +801,18 @@ impl WinderustApp {
             move |_, _, _: &InputEvent, _, cx| {
                 cx.notify();
             },
+        ));
+    }
+
+    pub(in crate::ui::app) fn subscribe_to_process_list_search_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._process_list_search_subscription = Some(cx.subscribe_in(
+            &self.inputs.process_list_search,
+            window,
+            move |_, _, _: &InputEvent, _, cx| cx.notify(),
         ));
     }
 

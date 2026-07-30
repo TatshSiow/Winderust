@@ -264,6 +264,8 @@ home:
   launch_boost: "啟動提升"
 
 process_list:
+  search_placeholder: "搜尋處理程序..."
+  no_matches: "找不到符合的處理程序"
   hide_limited_access_items: "隱藏存取受限項目"
   app_name: "應用程式名稱"
   selected_summary: "%{name} · PID %{pid} · %{count} 個自訂原則"

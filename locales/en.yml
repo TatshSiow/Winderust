@@ -264,6 +264,8 @@ home:
   launch_boost: "Launch boost"
 
 process_list:
+  search_placeholder: "Search processes..."
+  no_matches: "No matching processes"
   hide_limited_access_items: "Hide limited access items"
   app_name: "App name"
   title: "Process List"

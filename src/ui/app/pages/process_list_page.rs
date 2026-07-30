@@ -12,7 +12,8 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let render_data = process_list_render_data(self, window);
+        let search_query = self.inputs.process_list_search.read(cx).value().to_string();
+        let render_data = process_list_render_data(self, window, &search_query);
         let process_count = render_data.process_count;
         let table_scroll_height = process_list_scroll_height(window);
         let column_layout = render_data.column_layout;
@@ -32,6 +33,17 @@ impl WinderustApp {
             .read(cx)
             .clone();
         let refresh_in_progress = self.process_refresh_in_progress;
+        let search_focused = self
+            .inputs
+            .process_list_search
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let search_input = div().w(px(280.0)).max_w_full().child(app_input(
+            &self.inputs.process_list_search,
+            search_focused,
+            cx,
+        ));
         let refresh_button = control_button(Button::new("refresh-process-list"))
             .label(if refresh_in_progress {
                 t!("common.loading").to_string()
@@ -60,8 +72,12 @@ impl WinderustApp {
             cx,
         ));
         let rows = if rendered_rows.is_empty() {
-            let message = process_load_state_message(&self.running_process_load_state)
-                .unwrap_or_else(|| t!("common.no_running_apps_loaded").to_string());
+            let message = if search_query.trim().is_empty() {
+                process_load_state_message(&self.running_process_load_state)
+                    .unwrap_or_else(|| t!("common.no_running_apps_loaded").to_string())
+            } else {
+                t!("process_list.no_matches").to_string()
+            };
             process_list_scroll_content(table_width)
                 .child(process_list_empty_row(message))
                 .into_any_element()
@@ -112,18 +128,13 @@ impl WinderustApp {
                     .justify_between()
                     .gap_2()
                     .flex_wrap()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .truncate()
-                            .child(text_muted(process_list_toolbar_label(self, process_count))),
-                    )
+                    .child(div().flex_1().min_w(px(0.0)).child(search_input))
                     .child(
                         h_flex()
                             .flex_none()
                             .items_center()
                             .gap_2()
+                            .child(text_muted(process_list_toolbar_label(self, process_count)))
                             .child(div().flex_none().child(hide_limited_access))
                             .child(refresh_button),
                     ),
