@@ -240,6 +240,7 @@ impl CoreSteeringManager {
         for process in processes {
             if process.id == 0
                 || process.is_critical != Some(false)
+                || !process.can_set_information
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
                 || !enabled_process_names.contains(&process.name.to_ascii_lowercase())

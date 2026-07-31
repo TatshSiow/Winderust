@@ -41,10 +41,10 @@ use crate::{
 
 use crate::config::AppSuspensionSettings;
 use crate::foreground::{
-    capture_process_action_target, contains_process_name, ensure_process_action_target_mutable,
+    capture_process_action_target, contains_process_name, ensure_process_action_target_access,
     executable_path_key, list_processes, process_executable_path,
     process_handle_matches_executable_path, process_session_id, same_executable_path,
-    ProcessActionTarget, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+    ProcessActionAccess, ProcessActionTarget, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -227,7 +227,12 @@ impl AppSuspensionManager {
             );
             return;
         }
-        if ensure_process_action_target_mutable(target).is_err()
+        let access = if suspend {
+            ProcessActionAccess::AssignToJob
+        } else {
+            ProcessActionAccess::SafetyOnly
+        };
+        if ensure_process_action_target_access(target, access).is_err()
             || contains_process_name(BUILT_IN_EXCLUSIONS, &target.name)
         {
             action_log.record(
@@ -415,6 +420,7 @@ impl AppSuspensionManager {
         for process in processes {
             if process.id == 0
                 || process.is_critical != Some(false)
+                || !process.can_set_information
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
                 || !contains_process_name(&enabled_process_names, &process.name)

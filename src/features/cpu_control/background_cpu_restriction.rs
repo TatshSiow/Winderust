@@ -109,6 +109,8 @@ impl BackgroundCpuRestrictionManager {
             .into_iter()
             .filter(|process| {
                 process.id != 0
+                    && process.is_critical == Some(false)
+                    && process.can_set_information
                     && process.id != current_process_id
                     && !core_steering::is_builtin_excluded(&process.name)
                     && (allow_cross_session_process_control

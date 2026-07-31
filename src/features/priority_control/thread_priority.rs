@@ -27,10 +27,10 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{ProcessThreadPrioritySetting, ThreadPrioritySettings},
     foreground::{
-        ensure_process_action_target_mutable, is_foreground_process, list_processes,
+        ensure_process_action_target_access, is_foreground_process, list_processes,
         process_executable_path, process_failure_key, process_handle_matches_executable_path,
         process_session_id, same_executable_path, same_process_name, unique_app_names,
-        ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        ProcessActionAccess, ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
@@ -170,6 +170,7 @@ impl ThreadPriorityManager {
         for process in processes {
             if process.id == 0
                 || process.is_critical != Some(false)
+                || !process.can_set_information
                 || process.id == current_process_id
                 || (!allow_cross_session_process_control
                     && process_session_id(process.id) != Some(current_session_id))
@@ -827,7 +828,7 @@ pub(crate) fn apply_once(
 ) -> Result<usize, String> {
     let priority = thread_priority_value(priority)
         .ok_or_else(|| "This thread priority is not available as a quick action.".to_owned())?;
-    ensure_process_action_target_mutable(target)?;
+    ensure_process_action_target_access(target, ProcessActionAccess::SafetyOnly)?;
     let process = VerifiedProcess::open(target.id, &target.executable_path)
         .map_err(thread_priority_error_message)?;
     if process.creation_time != target.creation_time {

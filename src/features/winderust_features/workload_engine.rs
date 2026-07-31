@@ -374,6 +374,7 @@ impl WorkloadEngineManager {
         let mut lowerable_background_processes = BTreeMap::new();
         for process in &processes {
             if process.is_critical != Some(false)
+                || !process.can_set_information
                 || should_skip_process(
                     process.id,
                     &process.name,
@@ -502,7 +503,9 @@ impl WorkloadEngineManager {
             {
                 for process in processes
                     .iter()
-                    .filter(|process| process.is_critical == Some(false))
+                    .filter(|process| {
+                        process.is_critical == Some(false) && process.can_set_information
+                    })
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
                     .filter(|process| !background_efficiency_process_ids.contains(&process.id))
                     .filter(|process| {
@@ -847,7 +850,9 @@ impl WorkloadEngineManager {
             {
                 let boost_targets = processes
                     .iter()
-                    .filter(|process| process.is_critical == Some(false))
+                    .filter(|process| {
+                        process.is_critical == Some(false) && process.can_set_information
+                    })
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
                     .filter(|process| !background_efficiency_process_ids.contains(&process.id))
                     .filter(|process| {

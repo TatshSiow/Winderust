@@ -44,6 +44,7 @@ fn inaccessible_process_filter_matches_process_action_safety() {
         session_id: Some(1),
         user_name: Some("User".to_owned()),
         is_critical: Some(false),
+        can_set_information: true,
         name: "app.exe".to_owned(),
         image_path: Some(PathBuf::from(r"C:\Apps\app.exe")),
     };
@@ -56,6 +57,10 @@ fn inaccessible_process_filter_matches_process_action_safety() {
 
     inaccessible = accessible.clone();
     inaccessible.is_critical = None;
+    assert!(process_list_process_is_inaccessible(&inaccessible));
+
+    inaccessible = accessible.clone();
+    inaccessible.can_set_information = false;
     assert!(process_list_process_is_inaccessible(&inaccessible));
 
     inaccessible = accessible;
@@ -72,6 +77,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
             session_id: Some(0),
             user_name: Some("SYSTEM".to_owned()),
             is_critical: Some(false),
+            can_set_information: true,
             name: "service.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Apps\service.exe")),
         },
@@ -81,6 +87,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
             session_id: Some(1),
             user_name: Some("User".to_owned()),
             is_critical: Some(false),
+            can_set_information: true,
             name: "service.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Apps\service.exe")),
         },
@@ -167,6 +174,7 @@ fn process_list_column_layout_fits_headers_and_values() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
@@ -176,6 +184,7 @@ fn process_list_column_layout_fits_headers_and_values() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
             image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
@@ -220,6 +229,7 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
         session_id: None,
         user_name: None,
         is_critical: Some(false),
+        can_set_information: true,
         name: "Editor.EXE".to_owned(),
         image_path: Some(executable_path.clone()),
     }];
@@ -266,6 +276,7 @@ fn process_list_group_actions_target_the_root_process() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
             image_path: Some(executable_path.clone()),
         },
@@ -275,6 +286,7 @@ fn process_list_group_actions_target_the_root_process() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
             image_path: Some(executable_path),
         },
@@ -300,6 +312,7 @@ fn process_list_search_matches_name_pid_and_path() {
         session_id: None,
         user_name: None,
         is_critical: Some(false),
+        can_set_information: true,
         name: "Editor.EXE".to_owned(),
         image_path: Some(PathBuf::from(r"C:\Apps\Editor\editor.exe")),
     };
@@ -319,6 +332,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
@@ -328,6 +342,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
             image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
@@ -359,6 +374,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Games\game.exe")),
         },
@@ -368,6 +384,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Other\game.exe")),
         },
@@ -404,6 +421,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
@@ -413,6 +431,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
             image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
@@ -422,6 +441,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
@@ -474,6 +494,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
@@ -483,6 +504,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
             image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },

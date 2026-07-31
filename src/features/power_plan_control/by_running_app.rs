@@ -223,6 +223,7 @@ mod tests {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
@@ -258,6 +259,7 @@ mod tests {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
@@ -290,6 +292,7 @@ mod tests {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];

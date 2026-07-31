@@ -109,6 +109,7 @@ pub(in crate::ui::app) struct ProcessListGroupRowData<'a> {
     pub(in crate::ui::app) user_label: &'a str,
     pub(in crate::ui::app) user_unavailable: bool,
     pub(in crate::ui::app) protected: bool,
+    pub(in crate::ui::app) inaccessible: bool,
 }
 
 #[derive(Clone)]
@@ -127,6 +128,7 @@ pub(in crate::ui::app) enum ProcessListRenderedRow {
         user_label: String,
         user_unavailable: bool,
         protected: bool,
+        inaccessible: bool,
         summary: Arc<ProcessPolicySummary>,
         icon: Option<Arc<Image>>,
         state: ProcessListGroupRowState,
@@ -284,6 +286,7 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
             user_label: process_list_group_user_label(&group.processes),
             user_unavailable: process_list_group_user_unavailable(&group.processes),
             protected: process_list_group_is_protected(&group.processes),
+            inaccessible: process_list_group_is_inaccessible(&group.processes),
             summary: Arc::clone(&summary),
             icon: icon.clone(),
             state: ProcessListGroupRowState { collapsed, divided },
@@ -352,6 +355,13 @@ pub(in crate::ui::app) fn process_list_render_data(
             });
         summary.status = if process_list_group_is_protected(&group.processes) {
             t!("process_list.status_protected_system_process").to_string()
+        } else if process_list_group_is_inaccessible(&group.processes) {
+            t!(if privilege::is_running_as_admin() {
+                "process_list.status_access_denied"
+            } else {
+                "process_list.status_administrator_required"
+            })
+            .to_string()
         } else {
             process_list_status_label(
                 &app.app_suspension_status,
@@ -530,8 +540,16 @@ pub(in crate::ui::app) fn process_list_process_is_inaccessible(process: &Process
     process.image_path.is_none()
         || process.id == 0
         || process.id == std::process::id()
+        || !process.can_set_information
         || process.is_critical.is_none()
         || process_list_process_is_protected(process)
+}
+
+pub(in crate::ui::app) fn process_list_group_is_inaccessible(processes: &[&ProcessInfo]) -> bool {
+    !processes.is_empty()
+        && processes
+            .iter()
+            .all(|process| process_list_process_is_inaccessible(process))
 }
 
 pub(in crate::ui::app) fn process_list_group_is_protected(processes: &[&ProcessInfo]) -> bool {

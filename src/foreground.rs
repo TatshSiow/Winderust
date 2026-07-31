@@ -17,5 +17,6 @@ pub use process_list::{
     EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 pub(crate) use process_list::{
-    ensure_process_action_target_mutable, process_handle_matches_executable_path,
+    ensure_process_action_target_access, process_handle_matches_executable_path,
+    ProcessActionAccess,
 };

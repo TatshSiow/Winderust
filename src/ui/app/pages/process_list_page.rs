@@ -609,6 +609,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
             user_label,
             user_unavailable,
             protected,
+            inaccessible,
             summary,
             icon,
             state,
@@ -621,6 +622,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
                 user_label: user_label.as_str(),
                 user_unavailable: *user_unavailable,
                 protected: *protected,
+                inaccessible: *inaccessible,
             },
             summary.as_ref(),
             icon.as_ref(),
@@ -653,14 +655,23 @@ fn process_list_context_menu(
 ) -> PopupMenu {
     let target =
         capture_process_action_target(process_id, Path::new(&executable_path), allow_cross_session);
-    let mutations_disabled = target.as_ref().map_or(true, |target| {
-        ensure_process_action_target_mutable(target).is_err()
-    });
-    let suspension_disabled = mutations_disabled
+    let action_disabled = |access| {
+        target.as_ref().map_or(true, |target| {
+            ensure_process_action_target_access(target, access).is_err()
+        })
+    };
+    let termination_disabled = action_disabled(ProcessActionAccess::Terminate);
+    let suspend = !suspended;
+    let suspension_access = if suspend {
+        ProcessActionAccess::AssignToJob
+    } else {
+        ProcessActionAccess::SafetyOnly
+    };
+    let suspension_disabled = action_disabled(suspension_access)
         || target
             .as_ref()
             .is_ok_and(|target| app_suspension::is_builtin_excluded(&target.name));
-    let efficiency_disabled = mutations_disabled
+    let efficiency_disabled = action_disabled(ProcessActionAccess::SetInformation)
         || target
             .as_ref()
             .is_ok_and(|target| background_efficiency::is_builtin_excluded(&target.name));
@@ -686,9 +697,9 @@ fn process_list_context_menu(
             process_list_value_menu_item(
                 t!(label_key).to_string(),
                 ProcessListMenuItemTone::Danger,
-                mutations_disabled,
+                termination_disabled,
             )
-            .disabled(mutations_disabled)
+            .disabled(termination_disabled)
             .on_click(move |_, window, cx| {
                 let description = t!(
                     if tree {
@@ -749,7 +760,6 @@ fn process_list_context_menu(
         let app_entity = app_entity.clone();
         let process_name = process_name.clone();
         let target = target.clone();
-        let suspend = !suspended;
         let label_key = if suspend {
             "process_list.suspend_process"
         } else {
@@ -886,7 +896,7 @@ fn process_list_priority_controls_submenu(
     menu_cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
     if target.as_ref().map_or(true, |target| {
-        ensure_process_action_target_mutable(target).is_err()
+        ensure_process_action_target_access(target, ProcessActionAccess::SafetyOnly).is_err()
     }) {
         return menu.item(
             process_list_value_menu_item(
@@ -902,11 +912,16 @@ fn process_list_priority_controls_submenu(
         window,
         menu_cx,
         move |menu, window, menu_cx| {
+            let can_set_information = target.as_ref().is_ok_and(|target| {
+                ensure_process_action_target_access(target, ProcessActionAccess::SetInformation)
+                    .is_ok()
+            });
             let current_process = target
                 .as_ref()
                 .ok()
                 .and_then(|target| process_priority::current_priority(target).ok());
-            let process_priority_available = current_process.is_some()
+            let process_priority_available = can_set_information
+                && current_process.is_some()
                 && current_process != Some(ProcessPrioritySetting::Realtime);
             let process_options = if expose_all_priorities {
                 &ProcessPrioritySetting::ADVANCED_ALL[..]
@@ -973,7 +988,7 @@ fn process_list_priority_controls_submenu(
                 t!("process_list.dynamic_priority_boost").to_string(),
                 vec![false, true],
                 current_boost,
-                current_boost.is_some(),
+                can_set_information && current_boost.is_some(),
                 process_list_priority_option_available,
                 app_entity.clone(),
                 process_name.clone(),
@@ -1001,7 +1016,7 @@ fn process_list_priority_controls_submenu(
                 t!("process_list.io_priority").to_string(),
                 io_options,
                 current_io,
-                current_io.is_some(),
+                can_set_information && current_io.is_some(),
                 process_list_priority_option_available,
                 app_entity.clone(),
                 process_name.clone(),
@@ -1029,7 +1044,7 @@ fn process_list_priority_controls_submenu(
                 t!("process_list.gpu_priority").to_string(),
                 gpu_options,
                 current_gpu,
-                current_gpu.is_some(),
+                can_set_information && current_gpu.is_some(),
                 process_list_priority_option_available,
                 app_entity.clone(),
                 process_name.clone(),
@@ -1053,7 +1068,7 @@ fn process_list_priority_controls_submenu(
                 t!("process_list.memory_priority").to_string(),
                 memory_options,
                 current_memory,
-                current_memory.is_some(),
+                can_set_information && current_memory.is_some(),
                 process_list_priority_option_available,
                 app_entity.clone(),
                 process_name.clone(),
@@ -1253,7 +1268,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
     let details_path = executable_path.clone();
     let selected = edit_context.app.selected_process_id == Some(process_id);
     let app_entity = cx.entity();
-    let limited_access = executable_path.is_none();
+    let limited_access = executable_path.is_none() || !process.can_set_information;
     let protected = process_list_process_is_protected(process);
     let suspended = edit_context
         .app
@@ -1352,7 +1367,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
     let mut process_summary = summary.clone();
     if protected {
         process_summary.status = t!("process_list.status_protected_system_process").to_string();
-    } else if executable_path.is_none() {
+    } else if limited_access {
         process_summary.status = if privilege::is_running_as_admin() {
             t!("process_list.status_access_denied").to_string()
         } else {
@@ -1379,7 +1394,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
         executable_path.as_deref().unwrap_or_default(),
         &process_summary,
         layout,
-        state.editable && executable_path.is_some() && !protected,
+        state.editable && !limited_access && !protected,
         edit_context,
         cx,
     ))
@@ -1449,6 +1464,11 @@ pub(in crate::ui::app) fn process_list_group_row(
                     .build(window, cx)
             })
         })
+        .when(data.inaccessible && !data.protected, |row| {
+            row.opacity(0.65).tooltip(|window, cx| {
+                Tooltip::new(t!("process_list.access_denied_help").to_string()).build(window, cx)
+            })
+        })
         .hover(|style| style.bg(rgb(settings_card_hover_color())))
         .cursor_pointer()
         .on_click(cx.listener(move |app, _, _, cx| {
@@ -1489,7 +1509,7 @@ pub(in crate::ui::app) fn process_list_group_row(
         &executable_path,
         summary,
         layout,
-        !data.protected,
+        !data.protected && !data.inaccessible,
         edit_context,
         cx,
     ))

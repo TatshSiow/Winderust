@@ -22,9 +22,10 @@ use crate::{
     audio_activity::active_audio_process_ids,
     config::{BackgroundEfficiencyAggressiveness, BackgroundEfficiencySettings},
     foreground::{
-        contains_process_name, ensure_process_action_target_mutable, list_processes,
+        contains_process_name, ensure_process_action_target_access, list_processes,
         process_executable_path, process_failure_key, process_handle_matches_executable_path,
-        process_session_id, should_ignore_foreground_process, ProcessActionTarget,
+        process_session_id, should_ignore_foreground_process, ProcessActionAccess,
+        ProcessActionTarget,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -216,6 +217,7 @@ impl BackgroundEfficiencyManager {
         for process in processes {
             if process.id == 0
                 || process.is_critical != Some(false)
+                || !process.can_set_information
                 || process.id == current_process_id
                 || is_builtin_excluded_for(&process.name, settings.aggressiveness)
                 || (!allow_cross_session_process_control
@@ -910,7 +912,7 @@ pub(crate) fn apply_efficiency_mode_once(
     enabled: bool,
     previous_priority: Option<u32>,
 ) -> Result<Option<u32>, String> {
-    ensure_process_action_target_mutable(target)?;
+    ensure_process_action_target_access(target, ProcessActionAccess::SetInformation)?;
     if is_builtin_excluded(&target.name) {
         return Err("Built-in Windows processes cannot be modified.".to_owned());
     }

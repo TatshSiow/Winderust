@@ -15,8 +15,8 @@ use crate::{
 
 use windows_sys::Win32::{
     Foundation::{
-        GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, FILETIME,
-        INVALID_HANDLE_VALUE,
+        GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, FILETIME, HANDLE,
+        INVALID_HANDLE_VALUE, NTSTATUS,
     },
     Security::{
         GetTokenInformation, LookupAccountSidW, TokenUser, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
@@ -32,13 +32,27 @@ use windows_sys::Win32::{
         Threading::{
             GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
             IsProcessCritical, OpenProcess, OpenProcessToken, ProcessPowerThrottling,
-            QueryFullProcessImageNameW, TerminateProcess, IDLE_PRIORITY_CLASS, PROCESS_NAME_WIN32,
-            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            ProcessProtectionLevelInfo, QueryFullProcessImageNameW, TerminateProcess,
+            IDLE_PRIORITY_CLASS, PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+            PROCESS_PROTECTION_LEVEL_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SET_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE, PROTECTION_LEVEL_NONE,
         },
+        WindowsProgramming::PUBLIC_OBJECT_BASIC_INFORMATION,
     },
 };
 
+unsafe extern "system" {
+    fn NtQueryObject(
+        handle: HANDLE,
+        object_information_class: i32,
+        object_information: *mut core::ffi::c_void,
+        object_information_length: u32,
+        return_length: *mut u32,
+    ) -> NTSTATUS;
+}
+
+const OBJECT_BASIC_INFORMATION_CLASS: i32 = 0;
 const PROCESS_IMAGE_PATH_INITIAL_BUFFER_LEN: usize = 512;
 const PROCESS_IMAGE_PATH_MAX_BUFFER_LEN: usize = 32_768;
 const WINDOWS_DIRECTORY_INITIAL_BUFFER_LEN: usize = 260;
@@ -99,6 +113,7 @@ pub struct ProcessInfo {
     pub session_id: Option<u32>,
     pub user_name: Option<String>,
     pub is_critical: Option<bool>,
+    pub can_set_information: bool,
     pub name: String,
     pub image_path: Option<PathBuf>,
 }
@@ -198,6 +213,25 @@ pub struct ProcessActionTarget {
     pub creation_time: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessActionAccess {
+    SafetyOnly,
+    SetInformation,
+    Terminate,
+    AssignToJob,
+}
+
+impl ProcessActionAccess {
+    fn desired_access(self) -> u32 {
+        match self {
+            Self::SafetyOnly => 0,
+            Self::SetInformation => PROCESS_SET_INFORMATION,
+            Self::Terminate => PROCESS_TERMINATE,
+            Self::AssignToJob => PROCESS_SET_QUOTA | PROCESS_TERMINATE,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessActionTargetError {
     ProtectedProcess,
@@ -291,7 +325,7 @@ pub fn capture_process_action_target(
 }
 
 pub fn terminate_process(target: &ProcessActionTarget) -> Result<(), String> {
-    ensure_process_action_target_mutable(target)?;
+    ensure_process_action_target_access(target, ProcessActionAccess::Terminate)?;
     let process = open_verified_action_process(target, PROCESS_TERMINATE)?;
     // SAFETY: process is a verified live handle opened with PROCESS_TERMINATE.
     if unsafe { TerminateProcess(process.raw(), 1) } == 0 {
@@ -309,7 +343,7 @@ pub fn terminate_process_tree(
     processes: &[ProcessInfo],
     allow_cross_session: bool,
 ) -> Result<usize, String> {
-    ensure_process_action_target_mutable(root)?;
+    ensure_process_action_target_access(root, ProcessActionAccess::Terminate)?;
     let mut process_ids = vec![root.id];
     let mut selected = BTreeSet::from([root.id]);
     let mut index = 0;
@@ -344,7 +378,7 @@ pub fn terminate_process_tree(
     }
     let count = targets.len();
     for target in &targets {
-        ensure_process_action_target_mutable(target)?;
+        ensure_process_action_target_access(target, ProcessActionAccess::Terminate)?;
     }
     for target in targets {
         terminate_process(&target)?;
@@ -352,18 +386,24 @@ pub fn terminate_process_tree(
     Ok(count)
 }
 
-pub(crate) fn ensure_process_action_target_mutable(
+pub(crate) fn ensure_process_action_target_access(
     target: &ProcessActionTarget,
+    access: ProcessActionAccess,
 ) -> Result<(), String> {
     if contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &target.name) {
         return Err("Built-in Windows processes cannot be modified.".to_owned());
     }
-    if open_process_for_query(target.id)
-        .as_ref()
-        .and_then(process_critical_from_handle)
-        != Some(false)
-    {
+    let process = open_process_for_query(target.id)
+        .ok_or_else(|| "The process is no longer accessible.".to_owned())?;
+    if process_critical_from_handle(&process) != Some(false) {
         return Err("Critical or unverifiable processes cannot be modified.".to_owned());
+    }
+    if process_protection_from_handle(&process) != Some(false) {
+        return Err("Windows protected processes cannot be modified.".to_owned());
+    }
+    let desired_access = access.desired_access();
+    if desired_access != 0 && !process_has_access(target.id, desired_access) {
+        return Err("Windows denied process control access.".to_owned());
     }
     Ok(())
 }
@@ -441,7 +481,7 @@ pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
 pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<ProcessCandidateInfo> {
     let mut candidates = BTreeMap::new();
     for process in processes {
-        if process.is_critical != Some(false) {
+        if process.is_critical != Some(false) || !process.can_set_information {
             continue;
         }
         let Some(image_path) = process.image_path.as_ref() else {
@@ -475,6 +515,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
                 session_id: process_session_id(entry.th32ProcessID),
                 user_name: None,
                 is_critical: None,
+                can_set_information: false,
                 name,
                 image_path: None,
             });
@@ -486,9 +527,12 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     ensure_process_iteration_complete()?;
 
     for process in &mut processes {
-        process.is_critical = open_process_for_query(process.id)
-            .as_ref()
-            .and_then(process_critical_from_handle);
+        let Some(handle) = open_process_for_query(process.id) else {
+            continue;
+        };
+        process.is_critical = process_critical_from_handle(&handle);
+        process.can_set_information = process_protection_from_handle(&handle) == Some(false)
+            && process_has_access(process.id, PROCESS_SET_INFORMATION);
     }
     Ok(processes)
 }
@@ -686,6 +730,44 @@ fn open_process_for_query(process_id: u32) -> Option<WinHandle> {
     (!process.is_null()).then(|| WinHandle::new(process))
 }
 
+fn process_has_access(process_id: u32, desired_access: u32) -> bool {
+    // SAFETY: process_id came from a current snapshot and no inherited handle is requested.
+    let process = unsafe { OpenProcess(desired_access, 0, process_id) };
+    let process = (!process.is_null()).then(|| WinHandle::new(process));
+    process
+        .as_ref()
+        .is_some_and(|process| process_handle_has_access(process, desired_access) == Some(true))
+}
+
+fn process_handle_has_access(process: &WinHandle, desired_access: u32) -> Option<bool> {
+    let mut information = PUBLIC_OBJECT_BASIC_INFORMATION::default();
+    // SAFETY: process is live and information is writable for its full declared size.
+    let status = unsafe {
+        NtQueryObject(
+            process.raw(),
+            OBJECT_BASIC_INFORMATION_CLASS,
+            (&mut information as *mut PUBLIC_OBJECT_BASIC_INFORMATION).cast(),
+            std::mem::size_of::<PUBLIC_OBJECT_BASIC_INFORMATION>() as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    (status >= 0).then_some(information.GrantedAccess & desired_access == desired_access)
+}
+
+fn process_protection_from_handle(process: &WinHandle) -> Option<bool> {
+    let mut protection = PROCESS_PROTECTION_LEVEL_INFORMATION::default();
+    // SAFETY: process is live with query access and protection is writable for its full size.
+    (unsafe {
+        GetProcessInformation(
+            process.raw(),
+            ProcessProtectionLevelInfo,
+            (&mut protection as *mut PROCESS_PROTECTION_LEVEL_INFORMATION).cast(),
+            std::mem::size_of::<PROCESS_PROTECTION_LEVEL_INFORMATION>() as u32,
+        )
+    } != 0)
+        .then_some(protection.ProtectionLevel != PROTECTION_LEVEL_NONE)
+}
+
 pub fn process_is_critical(process_id: u32) -> Option<bool> {
     let process = open_process_for_query(process_id)?;
     process_critical_from_handle(&process)
@@ -870,7 +952,20 @@ mod tests {
     }
 
     #[test]
-    fn mutable_process_targets_reject_built_in_windows_processes() {
+    fn process_action_targets_use_operation_specific_access() {
+        assert_eq!(ProcessActionAccess::SafetyOnly.desired_access(), 0);
+        assert_eq!(
+            ProcessActionAccess::SetInformation.desired_access(),
+            PROCESS_SET_INFORMATION
+        );
+        assert_eq!(
+            ProcessActionAccess::Terminate.desired_access(),
+            PROCESS_TERMINATE
+        );
+        assert_eq!(
+            ProcessActionAccess::AssignToJob.desired_access(),
+            PROCESS_SET_QUOTA | PROCESS_TERMINATE
+        );
         let target = ProcessActionTarget {
             id: 42,
             name: "explorer.exe".to_owned(),
@@ -878,7 +973,9 @@ mod tests {
             creation_time: 1,
         };
 
-        assert!(ensure_process_action_target_mutable(&target).is_err());
+        assert!(
+            ensure_process_action_target_access(&target, ProcessActionAccess::SafetyOnly).is_err()
+        );
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
@@ -887,7 +984,10 @@ mod tests {
             name: "editor.exe".to_owned(),
             ..target
         };
-        assert!(ensure_process_action_target_mutable(&target).is_ok());
+        assert!(
+            ensure_process_action_target_access(&target, ProcessActionAccess::SetInformation)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -898,6 +998,7 @@ mod tests {
             session_id: Some(1),
             user_name: Some("User".to_owned()),
             is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Apps\editor.exe")),
         };
@@ -911,8 +1012,14 @@ mod tests {
         unverifiable.name = "unknown.exe".to_owned();
         unverifiable.image_path = Some(PathBuf::from(r"C:\Apps\unknown.exe"));
         unverifiable.is_critical = None;
+        let mut inaccessible = process.clone();
+        inaccessible.id = 45;
+        inaccessible.name = "protected-service.exe".to_owned();
+        inaccessible.image_path = Some(PathBuf::from(r"C:\Apps\protected-service.exe"));
+        inaccessible.can_set_information = false;
 
-        let candidates = process_candidates_from_processes(&[process, critical, unverifiable]);
+        let candidates =
+            process_candidates_from_processes(&[process, critical, unverifiable, inaccessible]);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "editor.exe");
     }
@@ -933,6 +1040,7 @@ mod tests {
             session_id: None,
             user_name: None,
             is_critical: Some(false),
+            can_set_information: true,
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Games\game.exe")),
         };
