@@ -45,8 +45,8 @@ use crate::{
     memory_trim::{MemoryTrimManager, MemoryTrimSnapshot},
     power::{
         active_plan, adaptive_power_profile_transition, apply_processor_power_values,
-        create_adaptive_plan, delete_plan, read_processor_power_values, set_active,
-        AdaptivePowerDemand, AdaptivePowerProfile, ProcessorPowerAcDcValues, ProcessorPowerValues,
+        create_adaptive_plan, delete_plan, set_active, AdaptivePowerDemand, AdaptivePowerProfile,
+        ProcessorPowerValues,
     },
     power_source,
     process_priority::{ProcessPriorityManager, ProcessPrioritySnapshot},

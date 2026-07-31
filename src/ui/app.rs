@@ -1450,7 +1450,7 @@ mod tests {
             &settings,
             PowerModePreset::Performance
         ));
-        assert!(!settings.adaptive_engine.enabled);
+        assert!(settings.adaptive_engine.enabled);
         assert!(!settings.background_efficiency.enabled);
         assert!(settings.workload_engine.enabled);
         assert!(settings.workload_engine.workload_engine_enabled);
@@ -1462,7 +1462,7 @@ mod tests {
 
         apply_power_mode_preset(&mut settings, PowerModePreset::Speed);
         assert!(power_mode_matches_preset(&settings, PowerModePreset::Speed));
-        assert!(!settings.adaptive_engine.enabled);
+        assert!(settings.adaptive_engine.enabled);
         assert!(settings.workload_engine.enabled);
         assert!(settings.workload_engine.workload_engine_enabled);
         assert!(settings.adaptive_engine.processor_policy_enabled);
@@ -1511,7 +1511,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_engine_toggle_keeps_power_mode_preset() {
+    fn adaptive_engine_toggle_disables_power_mode_preset_match() {
         let mut settings = Settings::default();
 
         for preset in PowerModePreset::ALL {
@@ -1519,7 +1519,7 @@ mod tests {
             let enabled = !settings.adaptive_engine.enabled;
             apply_adaptive_engine(&mut settings, enabled);
 
-            assert!(power_mode_matches_preset(&settings, preset));
+            assert!(!power_mode_matches_preset(&settings, preset));
         }
     }
 

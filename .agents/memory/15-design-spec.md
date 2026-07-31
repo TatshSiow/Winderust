@@ -76,6 +76,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 ## Settings Pages
 
+- Adaptive Engine is the parent of Workload Engine. Workload Engine may retain its child configuration while the parent is off, but it must not run or appear as independently enabled.
 - Prefer one setting per row when possible.
 - Use collapsible setting groups for advanced or multi-row settings.
 - Put explanatory text in muted helper labels or info popovers, not large instruction blocks.

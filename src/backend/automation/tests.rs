@@ -437,6 +437,7 @@ fn workload_engine_fast_refresh_requires_enabled_feature() {
     ));
 
     settings.general.enabled = true;
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     let deadline = workload_engine_fast_refresh_deadline(&settings, now)
         .expect("Workload Engine should enable fast refresh");
@@ -459,6 +460,7 @@ fn workload_engine_fast_refresh_requires_enabled_feature() {
 #[test]
 fn workload_engine_io_assist_waits_for_pressure() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings
         .workload_engine
@@ -484,6 +486,7 @@ fn workload_engine_io_assist_waits_for_pressure() {
 #[test]
 fn workload_engine_pressure_feeds_priority_defaults() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.workload_engine_enabled = true;
     settings
@@ -593,6 +596,7 @@ fn workload_engine_pressure_feeds_priority_defaults() {
 #[test]
 fn workload_engine_page_enabled_without_runtime_work_does_not_poll() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.lower_background_apps = false;
     settings
@@ -611,6 +615,7 @@ fn workload_engine_page_enabled_without_runtime_work_does_not_poll() {
 #[test]
 fn workload_engine_priority_assist_temporarily_overrides_global_priority_defaults() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.workload_engine_enabled = true;
     settings.thread_priority.enabled = true;
@@ -661,6 +666,7 @@ fn workload_engine_priority_assist_temporarily_overrides_global_priority_default
 #[test]
 fn workload_engine_without_io_assist_does_not_require_io_refresh() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.workload_engine_enabled = true;
     settings.workload_engine.boost_foreground_app = false;
@@ -910,7 +916,6 @@ fn adaptive_plan_follows_adaptive_engine_processor_policy() {
     settings.adaptive_engine.processor_policy_enabled = true;
 
     assert!(adaptive_power_plan_required(&settings));
-    assert_eq!(static_processor_power_values(&settings), None);
 
     settings.adaptive_engine.processor_policy_enabled = false;
     assert!(!adaptive_power_plan_required(&settings));
@@ -958,25 +963,19 @@ fn adaptive_plan_uses_fast_cpu_and_slow_aggregate_telemetry() {
 }
 
 #[test]
-fn by_running_app_keeps_its_static_processor_target() {
+fn workload_engine_requires_adaptive_engine() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.workload_engine_enabled = true;
-    settings.adaptive_engine.processor_policy_values = ProcessorPowerValues::new_with_boost_mode(
-        100,
-        25,
-        100,
-        85,
-        crate::power::ProcessorBoostMode::EfficientAggressive,
-    );
 
-    assert_eq!(
-        static_processor_power_values(&settings),
-        Some(settings.adaptive_engine.processor_policy_values)
-    );
+    assert!(!workload_engine_required(&settings));
+    assert!(!workload_engine_priority_assist_required(&settings));
+
+    settings.adaptive_engine.enabled = true;
+    assert!(workload_engine_required(&settings));
+    assert!(workload_engine_priority_assist_required(&settings));
 }
-
 #[test]
 fn power_plan_checks_sleep_when_decision_features_are_off() {
     let mut settings = Settings::default();

@@ -59,7 +59,8 @@ fn enabled_executable_path_rule(enabled: bool, executable_path: &str) -> bool {
 
 pub(super) fn workload_engine_required(settings: &Settings) -> bool {
     let workload = &settings.workload_engine;
-    workload.enabled
+    settings.adaptive_engine.enabled
+        && workload.enabled
         && (workload.lower_background_apps
             || workload.workload_engine_background_efficiency_enabled
             || workload.workload_engine_enabled
@@ -103,7 +104,8 @@ pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
 
 pub(super) fn io_priority_required(settings: &Settings) -> bool {
     settings.io_priority.enabled
-        || (settings.workload_engine.enabled
+        || (settings.adaptive_engine.enabled
+            && settings.workload_engine.enabled
             && (settings
                 .workload_engine
                 .lower_background_io_priority_enabled
@@ -111,7 +113,9 @@ pub(super) fn io_priority_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn workload_engine_priority_assist_required(settings: &Settings) -> bool {
-    settings.workload_engine.enabled && settings.workload_engine.workload_engine_enabled
+    settings.adaptive_engine.enabled
+        && settings.workload_engine.enabled
+        && settings.workload_engine.workload_engine_enabled
 }
 
 pub(super) fn thread_priority_required(settings: &Settings) -> bool {

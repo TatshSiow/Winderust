@@ -8,7 +8,8 @@ impl WinderustApp {
     ) -> AnyElement {
         let enabled = adaptive_engine_enabled(&self.settings);
         let timer_guard_available = self.settings.background_efficiency.enabled
-            || (self.settings.workload_engine.enabled
+            || (enabled
+                && self.settings.workload_engine.enabled
                 && self
                     .settings
                     .workload_engine
@@ -266,7 +267,9 @@ impl WinderustApp {
                 (
                     None,
                     t!("adaptive_engine.workload_engine").to_string(),
-                    if self.settings.workload_engine.enabled {
+                    if self.settings.adaptive_engine.enabled
+                        && self.settings.workload_engine.enabled
+                    {
                         format!(
                             "{} {}",
                             self.workload_engine_status.background_adjusted_processes,

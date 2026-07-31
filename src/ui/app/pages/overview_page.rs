@@ -304,9 +304,11 @@ impl WinderustApp {
                 .to_string(),
             ));
         }
-        if settings.workload_engine.enabled {
+        if settings.adaptive_engine.enabled {
             let workload_engine_status = if self.workload_engine_status.launch_boost_active {
                 t!("home.launch_boost").to_string()
+            } else if !settings.workload_engine.enabled {
+                t!("common.enabled").to_string()
             } else {
                 t!(
                     "home.adjusted_count",
@@ -316,7 +318,7 @@ impl WinderustApp {
             };
             items.push((
                 Some(Page::AdaptiveEngine),
-                t!("nav.workload_engine").to_string(),
+                t!("nav.adaptive_engine").to_string(),
                 workload_engine_status,
             ));
         }

@@ -4,29 +4,6 @@ pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled && settings.adaptive_engine.processor_policy_enabled
 }
 
-pub(super) fn static_processor_power_values(settings: &Settings) -> Option<ProcessorPowerValues> {
-    let values = settings
-        .adaptive_engine
-        .processor_policy_values
-        .normalized();
-    let default_saver_values = ProcessorPowerValues::new_with_boost_mode(
-        0,
-        5,
-        45,
-        0,
-        crate::power::ProcessorBoostMode::Disabled,
-    );
-
-    (settings.general.enabled
-        && !settings.adaptive_engine.enabled
-        && settings.adaptive_engine.processor_policy_enabled
-        && !settings.background_efficiency.enabled
-        && settings.workload_engine.enabled
-        && settings.workload_engine.workload_engine_enabled
-        && values != default_saver_values)
-        .then_some(values)
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub(super) struct AdaptiveProcessorDemand {
     pub(super) peak_cpu_percent: Option<f32>,
@@ -77,12 +54,6 @@ pub(super) struct ActiveAdaptivePowerPlan {
     lower_demand_since: Option<Instant>,
 }
 
-pub(super) struct AppliedStaticProcessorPolicy {
-    plan_guid: String,
-    restore_values: ProcessorPowerAcDcValues,
-    applied_values: ProcessorPowerValues,
-}
-
 #[derive(Default)]
 pub(super) struct HiddenAutomationRunner {
     last_settings: Option<Settings>,
@@ -100,7 +71,6 @@ pub(super) struct HiddenAutomationRunner {
     next_adaptive_io_refresh: Option<Instant>,
     adaptive_power_plan: Option<ActiveAdaptivePowerPlan>,
     adaptive_foreground_process_id: Option<u32>,
-    static_processor_policy: Option<AppliedStaticProcessorPolicy>,
     idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
@@ -355,11 +325,13 @@ impl HiddenAutomationRunner {
     ) -> WorkloadEngineSnapshot {
         self.refresh_cpu_usage();
         let foreground_process_id = foreground_process_id();
+        let mut workload_settings = settings.workload_engine.clone();
+        workload_settings.enabled &= settings.adaptive_engine.enabled;
         let mut excluded_process_ids = self.background_efficiency_manager.throttled_process_ids();
         excluded_process_ids.extend(self.by_running_app_manager.active_process_ids());
         let mut snapshot = self.workload_engine_manager.update(
             WorkloadEngineUpdate {
-                settings: &settings.workload_engine,
+                settings: &workload_settings,
                 automation_enabled: settings.general.enabled,
                 allow_cross_session_process_control: settings
                     .general
@@ -391,7 +363,6 @@ impl HiddenAutomationRunner {
         foreground_process_id: Option<u32>,
     ) -> Result<(), String> {
         if adaptive_power_plan_required(settings) && settings.general.enabled {
-            self.restore_static_processor_policy()?;
             let foreground_changed = foreground_process_id.is_some()
                 && self.adaptive_foreground_process_id != foreground_process_id;
             self.adaptive_foreground_process_id = foreground_process_id;
@@ -405,8 +376,7 @@ impl HiddenAutomationRunner {
             )
         } else {
             self.adaptive_foreground_process_id = None;
-            self.restore_adaptive_power_plan()?;
-            self.sync_static_processor_policy(settings)
+            self.restore_adaptive_power_plan()
         }
     }
 
@@ -525,45 +495,6 @@ impl HiddenAutomationRunner {
         self.current_guid = Some(plan.original_guid.clone());
         if let Err(error) = delete_plan(&plan.plan_guid) {
             self.adaptive_power_plan = Some(plan);
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(super) fn sync_static_processor_policy(
-        &mut self,
-        settings: &Settings,
-    ) -> Result<(), String> {
-        let desired_values = static_processor_power_values(settings);
-        if self
-            .static_processor_policy
-            .as_ref()
-            .is_some_and(|policy| Some(policy.applied_values) == desired_values)
-        {
-            return Ok(());
-        }
-
-        self.restore_static_processor_policy()?;
-        let Some(values) = desired_values else {
-            return Ok(());
-        };
-        let plan_guid = active_plan()?.guid;
-        let restore_values = read_processor_power_values(&plan_guid)?;
-        apply_processor_power_values(&plan_guid, ProcessorPowerAcDcValues::same(values))?;
-        self.static_processor_policy = Some(AppliedStaticProcessorPolicy {
-            plan_guid,
-            restore_values,
-            applied_values: values,
-        });
-        Ok(())
-    }
-
-    pub(super) fn restore_static_processor_policy(&mut self) -> Result<(), String> {
-        let Some(policy) = self.static_processor_policy.take() else {
-            return Ok(());
-        };
-        if let Err(error) = apply_processor_power_values(&policy.plan_guid, policy.restore_values) {
-            self.static_processor_policy = Some(policy);
             return Err(error);
         }
         Ok(())
@@ -816,7 +747,6 @@ pub(super) fn adaptive_plan_setup_error(
 impl Drop for HiddenAutomationRunner {
     fn drop(&mut self) {
         let _ = self.restore_adaptive_power_plan();
-        let _ = self.restore_static_processor_policy();
     }
 }
 
