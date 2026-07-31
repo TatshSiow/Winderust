@@ -276,7 +276,10 @@ impl GpuPriorityManager {
                     skipped_processes += 1;
                     denied_processes += 1;
                     self.clear_process_pending_context(&executable_path);
-                    if self.record_process_failure(&executable_path) {
+                    if self
+                        .failure_suppression
+                        .suppress_process_failure(&executable_path)
+                    {
                         access_denied_log_count += 1;
                     }
                 }

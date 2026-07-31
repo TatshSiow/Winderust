@@ -382,7 +382,8 @@ impl CoreSteeringManager {
                 }
                 Err(AffinityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&failure_executable_path);
+                    self.failure_suppression
+                        .suppress_process_failure(&failure_executable_path);
                     action_log.record(
                         self.action_log_feature,
                         Some(process_id),

@@ -305,7 +305,8 @@ impl MemoryPriorityManager {
                 }
                 Err(MemoryPriorityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&target.executable_path);
+                    self.failure_suppression
+                        .suppress_process_failure(&target.executable_path);
                     action_log.record(
                         action_log_feature,
                         Some(target.process_id),

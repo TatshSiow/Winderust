@@ -262,7 +262,7 @@ impl ProcessPriorityManager {
                 Err(ProcessPriorityError::AccessDenied) => {
                     skipped_processes += 1;
                     self.failure_suppression
-                        .record_process_failure(&executable_path);
+                        .suppress_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::ProcessPriority,
                         Some(process_id),

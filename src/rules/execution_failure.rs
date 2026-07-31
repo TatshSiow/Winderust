@@ -41,6 +41,11 @@ impl ExecutionFailureState {
         self.attempts = self.attempts.saturating_add(1);
     }
 
+    fn suppress_permanently(&mut self) {
+        self.attempts = execution_failure_suppression_threshold();
+        self.suppression_logged = true;
+    }
+
     fn is_suppressed(&self) -> bool {
         self.attempts >= execution_failure_suppression_threshold()
     }
@@ -110,6 +115,15 @@ impl ExecutionFailureTracker {
             return false;
         };
         self.record_key_failure(&key)
+    }
+
+    pub fn suppress_process_failure(&mut self, process_name: &str) -> bool {
+        let Some(key) = process_failure_key(process_name) else {
+            return false;
+        };
+        let is_new = !self.states.contains_key(&key);
+        self.states.entry(key).or_default().suppress_permanently();
+        is_new
     }
 
     pub fn clear_key_failure(&mut self, key: &str) {
@@ -184,5 +198,16 @@ mod tests {
         assert_eq!(second, ExecutionSuppression::active(false));
         assert!(!tracker.process_suppression(r"C:\Tools\app.exe").suppressed);
         assert!(!tracker.process_suppression(r"C:\Games\APP.exe").suppressed);
+    }
+
+    #[test]
+    fn permanent_process_failure_suppresses_immediately() {
+        let mut tracker = ExecutionFailureTracker::default();
+
+        assert!(tracker.suppress_process_failure(r"C:\Apps\service.exe"));
+        assert_eq!(
+            tracker.process_suppression(r"C:\Apps\service.exe"),
+            ExecutionSuppression::active(false)
+        );
     }
 }

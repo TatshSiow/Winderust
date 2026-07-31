@@ -6,6 +6,7 @@ use std::{
 use crate::config::ActionLogMode;
 
 pub const DEFAULT_ACTION_LOG_CAPACITY: usize = 512;
+const SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS: u128 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActionLogEntry {
@@ -79,18 +80,35 @@ impl ActionLog {
             return;
         }
 
+        let process_name = process_name.into();
+        let reason = reason.into();
+        let timestamp_epoch_ms = timestamp_epoch_ms();
+        if result == ActionLogResult::Skipped
+            && self.entries.iter().rev().any(|entry| {
+                entry.feature == feature
+                    && entry.process_id == process_id
+                    && entry.process_name == process_name
+                    && entry.result == result
+                    && entry.reason == reason
+                    && timestamp_epoch_ms.saturating_sub(entry.timestamp_epoch_ms)
+                        < SKIPPED_ENTRY_DEDUPLICATION_WINDOW_MS
+            })
+        {
+            return;
+        }
+
         if self.entries.len() == self.capacity {
             self.entries.pop_front();
         }
 
         let entry = ActionLogEntry {
             sequence: self.next_sequence,
-            timestamp_epoch_ms: timestamp_epoch_ms(),
+            timestamp_epoch_ms,
             feature,
             process_id,
-            process_name: process_name.into(),
+            process_name,
             result,
-            reason: reason.into(),
+            reason,
         };
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.entries.push_back(entry);
@@ -275,5 +293,32 @@ mod tests {
         );
 
         assert_eq!(log.entries().len(), 2);
+    }
+
+    #[test]
+    fn action_log_coalesces_repeated_skipped_entries() {
+        let mut log = ActionLog::new(8);
+
+        for _ in 0..3 {
+            log.record(
+                ActionLogFeature::ProcessPriority,
+                Some(42),
+                "service.exe",
+                ActionLogResult::Skipped,
+                "Access denied.",
+            );
+        }
+        log.record(
+            ActionLogFeature::ProcessPriority,
+            Some(42),
+            "service.exe",
+            ActionLogResult::Skipped,
+            "Stopped retrying.",
+        );
+
+        let entries = log.entries();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].reason, "Access denied.");
+        assert_eq!(entries[1].reason, "Stopped retrying.");
     }
 }

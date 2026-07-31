@@ -784,7 +784,8 @@ impl WorkloadEngineManager {
                 }
                 Err(PriorityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&executable_path);
+                    self.failure_suppression
+                        .suppress_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::WorkloadEngine,
                         Some(process_id),
@@ -1317,7 +1318,8 @@ impl WorkloadEngineManager {
                 }
                 Err(PriorityError::AccessDenied) => {
                     result.skipped += 1;
-                    self.record_process_failure(executable_path);
+                    self.failure_suppression
+                        .suppress_process_failure(executable_path);
                     action_log.record(
                         ActionLogFeature::WorkloadEngine,
                         Some(*process_id),

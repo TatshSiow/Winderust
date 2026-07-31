@@ -294,7 +294,8 @@ impl MemoryTrimManager {
                 }
                 Err(MemoryTrimError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&executable_path);
+                    self.failure_suppression
+                        .suppress_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),

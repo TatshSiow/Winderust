@@ -280,7 +280,8 @@ impl BackgroundEfficiencyManager {
                 Err(BackgroundEfficiencyError::AccessDenied) => {
                     skipped_processes += 1;
                     access_denied_processes += 1;
-                    self.record_process_failure(&executable_path);
+                    self.failure_suppression
+                        .suppress_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::BackgroundEfficiency,
                         Some(process_id),
@@ -292,7 +293,8 @@ impl BackgroundEfficiencyManager {
                 Err(BackgroundEfficiencyError::Unsupported) => {
                     skipped_processes += 1;
                     unsupported = true;
-                    self.record_process_failure(&executable_path);
+                    self.failure_suppression
+                        .suppress_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::BackgroundEfficiency,
                         Some(process_id),

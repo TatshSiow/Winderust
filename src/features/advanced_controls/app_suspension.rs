@@ -689,6 +689,8 @@ impl AppSuspensionManager {
                     self.forget_process_state(process_id);
                 }
                 Err(SuspensionError::AccessDenied | SuspensionError::NotSupported) => {
+                    self.failure_suppression
+                        .suppress_process_failure(&process.key());
                     skipped_processes += 1;
                     action_log.record(
                         ActionLogFeature::AppSuspension,
