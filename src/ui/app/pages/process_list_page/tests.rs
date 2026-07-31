@@ -173,6 +173,36 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
 }
 
 #[test]
+fn process_list_group_actions_target_the_root_process() {
+    let executable_path = PathBuf::from(r"C:\Apps\Editor\editor.exe");
+    let processes = vec![
+        ProcessInfo {
+            id: 10,
+            parent_id: Some(20),
+            name: "editor.exe".to_owned(),
+            image_path: Some(executable_path.clone()),
+        },
+        ProcessInfo {
+            id: 20,
+            parent_id: None,
+            name: "editor.exe".to_owned(),
+            image_path: Some(executable_path),
+        },
+    ];
+    let rows = process_list_groups(&processes)
+        .into_iter()
+        .map(|group| (group, default_process_policy_summary()))
+        .collect::<Vec<_>>();
+
+    let rendered = process_list_rendered_rows(&rows, &HashMap::new(), |_| true);
+
+    assert!(matches!(
+        rendered.first(),
+        Some(ProcessListRenderedRow::Group { process_id: 20, .. })
+    ));
+}
+
+#[test]
 fn process_list_search_matches_name_pid_and_path() {
     let process = ProcessInfo {
         id: 4242,

@@ -45,11 +45,7 @@ impl WinderustApp {
             cx,
         ));
         let refresh_button = control_button(Button::new("refresh-process-list"))
-            .label(if refresh_in_progress {
-                t!("common.loading").to_string()
-            } else {
-                t!("settings.refresh").to_string()
-            })
+            .label(t!("settings.refresh").to_string())
             .disabled(refresh_in_progress)
             .on_click(cx.listener(|app, _, _, cx| {
                 if app.refresh_running_processes(true, cx) {
@@ -605,6 +601,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
             cx,
         ),
         ProcessListRenderedRow::Group {
+            process_id,
             process_name,
             executable_path,
             process_count,
@@ -613,6 +610,7 @@ pub(in crate::ui::app) fn process_list_rendered_row(
             state,
         } => process_list_group_row(
             ProcessListGroupRowData {
+                process_id: *process_id,
                 process_name: process_name.as_str(),
                 executable_path: executable_path.as_str(),
                 process_count: *process_count,
@@ -1237,7 +1235,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
         .app_suspension_status
         .suspended_process_ids
         .contains(&process_id);
-    let show_suspend = edit_context.app.settings.advanced.show_advanced_controls;
+
     let expose_all_priorities = edit_context
         .app
         .settings
@@ -1285,7 +1283,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
                 process_name.clone(),
                 executable_path.clone().unwrap_or_default(),
                 suspended,
-                show_suspend,
+                false,
                 expose_all_priorities,
                 state.nested,
                 window,
@@ -1360,6 +1358,16 @@ pub(in crate::ui::app) fn process_list_group_row(
     let menu_process_name = process_name.clone();
     let menu_executable_path = executable_path.clone();
     let app_entity = cx.entity();
+    let suspended = edit_context
+        .app
+        .app_suspension_status
+        .suspended_process_ids
+        .contains(&data.process_id);
+    let expose_all_priorities = edit_context
+        .app
+        .settings
+        .advanced
+        .expose_all_priority_values;
 
     let mut row = h_flex()
         .id(row_id)
@@ -1380,19 +1388,20 @@ pub(in crate::ui::app) fn process_list_group_row(
         .on_click(cx.listener(move |app, _, _, cx| {
             app.open_process_details(details_name.clone(), details_path.clone(), cx);
         }))
-        .context_menu(move |menu, _, _| {
-            menu.item(process_list_rule_details_menu_item(
+        .context_menu(move |menu, window, menu_cx| {
+            process_list_context_menu(
+                menu,
                 app_entity.clone(),
-                None,
+                data.process_id,
                 menu_process_name.clone(),
                 menu_executable_path.clone(),
-            ))
-            .separator()
-            .item(process_list_open_location_menu_item(
-                app_entity.clone(),
-                menu_process_name.clone(),
-                menu_executable_path.clone(),
-            ))
+                suspended,
+                true,
+                expose_all_priorities,
+                true,
+                window,
+                menu_cx,
+            )
         })
         .child(process_list_group_name_cell(
             &process_name,
