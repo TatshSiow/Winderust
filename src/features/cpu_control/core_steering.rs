@@ -141,6 +141,7 @@ impl CoreSteeringManager {
         &mut self,
         settings: &CoreSteeringSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> CoreSteeringSnapshot {
@@ -238,6 +239,7 @@ impl CoreSteeringManager {
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
                 || !enabled_process_names.contains(&process.name.to_ascii_lowercase())
@@ -245,7 +247,9 @@ impl CoreSteeringManager {
                 continue;
             }
 
-            if process_session_id(process.id) != Some(current_session_id) {
+            if !allow_cross_session_process_control
+                && process_session_id(process.id) != Some(current_session_id)
+            {
                 continue;
             }
 

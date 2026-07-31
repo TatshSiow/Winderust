@@ -67,6 +67,7 @@ impl ProcessPriorityManager {
         &mut self,
         settings: &ProcessPrioritySettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         excluded_process_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
@@ -150,9 +151,11 @@ impl ProcessPriorityManager {
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
                 || process.id == current_process_id
                 || excluded_process_ids.contains(&process.id)
-                || process_session_id(process.id) != Some(current_session_id)
+                || (!allow_cross_session_process_control
+                    && process_session_id(process.id) != Some(current_session_id))
                 || is_builtin_excluded(&process.name)
             {
                 continue;

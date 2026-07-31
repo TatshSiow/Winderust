@@ -202,7 +202,7 @@ rg -n -i --glob '!target/**' --glob '!graphify-out/**' --glob '!.git/**' --glob 
 Process-control features must keep these defaults:
 
 - Do not target Winderust itself.
-- Do not target protected/system/session-mismatched processes.
+- Do not target protected/system processes. Cross-session targeting follows `general.allow_cross_session_process_control`; even when enabled, preserve Windows access checks, built-in exclusions, and identity revalidation.
 - Treat access denied as skipped unless it indicates a real implementation bug.
 - Restore previous process state on disable, process exit, app shutdown, or rule mismatch when the backend can observe it.
 - Keep High/Realtime priority out of automatic paths.

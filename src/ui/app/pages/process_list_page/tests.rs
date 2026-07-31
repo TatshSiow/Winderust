@@ -17,18 +17,66 @@ fn process_resource_columns_format_usage() {
 }
 
 #[test]
-fn limited_access_process_uses_dash_for_unavailable_metrics() {
-    let mut summary = default_process_policy_summary();
-    summary.status = t!("process_list.status_limited_access").to_string();
+fn inaccessible_process_uses_dash_for_unavailable_metrics() {
+    for status in [
+        t!("process_list.status_administrator_required").to_string(),
+        t!("process_list.status_access_denied").to_string(),
+    ] {
+        let mut summary = default_process_policy_summary();
+        summary.status = status;
+
+        assert_eq!(
+            process_list_column_value(&summary, ProcessListColumn::CpuUsage),
+            "\u{2014}"
+        );
+        assert_eq!(
+            process_list_column_value(&summary, ProcessListColumn::MemoryUsage),
+            "\u{2014}"
+        );
+    }
+}
+
+#[test]
+fn process_list_user_column_is_last_and_groups_mixed_users() {
+    let processes = vec![
+        ProcessInfo {
+            id: 1,
+            parent_id: None,
+            session_id: Some(0),
+            user_name: Some("SYSTEM".to_owned()),
+            is_critical: Some(false),
+            name: "service.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Apps\service.exe")),
+        },
+        ProcessInfo {
+            id: 2,
+            parent_id: None,
+            session_id: Some(1),
+            user_name: Some("User".to_owned()),
+            is_critical: Some(false),
+            name: "service.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Apps\service.exe")),
+        },
+    ];
+    let groups = process_list_groups(&processes);
 
     assert_eq!(
-        process_list_column_value(&summary, ProcessListColumn::CpuUsage),
-        "\u{2014}"
+        PROCESS_LIST_OVERVIEW_COLUMNS.last(),
+        Some(&ProcessListColumn::User)
     );
     assert_eq!(
-        process_list_column_value(&summary, ProcessListColumn::MemoryUsage),
-        "\u{2014}"
+        process_list_group_user_label(&groups[0].processes),
+        "Multiple accounts"
     );
+    assert_eq!(
+        process_list_user_label(Some("SYSTEM"), Some(0), 100),
+        "SYSTEM"
+    );
+    assert_eq!(
+        process_list_user_label(None, Some(2), 100),
+        "Unavailable · S2"
+    );
+    assert_eq!(process_list_user_label(None, Some(0), 4), "Windows kernel");
 }
 
 #[test]
@@ -89,12 +137,18 @@ fn process_list_column_layout_fits_headers_and_values() {
         ProcessInfo {
             id: 1234,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 12345,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "worker.exe".to_owned(),
             image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
@@ -136,6 +190,9 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
     let processes = vec![ProcessInfo {
         id: 1,
         parent_id: None,
+        session_id: None,
+        user_name: None,
+        is_critical: Some(false),
         name: "Editor.EXE".to_owned(),
         image_path: Some(executable_path.clone()),
     }];
@@ -179,12 +236,18 @@ fn process_list_group_actions_target_the_root_process() {
         ProcessInfo {
             id: 10,
             parent_id: Some(20),
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "editor.exe".to_owned(),
             image_path: Some(executable_path.clone()),
         },
         ProcessInfo {
             id: 20,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "editor.exe".to_owned(),
             image_path: Some(executable_path),
         },
@@ -207,6 +270,9 @@ fn process_list_search_matches_name_pid_and_path() {
     let process = ProcessInfo {
         id: 4242,
         parent_id: None,
+        session_id: None,
+        user_name: None,
+        is_critical: Some(false),
         name: "Editor.EXE".to_owned(),
         image_path: Some(PathBuf::from(r"C:\Apps\Editor\editor.exe")),
     };
@@ -223,12 +289,18 @@ fn process_list_sort_orders_groups_by_name_direction() {
         ProcessInfo {
             id: 1,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 2,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "worker.exe".to_owned(),
             image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
@@ -257,12 +329,18 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
         ProcessInfo {
             id: 1,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Games\game.exe")),
         },
         ProcessInfo {
             id: 2,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Other\game.exe")),
         },
@@ -296,18 +374,27 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
         ProcessInfo {
             id: 30,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 10,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "worker.exe".to_owned(),
             image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
         ProcessInfo {
             id: 20,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
@@ -357,12 +444,18 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
         ProcessInfo {
             id: 1,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "editor.exe".to_owned(),
             image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 2,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "worker.exe".to_owned(),
             image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },

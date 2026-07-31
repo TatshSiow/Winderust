@@ -29,6 +29,7 @@
 - Power-plan selections belong to the page or rule that exposes them. By Activity owns Idle/Active plans; other automation rules own `power_plan_guid`. There is no global `Settings::power_plans` fallback.
 - The global pause for power-plan switching on A/C belongs on the Power Plan Control landing page, not Winderust Behaviour.
 - Managed adaptive-plan recovery recognizes only the current `Winderust Adaptive` name and description.
+- Cross-session process control is owned by Winderust Behaviour and defaults on. Disabling it restores same-session-only targeting; Windows access checks and existing protected-process safeguards always remain active.
 - Repeated process failure suppression uses `ExecutionFailureTracker` in `src/rules/execution_failure.rs`; the threshold comes from `settings.advanced.execution_failure_suppression_threshold`.
 - Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.

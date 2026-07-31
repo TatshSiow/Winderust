@@ -14,11 +14,13 @@ pub(in crate::ui::app) enum ProcessListColumn {
     IoPriority,
     GpuPriority,
     MemoryPriority,
+    User,
 }
 
-pub(in crate::ui::app) const PROCESS_LIST_OVERVIEW_COLUMNS: [ProcessListColumn; 4] = [
+pub(in crate::ui::app) const PROCESS_LIST_OVERVIEW_COLUMNS: [ProcessListColumn; 5] = [
     ProcessListColumn::Pid,
     ProcessListColumn::Status,
     ProcessListColumn::CpuUsage,
     ProcessListColumn::MemoryUsage,
+    ProcessListColumn::User,
 ];

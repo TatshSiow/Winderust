@@ -65,6 +65,7 @@ impl DynamicPriorityBoostManager {
         &mut self,
         settings: &DynamicPriorityBoostSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> DynamicPriorityBoostSnapshot {
@@ -147,8 +148,10 @@ impl DynamicPriorityBoostManager {
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
                 || process.id == current_process_id
-                || process_session_id(process.id) != Some(current_session_id)
+                || (!allow_cross_session_process_control
+                    && process_session_id(process.id) != Some(current_session_id))
                 || is_builtin_excluded(&process.name)
             {
                 continue;

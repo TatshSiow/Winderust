@@ -78,11 +78,12 @@ use crate::{
     },
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
-        capture_process_action_target, ensure_process_action_target_mutable, executable_path_key,
-        foreground_process, list_process_candidates, list_processes_with_paths,
-        open_process_location, process_candidates_from_processes, same_executable_path,
-        sample_process_resources, terminate_process, terminate_process_tree, ProcessActionTarget,
-        ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo, ProcessResourceSample,
+        capture_process_action_target, contains_process_name, ensure_process_action_target_mutable,
+        executable_path_key, foreground_process, list_process_candidates,
+        list_processes_with_paths, open_process_location, process_candidates_from_processes,
+        same_executable_path, sample_process_resources, terminate_process, terminate_process_tree,
+        ProcessActionTarget, ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo,
+        ProcessResourceSample, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
@@ -458,7 +459,7 @@ pub struct WinderustApp {
     running_processes: Vec<ProcessInfo>,
     process_resource_samples: BTreeMap<u32, ProcessResourceSample>,
     process_resource_usage: HashMap<u32, ProcessResourceUsage>,
-    process_efficiency_mode_overrides: HashMap<u32, (u64, bool)>,
+    process_efficiency_mode_overrides: HashMap<u32, (u64, bool, Option<u32>)>,
     hide_limited_access_processes: bool,
     running_process_load_state: ProcessLoadState,
     process_refresh_in_progress: bool,
@@ -792,6 +793,7 @@ impl WinderustApp {
                 }
             });
         let adaptive_plan_recovery_error = restore_stale_adaptive_plans().err();
+        let debug_privilege_error = privilege::enable_debug_privilege().err();
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
@@ -806,6 +808,9 @@ impl WinderustApp {
                 t!("status.adaptive_power_plan_recovery_failed", error = error).to_string();
         }
         if let Some(error) = settings_load_error {
+            initial_processor_power.status_message = error;
+        }
+        if let Some(error) = debug_privilege_error {
             initial_processor_power.status_message = error;
         }
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);

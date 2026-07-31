@@ -95,10 +95,9 @@ User-facing behavior:
 
 ## Background Efficiency / EcoQoS
 
-Winderust Background Efficiency applies Windows EcoQoS to selected background
-user-session processes. It also manages idle process priority when Process
-Priority is disabled; when Process Priority is enabled, that feature remains
-the sole owner of process-priority changes.
+Winderust Background Efficiency applies Windows EcoQoS and idle process
+priority to selected background user-session processes. Process Priority skips
+those active targets so the features do not fight over their priority class.
 
 Implementation paths:
 
@@ -114,8 +113,9 @@ User-facing behavior:
 - It reads the process's existing power throttling state and, when it owns
   priority management, the existing priority class.
 - It enables EcoQoS by setting `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` through `SetProcessInformation`.
-- When Process Priority is disabled, it sets the process priority class to
-  `IDLE_PRIORITY_CLASS`. Otherwise it leaves priority unchanged.
+- The Process List and manual context-menu action use Task Manager semantics: Efficiency mode requires both EcoQoS and `IDLE_PRIORITY_CLASS`; manual changes verify both and restore the previous priority when disabled.
+- It sets the process priority class to `IDLE_PRIORITY_CLASS` while the target
+  is managed.
 - It restores the state it owns when the process stops being a target,
   Background Efficiency is disabled, automation is disabled, or Winderust
   exits.
@@ -148,6 +148,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 | `QueryFullProcessImageNameW` | Reads executable paths through `src/foreground/process_list.rs` for process discovery, foreground/cursor identification, and exact executable-path matching across every user-configured process rule. Process mutation paths revalidate the expected executable path on the same opened handle immediately before the change; built-in Windows safety exclusions remain filename-based. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew |
 | Process handles and identifiers | Documents that a process ID is valid only until process termination and can be reused, while an open handle continues to identify that process object. Winderust pairs executable-path checks with creation-time checks wherever sampled state crosses into a later mutation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-handles-and-identifiers |
 | Process Security and Access Rights | Documents the query-only `PROCESS_QUERY_LIMITED_INFORMATION` right and the `PROCESS_SET_INFORMATION` right required by `SetProcessInformation`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
+| `OpenProcessToken` / `AdjustTokenPrivileges` | When Winderust is already elevated, enables the existing `SeDebugPrivilege` in its process token before process discovery and automation. This bypasses ordinary process DACL checks but does not remove Winderust's critical-process, built-in, identity, minimal-access, or Windows protected-process barriers. `ERROR_NOT_ALL_ASSIGNED` is treated as failure. | https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges |
 
 ## Advanced Power Plan Tuning
 
@@ -281,10 +282,22 @@ Winderust keeps App Suspension opt-in and limited to explicitly selected apps be
 | API | Used for | Reference |
 | --- | --- | --- |
 | `GetCurrentProcessId` | Gets Winderust's own process ID so Winderust never suspends itself. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentprocessid |
-| `ProcessIdToSessionId` | Checks the Windows session for a process so Winderust only targets the current user session. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-processidtosessionid |
+| `ProcessIdToSessionId` | Captures the session suffix/fallback shown in the Process List User column and enforces same-session targeting when Allow cross-session process control is disabled. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-processidtosessionid |
+| `IsProcessCritical` | Marks Windows-critical processes as `Protected system process`, excludes them from rule candidates and automation targets, and makes unverifiable targets fail closed. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocesscritical |
+| `OpenProcessToken` | Opens each queryable process token with `TOKEN_QUERY` while populating the Process List User column. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken |
+| `GetTokenInformation(TokenUser)` | Reads the SID of the account associated with the process token. | https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation |
+| `LookupAccountSidW` | Resolves the process token SID to its local account name; inaccessible or unmapped tokens use the neutral `Unavailable · S#` UI fallback rather than guessing an account. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountsidw |
 | `WaitForSingleObject` | Checks whether a managed process has exited before reusing a cached freezer. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
 | `CloseHandle` | Closes process and job handles after use. | https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle |
 | `GetLastError` | Reads extended Win32 error codes after failed API calls. | https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror |
+
+Implementation paths: process account/session capture and one-time target validation are in
+`src/foreground/process_list.rs`; rule-driven filtering is applied by the
+individual process-control managers under `src/features/`. Winderust Behaviour
+owns `general.allow_cross_session_process_control`, which defaults on. Enabling
+it removes only the session-equality filter: self-process protection, built-in
+exclusions, target identity revalidation, minimal access masks, and Windows
+process DACL/protected-process enforcement remain active.
 
 ### Related Windows Behavior
 

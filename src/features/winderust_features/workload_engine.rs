@@ -229,6 +229,7 @@ enum PriorityTargetSource {
 pub struct WorkloadEngineUpdate<'a> {
     pub settings: &'a WorkloadEngineSettings,
     pub automation_enabled: bool,
+    pub allow_cross_session_process_control: bool,
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
     pub background_efficiency_managed: bool,
@@ -275,6 +276,7 @@ impl WorkloadEngineManager {
         let WorkloadEngineUpdate {
             settings,
             automation_enabled,
+            allow_cross_session_process_control,
             foreground_process_id,
             total_cpu_usage_percent,
             background_efficiency_managed,
@@ -371,18 +373,22 @@ impl WorkloadEngineManager {
 
         let mut lowerable_background_processes = BTreeMap::new();
         for process in &processes {
-            if should_skip_process(
-                process.id,
-                &process.name,
-                current_process_id,
-                foreground_process_id,
-                &foreground_process_group_ids,
-                background_efficiency_process_ids,
-            ) {
+            if process.is_critical != Some(false)
+                || should_skip_process(
+                    process.id,
+                    &process.name,
+                    current_process_id,
+                    foreground_process_id,
+                    &foreground_process_group_ids,
+                    background_efficiency_process_ids,
+                )
+            {
                 continue;
             }
 
-            if process_session_id(process.id) != Some(current_session_id) {
+            if !allow_cross_session_process_control
+                && process_session_id(process.id) != Some(current_session_id)
+            {
                 continue;
             }
 
@@ -473,6 +479,7 @@ impl WorkloadEngineManager {
         let lower_background_affinity_snapshot = self.lower_background_affinity.update(
             &lower_background_affinity_settings,
             automation_enabled,
+            allow_cross_session_process_control,
             foreground_process_id,
             action_log,
         );
@@ -495,6 +502,7 @@ impl WorkloadEngineManager {
             {
                 for process in processes
                     .iter()
+                    .filter(|process| process.is_critical == Some(false))
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
                     .filter(|process| !background_efficiency_process_ids.contains(&process.id))
                     .filter(|process| {
@@ -658,6 +666,7 @@ impl WorkloadEngineManager {
                         rules: Vec::new(),
                     },
                     automation_enabled,
+                    allow_cross_session_process_control,
                     foreground_process_id,
                     action_log,
                 )
@@ -837,6 +846,7 @@ impl WorkloadEngineManager {
             {
                 let boost_targets = processes
                     .iter()
+                    .filter(|process| process.is_critical == Some(false))
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
                     .filter(|process| !background_efficiency_process_ids.contains(&process.id))
                     .filter(|process| {
@@ -958,16 +968,20 @@ impl WorkloadEngineManager {
             exclude_foreground_app: true,
             rules: Vec::new(),
         };
-        let lower_affinity_snapshot =
-            self.lower_background_affinity
-                .update(&affinity_settings, true, None, action_log);
+        let lower_affinity_snapshot = self.lower_background_affinity.update(
+            &affinity_settings,
+            true,
+            false,
+            None,
+            action_log,
+        );
         failures.count += lower_affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
             failures.last_error = lower_affinity_snapshot.last_error;
         }
         let affinity_snapshot =
             self.workload_engine_affinity
-                .update(&affinity_settings, true, None, action_log);
+                .update(&affinity_settings, true, false, None, action_log);
         failures.count += affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
             failures.last_error = affinity_snapshot.last_error;

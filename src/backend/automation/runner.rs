@@ -197,8 +197,9 @@ impl HiddenAutomationRunner {
         self.background_efficiency_manager.update(
             &settings.background_efficiency,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id,
-            !settings.process_priority.enabled,
+            true,
             &mut self.action_log,
         )
     }
@@ -213,6 +214,7 @@ impl HiddenAutomationRunner {
             self.app_suspension_manager.apply_manual_process_action(
                 target,
                 *suspend,
+                settings.general.allow_cross_session_process_control,
                 &mut self.action_log,
             );
         }
@@ -220,6 +222,7 @@ impl HiddenAutomationRunner {
         self.app_suspension_manager.update(
             &settings.app_suspension,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id,
             manual_freeze_processes,
             &mut self.action_log,
@@ -303,6 +306,7 @@ impl HiddenAutomationRunner {
         self.core_steering_manager.update(
             &settings.core_steering,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id,
             &mut self.action_log,
         )
@@ -315,6 +319,7 @@ impl HiddenAutomationRunner {
         self.background_cpu_restriction_manager.update(
             &settings.background_cpu_restriction,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -326,6 +331,7 @@ impl HiddenAutomationRunner {
         self.core_limiter_manager.update(
             &settings.core_limiter,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id,
             &core_steering_process_ids,
             &mut self.action_log,
@@ -355,6 +361,9 @@ impl HiddenAutomationRunner {
             WorkloadEngineUpdate {
                 settings: &settings.workload_engine,
                 automation_enabled: settings.general.enabled,
+                allow_cross_session_process_control: settings
+                    .general
+                    .allow_cross_session_process_control,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
                 background_efficiency_managed: settings.background_efficiency.enabled,
@@ -566,6 +575,7 @@ impl HiddenAutomationRunner {
         self.io_priority_manager.update(
             &io_priority_settings,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -575,10 +585,12 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
     ) -> ProcessPrioritySnapshot {
-        let excluded_process_ids = self.workload_engine_manager.managed_process_ids();
+        let mut excluded_process_ids = self.workload_engine_manager.managed_process_ids();
+        excluded_process_ids.extend(self.background_efficiency_manager.throttled_process_ids());
         self.process_priority_manager.update(
             &settings.process_priority,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &excluded_process_ids,
             &mut self.action_log,
@@ -594,6 +606,7 @@ impl HiddenAutomationRunner {
         self.thread_priority_manager.update(
             &thread_priority_settings,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -608,6 +621,7 @@ impl HiddenAutomationRunner {
         self.dynamic_priority_boost_manager.update(
             &dynamic_priority_boost_settings,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -619,6 +633,7 @@ impl HiddenAutomationRunner {
         self.gpu_priority_manager.update(
             &gpu_priority_settings,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -631,6 +646,7 @@ impl HiddenAutomationRunner {
         self.memory_priority_manager.update_rules(
             &settings.memory_priority,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -640,6 +656,7 @@ impl HiddenAutomationRunner {
         self.memory_trim_manager.update(
             &settings.memory_trim,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -649,6 +666,7 @@ impl HiddenAutomationRunner {
         self.memory_trim_manager.trim_now(
             &settings.memory_trim,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -661,6 +679,7 @@ impl HiddenAutomationRunner {
         let foreground_executable_path = timer_resolution_required(settings)
             .then(foreground_process)
             .flatten()
+            .filter(|process| process_is_critical(process.id) == Some(false))
             .map(|process| process.executable_path.to_string_lossy().into_owned());
         self.timer_resolution_manager.update(
             &settings.timer_resolution,
@@ -687,6 +706,7 @@ impl HiddenAutomationRunner {
         let foreground_executable_path = foreground_lookup_required(settings)
             .then(foreground_process)
             .flatten()
+            .filter(|process| process_is_critical(process.id) == Some(false))
             .map(|process| process.executable_path.to_string_lossy().into_owned());
         let by_time_decision = current_by_time_decision(&settings.by_time);
         let by_cpu_load_decision = self

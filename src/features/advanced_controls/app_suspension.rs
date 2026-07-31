@@ -208,9 +208,11 @@ impl AppSuspensionManager {
         &mut self,
         target: &ProcessActionTarget,
         suspend: bool,
+        allow_cross_session: bool,
         action_log: &mut ActionLog,
     ) {
-        let refreshed = capture_process_action_target(target.id, &target.executable_path);
+        let refreshed =
+            capture_process_action_target(target.id, &target.executable_path, allow_cross_session);
         if refreshed.is_err()
             || refreshed
                 .as_ref()
@@ -299,6 +301,7 @@ impl AppSuspensionManager {
         &mut self,
         settings: &AppSuspensionSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         manual_freeze_processes: &[String],
         action_log: &mut ActionLog,
@@ -411,6 +414,7 @@ impl AppSuspensionManager {
 
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
                 || !contains_process_name(&enabled_process_names, &process.name)
@@ -418,7 +422,9 @@ impl AppSuspensionManager {
                 continue;
             }
 
-            if process_session_id(process.id) != Some(current_session_id) {
+            if !allow_cross_session_process_control
+                && process_session_id(process.id) != Some(current_session_id)
+            {
                 continue;
             }
             let Some(executable_path) = process_executable_path(&process) else {
@@ -1839,6 +1845,7 @@ mod tests {
         let status = manager.update(
             &AppSuspensionSettings::default(),
             false,
+            false,
             None,
             &[],
             &mut log,
@@ -1873,7 +1880,7 @@ mod tests {
             ..Default::default()
         };
 
-        let status = manager.update(&settings, true, None, &[], &mut log);
+        let status = manager.update(&settings, true, false, None, &[], &mut log);
 
         assert_eq!(status.suspended_process_ids, vec![7]);
         assert!(manager.suspended.contains_key(&7));
@@ -2513,7 +2520,7 @@ mod tests {
             },
         );
 
-        let status = manager.update(&settings, true, None, &[], &mut log);
+        let status = manager.update(&settings, true, false, None, &[], &mut log);
 
         assert_eq!(status.message, "Paused: foreground app is unknown.");
         assert!(status.status_unknown);

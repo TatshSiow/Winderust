@@ -77,6 +77,7 @@ impl MemoryPriorityManager {
         &mut self,
         settings: &MemoryPrioritySettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> MemoryPrioritySnapshot {
@@ -173,12 +174,15 @@ impl MemoryPriorityManager {
         let targets = processes
             .into_iter()
             .filter_map(|process| {
-                if should_skip_process(
-                    process.id,
-                    &process.name,
-                    current_process_id,
-                    current_session_id,
-                ) {
+                if process.is_critical != Some(false)
+                    || should_skip_process(
+                        process.id,
+                        &process.name,
+                        current_process_id,
+                        current_session_id,
+                        allow_cross_session_process_control,
+                    )
+                {
                     return None;
                 }
 
@@ -815,10 +819,12 @@ fn should_skip_process(
     process_name: &str,
     current_process_id: u32,
     current_session_id: u32,
+    allow_cross_session_process_control: bool,
 ) -> bool {
     process_id == 0
         || process_id == current_process_id
-        || process_session_id(process_id) != Some(current_session_id)
+        || (!allow_cross_session_process_control
+            && process_session_id(process_id) != Some(current_session_id))
         || is_builtin_excluded(process_name)
 }
 

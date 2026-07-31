@@ -71,6 +71,7 @@ impl CoreLimiterManager {
         &mut self,
         settings: &CoreLimiterSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         core_steering_process_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
@@ -173,10 +174,12 @@ impl CoreLimiterManager {
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
                 || !enabled_process_names.contains(&process.name.to_ascii_lowercase())
-                || process_session_id(process.id) != Some(current_session_id)
+                || (!allow_cross_session_process_control
+                    && process_session_id(process.id) != Some(current_session_id))
             {
                 continue;
             }

@@ -35,8 +35,9 @@ use crate::{
     },
     foreground::{
         cursor_is_shell_window, cursor_process, cursor_process_id, executable_path_key,
-        foreground_process, foreground_process_id, list_processes, same_executable_path,
-        shell_window_mouse_pressed, top_level_window_process_ids, ProcessActionTarget,
+        foreground_process, foreground_process_id, list_processes, process_is_critical,
+        same_executable_path, shell_window_mouse_pressed, top_level_window_process_ids,
+        ProcessActionTarget,
     },
     gpu_priority::{GpuPriorityManager, GpuPrioritySnapshot},
     io_priority::{IoPriorityManager, IoPrioritySnapshot},

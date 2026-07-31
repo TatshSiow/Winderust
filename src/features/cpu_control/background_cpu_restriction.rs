@@ -31,6 +31,7 @@ impl BackgroundCpuRestrictionManager {
         &mut self,
         settings: &BackgroundCpuRestrictionSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> CoreSteeringSnapshot {
@@ -43,6 +44,7 @@ impl BackgroundCpuRestrictionManager {
             let mut snapshot = self.affinity.update(
                 &affinity_settings,
                 automation_enabled,
+                allow_cross_session_process_control,
                 foreground_process_id,
                 action_log,
             );
@@ -109,7 +111,8 @@ impl BackgroundCpuRestrictionManager {
                 process.id != 0
                     && process.id != current_process_id
                     && !core_steering::is_builtin_excluded(&process.name)
-                    && process_session_id(process.id) == Some(current_session_id)
+                    && (allow_cross_session_process_control
+                        || process_session_id(process.id) == Some(current_session_id))
                     && !(settings.exclude_foreground_app
                         && (Some(process.id) == foreground_process_id
                             || process

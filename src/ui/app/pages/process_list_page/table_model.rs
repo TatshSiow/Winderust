@@ -106,6 +106,9 @@ pub(in crate::ui::app) struct ProcessListGroupRowData<'a> {
     pub(in crate::ui::app) process_name: &'a str,
     pub(in crate::ui::app) executable_path: &'a str,
     pub(in crate::ui::app) process_count: usize,
+    pub(in crate::ui::app) user_label: &'a str,
+    pub(in crate::ui::app) user_unavailable: bool,
+    pub(in crate::ui::app) protected: bool,
 }
 
 #[derive(Clone)]
@@ -121,6 +124,9 @@ pub(in crate::ui::app) enum ProcessListRenderedRow {
         process_name: String,
         executable_path: String,
         process_count: usize,
+        user_label: String,
+        user_unavailable: bool,
+        protected: bool,
         summary: Arc<ProcessPolicySummary>,
         icon: Option<Arc<Image>>,
         state: ProcessListGroupRowState,
@@ -275,6 +281,9 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
             process_name: group.display_name.clone(),
             executable_path: group.executable_path.clone(),
             process_count: group.processes.len(),
+            user_label: process_list_group_user_label(&group.processes),
+            user_unavailable: process_list_group_user_unavailable(&group.processes),
+            protected: process_list_group_is_protected(&group.processes),
             summary: Arc::clone(&summary),
             icon: icon.clone(),
             state: ProcessListGroupRowState { collapsed, divided },
@@ -339,12 +348,16 @@ pub(in crate::ui::app) fn process_list_render_data(
                     totals.2 || usage.efficiency_mode == Some(true),
                 )
             });
-        summary.status = process_list_status_label(
-            &app.app_suspension_status,
-            None,
-            &group.executable_path,
-            efficiency_mode,
-        );
+        summary.status = if process_list_group_is_protected(&group.processes) {
+            t!("process_list.status_protected_system_process").to_string()
+        } else {
+            process_list_status_label(
+                &app.app_suspension_status,
+                None,
+                &group.executable_path,
+                efficiency_mode,
+            )
+        };
         summary.cpu_percent = cpu_percent.map(|percent| percent.clamp(0.0, 100.0));
         summary.memory_bytes = memory_bytes;
         process_summaries.push(summary);
@@ -439,6 +452,10 @@ pub(in crate::ui::app) fn process_list_group_sort_cmp(
         ProcessListSortColumn::Column(ProcessListColumn::Status) => {
             process_list_text_sort_cmp(&left_summary.status, &right_summary.status)
         }
+        ProcessListSortColumn::Column(ProcessListColumn::User) => process_list_text_sort_cmp(
+            &process_list_group_user_label(&left_group.processes),
+            &process_list_group_user_label(&right_group.processes),
+        ),
         ProcessListSortColumn::Column(column) => process_list_text_sort_cmp(
             process_list_column_value(left_summary, column).as_ref(),
             process_list_column_value(right_summary, column).as_ref(),
@@ -462,6 +479,10 @@ pub(in crate::ui::app) fn process_list_process_sort_cmp(
     let primary = match sort.column {
         ProcessListSortColumn::ProcessName => process_list_text_sort_cmp(&left.name, &right.name),
         ProcessListSortColumn::Column(ProcessListColumn::Pid) => left.id.cmp(&right.id),
+        ProcessListSortColumn::Column(ProcessListColumn::User) => process_list_text_sort_cmp(
+            &process_list_user_label(left.user_name.as_deref(), left.session_id, left.id),
+            &process_list_user_label(right.user_name.as_deref(), right.session_id, right.id),
+        ),
         ProcessListSortColumn::Column(_) => CmpOrdering::Equal,
     };
 
@@ -477,6 +498,61 @@ pub(in crate::ui::app) fn process_list_directional_cmp(
     match direction {
         ProcessListSortDirection::Ascending => ordering,
         ProcessListSortDirection::Descending => ordering.reverse(),
+    }
+}
+
+pub(in crate::ui::app) fn process_list_user_label(
+    user_name: Option<&str>,
+    session_id: Option<u32>,
+    process_id: u32,
+) -> String {
+    if process_id <= 4 {
+        return t!("process_list.windows_kernel").to_string();
+    }
+
+    match (user_name, session_id) {
+        (Some(user_name), _) => user_name.to_owned(),
+        (None, Some(session_id)) => {
+            format!("{} · S{session_id}", t!("process_list.user_unavailable"))
+        }
+        (None, None) => t!("process_list.user_unavailable").to_string(),
+    }
+}
+
+pub(in crate::ui::app) fn process_list_process_is_protected(process: &ProcessInfo) -> bool {
+    process.is_critical == Some(true)
+        || contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &process.name)
+}
+
+pub(in crate::ui::app) fn process_list_group_is_protected(processes: &[&ProcessInfo]) -> bool {
+    processes
+        .iter()
+        .any(|process| process_list_process_is_protected(process))
+}
+
+pub(in crate::ui::app) fn process_list_group_user_unavailable(processes: &[&ProcessInfo]) -> bool {
+    !processes.is_empty()
+        && processes
+            .iter()
+            .all(|process| process.user_name.is_none() && process.id > 4)
+}
+
+pub(in crate::ui::app) fn process_list_group_user_label(processes: &[&ProcessInfo]) -> String {
+    let first = processes
+        .first()
+        .map(|process| (process.user_name.as_deref(), process.session_id));
+    if processes
+        .iter()
+        .all(|process| Some((process.user_name.as_deref(), process.session_id)) == first)
+    {
+        first.map_or_else(
+            || t!("process_list.user_unavailable").to_string(),
+            |(user_name, session_id)| {
+                process_list_user_label(user_name, session_id, processes[0].id)
+            },
+        )
+    } else {
+        t!("process_list.multiple_users").to_string()
     }
 }
 
@@ -545,15 +621,17 @@ pub(in crate::ui::app) fn process_list_column_min_width(column: ProcessListColum
         ProcessListColumn::Status => 120.0,
         ProcessListColumn::CpuUsage => 88.0,
         ProcessListColumn::MemoryUsage => 112.0,
+        ProcessListColumn::User => 120.0,
         _ => PROCESS_LIST_COLUMN_MIN_WIDTH,
     }
 }
 pub(in crate::ui::app) fn process_list_column_max_width(column: ProcessListColumn) -> f32 {
     match column {
         ProcessListColumn::Pid => PROCESS_LIST_PID_MAX_WIDTH,
-        ProcessListColumn::Status => 160.0,
+        ProcessListColumn::Status => 210.0,
         ProcessListColumn::CpuUsage => 110.0,
         ProcessListColumn::MemoryUsage => 150.0,
+        ProcessListColumn::User => 200.0,
         _ => PROCESS_LIST_COLUMN_MAX_WIDTH,
     }
 }
@@ -567,6 +645,7 @@ pub(in crate::ui::app) fn process_list_column_label(
         ProcessListColumn::Status => t!("process_list.status").to_string(),
         ProcessListColumn::CpuUsage => t!("process_list.cpu_usage").to_string(),
         ProcessListColumn::MemoryUsage => t!("process_list.memory_usage").to_string(),
+        ProcessListColumn::User => t!("process_list.user").to_string(),
         ProcessListColumn::PowerPlanForeground => {
             t!("process_list.power_plan_foreground").to_string()
         }
@@ -643,6 +722,23 @@ pub(in crate::ui::app) fn process_list_column_layout(
                 for process in &group.processes {
                     width = width.max(process_list_estimated_cell_width(
                         &process.id.to_string(),
+                        PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING,
+                    ));
+                }
+            }
+        } else if column == ProcessListColumn::User {
+            for group in groups {
+                width = width.max(process_list_estimated_cell_width(
+                    &process_list_group_user_label(&group.processes),
+                    PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING,
+                ));
+                for process in &group.processes {
+                    width = width.max(process_list_estimated_cell_width(
+                        &process_list_user_label(
+                            process.user_name.as_deref(),
+                            process.session_id,
+                            process.id,
+                        ),
                         PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING,
                     ));
                 }

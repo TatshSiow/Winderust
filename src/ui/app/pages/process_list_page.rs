@@ -520,6 +520,7 @@ pub(in crate::ui::app) fn process_list_sort_column_id(
         ProcessListSortColumn::Column(ProcessListColumn::Status) => "status",
         ProcessListSortColumn::Column(ProcessListColumn::CpuUsage) => "cpu-usage",
         ProcessListSortColumn::Column(ProcessListColumn::MemoryUsage) => "memory-usage",
+        ProcessListSortColumn::Column(ProcessListColumn::User) => "user",
         ProcessListSortColumn::Column(ProcessListColumn::PowerPlanForeground) => {
             "power-plan-foreground"
         }
@@ -605,6 +606,9 @@ pub(in crate::ui::app) fn process_list_rendered_row(
             process_name,
             executable_path,
             process_count,
+            user_label,
+            user_unavailable,
+            protected,
             summary,
             icon,
             state,
@@ -614,6 +618,9 @@ pub(in crate::ui::app) fn process_list_rendered_row(
                 process_name: process_name.as_str(),
                 executable_path: executable_path.as_str(),
                 process_count: *process_count,
+                user_label: user_label.as_str(),
+                user_unavailable: *user_unavailable,
+                protected: *protected,
             },
             summary.as_ref(),
             icon.as_ref(),
@@ -636,6 +643,7 @@ fn process_list_context_menu(
     process_id: u32,
     process_name: String,
     executable_path: String,
+    allow_cross_session: bool,
     suspended: bool,
     show_suspend: bool,
     expose_all_priorities: bool,
@@ -643,7 +651,8 @@ fn process_list_context_menu(
     window: &mut Window,
     menu_cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    let target = capture_process_action_target(process_id, Path::new(&executable_path));
+    let target =
+        capture_process_action_target(process_id, Path::new(&executable_path), allow_cross_session);
     let mutations_disabled = target.as_ref().map_or(true, |target| {
         ensure_process_action_target_mutable(target).is_err()
     });
@@ -713,8 +722,12 @@ fn process_list_context_menu(
                             .map_err(|error| error.to_string())
                             .and_then(|target| {
                                 if tree {
-                                    terminate_process_tree(&target, &app.running_processes)
-                                        .map(|_| ())
+                                    terminate_process_tree(
+                                        &target,
+                                        &app.running_processes,
+                                        allow_cross_session,
+                                    )
+                                    .map(|_| ())
                                 } else {
                                     terminate_process(&target)
                                 }
@@ -792,8 +805,8 @@ fn process_list_context_menu(
             .read(menu_cx)
             .process_efficiency_mode_overrides
             .get(&target.id)
-            .filter(|(creation_time, _)| *creation_time == target.creation_time)
-            .map(|(_, enabled)| *enabled)
+            .filter(|(creation_time, _, _)| *creation_time == target.creation_time)
+            .map(|(_, enabled, _)| *enabled)
     });
     let efficiency_enabled = queried_efficiency.or(cached_efficiency).unwrap_or(false);
     menu = menu.item({
@@ -813,17 +826,28 @@ fn process_list_context_menu(
         .on_click(move |_, _, cx| {
             app_entity.update(cx, |app, cx| {
                 let enabled = !efficiency_enabled;
+                let previous_priority = target.as_ref().ok().and_then(|target| {
+                    app.process_efficiency_mode_overrides
+                        .get(&target.id)
+                        .filter(|(creation_time, _, _)| *creation_time == target.creation_time)
+                        .and_then(|(_, _, previous_priority)| *previous_priority)
+                });
                 let result = target
                     .clone()
                     .map_err(|error| error.to_string())
                     .and_then(|target| {
-                        let result =
-                            background_efficiency::apply_efficiency_mode_once(&target, enabled);
-                        if result.is_ok() {
-                            app.process_efficiency_mode_overrides
-                                .insert(target.id, (target.creation_time, enabled));
+                        let result = background_efficiency::apply_efficiency_mode_once(
+                            &target,
+                            enabled,
+                            previous_priority,
+                        );
+                        if let Ok(original_priority) = result {
+                            app.process_efficiency_mode_overrides.insert(
+                                target.id,
+                                (target.creation_time, enabled, original_priority),
+                            );
                         }
-                        result
+                        result.map(|_| ())
                     });
                 app.finish_process_quick_action(
                     &process_name,
@@ -1230,6 +1254,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
     let selected = edit_context.app.selected_process_id == Some(process_id);
     let app_entity = cx.entity();
     let limited_access = executable_path.is_none();
+    let protected = process_list_process_is_protected(process);
     let suspended = edit_context
         .app
         .app_suspension_status
@@ -1241,6 +1266,11 @@ pub(in crate::ui::app) fn process_list_entry_row(
         .settings
         .advanced
         .expose_all_priority_values;
+    let allow_cross_session = edit_context
+        .app
+        .settings
+        .general
+        .allow_cross_session_process_control;
     let mut row = h_flex()
         .id(row_id)
         .w_full()
@@ -1256,9 +1286,20 @@ pub(in crate::ui::app) fn process_list_entry_row(
             row.border_t_1().border_color(rgb(border_color()))
         })
         .when(selected, |row| row.bg(rgb(panel_active_color())))
-        .when(limited_access, |row| {
+        .when(limited_access && !protected, |row| {
             row.opacity(0.65).tooltip(|window, cx| {
-                Tooltip::new(t!("process_list.limited_access_help").to_string()).build(window, cx)
+                let message = if privilege::is_running_as_admin() {
+                    t!("process_list.access_denied_help")
+                } else {
+                    t!("process_list.administrator_required_help")
+                };
+                Tooltip::new(message.to_string()).build(window, cx)
+            })
+        })
+        .when(protected, |row| {
+            row.tooltip(|window, cx| {
+                Tooltip::new(t!("process_list.protected_system_process_help").to_string())
+                    .build(window, cx)
             })
         })
         .when(!limited_access, |row| {
@@ -1282,6 +1323,7 @@ pub(in crate::ui::app) fn process_list_entry_row(
                 process_id,
                 process_name.clone(),
                 executable_path.clone().unwrap_or_default(),
+                allow_cross_session,
                 suspended,
                 false,
                 expose_all_priorities,
@@ -1308,8 +1350,14 @@ pub(in crate::ui::app) fn process_list_entry_row(
         .as_deref()
         .map(|path| path.to_string_lossy());
     let mut process_summary = summary.clone();
-    if executable_path.is_none() {
-        process_summary.status = t!("process_list.status_limited_access").to_string();
+    if protected {
+        process_summary.status = t!("process_list.status_protected_system_process").to_string();
+    } else if executable_path.is_none() {
+        process_summary.status = if privilege::is_running_as_admin() {
+            t!("process_list.status_access_denied").to_string()
+        } else {
+            t!("process_list.status_administrator_required").to_string()
+        };
     } else if let Some(usage) = edit_context.app.process_resource_usage.get(&process.id) {
         process_summary.cpu_percent = usage.cpu_percent;
         process_summary.memory_bytes = usage.working_set_bytes;
@@ -1331,9 +1379,16 @@ pub(in crate::ui::app) fn process_list_entry_row(
         executable_path.as_deref().unwrap_or_default(),
         &process_summary,
         layout,
-        state.editable && executable_path.is_some(),
+        state.editable && executable_path.is_some() && !protected,
         edit_context,
         cx,
+    ))
+    .child(process_list_user_cell(
+        layout.column_layout.column_width(ProcessListColumn::User),
+        process_list_user_label(process.user_name.as_deref(), process.session_id, process.id),
+        process.user_name.is_none() && process.id > 4,
+        "entry",
+        process.id,
     ))
     .into_any_element()
 }
@@ -1368,6 +1423,11 @@ pub(in crate::ui::app) fn process_list_group_row(
         .settings
         .advanced
         .expose_all_priority_values;
+    let allow_cross_session = edit_context
+        .app
+        .settings
+        .general
+        .allow_cross_session_process_control;
 
     let mut row = h_flex()
         .id(row_id)
@@ -1383,6 +1443,12 @@ pub(in crate::ui::app) fn process_list_group_row(
         .when(state.divided, |row| {
             row.border_t_1().border_color(rgb(border_color()))
         })
+        .when(data.protected, |row| {
+            row.tooltip(|window, cx| {
+                Tooltip::new(t!("process_list.protected_system_process_help").to_string())
+                    .build(window, cx)
+            })
+        })
         .hover(|style| style.bg(rgb(settings_card_hover_color())))
         .cursor_pointer()
         .on_click(cx.listener(move |app, _, _, cx| {
@@ -1395,6 +1461,7 @@ pub(in crate::ui::app) fn process_list_group_row(
                 data.process_id,
                 menu_process_name.clone(),
                 menu_executable_path.clone(),
+                allow_cross_session,
                 suspended,
                 true,
                 expose_all_priorities,
@@ -1422,9 +1489,16 @@ pub(in crate::ui::app) fn process_list_group_row(
         &executable_path,
         summary,
         layout,
-        true,
+        !data.protected,
         edit_context,
         cx,
+    ))
+    .child(process_list_user_cell(
+        layout.column_layout.column_width(ProcessListColumn::User),
+        data.user_label.to_string(),
+        data.user_unavailable,
+        "group",
+        data.process_id,
     ))
     .into_any_element()
 }
@@ -1511,7 +1585,7 @@ pub(in crate::ui::app) fn process_list_policy_cells(
     PROCESS_LIST_OVERVIEW_COLUMNS
         .iter()
         .copied()
-        .filter(|column| *column != ProcessListColumn::Pid)
+        .filter(|column| !matches!(column, ProcessListColumn::Pid | ProcessListColumn::User))
         .map(|column| {
             process_list_policy_cell(
                 layout.column_layout.column_width(column),
@@ -1535,11 +1609,9 @@ pub(in crate::ui::app) fn process_list_column_value(
     column: ProcessListColumn,
 ) -> SharedString {
     match column {
-        ProcessListColumn::Pid => SharedString::new_static(""),
+        ProcessListColumn::Pid | ProcessListColumn::User => SharedString::new_static(""),
         ProcessListColumn::Status => summary.status.clone().into(),
-        ProcessListColumn::CpuUsage
-            if summary.status == t!("process_list.status_limited_access") =>
-        {
+        ProcessListColumn::CpuUsage if process_list_status_is_inaccessible(&summary.status) => {
             SharedString::new_static("\u{2014}")
         }
         ProcessListColumn::CpuUsage => summary
@@ -1547,9 +1619,7 @@ pub(in crate::ui::app) fn process_list_column_value(
             .map(|percent| format!("{percent:.1}%"))
             .unwrap_or_else(|| t!("common.unknown").to_string())
             .into(),
-        ProcessListColumn::MemoryUsage
-            if summary.status == t!("process_list.status_limited_access") =>
-        {
+        ProcessListColumn::MemoryUsage if process_list_status_is_inaccessible(&summary.status) => {
             SharedString::new_static("\u{2014}")
         }
         ProcessListColumn::MemoryUsage => summary
@@ -1568,6 +1638,24 @@ pub(in crate::ui::app) fn process_list_column_value(
         ProcessListColumn::GpuPriority => summary.gpu_priority.clone().into(),
         ProcessListColumn::MemoryPriority => summary.memory_priority.clone().into(),
     }
+}
+
+pub(in crate::ui::app) fn process_list_user_cell(
+    width: f32,
+    value: impl Into<SharedString>,
+    unavailable: bool,
+    row_kind: &'static str,
+    process_id: u32,
+) -> gpui::Stateful<gpui::Div> {
+    process_list_text_cell(width, value)
+        .id(SharedString::from(format!(
+            "process-list-user-{row_kind}-{process_id}"
+        )))
+        .when(unavailable, |cell| {
+            cell.tooltip(|window, cx| {
+                Tooltip::new(t!("process_list.user_unavailable_help").to_string()).build(window, cx)
+            })
+        })
 }
 
 pub(in crate::ui::app) fn process_list_text_cell(
@@ -1678,6 +1766,11 @@ pub(in crate::ui::app) fn process_list_split_policy_value(value: &str) -> Option
     Some((foreground.trim(), background.trim()))
 }
 
+pub(in crate::ui::app) fn process_list_status_is_inaccessible(status: &str) -> bool {
+    status == t!("process_list.status_administrator_required")
+        || status == t!("process_list.status_access_denied")
+}
+
 pub(in crate::ui::app) fn process_list_policy_cell(
     width: f32,
     target: ProcessListPolicyCellTarget<'_>,
@@ -1688,10 +1781,11 @@ pub(in crate::ui::app) fn process_list_policy_cell(
 ) -> AnyElement {
     let value = value.into();
     if target.column == ProcessListColumn::Status {
-        let limited_access = value == t!("process_list.status_limited_access").to_string();
+        let inaccessible = process_list_status_is_inaccessible(&value);
+        let protected = value == t!("process_list.status_protected_system_process").to_string();
         let suspended = value == t!("process_list.status_suspended").to_string();
         let efficiency_mode = value == t!("process_list.status_efficiency_mode").to_string();
-        let (icon, color) = if limited_access {
+        let (icon, color) = if inaccessible || protected {
             (NavIcon::OctagonMinus, muted_text_color())
         } else if suspended {
             (NavIcon::CirclePause, warning_text_color())
@@ -1914,7 +2008,8 @@ pub(in crate::ui::app) fn process_list_cell_editor_option_count(
         ProcessListColumn::Pid
         | ProcessListColumn::Status
         | ProcessListColumn::CpuUsage
-        | ProcessListColumn::MemoryUsage => 0,
+        | ProcessListColumn::MemoryUsage
+        | ProcessListColumn::User => 0,
     }
 }
 
@@ -2134,7 +2229,8 @@ pub(in crate::ui::app) fn process_list_cell_editor_options(
         ProcessListColumn::Pid
         | ProcessListColumn::Status
         | ProcessListColumn::CpuUsage
-        | ProcessListColumn::MemoryUsage => {}
+        | ProcessListColumn::MemoryUsage
+        | ProcessListColumn::User => {}
     }
 
     options

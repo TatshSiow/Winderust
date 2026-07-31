@@ -103,6 +103,8 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub hide_to_tray: bool,
     #[serde(default = "default_true")]
+    pub allow_cross_session_process_control: bool,
+    #[serde(default = "default_true")]
     pub check_for_updates: bool,
     #[serde(default)]
     pub update_channel: UpdateChannel,
@@ -1409,6 +1411,7 @@ impl Default for Settings {
                 startup_with_windows: false,
                 start_minimized: false,
                 hide_to_tray: false,
+                allow_cross_session_process_control: true,
                 check_for_updates: true,
                 update_channel: UpdateChannel::PreRelease,
                 theme_mode: AppThemeMode::System,
@@ -2427,6 +2430,15 @@ mod tests {
         ]
         .into_iter()
         .any(|enabled| enabled));
+    }
+
+    #[test]
+    fn cross_session_process_control_is_enabled_by_default() {
+        assert!(
+            Settings::default()
+                .general
+                .allow_cross_session_process_control
+        );
     }
 
     #[test]

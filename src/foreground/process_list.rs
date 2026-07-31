@@ -18,6 +18,9 @@ use windows_sys::Win32::{
         GetLastError, ERROR_INSUFFICIENT_BUFFER, ERROR_NO_MORE_FILES, FILETIME,
         INVALID_HANDLE_VALUE,
     },
+    Security::{
+        GetTokenInformation, LookupAccountSidW, TokenUser, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
+    },
     System::{
         Diagnostics::ToolHelp::{
             CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -27,11 +30,11 @@ use windows_sys::Win32::{
         RemoteDesktop::ProcessIdToSessionId,
         SystemInformation::GetSystemWindowsDirectoryW,
         Threading::{
-            GetCurrentProcessId, GetProcessInformation, GetProcessTimes, OpenProcess,
-            ProcessPowerThrottling, QueryFullProcessImageNameW, TerminateProcess,
-            PROCESS_NAME_WIN32, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
-            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            GetCurrentProcessId, GetPriorityClass, GetProcessInformation, GetProcessTimes,
+            IsProcessCritical, OpenProcess, OpenProcessToken, ProcessPowerThrottling,
+            QueryFullProcessImageNameW, TerminateProcess, IDLE_PRIORITY_CLASS, PROCESS_NAME_WIN32,
+            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
         },
     },
 };
@@ -93,6 +96,9 @@ pub const EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS: &[&str] = &[
 pub struct ProcessInfo {
     pub id: u32,
     pub parent_id: Option<u32>,
+    pub session_id: Option<u32>,
+    pub user_name: Option<String>,
+    pub is_critical: Option<bool>,
     pub name: String,
     pub image_path: Option<PathBuf>,
 }
@@ -155,7 +161,7 @@ fn sample_process_resource(process_id: u32) -> Option<ProcessResourceSample> {
         ..Default::default()
     };
     // SAFETY: handle is live and power_throttling is writable for the supplied structure size.
-    let efficiency_mode = (unsafe {
+    let eco_qos = (unsafe {
         GetProcessInformation(
             handle.raw(),
             ProcessPowerThrottling,
@@ -167,6 +173,11 @@ fn sample_process_resource(process_id: u32) -> Option<ProcessResourceSample> {
             power_throttling.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
                 && power_throttling.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0,
         );
+    // SAFETY: handle is live and GetPriorityClass only reads process state.
+    let priority_class = unsafe { GetPriorityClass(handle.raw()) };
+    let efficiency_mode = eco_qos
+        .filter(|enabled| !enabled || priority_class != 0)
+        .map(|enabled| enabled && priority_class == IDLE_PRIORITY_CLASS);
 
     Some(ProcessResourceSample {
         cpu: ProcessCpuSample {
@@ -226,21 +237,24 @@ impl std::error::Error for ProcessActionTargetError {}
 pub fn capture_process_action_target(
     process_id: u32,
     expected_executable_path: &Path,
+    allow_cross_session: bool,
 ) -> Result<ProcessActionTarget, ProcessActionTargetError> {
     // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
     let current_process_id = unsafe { GetCurrentProcessId() };
     if process_id == 0 || process_id == current_process_id {
         return Err(ProcessActionTargetError::ProtectedProcess);
     }
-    let current_session_id = process_session_id(current_process_id)
-        .ok_or(ProcessActionTargetError::CurrentSessionUnavailable)?;
-    if process_session_id(process_id) != Some(current_session_id) {
-        return Err(ProcessActionTargetError::DifferentSession);
+    if !allow_cross_session {
+        let current_session_id = process_session_id(current_process_id)
+            .ok_or(ProcessActionTargetError::CurrentSessionUnavailable)?;
+        if process_session_id(process_id) != Some(current_session_id) {
+            return Err(ProcessActionTargetError::DifferentSession);
+        }
     }
     if !expected_executable_path.is_absolute() {
         return Err(ProcessActionTargetError::IdentityUnavailable);
     }
-    // SAFETY: process_id came from the current-session process list and no inherited handle is
+    // SAFETY: process_id came from the current process snapshot and no inherited handle is
     // requested.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
     if handle.is_null() {
@@ -251,6 +265,9 @@ pub fn capture_process_action_target(
         }));
     }
     let process = WinHandle::new(handle);
+    if process_critical_from_handle(&process) != Some(false) {
+        return Err(ProcessActionTargetError::ProtectedProcess);
+    }
     let executable_path = process_image_path_from_handle(&process)
         .ok_or(ProcessActionTargetError::IdentityUnavailable)?;
     if !same_executable_path(&executable_path, expected_executable_path) {
@@ -290,6 +307,7 @@ pub fn terminate_process(target: &ProcessActionTarget) -> Result<(), String> {
 pub fn terminate_process_tree(
     root: &ProcessActionTarget,
     processes: &[ProcessInfo],
+    allow_cross_session: bool,
 ) -> Result<usize, String> {
     ensure_process_action_target_mutable(root)?;
     let mut process_ids = vec![root.id];
@@ -320,7 +338,8 @@ pub fn terminate_process_tree(
             .as_deref()
             .ok_or_else(|| "A child process could not be identified safely.".to_owned())?;
         targets.push(
-            capture_process_action_target(process_id, path).map_err(|error| error.to_string())?,
+            capture_process_action_target(process_id, path, allow_cross_session)
+                .map_err(|error| error.to_string())?,
         );
     }
     let count = targets.len();
@@ -337,10 +356,16 @@ pub(crate) fn ensure_process_action_target_mutable(
     target: &ProcessActionTarget,
 ) -> Result<(), String> {
     if contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &target.name) {
-        Err("Built-in Windows processes cannot be modified.".to_owned())
-    } else {
-        Ok(())
+        return Err("Built-in Windows processes cannot be modified.".to_owned());
     }
+    if open_process_for_query(target.id)
+        .as_ref()
+        .and_then(process_critical_from_handle)
+        != Some(false)
+    {
+        return Err("Critical or unverifiable processes cannot be modified.".to_owned());
+    }
+    Ok(())
 }
 
 pub fn open_process_location(executable_path: &Path) -> Result<(), String> {
@@ -416,6 +441,9 @@ pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
 pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<ProcessCandidateInfo> {
     let mut candidates = BTreeMap::new();
     for process in processes {
+        if process.is_critical != Some(false) {
+            continue;
+        }
         let Some(image_path) = process.image_path.as_ref() else {
             continue;
         };
@@ -444,6 +472,9 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
             processes.push(ProcessInfo {
                 id: entry.th32ProcessID,
                 parent_id: (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID),
+                session_id: process_session_id(entry.th32ProcessID),
+                user_name: None,
+                is_critical: None,
                 name,
                 image_path: None,
             });
@@ -454,13 +485,23 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
     }
     ensure_process_iteration_complete()?;
 
+    for process in &mut processes {
+        process.is_critical = open_process_for_query(process.id)
+            .as_ref()
+            .and_then(process_critical_from_handle);
+    }
     Ok(processes)
 }
 
 pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
     let mut processes = list_processes()?;
     for process in &mut processes {
-        process.image_path = process_image_path(process.id);
+        let Some(handle) = open_process_for_query(process.id) else {
+            continue;
+        };
+        process.image_path = process_image_path_from_handle(&handle);
+        process.user_name = process_user_name_from_handle(&handle);
+        process.is_critical = process_critical_from_handle(&handle);
     }
     Ok(processes)
 }
@@ -631,17 +672,119 @@ fn is_system_process_name(name: &str) -> bool {
 }
 
 pub(crate) fn process_image_path(process_id: u32) -> Option<PathBuf> {
+    let process = open_process_for_query(process_id)?;
+    process_image_path_from_handle(&process)
+}
+
+fn open_process_for_query(process_id: u32) -> Option<WinHandle> {
     if process_id == 0 {
         return None;
     }
 
     // SAFETY: process_id came from a current snapshot and no inherited handle is requested.
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
-    if process.is_null() {
+    (!process.is_null()).then(|| WinHandle::new(process))
+}
+
+pub fn process_is_critical(process_id: u32) -> Option<bool> {
+    let process = open_process_for_query(process_id)?;
+    process_critical_from_handle(&process)
+}
+
+fn process_critical_from_handle(process: &WinHandle) -> Option<bool> {
+    let mut critical = 0;
+    // SAFETY: process is live with query access and critical is writable for the BOOL result.
+    (unsafe { IsProcessCritical(process.raw(), &mut critical) } != 0).then_some(critical != 0)
+}
+
+fn process_user_name_from_handle(process: &WinHandle) -> Option<String> {
+    let mut token = std::ptr::null_mut();
+    // SAFETY: process is live, token is writable, and the requested token access is query-only.
+    if unsafe { OpenProcessToken(process.raw(), TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    let token = WinHandle::new(token);
+
+    let mut required_bytes = 0;
+    // SAFETY: token is live; a null output with zero length requests the required buffer size.
+    let first_result = unsafe {
+        GetTokenInformation(
+            token.raw(),
+            TokenUser,
+            std::ptr::null_mut(),
+            0,
+            &mut required_bytes,
+        )
+    };
+    // SAFETY: GetLastError reads thread-local state immediately after GetTokenInformation.
+    let first_error = unsafe { GetLastError() };
+    if first_result != 0 || required_bytes == 0 || first_error != ERROR_INSUFFICIENT_BUFFER {
         return None;
     }
 
-    process_image_path_from_handle(&WinHandle::new(process))
+    let word_size = std::mem::size_of::<usize>();
+    let mut token_buffer = vec![0usize; (required_bytes as usize).div_ceil(word_size)];
+    // SAFETY: token is live; token_buffer is aligned and writable for required_bytes.
+    if unsafe {
+        GetTokenInformation(
+            token.raw(),
+            TokenUser,
+            token_buffer.as_mut_ptr().cast(),
+            required_bytes,
+            &mut required_bytes,
+        )
+    } == 0
+    {
+        return None;
+    }
+
+    // SAFETY: successful TokenUser output starts with a valid aligned TOKEN_USER whose SID remains
+    // valid while token_buffer is alive.
+    let token_user = unsafe { &*token_buffer.as_ptr().cast::<TOKEN_USER>() };
+    let mut name_len = 0;
+    let mut domain_len = 0;
+    let mut sid_use: SID_NAME_USE = 0;
+    // SAFETY: the SID comes from the live TokenUser buffer; null outputs request required lengths.
+    let first_result = unsafe {
+        LookupAccountSidW(
+            std::ptr::null(),
+            token_user.User.Sid,
+            std::ptr::null_mut(),
+            &mut name_len,
+            std::ptr::null_mut(),
+            &mut domain_len,
+            &mut sid_use,
+        )
+    };
+    // SAFETY: GetLastError reads thread-local state immediately after LookupAccountSidW.
+    let first_error = unsafe { GetLastError() };
+    if first_result != 0 || name_len == 0 || first_error != ERROR_INSUFFICIENT_BUFFER {
+        return None;
+    }
+
+    let mut name = vec![0u16; name_len as usize];
+    let mut domain = vec![0u16; domain_len as usize];
+    // SAFETY: the SID remains valid; both UTF-16 buffers are writable for their declared lengths.
+    if unsafe {
+        LookupAccountSidW(
+            std::ptr::null(),
+            token_user.User.Sid,
+            name.as_mut_ptr(),
+            &mut name_len,
+            domain.as_mut_ptr(),
+            &mut domain_len,
+            &mut sid_use,
+        )
+    } == 0
+    {
+        return None;
+    }
+
+    let name_len = name
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(name.len());
+    (name_len != 0).then(|| String::from_utf16_lossy(&name[..name_len]))
 }
 
 fn process_image_path_from_handle(process: &WinHandle) -> Option<PathBuf> {
@@ -716,6 +859,17 @@ mod tests {
     }
 
     #[test]
+    fn current_process_account_name_is_available() {
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
+        let process_id = unsafe { GetCurrentProcessId() };
+        let process = open_process_for_query(process_id).expect("current process is queryable");
+        let user_name =
+            process_user_name_from_handle(&process).expect("current process token resolves");
+
+        assert!(!user_name.is_empty());
+    }
+
+    #[test]
     fn mutable_process_targets_reject_built_in_windows_processes() {
         let target = ProcessActionTarget {
             id: 42,
@@ -726,11 +880,41 @@ mod tests {
 
         assert!(ensure_process_action_target_mutable(&target).is_err());
 
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
+        let current_process_id = unsafe { GetCurrentProcessId() };
         let target = ProcessActionTarget {
+            id: current_process_id,
             name: "editor.exe".to_owned(),
             ..target
         };
         assert!(ensure_process_action_target_mutable(&target).is_ok());
+    }
+
+    #[test]
+    fn process_candidates_exclude_critical_and_unverifiable_processes() {
+        let process = ProcessInfo {
+            id: 42,
+            parent_id: None,
+            session_id: Some(1),
+            user_name: Some("User".to_owned()),
+            is_critical: Some(false),
+            name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Apps\editor.exe")),
+        };
+        let mut critical = process.clone();
+        critical.id = 43;
+        critical.name = "critical.exe".to_owned();
+        critical.image_path = Some(PathBuf::from(r"C:\Windows\critical.exe"));
+        critical.is_critical = Some(true);
+        let mut unverifiable = process.clone();
+        unverifiable.id = 44;
+        unverifiable.name = "unknown.exe".to_owned();
+        unverifiable.image_path = Some(PathBuf::from(r"C:\Apps\unknown.exe"));
+        unverifiable.is_critical = None;
+
+        let candidates = process_candidates_from_processes(&[process, critical, unverifiable]);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].name, "editor.exe");
     }
 
     #[test]
@@ -746,6 +930,9 @@ mod tests {
         let process = ProcessInfo {
             id: 42,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from(r"C:\Games\game.exe")),
         };

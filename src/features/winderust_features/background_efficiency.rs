@@ -9,9 +9,9 @@ use windows_sys::Win32::{
     System::Threading::{
         GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess,
         ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS,
-        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+        NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
     },
 };
 
@@ -132,6 +132,7 @@ impl BackgroundEfficiencyManager {
         &mut self,
         settings: &BackgroundEfficiencySettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         manage_process_priority: bool,
         action_log: &mut ActionLog,
@@ -214,9 +215,11 @@ impl BackgroundEfficiencyManager {
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
                 || process.id == current_process_id
                 || is_builtin_excluded_for(&process.name, settings.aggressiveness)
-                || process_session_id(process.id) != Some(current_session_id)
+                || (!allow_cross_session_process_control
+                    && process_session_id(process.id) != Some(current_session_id))
             {
                 continue;
             }
@@ -887,19 +890,24 @@ pub(crate) fn current_efficiency_mode(target: &ProcessActionTarget) -> Result<bo
     {
         return Err("The selected process instance has changed.".to_owned());
     }
-    process
+    let eco_qos = process
         .power_throttling_state()
         .map(|state| {
             state.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
                 && state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
         })
+        .map_err(background_efficiency_error_message)?;
+    process
+        .priority_class()
+        .map(|priority| eco_qos && priority == IDLE_PRIORITY_CLASS)
         .map_err(background_efficiency_error_message)
 }
 
 pub(crate) fn apply_efficiency_mode_once(
     target: &ProcessActionTarget,
     enabled: bool,
-) -> Result<(), String> {
+    previous_priority: Option<u32>,
+) -> Result<Option<u32>, String> {
     ensure_process_action_target_mutable(target)?;
     if is_builtin_excluded(&target.name) {
         return Err("Built-in Windows processes cannot be modified.".to_owned());
@@ -910,6 +918,12 @@ pub(crate) fn apply_efficiency_mode_once(
     {
         return Err("The selected process instance has changed.".to_owned());
     }
+    let previous_state = process
+        .power_throttling_state()
+        .map_err(background_efficiency_error_message)?;
+    let current_priority = process
+        .priority_class()
+        .map_err(background_efficiency_error_message)?;
     let state = PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
@@ -922,16 +936,51 @@ pub(crate) fn apply_efficiency_mode_once(
     process
         .set_power_throttling_state(state)
         .map_err(background_efficiency_error_message)?;
-    match process.power_throttling_state() {
-        Ok(state)
-            if state.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
-                && (state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0) == enabled =>
-        {
-            Ok(())
+    let target_priority = if enabled {
+        IDLE_PRIORITY_CLASS
+    } else {
+        previous_priority.unwrap_or(NORMAL_PRIORITY_CLASS)
+    };
+    if let Err(error) = process.set_priority_class(target_priority) {
+        return Err(background_efficiency_error_message(
+            background_efficiency_rollback_error(
+                error,
+                process.set_power_throttling_state(previous_state),
+            ),
+        ));
+    }
+    let changed = process.power_throttling_state().and_then(|state| {
+        process.priority_class().map(|priority| {
+            let eco_qos = state.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
+                && state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0;
+            eco_qos == enabled && priority == target_priority
+        })
+    });
+    match changed {
+        Ok(true) => Ok(enabled.then_some(current_priority)),
+        Ok(false) => {
+            let error = BackgroundEfficiencyError::Failed(
+                "Efficiency mode did not change after request.".to_owned(),
+            );
+            Err(background_efficiency_error_message(
+                background_efficiency_rollback_error(
+                    error,
+                    (|| {
+                        process.set_power_throttling_state(previous_state)?;
+                        process.set_priority_class(current_priority)
+                    })(),
+                ),
+            ))
         }
-        Ok(_) => Err("Efficiency mode did not change after request.".to_owned()),
-        Err(BackgroundEfficiencyError::Unsupported) => Ok(()),
-        Err(error) => Err(background_efficiency_error_message(error)),
+        Err(error) => Err(background_efficiency_error_message(
+            background_efficiency_rollback_error(
+                error,
+                (|| {
+                    process.set_power_throttling_state(previous_state)?;
+                    process.set_priority_class(current_priority)
+                })(),
+            ),
+        )),
     }
 }
 
@@ -986,30 +1035,37 @@ mod tests {
     }
 
     #[test]
-    fn one_time_efficiency_mode_round_trips_on_live_process() {
+    fn efficiency_mode_round_trips_on_live_process() {
         let command = std::env::var_os("ComSpec").expect("ComSpec is defined on Windows");
         let mut child = std::process::Command::new(&command)
             .args(["/d", "/c", "ping -n 30 127.0.0.1 > nul"])
             .spawn()
             .expect("test process starts");
         let result: Result<(), String> = (|| {
-            let target =
-                crate::foreground::capture_process_action_target(child.id(), Path::new(&command))
-                    .map_err(|error| error.to_string())?;
-            apply_efficiency_mode_once(&target, true)
+            let target = crate::foreground::capture_process_action_target(
+                child.id(),
+                Path::new(&command),
+                false,
+            )
+            .map_err(|error| error.to_string())?;
+            let previous_priority = apply_efficiency_mode_once(&target, true, None)
                 .map_err(|error| format!("enable: {error}"))?;
-            apply_efficiency_mode_once(&target, false)
+            assert!(current_efficiency_mode(&target)?);
+            apply_efficiency_mode_once(&target, false, previous_priority)
                 .map_err(|error| format!("disable: {error}"))?;
+            assert!(!current_efficiency_mode(&target)?);
             let managed = enable_background_efficiency(
                 target.id,
                 target.name.clone(),
                 target.executable_path.to_string_lossy().into_owned(),
                 false,
-                false,
+                true,
             )
             .map_err(background_efficiency_error_message)?;
+            assert!(current_efficiency_mode(&target)?);
             restore_background_efficiency(target.id, &managed)
                 .map_err(background_efficiency_error_message)?;
+            assert!(!current_efficiency_mode(&target)?);
             Ok(())
         })();
         let _ = child.kill();

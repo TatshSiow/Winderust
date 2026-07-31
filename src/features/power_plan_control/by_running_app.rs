@@ -70,6 +70,7 @@ impl ByRunningAppManager {
             .into_iter()
             .filter(|process| {
                 process.id != 0
+                    && process.is_critical == Some(false)
                     && process.id != current_process_id
                     && !is_builtin_excluded(&process.name)
                     && process_session_id(process.id) == Some(current_session_id)
@@ -219,6 +220,9 @@ mod tests {
         let processes = vec![ProcessInfo {
             id: 42,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
@@ -251,6 +255,9 @@ mod tests {
         let processes = vec![ProcessInfo {
             id: 42,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];
@@ -280,6 +287,9 @@ mod tests {
         let processes = vec![ProcessInfo {
             id: 42,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
             name: "game.exe".to_owned(),
             image_path: Some(PathBuf::from("game.exe".to_owned())),
         }];

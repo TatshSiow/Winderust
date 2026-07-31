@@ -21,6 +21,7 @@ Read `.agents/memory/README.md` first.
 - Trace all callers before renaming or removing a setting.
 - Keep `Page`, navigation sections, render dispatch, locale keys, settings fields, backend status, scripts, and docs aligned with the same UI term.
 - Preserve runtime safety behavior: process-state restoration, protected-process filtering, conservative defaults, and failure handling are not legacy compatibility.
+- Cross-session process control is governed by the Winderust Behaviour setting and defaults on; do not bypass Windows access checks, protected-process filtering, target identity validation, or restoration.
 - Prefer typed errors when callers must distinguish failures; do not use `unwrap` or `expect` on runtime Win32/process paths, and do not silently ignore impossible internal wiring.
 - Keep every unsafe operation in the smallest practical explicit `unsafe` block, including inside `unsafe fn`, with an immediately preceding `SAFETY:` rationale.
 - When a feature-defining or compatibility-sensitive Win32, NT, or WDK
