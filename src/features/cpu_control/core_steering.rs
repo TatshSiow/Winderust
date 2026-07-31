@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
     mem::size_of,
+    path::Path,
     ptr::{null_mut, read_unaligned},
     slice,
 };
@@ -31,9 +32,9 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings},
     foreground::{
-        contains_process_name, list_processes, process_failure_key, process_names_by_id,
-        process_session_id, same_process_name, should_ignore_foreground_process, unique_app_names,
-        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        contains_process_name, list_processes, process_executable_path, process_failure_key,
+        process_handle_matches_executable_path, process_session_id, same_executable_path,
+        same_process_name, should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -54,6 +55,15 @@ pub struct CoreSteeringSnapshot {
     pub adjusted_apps: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
+}
+
+pub(crate) struct CoreSteeringTarget {
+    pub(crate) process_id: u32,
+    pub(crate) process_name: String,
+    pub(crate) executable_path: String,
+    pub(crate) mode: CoreSteeringMode,
+    pub(crate) core_mask: u64,
+    pub(crate) expected_creation_time: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +104,7 @@ pub struct CoreSteeringManager {
 #[derive(Clone)]
 struct AdjustedProcess {
     process_name: String,
+    executable_path: String,
     creation_time: u64,
     adjustment: AffinityAdjustment,
 }
@@ -130,6 +141,7 @@ impl CoreSteeringManager {
         &mut self,
         settings: &CoreSteeringSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> CoreSteeringSnapshot {
@@ -151,6 +163,29 @@ impl CoreSteeringManager {
                 enabled: false,
                 failed_processes: failed,
                 message: format!("{} disabled.", self.feature_label()),
+                ..Default::default()
+            };
+        }
+
+        let enabled_process_names = settings
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.enabled
+                    && rule_has_target(rule)
+                    && Path::new(rule.executable_path.trim()).is_absolute()
+            })
+            .filter_map(|rule| Path::new(&rule.executable_path).file_name())
+            .filter_map(|name| name.to_str())
+            .map(str::to_ascii_lowercase)
+            .collect::<BTreeSet<_>>();
+        if enabled_process_names.is_empty() {
+            let failed = self.clear_all(action_log, "no Core Steering rules configured");
+            self.failure_suppression.clear();
+            return CoreSteeringSnapshot {
+                enabled: true,
+                failed_processes: failed,
+                message: "No Core Steering rules configured.".to_owned(),
                 ..Default::default()
             };
         }
@@ -191,13 +226,12 @@ impl CoreSteeringManager {
         };
 
         let scanned_processes = processes.len();
-        let current_process_names = process_names_by_id(&processes);
-        let foreground_process_name = if settings.exclude_foreground_app {
+        let foreground_executable_path = if settings.exclude_foreground_app {
             foreground_process_id.and_then(|id| {
                 processes
                     .iter()
                     .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
+                    .and_then(process_executable_path)
             })
         } else {
             None
@@ -205,38 +239,97 @@ impl CoreSteeringManager {
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
+                || !process.can_set_information
                 || process.id == current_process_id
-                || should_ignore_foreground_process(
-                    settings.exclude_foreground_app,
-                    process.id,
-                    &process.name,
-                    foreground_process_id,
-                    foreground_process_name.as_deref(),
-                )
                 || is_builtin_excluded(&process.name)
+                || !enabled_process_names.contains(&process.name.to_ascii_lowercase())
             {
                 continue;
             }
 
-            if process_session_id(process.id) != Some(current_session_id) {
+            if !allow_cross_session_process_control
+                && process_session_id(process.id) != Some(current_session_id)
+            {
                 continue;
             }
 
-            if let Some(rule) = matching_rule(settings, &process.name) {
-                target_processes.insert(process.id, (process.name, rule.mode, rule.core_mask));
+            let Some(executable_path) = process_executable_path(&process) else {
+                continue;
+            };
+            if should_ignore_foreground_process(
+                settings.exclude_foreground_app,
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            ) {
+                continue;
+            }
+
+            if let Some(rule) = matching_rule(settings, &executable_path) {
+                target_processes.insert(
+                    process.id,
+                    (
+                        process.name,
+                        executable_path.to_string_lossy().into_owned(),
+                        rule.mode,
+                        rule.core_mask,
+                        None,
+                    ),
+                );
             }
         }
 
+        self.apply_targets(
+            target_processes,
+            scanned_processes,
+            core_steering_message(settings),
+            action_log,
+        )
+    }
+
+    pub(crate) fn update_discovered_targets(
+        &mut self,
+        targets: Vec<CoreSteeringTarget>,
+        scanned_processes: usize,
+        message: &str,
+        action_log: &mut ActionLog,
+    ) -> CoreSteeringSnapshot {
+        let targets = targets
+            .into_iter()
+            .map(|target| {
+                (
+                    target.process_id,
+                    (
+                        target.process_name,
+                        target.executable_path,
+                        target.mode,
+                        target.core_mask,
+                        target.expected_creation_time,
+                    ),
+                )
+            })
+            .collect();
+        self.apply_targets(targets, scanned_processes, message.to_owned(), action_log)
+    }
+
+    fn apply_targets(
+        &mut self,
+        target_processes: BTreeMap<u32, (String, String, CoreSteeringMode, u64, Option<u64>)>,
+        scanned_processes: usize,
+        message: String,
+        action_log: &mut ActionLog,
+    ) -> CoreSteeringSnapshot {
         let active_target_names = target_processes
             .values()
-            .map(|(name, _, _)| process_failure_key(name))
+            .map(|(_name, path, _, _, _)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut failed_processes = self.release_non_targets(
             &target_ids,
-            &current_process_names,
             action_log,
             &format!("process no longer matches a {} rule", self.feature_label()),
         );
@@ -244,41 +337,54 @@ impl CoreSteeringManager {
         let mut last_error = None;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        for (process_id, (process_name, mode, rule_mask)) in target_processes {
+        for (
+            process_id,
+            (process_name, executable_path, mode, rule_mask, expected_creation_time),
+        ) in target_processes
+        {
             let failure_process_name = process_name.clone();
-            let suppression =
-                self.check_process_suppression(process_id, &failure_process_name, action_log);
+            let failure_executable_path = executable_path.clone();
+            let suppression = self.check_process_suppression(
+                process_id,
+                &failure_process_name,
+                &failure_executable_path,
+                action_log,
+            );
             if suppression.suppressed {
                 skipped_processes += 1;
                 if suppression.newly_suppressed {
-                    auto_excluded_processes.insert(process_failure_key(&failure_process_name));
+                    auto_excluded_processes.insert(failure_executable_path.clone());
                 }
                 continue;
             }
 
             match apply_affinity(
-                process_id,
-                process_name,
+                (process_id, process_name, executable_path),
                 mode,
                 rule_mask,
+                expected_creation_time,
                 self.adjusted.get(&process_id),
                 self.action_log_feature,
                 action_log,
             ) {
                 Ok(adjusted) => {
                     if let Some(adjusted) = adjusted {
-                        self.clear_process_failure(&failure_process_name);
+                        self.clear_process_failure(&failure_executable_path);
                         self.adjusted.insert(process_id, adjusted);
                     } else {
                         skipped_processes += 1;
-                        self.clear_process_failure(&failure_process_name);
+                        self.clear_process_failure(&failure_executable_path);
                         self.adjusted.remove(&process_id);
                     }
                 }
-                Err(AffinityError::ProcessExited) => skipped_processes += 1,
+                Err(AffinityError::ProcessExited) => {
+                    skipped_processes += 1;
+                    self.adjusted.remove(&process_id);
+                }
                 Err(AffinityError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&failure_process_name);
+                    self.failure_suppression
+                        .suppress_process_failure(&failure_executable_path);
                     action_log.record(
                         self.action_log_feature,
                         Some(process_id),
@@ -288,7 +394,7 @@ impl CoreSteeringManager {
                     );
                 }
                 Err(error) => {
-                    self.record_process_failure(&failure_process_name);
+                    self.record_process_failure(&failure_executable_path);
                     let err = affinity_error_message(error);
                     failed_processes += 1;
                     if last_error.is_none() {
@@ -312,12 +418,14 @@ impl CoreSteeringManager {
             skipped_processes,
             failed_processes,
             auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
-            adjusted_apps: unique_app_names(
-                self.adjusted
-                    .values()
-                    .map(|process| process.process_name.as_str()),
-            ),
-            message: core_steering_message(settings),
+            adjusted_apps: self
+                .adjusted
+                .values()
+                .map(|process| process.executable_path.clone())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            message,
             last_error,
         }
     }
@@ -325,7 +433,6 @@ impl CoreSteeringManager {
     fn release_non_targets(
         &mut self,
         target_ids: &BTreeSet<u32>,
-        current_process_names: &BTreeMap<u32, String>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> usize {
@@ -336,33 +443,24 @@ impl CoreSteeringManager {
             .filter(|process_id| !target_ids.contains(process_id))
             .collect::<Vec<_>>();
 
-        self.release_processes(
-            &process_ids,
-            Some(current_process_names),
-            action_log,
-            reason,
-        )
+        self.release_processes(&process_ids, action_log, reason)
     }
 
     fn clear_all(&mut self, action_log: &mut ActionLog, reason: &str) -> usize {
         let process_ids = self.adjusted.keys().copied().collect::<Vec<_>>();
-        self.release_processes(&process_ids, None, action_log, reason)
+        self.release_processes(&process_ids, action_log, reason)
     }
 
     fn release_processes(
         &mut self,
         process_ids: &[u32],
-        current_process_names: Option<&BTreeMap<u32, String>>,
         action_log: &mut ActionLog,
         reason: &str,
     ) -> usize {
         let mut failed = 0;
         for process_id in process_ids {
             if let Some(process) = self.adjusted.get(process_id).cloned() {
-                let process_name = current_process_names
-                    .and_then(|names| names.get(process_id))
-                    .cloned()
-                    .unwrap_or_else(|| process.process_name.clone());
+                let process_name = process.process_name.clone();
                 let adjustment = process.adjustment.clone();
                 if let Err(err) = restore_affinity(*process_id, &process) {
                     if matches!(&err, AffinityError::ProcessExited) {
@@ -396,9 +494,12 @@ impl CoreSteeringManager {
         &mut self,
         process_id: u32,
         process_name: &str,
+        executable_path: &str,
         action_log: &mut ActionLog,
     ) -> ExecutionSuppression {
-        let suppression = self.failure_suppression.process_suppression(process_name);
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
         if suppression.newly_suppressed {
             action_log.record(
                 self.action_log_feature,
@@ -423,7 +524,7 @@ impl CoreSteeringManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        self.check_process_suppression(process_id, process_name, action_log)
+        self.check_process_suppression(process_id, process_name, process_name, action_log)
             .suppressed
     }
 
@@ -481,12 +582,21 @@ impl Default for CoreSteeringSnapshot {
 }
 
 pub fn is_builtin_excluded(process_name: &str) -> bool {
+    let process_name = std::path::Path::new(process_name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(process_name);
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
         || contains_process_name(EXTRA_BUILT_IN_EXCLUSIONS, process_name)
 }
 
-pub fn contains_process(list: &[String], process_name: &str) -> bool {
-    contains_process_name(list, process_name)
+pub fn contains_process(list: &[String], executable_path: &str) -> bool {
+    list.iter().any(|path| {
+        crate::foreground::same_executable_path(
+            std::path::Path::new(path),
+            std::path::Path::new(executable_path),
+        )
+    })
 }
 
 pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
@@ -682,10 +792,12 @@ fn processor_kind(
 
 fn matching_rule<'a>(
     settings: &'a CoreSteeringSettings,
-    process_name: &str,
+    executable_path: &Path,
 ) -> Option<&'a CoreSteeringRule> {
     settings.rules.iter().find(|rule| {
-        rule.enabled && rule_has_target(rule) && same_process_name(&rule.process_name, process_name)
+        rule.enabled
+            && rule_has_target(rule)
+            && same_executable_path(Path::new(&rule.executable_path), executable_path)
     })
 }
 
@@ -702,23 +814,30 @@ enum AffinityError {
 struct AffinityTarget {
     process_id: u32,
     process_name: String,
+    executable_path: String,
     creation_time: u64,
 }
 
 fn apply_affinity(
-    process_id: u32,
-    process_name: String,
+    (process_id, process_name, executable_path): (u32, String, String),
     mode: CoreSteeringMode,
     rule_mask: u64,
+    expected_creation_time: Option<u64>,
     existing: Option<&AdjustedProcess>,
     action_log_feature: ActionLogFeature,
     action_log: &mut ActionLog,
 ) -> Result<Option<AdjustedProcess>, AffinityError> {
     let process = ProcessHandle::open(process_id)?;
+    if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
+        return Err(AffinityError::ProcessExited);
+    }
     let creation_time = process
         .0
         .process_creation_time()
         .ok_or(AffinityError::ProcessExited)?;
+    if expected_creation_time.is_some_and(|expected| expected != creation_time) {
+        return Err(AffinityError::ProcessExited);
+    }
     let reusable_existing = existing
         .filter(|adjusted| adjusted.creation_time == creation_time)
         .filter(|adjusted| same_process_name(&adjusted.process_name, &process_name))
@@ -749,6 +868,7 @@ fn apply_affinity(
             AffinityTarget {
                 process_id,
                 process_name,
+                executable_path,
                 creation_time,
             },
             &process,
@@ -761,6 +881,7 @@ fn apply_affinity(
             AffinityTarget {
                 process_id,
                 process_name,
+                executable_path,
                 creation_time,
             },
             &process,
@@ -773,6 +894,7 @@ fn apply_affinity(
             AffinityTarget {
                 process_id,
                 process_name,
+                executable_path,
                 creation_time,
             },
             &process,
@@ -803,7 +925,12 @@ fn apply_affinity(
 
 fn restore_affinity(process_id: u32, process_state: &AdjustedProcess) -> Result<(), AffinityError> {
     let process = ProcessHandle::open(process_id)?;
-    if process.0.process_creation_time() != Some(process_state.creation_time) {
+    if process.0.process_creation_time() != Some(process_state.creation_time)
+        || !process_handle_matches_executable_path(
+            &process.0,
+            Path::new(&process_state.executable_path),
+        )
+    {
         return Err(AffinityError::ProcessExited);
     }
     restore_adjustment(&process, &process_state.adjustment)
@@ -820,6 +947,7 @@ fn apply_hard_affinity(
     let AffinityTarget {
         process_id,
         process_name,
+        executable_path,
         creation_time,
     } = target;
     let (current_affinity, system_affinity) = process.affinity_mask()?;
@@ -859,6 +987,7 @@ fn apply_hard_affinity(
 
     Ok(Some(AdjustedProcess {
         process_name,
+        executable_path,
         creation_time,
         adjustment: AffinityAdjustment::Hard {
             previous_affinity,
@@ -878,6 +1007,7 @@ fn apply_soft_affinity(
     let AffinityTarget {
         process_id,
         process_name,
+        executable_path,
         creation_time,
     } = target;
     let Some(target_cpu_set_ids) = target_cpu_set_ids(rule_mask)? else {
@@ -918,6 +1048,7 @@ fn apply_soft_affinity(
 
     Ok(Some(AdjustedProcess {
         process_name,
+        executable_path,
         creation_time,
         adjustment: AffinityAdjustment::Soft {
             previous_cpu_set_ids,
@@ -936,6 +1067,7 @@ fn apply_background_efficiency_off(
     let AffinityTarget {
         process_id,
         process_name,
+        executable_path,
         creation_time,
     } = target;
     let current_state = process.power_throttling_state()?;
@@ -971,6 +1103,7 @@ fn apply_background_efficiency_off(
 
     Ok(Some(AdjustedProcess {
         process_name,
+        executable_path,
         creation_time,
         adjustment: AffinityAdjustment::EfficiencyOff { previous_state },
     }))
@@ -1290,34 +1423,35 @@ mod tests {
                 CoreSteeringRule {
                     enabled: false,
                     mode: CoreSteeringMode::Hard,
-                    process_name: "browser.exe".to_owned(),
+                    executable_path: r"C:\Apps\Browser\browser.exe".to_owned(),
                     core_mask: 1,
                 },
                 CoreSteeringRule {
                     enabled: true,
                     mode: CoreSteeringMode::Hard,
-                    process_name: "backup.exe".to_owned(),
+                    executable_path: r"C:\Apps\Backup\backup.exe".to_owned(),
                     core_mask: 0,
                 },
                 CoreSteeringRule {
                     enabled: true,
                     mode: CoreSteeringMode::Soft,
-                    process_name: " Worker.EXE ".to_owned(),
+                    executable_path: r" C:\Apps\Worker\Worker.EXE ".to_owned(),
                     core_mask: 0b11,
                 },
                 CoreSteeringRule {
                     enabled: true,
                     mode: CoreSteeringMode::EfficiencyOff,
-                    process_name: "Game.EXE".to_owned(),
+                    executable_path: r"C:\Apps\Game\Game.EXE".to_owned(),
                     core_mask: 0,
                 },
             ],
         };
 
-        assert!(matching_rule(&settings, "worker.exe").is_some());
-        assert!(matching_rule(&settings, "game.exe").is_some());
-        assert!(matching_rule(&settings, "browser.exe").is_none());
-        assert!(matching_rule(&settings, "backup.exe").is_none());
+        assert!(matching_rule(&settings, Path::new(r"c:\apps\worker\worker.exe")).is_some());
+        assert!(matching_rule(&settings, Path::new(r"C:\Apps\Game\game.exe")).is_some());
+        assert!(matching_rule(&settings, Path::new(r"C:\Apps\Browser\browser.exe")).is_none());
+        assert!(matching_rule(&settings, Path::new(r"C:\Apps\Backup\backup.exe")).is_none());
+        assert!(matching_rule(&settings, Path::new(r"D:\Other\worker.exe")).is_none());
     }
 
     #[test]
@@ -1348,15 +1482,28 @@ mod tests {
     fn repeated_failures_suppress_future_core_steering_attempts_once() {
         let mut manager = CoreSteeringManager::default();
         let mut log = ActionLog::new(8);
+        let executable_path = r"C:\Apps\app.exe";
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        manager.record_process_failure(executable_path);
+        manager.record_process_failure(executable_path);
+        assert!(
+            !manager
+                .check_process_suppression(42, "app.exe", executable_path, &mut log)
+                .suppressed
+        );
         assert!(log.entries().is_empty());
 
-        manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+        manager.record_process_failure(executable_path);
+        assert!(
+            manager
+                .check_process_suppression(42, "app.exe", executable_path, &mut log)
+                .suppressed
+        );
+        assert!(
+            manager
+                .check_process_suppression(43, "app.exe", r"C:/Apps/app.exe", &mut log)
+                .suppressed
+        );
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
@@ -1396,8 +1543,8 @@ mod tests {
         manager.record_process_failure("app.exe");
         manager.record_process_failure("app.exe");
 
-        let first = manager.check_process_suppression(42, "app.exe", &mut log);
-        let second = manager.check_process_suppression(42, "app.exe", &mut log);
+        let first = manager.check_process_suppression(42, "app.exe", "app.exe", &mut log);
+        let second = manager.check_process_suppression(42, "app.exe", "app.exe", &mut log);
 
         assert!(first.suppressed);
         assert!(first.newly_suppressed);
@@ -1446,41 +1593,42 @@ mod tests {
     }
 
     #[test]
-    fn foreground_skip_matches_pid_or_name() {
+    fn foreground_skip_matches_pid_or_exact_path() {
         let mut settings = CoreSteeringSettings {
             exclude_foreground_app: true,
             ..Default::default()
         };
+        let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
 
         assert!(should_ignore_foreground_process(
             settings.exclude_foreground_app,
             42,
-            "helper.exe",
+            Path::new(r"C:\Apps\helper.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
         assert!(should_ignore_foreground_process(
             settings.exclude_foreground_app,
             99,
-            "APP.EXE",
+            Path::new(r"c:\apps\foreground\APP.EXE"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
         assert!(!should_ignore_foreground_process(
             settings.exclude_foreground_app,
             99,
-            "other.exe",
+            Path::new(r"D:\Other\app.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
 
         settings.exclude_foreground_app = false;
         assert!(!should_ignore_foreground_process(
             settings.exclude_foreground_app,
             42,
-            "app.exe",
+            foreground,
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
     }
 
@@ -1498,6 +1646,7 @@ mod tests {
             0,
             AdjustedProcess {
                 process_name: "exited.exe".to_owned(),
+                executable_path: r"C:\Apps\exited.exe".to_owned(),
                 creation_time: 0,
                 adjustment: AffinityAdjustment::Hard {
                     previous_affinity: 0b1111,
@@ -1507,7 +1656,7 @@ mod tests {
         );
         let mut log = ActionLog::new(8);
 
-        let failed = manager.release_processes(&[0], Some(&BTreeMap::new()), &mut log, "test");
+        let failed = manager.release_processes(&[0], &mut log, "test");
 
         assert_eq!(failed, 0);
         assert!(log.entries().is_empty());

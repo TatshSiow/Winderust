@@ -227,6 +227,101 @@ impl WinderustApp {
         )
     }
 
+    pub(in crate::ui::app) fn render_update_available_modal(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let version = self.latest_version.clone().unwrap_or_default();
+        let focus_handle = self.about_updates_focus_handle.clone();
+        let scroll_anchor = self.about_updates_scroll_anchor.clone();
+        let modal = v_flex()
+            .w_full()
+            .max_w(px(480.0))
+            .gap_3()
+            .p_4()
+            .rounded(px(BRAND_RADIUS_OVERLAY))
+            .border_1()
+            .border_color(rgb(accent_color()))
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .on_any_mouse_down(|_, _, cx| {
+                cx.stop_propagation();
+            })
+            .child(section_title_text(
+                t!("about.update_available_title").to_string(),
+            ))
+            .child(
+                div()
+                    .text_size(px(TEXT_BODY_SIZE))
+                    .line_height(px(TEXT_BODY_LINE_HEIGHT))
+                    .child(
+                        t!("about.update_available_message", version = version.as_str())
+                            .to_string(),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(animated_button_hover(
+                        control_button(Button::new("dismiss-startup-update").w(px(120.0)))
+                            .label(t!("about.update_available_not_now").to_string())
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.dismiss_startup_update_modal(cx);
+                            })),
+                        "dismiss-startup-update",
+                    ))
+                    .child(animated_button_hover(
+                        primary_control_button(Button::new("view-startup-update").w(px(120.0)), cx)
+                            .label(t!("about.update_available_view").to_string())
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                app.dismiss_startup_update_modal(cx);
+                                clear_input(&app.inputs.dashboard_search, window, cx);
+                                app.navigate_to(Page::About, cx);
+                                let focus_handle = focus_handle.clone();
+                                let scroll_anchor = scroll_anchor.clone();
+                                window.on_next_frame(move |window, cx| {
+                                    focus_handle.focus(window);
+                                    scroll_anchor.scroll_to(window, cx);
+                                });
+                                cx.notify();
+                            })),
+                        "view-startup-update",
+                    )),
+            );
+
+        let overlay = h_flex()
+            .absolute()
+            .inset_0()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .bg(rgba(0x0000008c))
+            .occlude()
+            .on_any_mouse_down(cx.listener(|app, _, _, cx| {
+                app.dismiss_startup_update_modal(cx);
+            }))
+            .child(modal);
+
+        if self.startup_update_modal_closing {
+            with_optional_motion(
+                overlay,
+                "startup-update-modal-exit",
+                MotionSpeed::Fast,
+                |overlay| overlay.opacity(0.0),
+                |overlay, delta| overlay.opacity(1.0 - delta),
+            )
+        } else {
+            with_optional_motion(
+                overlay,
+                "startup-update-modal-enter",
+                MotionSpeed::Standard,
+                |overlay| overlay,
+                |overlay, delta| overlay.opacity(delta),
+            )
+        }
+    }
     pub(in crate::ui::app) fn render_admin_rights_prompt(
         &self,
         bottom: f32,

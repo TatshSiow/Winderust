@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .app_suspension_process
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::AppSuspension,
+            &self.inputs.app_suspension_process,
+            cx,
+        );
         let enabled = self.settings.app_suspension.enabled;
         let thaw_group_collapsed =
             self.is_setting_group_collapsed(SettingGroupTarget::SuspensionThaw);
@@ -230,12 +229,11 @@ impl WinderustApp {
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .app_suspension_process
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
+                                let process = app.process_picker_path(
+                                    SuggestionTarget::AppSuspension,
+                                    &app.inputs.app_suspension_process,
+                                    cx,
+                                );
                                 if can_add_app_suspension_process(
                                     &app.settings.app_suspension,
                                     &process,
@@ -289,7 +287,8 @@ impl WinderustApp {
                 t!("common.status").to_string(),
                 SUSPENSION_STATUS_COLUMN_WIDTH,
             ),
-            rule_table_title_header(t!("process_list.process_name").to_string()),
+            rule_table_title_header(t!("process_list.app_name").to_string()),
+            rule_table_title_header(t!("process_list.executable_path").to_string()),
             rule_table_centered_header(
                 t!("app_suspension.audio").to_string(),
                 SUSPENSION_DETECT_COLUMN_WIDTH,
@@ -312,7 +311,7 @@ impl WinderustApp {
             .iter()
             .enumerate()
         {
-            let process = rule.process_name.clone();
+            let process = rule.executable_path.clone();
             let indicator = app_suspension_indicator(&self.app_suspension_status, &process);
             let rule_enabled = rule.enabled;
             let network_thresholds_enabled = rule_enabled

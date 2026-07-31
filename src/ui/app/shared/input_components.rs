@@ -5,11 +5,22 @@ pub(in crate::ui::app) fn app_input(
     focused: bool,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Div {
+    app_input_with_detail(input, focused, None, cx)
+}
+
+pub(in crate::ui::app) fn app_input_with_detail(
+    input: &Entity<InputState>,
+    focused: bool,
+    detail: Option<String>,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Div {
+    let detail_id = SharedString::from(format!("app-input-detail-{:?}", input.entity_id()));
     div()
         .w_full()
         .h(px(32.0))
         .flex()
-        .flex_col()
+        .flex_row()
+        .items_center()
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_CONTROL))
@@ -18,15 +29,35 @@ pub(in crate::ui::app) fn app_input(
         .bg(rgb(app_input_color(focused)))
         .hover(|style| style.border_color(rgb(app_input_hover_border_color())))
         .child(
-            Input::new(input)
-                .appearance(false)
-                .bordered(false)
-                .focus_bordered(false)
-                .w_full()
-                .h_full()
-                .text_color(cx.theme().foreground)
-                .into_any_element(),
+            div().flex_1().min_w(px(0.0)).h_full().child(
+                Input::new(input)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .w_full()
+                    .h_full()
+                    .text_color(cx.theme().foreground)
+                    .into_any_element(),
+            ),
         )
+        .when_some(detail, |input, detail| {
+            let tooltip_detail = detail.clone();
+            input.child(
+                div()
+                    .id(detail_id.clone())
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .pr_3()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_size(px(TEXT_LABEL_SIZE))
+                    .text_color(rgb(dim_text_color()))
+                    .child(detail)
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(tooltip_detail.clone()).build(window, cx)
+                    }),
+            )
+        })
 }
 
 pub(in crate::ui::app) fn app_input_color(focused: bool) -> u32 {

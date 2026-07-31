@@ -71,24 +71,21 @@ pub(super) fn workload_engine_status_message(
 
 pub(super) fn matching_rule<'a>(
     settings: &'a WorkloadEngineSettings,
-    process_name: &str,
+    process: &ProcessInfo,
 ) -> Option<&'a PriorityRule> {
-    settings
-        .rules
-        .iter()
-        .find(|rule| rule.enabled && same_process_name(&rule.process_name, process_name))
+    settings.rules.iter().find(|rule| {
+        rule.enabled
+            && crate::foreground::process_matches_executable_path(process, &rule.executable_path)
+    })
 }
 
 pub(super) fn should_skip_foreground_process(
     process_id: u32,
-    process_name: &str,
     foreground_process_id: Option<u32>,
     foreground_process_group_ids: &BTreeSet<u32>,
-    foreground_process_name: Option<&str>,
 ) -> bool {
     foreground_process_id.is_some_and(|id| id == process_id)
         || foreground_process_group_ids.contains(&process_id)
-        || foreground_process_name.is_some_and(|name| same_process_name(name, process_name))
 }
 
 pub(super) fn foreground_boost_eligible(
@@ -111,7 +108,6 @@ pub(super) fn should_skip_process(
     current_process_id: u32,
     foreground_process_id: Option<u32>,
     foreground_process_group_ids: &BTreeSet<u32>,
-    foreground_process_name: Option<&str>,
     background_efficiency_process_ids: &BTreeSet<u32>,
 ) -> bool {
     process_id == 0
@@ -120,10 +116,8 @@ pub(super) fn should_skip_process(
         || is_builtin_excluded(process_name)
         || should_skip_foreground_process(
             process_id,
-            process_name,
             foreground_process_id,
             foreground_process_group_ids,
-            foreground_process_name,
         )
 }
 

@@ -39,7 +39,7 @@ pub(super) fn audio_wake_duration(settings: &AppSuspensionSettings) -> Option<Du
 }
 
 pub(super) fn audio_process_names_with_activity(
-    target_processes: &BTreeMap<u32, String>,
+    target_processes: &BTreeMap<u32, TargetProcess>,
 ) -> Result<BTreeSet<String>, String> {
     if target_processes.is_empty() {
         return Ok(BTreeSet::new());
@@ -48,13 +48,13 @@ pub(super) fn audio_process_names_with_activity(
     let active_process_ids = active_audio_process_ids()?;
     Ok(target_processes
         .iter()
-        .filter(|(process_id, _process_name)| active_process_ids.contains(process_id))
-        .map(|(_process_id, process_name)| process_name_key(process_name))
+        .filter(|(process_id, _process)| active_process_ids.contains(process_id))
+        .map(|(_process_id, process)| process.key())
         .collect())
 }
 
 pub(super) fn network_connection_snapshot(
-    target_processes: &BTreeMap<u32, String>,
+    target_processes: &BTreeMap<u32, TargetProcess>,
 ) -> Result<NetworkConnectionSnapshot, String> {
     let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
     let mut connections_by_pid: NetworkConnectionsByProcess = BTreeMap::new();
@@ -66,15 +66,15 @@ pub(super) fn network_connection_snapshot(
 
     let mut snapshot = target_processes
         .values()
-        .map(|process_name| (process_name_key(process_name), BTreeMap::new()))
+        .map(|process| (process.key(), BTreeMap::new()))
         .collect::<NetworkConnectionSnapshot>();
     for (process_id, connections) in connections_by_pid {
-        let Some(process_name) = target_processes.get(&process_id) else {
+        let Some(process) = target_processes.get(&process_id) else {
             continue;
         };
 
         snapshot
-            .entry(process_name_key(process_name))
+            .entry(process.key())
             .or_insert_with(BTreeMap::new)
             .extend(connections);
     }
@@ -113,14 +113,15 @@ pub(super) fn network_process_names_with_activity(
 
 pub(super) fn network_activity_thresholds(
     settings: &AppSuspensionSettings,
-    target_processes: &BTreeMap<u32, String>,
+    target_processes: &BTreeMap<u32, TargetProcess>,
 ) -> NetworkActivityThresholdsByProcess {
     target_processes
         .values()
-        .filter_map(|process_name| {
-            let (bytes_in, bytes_out) = settings.network_wake_thresholds_for(process_name)?;
+        .filter_map(|process| {
+            let (bytes_in, bytes_out) =
+                settings.network_wake_thresholds_for(&process.executable_path)?;
             Some((
-                process_name_key(process_name),
+                process.key(),
                 NetworkActivityThresholds {
                     bytes_in,
                     bytes_out,
@@ -137,14 +138,6 @@ pub(super) fn eligible_network_wake_names(
     network_process_names
         .intersection(network_target_process_names)
         .cloned()
-        .collect()
-}
-
-pub(super) fn manual_freeze_app_names(process_names: &[String]) -> BTreeSet<String> {
-    process_names
-        .iter()
-        .map(|process_name| process_name_key(process_name))
-        .filter(|process_name| !process_name.is_empty())
         .collect()
 }
 
@@ -469,11 +462,11 @@ pub(super) fn table_rows<T: Copy>(buffer: &[u8]) -> Vec<T> {
 
 pub(super) fn should_skip_foreground_process(
     process_id: u32,
-    process_name: &str,
+    executable_path: &Path,
     foreground_process_id: u32,
-    foreground_process_name: Option<&str>,
+    foreground_executable_path: Option<&Path>,
 ) -> bool {
     process_id == foreground_process_id
-        || foreground_process_name
-            .is_some_and(|name| process_name_key(name) == process_name_key(process_name))
+        || foreground_executable_path
+            .is_some_and(|foreground_path| same_executable_path(executable_path, foreground_path))
 }

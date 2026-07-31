@@ -17,8 +17,8 @@ use windows_sys::Win32::{
             AppendMenuW, CallWindowProcW, CreatePopupMenu, DestroyMenu, GetCursorPos, LoadImageW,
             PostMessageW, SetForegroundWindow, SetWindowLongPtrW, ShowWindow, TrackPopupMenu,
             GWLP_WNDPROC, HICON, IMAGE_ICON, LR_DEFAULTSIZE, LR_SHARED, MF_STRING, SW_HIDE,
-            SW_RESTORE, SW_SHOWNA, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE,
-            WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
+            SW_SHOW, SW_SHOWNA, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_APP, WM_CLOSE, WM_LBUTTONDBLCLK,
+            WM_LBUTTONUP, WM_RBUTTONUP, WM_SHOWWINDOW, WNDPROC,
         },
     },
 };
@@ -248,7 +248,7 @@ fn show_window(hwnd: HWND) {
     let _ = self_power::disable_hidden_mode();
     // SAFETY: hwnd is the live application window supplied by its window procedure callback.
     unsafe {
-        ShowWindow(hwnd, SW_RESTORE);
+        ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
     }
 }

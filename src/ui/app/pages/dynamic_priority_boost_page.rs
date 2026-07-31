@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .dynamic_priority_boost_process
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::DynamicPriorityBoost,
+            &self.inputs.dynamic_priority_boost_process,
+            cx,
+        );
         let enabled = self.settings.dynamic_priority_boost.enabled;
         let help = tooltip_lines(vec![
             t!("dynamic_priority_boost.intro_1").to_string(),
@@ -116,12 +115,11 @@ impl WinderustApp {
                                 ),
                         )
                         .on_click(cx.listener(|app, _, window, cx| {
-                            let process = app
-                                .inputs
-                                .dynamic_priority_boost_process
-                                .read(cx)
-                                .value()
-                                .to_string();
+                            let process = app.process_picker_path(
+                                SuggestionTarget::DynamicPriorityBoost,
+                                &app.inputs.dynamic_priority_boost_process,
+                                cx,
+                            );
                             if can_add_dynamic_priority_boost_exclusion(
                                 &app.settings.dynamic_priority_boost,
                                 &process,

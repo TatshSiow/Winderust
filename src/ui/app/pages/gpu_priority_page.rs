@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .gpu_priority_process
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::GpuPriority,
+            &self.inputs.gpu_priority_process,
+            cx,
+        );
         let enabled = self.settings.gpu_priority.enabled;
         let help = tooltip_lines(vec![
             t!("gpu_priority.intro_1").to_string(),
@@ -138,8 +137,11 @@ impl WinderustApp {
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.gpu_priority_process.read(cx).value().to_string();
+                                let process = app.process_picker_path(
+                                    SuggestionTarget::GpuPriority,
+                                    &app.inputs.gpu_priority_process,
+                                    cx,
+                                );
                                 if can_add_gpu_priority_exclusion(
                                     &app.settings.gpu_priority,
                                     &process,

@@ -6,12 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self
-            .inputs
-            .timer_resolution_process
-            .read(cx)
-            .value()
-            .to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::TimerResolution,
+            &self.inputs.timer_resolution_process,
+            cx,
+        );
         let enabled = self.settings.timer_resolution.enabled;
         let help = tooltip_lines(vec![
             t!("timer_resolution.intro_1").to_string(),
@@ -43,12 +42,11 @@ impl WinderustApp {
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process = app
-                                    .inputs
-                                    .timer_resolution_process
-                                    .read(cx)
-                                    .value()
-                                    .to_string();
+                                let process = app.process_picker_path(
+                                    SuggestionTarget::TimerResolution,
+                                    &app.inputs.timer_resolution_process,
+                                    cx,
+                                );
                                 if can_add_timer_resolution_process(
                                     &app.settings.timer_resolution,
                                     &process,
@@ -94,7 +92,8 @@ impl WinderustApp {
     ) -> AnyElement {
         let mut list = rule_list(vec![
             rule_table_active_header(),
-            rule_table_title_header(t!("process_list.process_name").to_string()),
+            rule_table_title_header(t!("process_list.app_name").to_string()),
+            rule_table_title_header(t!("process_list.executable_path").to_string()),
             rule_table_centered_header(t!("timer_resolution.requested").to_string(), 104.0),
             rule_table_action_header(),
         ]);
@@ -110,7 +109,7 @@ impl WinderustApp {
                         cx.notify();
                     }),
                 ))
-                .child(self.process_rule_title(&rule.process_name, cx))
+                .child(self.process_rule_title(&rule.executable_path, cx))
                 .child(self.render_numeric_value(
                     NumericField::TimerResolutionRule(index),
                     timer_resolution::format_resolution_ms(rule.desired_100ns),

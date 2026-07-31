@@ -6,7 +6,11 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let input_value = self.inputs.performance_process.read(cx).value().to_string();
+        let input_value = self.process_picker_path(
+            SuggestionTarget::ByRunningApp,
+            &self.inputs.performance_process,
+            cx,
+        );
         let enabled = self.settings.by_running_app.enabled;
         let body = feature_body(enabled)
             .child(section_title_text(t!("common.rules").to_string()))
@@ -33,8 +37,11 @@ impl WinderustApp {
                                     ),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
-                                let process =
-                                    app.inputs.performance_process.read(cx).value().to_string();
+                                let process = app.process_picker_path(
+                                    SuggestionTarget::ByRunningApp,
+                                    &app.inputs.performance_process,
+                                    cx,
+                                );
                                 if can_add_by_running_app_process(
                                     &app.settings.by_running_app,
                                     &process,
@@ -87,12 +94,13 @@ impl WinderustApp {
     ) -> AnyElement {
         let mut list = rule_list(vec![
             rule_table_active_header(),
-            rule_table_title_header(t!("process_list.process_name").to_string()),
+            rule_table_title_header(t!("process_list.app_name").to_string()),
+            rule_table_title_header(t!("process_list.executable_path").to_string()),
             priority_exclusion_table_cell(t!("by_running_app.power_plan").to_string()),
             rule_table_action_header(),
         ]);
         for (index, rule) in self.settings.by_running_app.rules.iter().enumerate() {
-            let process = rule.process_name.clone();
+            let process = rule.executable_path.clone();
             let row = compact_rule_row(format!("by-running-app-rule-row-{index}"))
                 .child(rule_active_cell(
                     format!("by-running-app-rule-enabled-{index}"),

@@ -45,6 +45,19 @@ impl WinderustApp {
             ))
             .child(section_title_text(t!("settings.advanced").to_string()))
             .child(setting_action_card_with_help(
+                "allow-cross-session-process-control",
+                t!("settings.allow_cross_session_process_control").to_string(),
+                t!("settings.allow_cross_session_process_control_help").to_string(),
+                switch_toggle_action(
+                    "allow-cross-session-process-control-toggle",
+                    self.settings.general.allow_cross_session_process_control,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.general.allow_cross_session_process_control = *checked;
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .child(setting_action_card_with_help(
                 "pause-dashboard-metrics",
                 t!("settings.pause_dashboard_metrics").to_string(),
                 t!("settings.pause_dashboard_metrics_help").to_string(),
@@ -68,11 +81,18 @@ impl WinderustApp {
                         app.settings.advanced.pause_process_population = *checked;
                         app.next_process_refresh = Instant::now();
                         if *checked {
+                            app.process_candidate_load_state = ProcessLoadState::Paused;
+                            app.running_process_load_state = ProcessLoadState::Paused;
                             app.process_candidates.clear();
                             app.running_processes.clear();
+                            app.process_resource_samples.clear();
+                            app.process_resource_usage.clear();
                             app.process_icon_cache.clear();
                             app.expanded_process_list_groups.clear();
                             app.active_power_plan_picker = None;
+                        } else {
+                            app.process_candidate_load_state = ProcessLoadState::Loading;
+                            app.running_process_load_state = ProcessLoadState::Loading;
                         }
                         cx.notify();
                     }),

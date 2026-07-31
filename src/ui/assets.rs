@@ -35,6 +35,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/bring-to-front.svg", icondata_lu::LuBringToFront),
     ("icons/calendar-days.svg", icondata_lu::LuCalendarDays),
     ("icons/chart-column.svg", icondata_lu::LuChartColumn),
+    ("icons/circle-pause.svg", icondata_lu::LuCirclePause),
     ("icons/chevron-down.svg", icondata_lu::LuChevronDown),
     ("icons/chevron-right.svg", icondata_lu::LuChevronRight),
     (
@@ -60,6 +61,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/octagon-minus.svg", icondata_lu::LuOctagonMinus),
     ("icons/palette.svg", icondata_lu::LuPalette),
     ("icons/panels-top-left.svg", icondata_lu::LuPanelsTopLeft),
+    ("icons/play.svg", icondata_lu::LuPlay),
     ("icons/rocket.svg", icondata_lu::LuRocket),
     ("icons/rotate-3d.svg", icondata_lu::LuRotate3d),
     ("icons/scissors.svg", icondata_lu::LuScissors),
@@ -71,6 +73,7 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/trash-2.svg", icondata_lu::LuTrash2),
     ("icons/trending-up-down.svg", icondata_lu::LuTrendingUpDown),
     ("icons/wrench.svg", icondata_lu::LuWrench),
+    ("icons/x.svg", icondata_lu::LuX),
     ("icons/zap.svg", icondata_lu::LuZap),
 ];
 

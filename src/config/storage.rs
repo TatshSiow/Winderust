@@ -146,6 +146,7 @@ mod tests {
                 startup_with_windows: true,
                 start_minimized: true,
                 hide_to_tray: true,
+                allow_cross_session_process_control: false,
                 check_for_updates: true,
                 update_channel: crate::config::UpdateChannel::PreRelease,
                 theme_mode: AppThemeMode::Dark,
@@ -195,13 +196,13 @@ mod tests {
                     ByForegroundRule {
                         enabled: true,
                         name: "Game plan".to_owned(),
-                        process_name: "game.exe".to_owned(),
+                        executable_path: "game.exe".to_owned(),
                         power_plan_guid: Some("gaming-guid".to_owned()),
                     },
                     ByForegroundRule {
                         enabled: false,
                         name: "Backup plan".to_owned(),
-                        process_name: "backup\\tool.exe".to_owned(),
+                        executable_path: "backup\\tool.exe".to_owned(),
                         power_plan_guid: Some("backup-guid".to_owned()),
                     },
                 ],
@@ -238,11 +239,11 @@ mod tests {
                 custom_rules: vec![
                     BackgroundEfficiencyRule {
                         enabled: true,
-                        process_name: "mouse.exe".to_owned(),
+                        executable_path: "mouse.exe".to_owned(),
                     },
                     BackgroundEfficiencyRule {
                         enabled: false,
-                        process_name: "comma,app.exe".to_owned(),
+                        executable_path: "comma,app.exe".to_owned(),
                     },
                 ],
             },
@@ -259,7 +260,7 @@ mod tests {
                 suspendable_apps: vec![
                     AppSuspensionRule {
                         enabled: true,
-                        process_name: "chat.exe".to_owned(),
+                        executable_path: "chat.exe".to_owned(),
                         network_wake_enabled: true,
                         audio_wake_enabled: true,
                         network_download_threshold_bytes: 1,
@@ -269,7 +270,7 @@ mod tests {
                     },
                     AppSuspensionRule {
                         enabled: false,
-                        process_name: "comma,app.exe".to_owned(),
+                        executable_path: "comma,app.exe".to_owned(),
                         network_wake_enabled: false,
                         audio_wake_enabled: false,
                         network_download_threshold_bytes: 1,
@@ -286,19 +287,19 @@ mod tests {
                     CoreSteeringRule {
                         enabled: true,
                         mode: CoreSteeringMode::Hard,
-                        process_name: "backup.exe".to_owned(),
+                        executable_path: "backup.exe".to_owned(),
                         core_mask: 0b0011,
                     },
                     CoreSteeringRule {
                         enabled: false,
                         mode: CoreSteeringMode::Soft,
-                        process_name: "indexer.exe".to_owned(),
+                        executable_path: "indexer.exe".to_owned(),
                         core_mask: 0b1100,
                     },
                     CoreSteeringRule {
                         enabled: true,
                         mode: CoreSteeringMode::EfficiencyOff,
-                        process_name: "game.exe".to_owned(),
+                        executable_path: "game.exe".to_owned(),
                         core_mask: 0,
                     },
                 ],
@@ -309,7 +310,7 @@ mod tests {
                 exclude_foreground_app: true,
                 rules: vec![CoreLimiterRule {
                     enabled: true,
-                    process_name: "encoder.exe".to_owned(),
+                    executable_path: "encoder.exe".to_owned(),
                     threshold_percent: 80,
                     sustain_seconds: 5,
                     cooldown_seconds: 15,
@@ -321,7 +322,7 @@ mod tests {
                 rules: vec![ByRunningAppRule {
                     enabled: true,
                     name: "Game performance".to_owned(),
-                    process_name: "game.exe".to_owned(),
+                    executable_path: "game.exe".to_owned(),
                     power_plan_guid: Some("gaming-guid".to_owned()),
                 }],
             },
@@ -355,7 +356,7 @@ mod tests {
                 workload_engine_max_targeted_processes: 6,
                 workload_engine_exclusions: vec![ProcessExclusionRule {
                     enabled: true,
-                    process_name: "game*.exe".to_owned(),
+                    executable_path: "C:\\Games\\game.exe".to_owned(),
                     ..Default::default()
                 }],
                 boost_foreground_app: true,
@@ -363,7 +364,7 @@ mod tests {
                 foreground_stability_delay_ms: 750,
                 rules: vec![PriorityRule {
                     enabled: true,
-                    process_name: "backup.exe".to_owned(),
+                    executable_path: "backup.exe".to_owned(),
                     priority: ProcessPriority::BelowNormal,
                 }],
             },
@@ -376,7 +377,7 @@ mod tests {
                 preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
-                    process_name: "backup.exe".to_owned(),
+                    executable_path: "backup.exe".to_owned(),
                     ..Default::default()
                 }],
             },
@@ -388,7 +389,7 @@ mod tests {
                 background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
-                    process_name: "backup.exe".to_owned(),
+                    executable_path: "backup.exe".to_owned(),
                     ..Default::default()
                 }],
             },
@@ -401,7 +402,7 @@ mod tests {
                 preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
-                    process_name: "backup.exe".to_owned(),
+                    executable_path: "backup.exe".to_owned(),
                     ..Default::default()
                 }],
             },
@@ -414,7 +415,7 @@ mod tests {
                 preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
-                    process_name: "render.exe".to_owned(),
+                    executable_path: "render.exe".to_owned(),
                     ..Default::default()
                 }],
             },
@@ -427,7 +428,7 @@ mod tests {
                 preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
-                    process_name: "backup.exe".to_owned(),
+                    executable_path: "backup.exe".to_owned(),
                     ..Default::default()
                 }],
             },
@@ -436,7 +437,7 @@ mod tests {
                 desired_100ns: 10_000,
                 rules: vec![TimerResolutionRule {
                     enabled: true,
-                    process_name: "game.exe".to_owned(),
+                    executable_path: "game.exe".to_owned(),
                     desired_100ns: 20_000,
                 }],
             },
@@ -447,7 +448,7 @@ mod tests {
                 process_idle_seconds: 300,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
-                    process_name: "keep.exe".to_owned(),
+                    executable_path: "keep.exe".to_owned(),
                     ..Default::default()
                 }],
             },

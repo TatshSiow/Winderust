@@ -47,12 +47,15 @@ impl WinderustApp {
                     .line_height(px(TEXT_LABEL_LINE_HEIGHT))
                     .text_color(rgb(muted_text_color()))
                     .child(rule_table_active_header())
+                    .child(rule_table_title_header(
+                        t!("process_list.app_name").to_string(),
+                    ))
                     .child(
                         div()
                             .flex_1()
                             .min_w(px(0.0))
                             .truncate()
-                            .child(t!("process_list.process_name").to_string()),
+                            .child(t!("process_list.executable_path").to_string()),
                     )
                     .child(priority_exclusion_table_cell(
                         t!("process_list.foreground").to_string(),
@@ -64,7 +67,7 @@ impl WinderustApp {
             );
 
         for (index, rule) in rules.iter().enumerate() {
-            let process = rule.process_name.clone();
+            let process = rule.executable_path.clone();
             let target = ListItemRemovalTarget::new(kind, index);
             let row = h_flex()
                 .id(SharedString::from(format!("{id_prefix}-row-{index}")))

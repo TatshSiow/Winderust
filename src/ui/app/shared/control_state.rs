@@ -1,6 +1,6 @@
 use crate::ui::app::*;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(in crate::ui::app) enum SuggestionTarget {
     Foreground,
     BackgroundEfficiency,
@@ -18,6 +18,48 @@ pub(in crate::ui::app) enum SuggestionTarget {
     MemoryPriority,
     TimerResolution,
     CoreSteering,
+}
+
+impl SuggestionTarget {
+    pub(in crate::ui::app) const ALL: [Self; 16] = [
+        Self::Foreground,
+        Self::BackgroundEfficiency,
+        Self::BackgroundCpu,
+        Self::MemoryTrim,
+        Self::AppSuspension,
+        Self::CoreLimiter,
+        Self::ByRunningApp,
+        Self::WorkloadEngine,
+        Self::ProcessPriority,
+        Self::ThreadPriority,
+        Self::DynamicPriorityBoost,
+        Self::IoPriority,
+        Self::GpuPriority,
+        Self::MemoryPriority,
+        Self::TimerResolution,
+        Self::CoreSteering,
+    ];
+
+    pub(in crate::ui::app) fn input(self, inputs: &UiInputs) -> &Entity<InputState> {
+        match self {
+            Self::Foreground => &inputs.foreground_process,
+            Self::BackgroundEfficiency => &inputs.background_efficiency_process,
+            Self::BackgroundCpu => &inputs.background_cpu_exclusion,
+            Self::MemoryTrim => &inputs.memory_trim_exclusion,
+            Self::AppSuspension => &inputs.app_suspension_process,
+            Self::CoreLimiter => &inputs.core_limiter_process,
+            Self::ByRunningApp => &inputs.performance_process,
+            Self::WorkloadEngine => &inputs.workload_engine_process,
+            Self::ProcessPriority => &inputs.process_priority_process,
+            Self::ThreadPriority => &inputs.thread_priority_process,
+            Self::DynamicPriorityBoost => &inputs.dynamic_priority_boost_process,
+            Self::IoPriority => &inputs.io_priority_process,
+            Self::GpuPriority => &inputs.gpu_priority_process,
+            Self::MemoryPriority => &inputs.memory_priority_process,
+            Self::TimerResolution => &inputs.timer_resolution_process,
+            Self::CoreSteering => &inputs.core_steering_process,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -404,6 +446,7 @@ impl UiInputs {
         let processor_power_values = processor_power_values.normalized();
         Self {
             dashboard_search: make_input(window, cx, "", &t!("home.search_placeholder")),
+            process_list_search: make_input(window, cx, "", &t!("process_list.search_placeholder")),
             by_cpu_load_rule_names: settings
                 .by_cpu_load
                 .rules
@@ -441,18 +484,6 @@ impl UiInputs {
                 .rules
                 .iter()
                 .map(|rule| make_input(window, cx, &rule.end_time, "HH:MM"))
-                .collect(),
-            foreground_rule_names: settings
-                .by_foreground
-                .rules
-                .iter()
-                .map(|rule| make_input(window, cx, &rule.name, &t!("common.rule_name")))
-                .collect(),
-            foreground_rule_processes: settings
-                .by_foreground
-                .rules
-                .iter()
-                .map(|rule| make_input(window, cx, &rule.process_name, "process.exe"))
                 .collect(),
             foreground_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             background_efficiency_process: make_input(
@@ -584,22 +615,6 @@ impl UiInputs {
             |index| settings.by_time.rules[index].end_time.clone(),
             "HH:MM",
         );
-        sync_input_vec(
-            &mut self.foreground_rule_names,
-            settings.by_foreground.rules.len(),
-            window,
-            cx,
-            |index| settings.by_foreground.rules[index].name.clone(),
-            &t!("common.rule_name"),
-        );
-        sync_input_vec(
-            &mut self.foreground_rule_processes,
-            settings.by_foreground.rules.len(),
-            window,
-            cx,
-            |index| settings.by_foreground.rules[index].process_name.clone(),
-            "process.exe",
-        );
     }
 
     pub(in crate::ui::app) fn refresh_localized_placeholders(
@@ -613,31 +628,24 @@ impl UiInputs {
             window,
             cx,
         );
-        for input in [
-            &self.foreground_process,
-            &self.background_efficiency_process,
-            &self.background_cpu_exclusion,
-            &self.memory_trim_exclusion,
-            &self.app_suspension_process,
-            &self.core_limiter_process,
-            &self.performance_process,
-            &self.core_steering_process,
-            &self.workload_engine_process,
-            &self.process_priority_process,
-            &self.thread_priority_process,
-            &self.dynamic_priority_boost_process,
-            &self.io_priority_process,
-            &self.gpu_priority_process,
-            &self.memory_priority_process,
-            &self.timer_resolution_process,
-        ] {
-            set_input_placeholder(input, t!("common.search_running_apps"), window, cx);
+        set_input_placeholder(
+            &self.process_list_search,
+            t!("process_list.search_placeholder"),
+            window,
+            cx,
+        );
+        for target in SuggestionTarget::ALL {
+            set_input_placeholder(
+                target.input(self),
+                t!("common.search_running_apps"),
+                window,
+                cx,
+            );
         }
         for input in self
             .by_cpu_load_rule_names
             .iter()
             .chain(&self.by_time_rule_names)
-            .chain(&self.foreground_rule_names)
         {
             set_input_placeholder(input, t!("common.rule_name"), window, cx);
         }
@@ -656,13 +664,46 @@ impl WinderustApp {
         self.editing_numeric = None;
         self.expanded_rule_cards.clear();
         self.pending_list_item_removals.clear();
+        self.selected_process_paths.clear();
         self.inputs = UiInputs::new(window, cx, &settings, processor_power_values);
         self.rebuild_rule_title_input_subscriptions(window, cx);
+        self.rebuild_process_picker_input_subscriptions(window, cx);
         self.subscribe_to_numeric_input(window, cx);
         self.subscribe_to_dashboard_search_input(window, cx);
+        self.subscribe_to_process_list_search_input(window, cx);
         self.subscribe_to_processor_power_sliders(window, cx);
         self.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         self.subscribe_to_activity_sliders(window, cx);
+    }
+
+    pub(in crate::ui::app) fn rebuild_process_picker_input_subscriptions(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._process_picker_input_subscriptions = SuggestionTarget::ALL
+            .into_iter()
+            .map(|target| {
+                let input = target.input(&self.inputs).clone();
+                cx.subscribe_in(
+                    &input,
+                    window,
+                    move |app, input, event: &InputEvent, _, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            let display_name = input.read(cx).value();
+                            let selection_still_matches =
+                                app.selected_process_paths.get(&target).is_some_and(|path| {
+                                    process_path_matches_display_name(path, display_name.as_ref())
+                                });
+                            if !selection_still_matches {
+                                app.selected_process_paths.remove(&target);
+                            }
+                            cx.notify();
+                        }
+                    },
+                )
+            })
+            .collect();
     }
 
     pub(in crate::ui::app) fn rule_title_input_count(&self) -> usize {
@@ -760,6 +801,18 @@ impl WinderustApp {
             move |_, _, _: &InputEvent, _, cx| {
                 cx.notify();
             },
+        ));
+    }
+
+    pub(in crate::ui::app) fn subscribe_to_process_list_search_input(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self._process_list_search_subscription = Some(cx.subscribe_in(
+            &self.inputs.process_list_search,
+            window,
+            move |_, _, _: &InputEvent, _, cx| cx.notify(),
         ));
     }
 
@@ -1319,14 +1372,6 @@ impl WinderustApp {
             }
             if let Some(input) = self.inputs.schedule_end_times.get(index) {
                 rule.end_time = input.read(cx).value().to_string();
-            }
-        }
-        for (index, rule) in self.settings.by_foreground.rules.iter_mut().enumerate() {
-            if let Some(input) = self.inputs.foreground_rule_names.get(index) {
-                rule.name = input.read(cx).value().to_string();
-            }
-            if let Some(input) = self.inputs.foreground_rule_processes.get(index) {
-                rule.process_name = input.read(cx).value().to_string();
             }
         }
     }

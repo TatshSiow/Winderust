@@ -11,7 +11,7 @@ impl WinderustApp {
     ) -> AnyElement {
         let mut list = rule_list(process_rule_table_headers());
         for (index, rule) in rules.iter().enumerate() {
-            let process = rule.process_name.clone();
+            let process = rule.executable_path.clone();
             let row = compact_rule_row(format!("{id_prefix}-row-{index}"))
                 .child(rule_active_cell(
                     format!("{id_prefix}-enabled-{index}"),
@@ -380,30 +380,44 @@ impl WinderustApp {
             .process_candidates
             .iter()
             .filter(|process| {
-                query.is_empty() || process.name.to_ascii_lowercase().contains(query.as_str())
+                query.is_empty()
+                    || process.name.to_ascii_lowercase().contains(query.as_str())
+                    || process
+                        .image_path
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .contains(query.as_str())
             })
-            .filter(|process| process_target_can_accept(target, &self.settings, &process.name))
-            .cloned()
+            .filter(|process| {
+                process_target_can_accept(
+                    target,
+                    &self.settings,
+                    process.image_path.to_string_lossy().as_ref(),
+                )
+            })
             .collect::<Vec<_>>();
         matches.sort_by(|left, right| left.name.cmp(&right.name));
-
         let mut suggestions = dropdown_surface(cx, max_height);
         if matches.is_empty() {
             suggestions = suggestions.child(dropdown_empty_row(
-                if self.process_candidates.is_empty() {
-                    t!("common.no_running_apps_loaded").to_string()
-                } else {
-                    t!("common.no_matching_apps").to_string()
-                },
+                process_load_state_message(&self.process_candidate_load_state).unwrap_or_else(
+                    || {
+                        if self.process_candidates.is_empty() {
+                            t!("common.no_running_apps_loaded").to_string()
+                        } else {
+                            t!("common.no_matching_apps").to_string()
+                        }
+                    },
+                ),
                 cx,
             ));
         }
         for (count, process) in matches.into_iter().enumerate() {
-            let process_name = process.name.clone();
+            let executable_path = process.image_path.to_string_lossy().into_owned();
             suggestions = suggestions.child(
                 dropdown_process_option_row(
                     SharedString::from(format!("{id}-{count}")),
-                    &process,
+                    process,
                     count == 0,
                     cx,
                 )
@@ -411,7 +425,7 @@ impl WinderustApp {
                     MouseButton::Left,
                     cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
                         cx.stop_propagation();
-                        app.apply_process_suggestion(target, &process_name, window, cx);
+                        app.apply_process_suggestion(target, &executable_path, window, cx);
                         window.blur();
                         cx.notify();
                     }),
@@ -422,11 +436,11 @@ impl WinderustApp {
         suggestions.into_any_element()
     }
 
-    pub(in crate::ui::app) fn process_icon_for_name(&self, process: &str) -> Option<&Arc<Image>> {
-        let process = process.trim();
+    pub(in crate::ui::app) fn process_icon_for_path(&self, process: &str) -> Option<&Arc<Image>> {
+        let process = Path::new(process.trim());
         self.process_candidates
             .iter()
-            .find(|candidate| same_process_name(&candidate.name, process))
+            .find(|candidate| same_executable_path(&candidate.image_path, process))
             .and_then(|candidate| candidate.icon.as_ref())
     }
 
@@ -435,13 +449,53 @@ impl WinderustApp {
         process: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let display_name = Path::new(process)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(process)
+            .to_owned();
+        let status_id = SharedString::from(format!("process-rule-status-{process}"));
+        let running_count =
+            (self.running_process_load_state == ProcessLoadState::Loaded).then(|| {
+                self.running_processes
+                    .iter()
+                    .filter(|running| {
+                        running
+                            .image_path
+                            .as_deref()
+                            .is_some_and(|path| same_executable_path(path, Path::new(process)))
+                    })
+                    .count()
+            });
         h_flex()
             .flex_1()
             .min_w(px(0.0))
             .overflow_hidden()
             .items_center()
             .gap_2()
-            .child(process_icon_cell(self.process_icon_for_name(process), cx))
+            .child(process_icon_cell(self.process_icon_for_path(process), cx))
+            .when_some(running_count, |row, count| {
+                let (color, tooltip) = if count == 0 {
+                    (
+                        dim_text_color(),
+                        t!("common.process_rule_not_running").to_string(),
+                    )
+                } else {
+                    (
+                        success_text_color(),
+                        t!("common.process_rule_running", count = count).to_string(),
+                    )
+                };
+                row.child(
+                    div()
+                        .id(status_id)
+                        .size(px(7.0))
+                        .flex_shrink_0()
+                        .rounded_full()
+                        .bg(rgb(color))
+                        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -450,8 +504,24 @@ impl WinderustApp {
                     .whitespace_nowrap()
                     .text_size(px(TEXT_HEADER_SIZE))
                     .line_height(px(TEXT_HEADER_LINE_HEIGHT))
-                    .child(process.to_owned()),
+                    .child(display_name),
             )
+            .child(self.process_rule_path(process))
+            .into_any_element()
+    }
+
+    pub(in crate::ui::app) fn process_rule_path(&self, process: &str) -> AnyElement {
+        let executable_path = process.to_owned();
+        div()
+            .id(SharedString::from(format!(
+                "process-rule-path-{executable_path}"
+            )))
+            .flex_1()
+            .min_w(px(0.0))
+            .truncate()
+            .text_color(rgb(dim_text_color()))
+            .child(executable_path.clone())
+            .tooltip(move |window, cx| Tooltip::new(executable_path.clone()).build(window, cx))
             .into_any_element()
     }
 
@@ -481,10 +551,27 @@ impl WinderustApp {
                         .name
                         .to_ascii_lowercase()
                         .contains(normalized_query.as_str())
+                    || process
+                        .image_path
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .contains(normalized_query.as_str())
             })
-            .filter(|process| process_target_can_accept(target, &self.settings, &process.name))
+            .filter(|process| {
+                process_target_can_accept(
+                    target,
+                    &self.settings,
+                    process.image_path.to_string_lossy().as_ref(),
+                )
+            })
             .count()
             .max(1);
+        let selected_path = self.process_picker_path(target, input, cx);
+        let input_detail = if !selected_path.is_empty() {
+            Some(selected_path)
+        } else {
+            process_load_state_message(&self.process_candidate_load_state)
+        };
         let placement =
             self.dropdown_placement(&id, dropdown_list_height(suggestion_count), window);
 
@@ -494,7 +581,7 @@ impl WinderustApp {
             .min_w(px(0.0))
             .relative()
             .min_h(px(32.0))
-            .child(app_input(input, is_open, cx))
+            .child(app_input_with_detail(input, is_open, input_detail, cx))
             .child(dropdown_anchor_sensor(
                 id.clone(),
                 Rc::clone(&self.dropdown_anchor_bounds),
@@ -531,65 +618,27 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match target {
-            SuggestionTarget::Foreground => {
-                clear_input_to(&self.inputs.foreground_process, process, window, cx);
-            }
-            SuggestionTarget::BackgroundEfficiency => {
-                clear_input_to(
-                    &self.inputs.background_efficiency_process,
-                    process,
-                    window,
-                    cx,
-                );
-            }
-            SuggestionTarget::BackgroundCpu => {
-                clear_input_to(&self.inputs.background_cpu_exclusion, process, window, cx);
-            }
-            SuggestionTarget::MemoryTrim => {
-                clear_input_to(&self.inputs.memory_trim_exclusion, process, window, cx);
-            }
-            SuggestionTarget::AppSuspension => {
-                clear_input_to(&self.inputs.app_suspension_process, process, window, cx);
-            }
-            SuggestionTarget::CoreLimiter => {
-                clear_input_to(&self.inputs.core_limiter_process, process, window, cx);
-            }
-            SuggestionTarget::ByRunningApp => {
-                clear_input_to(&self.inputs.performance_process, process, window, cx);
-            }
-            SuggestionTarget::WorkloadEngine => {
-                clear_input_to(&self.inputs.workload_engine_process, process, window, cx);
-            }
-            SuggestionTarget::ProcessPriority => {
-                clear_input_to(&self.inputs.process_priority_process, process, window, cx);
-            }
-            SuggestionTarget::ThreadPriority => {
-                clear_input_to(&self.inputs.thread_priority_process, process, window, cx);
-            }
-            SuggestionTarget::DynamicPriorityBoost => {
-                clear_input_to(
-                    &self.inputs.dynamic_priority_boost_process,
-                    process,
-                    window,
-                    cx,
-                );
-            }
-            SuggestionTarget::IoPriority => {
-                clear_input_to(&self.inputs.io_priority_process, process, window, cx);
-            }
-            SuggestionTarget::GpuPriority => {
-                clear_input_to(&self.inputs.gpu_priority_process, process, window, cx);
-            }
-            SuggestionTarget::MemoryPriority => {
-                clear_input_to(&self.inputs.memory_priority_process, process, window, cx);
-            }
-            SuggestionTarget::TimerResolution => {
-                clear_input_to(&self.inputs.timer_resolution_process, process, window, cx);
-            }
-            SuggestionTarget::CoreSteering => {
-                clear_input_to(&self.inputs.core_steering_process, process, window, cx);
-            }
-        }
+        let display_name = Path::new(process)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(process);
+        self.selected_process_paths
+            .insert(target, process.to_owned());
+        let input = target.input(&self.inputs).clone();
+        clear_input_to(&input, display_name, window, cx);
+    }
+
+    pub(in crate::ui::app) fn process_picker_path(
+        &self,
+        target: SuggestionTarget,
+        input: &Entity<InputState>,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let display_name = input.read(cx).value();
+        self.selected_process_paths
+            .get(&target)
+            .filter(|path| process_path_matches_display_name(path, display_name.as_ref()))
+            .cloned()
+            .unwrap_or_default()
     }
 }

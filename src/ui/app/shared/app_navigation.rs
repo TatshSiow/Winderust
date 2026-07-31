@@ -308,6 +308,7 @@ pub(in crate::ui::app) enum NavIcon {
     BringToFront,
     CalendarDays,
     ChartColumn,
+    CirclePause,
     ChevronDown,
     ChevronRight,
     CircleFadingArrowUp,
@@ -330,6 +331,7 @@ pub(in crate::ui::app) enum NavIcon {
     OctagonMinus,
     Palette,
     PanelsTopLeft,
+    Play,
     Rotate3d,
     Scissors,
     Settings,
@@ -340,6 +342,7 @@ pub(in crate::ui::app) enum NavIcon {
     Trash2,
     TrendingUpDown,
     Wrench,
+    X,
     Zap,
 }
 
@@ -350,6 +353,7 @@ impl IconNamed for NavIcon {
             Self::BringToFront => "icons/bring-to-front.svg",
             Self::CalendarDays => "icons/calendar-days.svg",
             Self::ChartColumn => "icons/chart-column.svg",
+            Self::CirclePause => "icons/circle-pause.svg",
             Self::ChevronDown => "icons/chevron-down.svg",
             Self::ChevronRight => "icons/chevron-right.svg",
             Self::CircleFadingArrowUp => "icons/circle-fading-arrow-up.svg",
@@ -372,6 +376,7 @@ impl IconNamed for NavIcon {
             Self::OctagonMinus => "icons/octagon-minus.svg",
             Self::Palette => "icons/palette.svg",
             Self::PanelsTopLeft => "icons/panels-top-left.svg",
+            Self::Play => "icons/play.svg",
             Self::Rotate3d => "icons/rotate-3d.svg",
             Self::Scissors => "icons/scissors.svg",
             Self::Settings => "icons/settings.svg",
@@ -382,6 +387,7 @@ impl IconNamed for NavIcon {
             Self::Trash2 => "icons/trash-2.svg",
             Self::TrendingUpDown => "icons/trending-up-down.svg",
             Self::Wrench => "icons/wrench.svg",
+            Self::X => "icons/x.svg",
             Self::Zap => "icons/zap.svg",
         }
         .into()

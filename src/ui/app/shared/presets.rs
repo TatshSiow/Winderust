@@ -62,7 +62,7 @@ pub(in crate::ui::app) fn apply_power_mode_preset(
             );
         }
         PowerModePreset::Performance => {
-            apply_adaptive_engine(settings, false);
+            apply_adaptive_engine(settings, true);
             settings.adaptive_engine.processor_policy_enabled = true;
             settings.adaptive_engine.processor_policy_values =
                 power_mode_performance_processor_values();
@@ -74,7 +74,7 @@ pub(in crate::ui::app) fn apply_power_mode_preset(
             );
         }
         PowerModePreset::Speed => {
-            apply_adaptive_engine(settings, false);
+            apply_adaptive_engine(settings, true);
             settings.adaptive_engine.processor_policy_enabled = true;
             settings.adaptive_engine.processor_policy_values = power_mode_speed_processor_values();
             settings.workload_engine.enabled = true;
@@ -91,6 +91,9 @@ pub(in crate::ui::app) fn power_mode_matches_preset(
     settings: &Settings,
     preset: PowerModePreset,
 ) -> bool {
+    if !settings.adaptive_engine.enabled {
+        return false;
+    }
     match preset {
         PowerModePreset::PowerSave => {
             settings.adaptive_engine.processor_policy_enabled

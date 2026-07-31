@@ -89,15 +89,15 @@ User-facing behavior:
 | API | Used for | Reference |
 | --- | --- | --- |
 | `Shell_NotifyIconW` | Adds and removes the Winderust notification-area icon. | https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shell_notifyiconw |
+| `ShowWindow` | Hides the window with `SW_HIDE` and shows it with `SW_SHOW`, preserving its current size and maximized state instead of resetting it with `SW_RESTORE`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow |
 | `SetWindowLongPtrW` | Installs and restores the temporary `GWLP_WNDPROC` tray callback. A zero return is a failure only when `GetLastError` is nonzero after first clearing it with `SetLastError(0)`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw |
 | `CallWindowProcW` | Forwards unhandled messages to the exact original window procedure. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw |
 
 ## Background Efficiency / EcoQoS
 
-Winderust Background Efficiency applies Windows EcoQoS to selected background
-user-session processes. It also manages idle process priority when Process
-Priority is disabled; when Process Priority is enabled, that feature remains
-the sole owner of process-priority changes.
+Winderust Background Efficiency applies Windows EcoQoS and idle process
+priority to selected background user-session processes. Process Priority skips
+those active targets so the features do not fight over their priority class.
 
 Implementation paths:
 
@@ -113,8 +113,9 @@ User-facing behavior:
 - It reads the process's existing power throttling state and, when it owns
   priority management, the existing priority class.
 - It enables EcoQoS by setting `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` through `SetProcessInformation`.
-- When Process Priority is disabled, it sets the process priority class to
-  `IDLE_PRIORITY_CLASS`. Otherwise it leaves priority unchanged.
+- The Process List and manual context-menu action use Task Manager semantics: Efficiency mode requires both EcoQoS and `IDLE_PRIORITY_CLASS`; manual changes verify both and restore the previous priority when disabled.
+- It sets the process priority class to `IDLE_PRIORITY_CLASS` while the target
+  is managed.
 - It restores the state it owns when the process stops being a target,
   Background Efficiency is disabled, automation is disabled, or Winderust
   exits.
@@ -143,9 +144,11 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 
 | API | Used for | Reference |
 | --- | --- | --- |
-| `OpenProcess` | Opens target processes with query and set-information access rights. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
-| `QueryFullProcessImageNameW` | Reads executable paths for process-list candidates and foreground/cursor process identification through the shared helper in `src/foreground/process_list.rs`. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew |
-| Process Security and Access Rights | Documents access flags such as `PROCESS_QUERY_LIMITED_INFORMATION`, `PROCESS_SET_INFORMATION`, and `PROCESS_SET_LIMITED_INFORMATION`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
+| `OpenProcess` | Opens target processes with query-only access for live EcoQoS state reads, and query plus set-information access for mutations. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
+| `QueryFullProcessImageNameW` | Reads executable paths through `src/foreground/process_list.rs` for process discovery, foreground/cursor identification, and exact executable-path matching across every user-configured process rule. Process mutation paths revalidate the expected executable path on the same opened handle immediately before the change; built-in Windows safety exclusions remain filename-based. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew |
+| Process handles and identifiers | Documents that a process ID is valid only until process termination and can be reused, while an open handle continues to identify that process object. Winderust pairs executable-path checks with creation-time checks wherever sampled state crosses into a later mutation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-handles-and-identifiers |
+| Process Security and Access Rights | Documents the query-only `PROCESS_QUERY_LIMITED_INFORMATION` right and the `PROCESS_SET_INFORMATION` right required by `SetProcessInformation`. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
+| `OpenProcessToken` / `AdjustTokenPrivileges` | When Winderust is already elevated, enables the existing `SeDebugPrivilege` in its process token before process discovery and automation. This bypasses ordinary process DACL checks but does not remove Winderust's critical-process, built-in, identity, minimal-access, or Windows protected-process barriers. `ERROR_NOT_ALL_ASSIGNED` is treated as failure. | https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-adjusttokenprivileges |
 
 ## Advanced Power Plan Tuning
 
@@ -183,6 +186,7 @@ Implementation entry points:
 | Thread Priority: `CreateToolhelp32Snapshot`, `Thread32First`, and `Thread32Next` | Enumerates threads belonging to target processes. | [Snapshot](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-createtoolhelp32snapshot) / [First](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32first) / [Next](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/nf-tlhelp32-thread32next) |
 | Thread Priority: `GetThreadPriority` / `SetThreadPriority` | Reads, applies, and restores thread priority values. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadpriority) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setthreadpriority) |
 | Thread Priority: `GetThreadTimes` | Records thread creation time so restoration does not target a recycled thread ID. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes |
+| Thread Priority: `GetProcessIdOfThread` | Revalidates that an opened thread still belongs to the verified process instance immediately before changing its priority. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessidofthread |
 | Dynamic Priority Boost: `GetProcessPriorityBoost` / `SetProcessPriorityBoost` | Reads, applies, and restores the process dynamic-priority-boost setting. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesspriorityboost) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocesspriorityboost) |
 | Memory Priority: `GetProcessInformation` / `SetProcessInformation` | Reads, applies, and restores `ProcessMemoryPriority`. | [Get](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation) / [Set](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation) |
 | `MEMORY_PRIORITY_INFORMATION` | Defines the memory-priority value passed to the process information APIs. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-memory_priority_information |
@@ -278,10 +282,25 @@ Winderust keeps App Suspension opt-in and limited to explicitly selected apps be
 | API | Used for | Reference |
 | --- | --- | --- |
 | `GetCurrentProcessId` | Gets Winderust's own process ID so Winderust never suspends itself. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentprocessid |
-| `ProcessIdToSessionId` | Checks the Windows session for a process so Winderust only targets the current user session. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-processidtosessionid |
+| `ProcessIdToSessionId` | Captures the session suffix/fallback shown in the Process List User column and enforces same-session targeting when Allow cross-session process control is disabled. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-processidtosessionid |
+| `IsProcessCritical` | Marks Windows-critical processes as `Protected system process`, excludes them from rule candidates and automation targets, and makes unverifiable targets fail closed. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-isprocesscritical |
+| `OpenProcess(PROCESS_SET_INFORMATION)` | Performs a non-mutating access-right probe during process discovery. Processes that expose query metadata but deny this mutation right, including protected security services, are classified as inaccessible and excluded from process-control rules. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
+| `GetProcessInformation(ProcessProtectionLevelInfo)` | Reads `PROCESS_PROTECTION_LEVEL_INFORMATION` during process discovery. Any level other than `PROTECTION_LEVEL_NONE` identifies a Protected Process Light target and makes it inaccessible to Winderust controls. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_protection_level_information |
+| `NtQueryObject(ObjectBasicInformation)` | Reads `PUBLIC_OBJECT_BASIC_INFORMATION.GrantedAccess` from Winderust's own opened process handle so kernel security callbacks that silently strip requested rights are detected. Discovery probes `PROCESS_SET_INFORMATION`; action validation probes the operation-specific mask (`PROCESS_TERMINATE`, `PROCESS_SET_INFORMATION`, or job-assignment rights) while retaining critical/PPL checks. This API is documented by Microsoft but explicitly compatibility-sensitive; failure is treated as inaccessible. | https://learn.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntqueryobject |
+| `OpenProcessToken` | Opens each queryable process token with `TOKEN_QUERY` while populating the Process List User column. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocesstoken |
+| `GetTokenInformation(TokenUser)` | Reads the SID of the account associated with the process token. | https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-gettokeninformation |
+| `LookupAccountSidW` | Resolves the process token SID to its local account name; inaccessible or unmapped tokens use the neutral `Unavailable · S#` UI fallback rather than guessing an account. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-lookupaccountsidw |
 | `WaitForSingleObject` | Checks whether a managed process has exited before reusing a cached freezer. | https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject |
 | `CloseHandle` | Closes process and job handles after use. | https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle |
 | `GetLastError` | Reads extended Win32 error codes after failed API calls. | https://learn.microsoft.com/en-us/windows/win32/api/errhandlingapi/nf-errhandlingapi-getlasterror |
+
+Implementation paths: process account/session capture and one-time target validation are in
+`src/foreground/process_list.rs`; rule-driven filtering is applied by the
+individual process-control managers under `src/features/`. Winderust Behaviour
+owns `general.allow_cross_session_process_control`, which defaults on. Enabling
+it removes only the session-equality filter: self-process protection, built-in
+exclusions, target identity revalidation, minimal access masks, and Windows
+process DACL/protected-process enforcement remain active.
 
 ### Related Windows Behavior
 
@@ -342,3 +361,23 @@ Winderust-owned per-user backup before the first change.
 Treat the value layout as compatibility-sensitive. Keep reading, backup,
 writing, bit decoding, and tests aligned, and fail visibly if the machine value
 cannot be read or written.
+
+## Process List Resource Usage
+
+Implementation entry point: `src/foreground/process_list.rs`. Sampling runs on
+the existing Process List background refresh and treats inaccessible or exited
+processes as unavailable rather than failing the complete refresh.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `GetProcessTimes` | Samples per-process kernel and user time; consecutive samples are converted to total-system CPU percentage. Creation time prevents PID-reuse comparisons. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes |
+| `K32GetProcessMemoryInfo` | Reads the current working-set size displayed in the Process List. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
+| `GetProcessInformation(ProcessPowerThrottling)` | Reads the execution-speed control and state masks used to report Efficiency mode where supported. The query is unavailable before Windows 11 22H2 even though `SetProcessInformation` can still apply the state. Query failure therefore leaves status unavailable; managed application falls back to restoring the documented system-managed state (`ControlMask = 0`, `StateMask = 0`) instead of skipping every target. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation |
+| `TerminateProcess` | Implements the confirmed Stop Process and Stop Process Tree actions. Winderust validates the root and every captured descendant against its built-in process exclusions before the first termination, requests only `PROCESS_TERMINATE` plus identity-query access, revalidates creation time and executable path before acting, and terminates children before the selected root. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess |
+| `GetSystemWindowsDirectoryW` | Resolves the shared Windows directory and launches its absolute `explorer.exe` path for Open Process Location, avoiding executable-name search through application-controlled directories. | [Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemwindowsdirectoryw) / [Rust `Command`](https://doc.rust-lang.org/stable/std/process/struct.Command.html#method.new) |
+| Process security and access rights | Defines the minimal `PROCESS_TERMINATE` right required by `TerminateProcess`; inaccessible processes remain unavailable rather than triggering privilege escalation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |
+
+Windows exposes no documented process-wide suspension query. The Process List
+therefore reports suspension only for process IDs currently suspended and
+tracked by Winderust; it does not infer suspension from undocumented NT thread
+state.

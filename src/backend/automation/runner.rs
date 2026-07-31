@@ -4,29 +4,6 @@ pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled && settings.adaptive_engine.processor_policy_enabled
 }
 
-pub(super) fn static_processor_power_values(settings: &Settings) -> Option<ProcessorPowerValues> {
-    let values = settings
-        .adaptive_engine
-        .processor_policy_values
-        .normalized();
-    let default_saver_values = ProcessorPowerValues::new_with_boost_mode(
-        0,
-        5,
-        45,
-        0,
-        crate::power::ProcessorBoostMode::Disabled,
-    );
-
-    (settings.general.enabled
-        && !settings.adaptive_engine.enabled
-        && settings.adaptive_engine.processor_policy_enabled
-        && !settings.background_efficiency.enabled
-        && settings.workload_engine.enabled
-        && settings.workload_engine.workload_engine_enabled
-        && values != default_saver_values)
-        .then_some(values)
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub(super) struct AdaptiveProcessorDemand {
     pub(super) peak_cpu_percent: Option<f32>,
@@ -77,12 +54,6 @@ pub(super) struct ActiveAdaptivePowerPlan {
     lower_demand_since: Option<Instant>,
 }
 
-pub(super) struct AppliedStaticProcessorPolicy {
-    plan_guid: String,
-    restore_values: ProcessorPowerAcDcValues,
-    applied_values: ProcessorPowerValues,
-}
-
 #[derive(Default)]
 pub(super) struct HiddenAutomationRunner {
     last_settings: Option<Settings>,
@@ -100,7 +71,6 @@ pub(super) struct HiddenAutomationRunner {
     next_adaptive_io_refresh: Option<Instant>,
     adaptive_power_plan: Option<ActiveAdaptivePowerPlan>,
     adaptive_foreground_process_id: Option<u32>,
-    static_processor_policy: Option<AppliedStaticProcessorPolicy>,
     idle_detector: IdleDetector,
     controller_activity_detector: ControllerActivityDetector,
     by_cpu_load_scheduler: ByCpuLoadScheduler,
@@ -197,8 +167,9 @@ impl HiddenAutomationRunner {
         self.background_efficiency_manager.update(
             &settings.background_efficiency,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id,
-            !settings.process_priority.enabled,
+            true,
             &mut self.action_log,
         )
     }
@@ -207,11 +178,21 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
         manual_freeze_processes: &[String],
+        process_requests: &[(ProcessActionTarget, bool)],
     ) -> AppSuspensionSnapshot {
+        for (target, suspend) in process_requests {
+            self.app_suspension_manager.apply_manual_process_action(
+                target,
+                *suspend,
+                settings.general.allow_cross_session_process_control,
+                &mut self.action_log,
+            );
+        }
         let foreground_process_id = foreground_process_id();
         self.app_suspension_manager.update(
             &settings.app_suspension,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id,
             manual_freeze_processes,
             &mut self.action_log,
@@ -226,10 +207,7 @@ impl HiddenAutomationRunner {
             self.last_app_suspension_shell_user_intent = Some(now);
             if let Some(status) = self
                 .app_suspension_manager
-                .release_window_owner_processes_for_user_intent(
-                    &top_level_window_process_ids(),
-                    &mut self.action_log,
-                )
+                .release_all_suspended_processes_for_user_intent(&mut self.action_log)
             {
                 return Some(status);
             }
@@ -243,7 +221,7 @@ impl HiddenAutomationRunner {
                 foreground_process
                     .as_ref()
                     .filter(|process| process.id == process_id)
-                    .map(|process| process.name.as_str()),
+                    .map(|process| process.executable_path.as_path()),
                 &mut self.action_log,
             )
         }) {
@@ -260,7 +238,7 @@ impl HiddenAutomationRunner {
             cursor_process
                 .as_ref()
                 .filter(|process| process.id == cursor_process_id)
-                .map(|process| process.name.as_str()),
+                .map(|process| process.executable_path.as_path()),
             &mut self.action_log,
         )
     }
@@ -282,7 +260,8 @@ impl HiddenAutomationRunner {
             return None;
         }
 
-        self.run_app_suspension_app_switch_release()
+        self.app_suspension_manager
+            .release_all_suspended_processes_for_user_intent(&mut self.action_log)
     }
 
     pub(super) fn app_suspension_shell_user_intent_due(&self, now: Instant) -> bool {
@@ -297,6 +276,7 @@ impl HiddenAutomationRunner {
         self.core_steering_manager.update(
             &settings.core_steering,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id,
             &mut self.action_log,
         )
@@ -309,6 +289,7 @@ impl HiddenAutomationRunner {
         self.background_cpu_restriction_manager.update(
             &settings.background_cpu_restriction,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -320,6 +301,7 @@ impl HiddenAutomationRunner {
         self.core_limiter_manager.update(
             &settings.core_limiter,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id,
             &core_steering_process_ids,
             &mut self.action_log,
@@ -343,12 +325,17 @@ impl HiddenAutomationRunner {
     ) -> WorkloadEngineSnapshot {
         self.refresh_cpu_usage();
         let foreground_process_id = foreground_process_id();
+        let mut workload_settings = settings.workload_engine.clone();
+        workload_settings.enabled &= settings.adaptive_engine.enabled;
         let mut excluded_process_ids = self.background_efficiency_manager.throttled_process_ids();
         excluded_process_ids.extend(self.by_running_app_manager.active_process_ids());
         let mut snapshot = self.workload_engine_manager.update(
             WorkloadEngineUpdate {
-                settings: &settings.workload_engine,
+                settings: &workload_settings,
                 automation_enabled: settings.general.enabled,
+                allow_cross_session_process_control: settings
+                    .general
+                    .allow_cross_session_process_control,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
                 background_efficiency_managed: settings.background_efficiency.enabled,
@@ -376,7 +363,6 @@ impl HiddenAutomationRunner {
         foreground_process_id: Option<u32>,
     ) -> Result<(), String> {
         if adaptive_power_plan_required(settings) && settings.general.enabled {
-            self.restore_static_processor_policy()?;
             let foreground_changed = foreground_process_id.is_some()
                 && self.adaptive_foreground_process_id != foreground_process_id;
             self.adaptive_foreground_process_id = foreground_process_id;
@@ -390,8 +376,7 @@ impl HiddenAutomationRunner {
             )
         } else {
             self.adaptive_foreground_process_id = None;
-            self.restore_adaptive_power_plan()?;
-            self.sync_static_processor_policy(settings)
+            self.restore_adaptive_power_plan()
         }
     }
 
@@ -444,8 +429,7 @@ impl HiddenAutomationRunner {
             )
             .and_then(|()| set_active(&plan_guid))
             {
-                let _ = delete_plan(&plan_guid);
-                return Err(error);
+                return Err(adaptive_plan_setup_error(error, delete_plan(&plan_guid)));
             }
             self.current_guid = Some(plan_guid.clone());
             self.adaptive_power_plan = Some(ActiveAdaptivePowerPlan {
@@ -516,51 +500,13 @@ impl HiddenAutomationRunner {
         Ok(())
     }
 
-    pub(super) fn sync_static_processor_policy(
-        &mut self,
-        settings: &Settings,
-    ) -> Result<(), String> {
-        let desired_values = static_processor_power_values(settings);
-        if self
-            .static_processor_policy
-            .as_ref()
-            .is_some_and(|policy| Some(policy.applied_values) == desired_values)
-        {
-            return Ok(());
-        }
-
-        self.restore_static_processor_policy()?;
-        let Some(values) = desired_values else {
-            return Ok(());
-        };
-        let plan_guid = active_plan()?.guid;
-        let restore_values = read_processor_power_values(&plan_guid)?;
-        apply_processor_power_values(&plan_guid, ProcessorPowerAcDcValues::same(values))?;
-        self.static_processor_policy = Some(AppliedStaticProcessorPolicy {
-            plan_guid,
-            restore_values,
-            applied_values: values,
-        });
-        Ok(())
-    }
-
-    pub(super) fn restore_static_processor_policy(&mut self) -> Result<(), String> {
-        let Some(policy) = self.static_processor_policy.take() else {
-            return Ok(());
-        };
-        if let Err(error) = apply_processor_power_values(&policy.plan_guid, policy.restore_values) {
-            self.static_processor_policy = Some(policy);
-            return Err(error);
-        }
-        Ok(())
-    }
-
     pub(super) fn run_io_priority_update(&mut self, settings: &Settings) -> IoPrioritySnapshot {
         let io_priority_settings =
             effective_io_priority_settings(settings, self.workload_engine_active);
         self.io_priority_manager.update(
             &io_priority_settings,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -570,10 +516,12 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
     ) -> ProcessPrioritySnapshot {
-        let excluded_process_ids = self.workload_engine_manager.managed_process_ids();
+        let mut excluded_process_ids = self.workload_engine_manager.managed_process_ids();
+        excluded_process_ids.extend(self.background_efficiency_manager.throttled_process_ids());
         self.process_priority_manager.update(
             &settings.process_priority,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &excluded_process_ids,
             &mut self.action_log,
@@ -589,6 +537,7 @@ impl HiddenAutomationRunner {
         self.thread_priority_manager.update(
             &thread_priority_settings,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -603,6 +552,7 @@ impl HiddenAutomationRunner {
         self.dynamic_priority_boost_manager.update(
             &dynamic_priority_boost_settings,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -614,6 +564,7 @@ impl HiddenAutomationRunner {
         self.gpu_priority_manager.update(
             &gpu_priority_settings,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -626,6 +577,7 @@ impl HiddenAutomationRunner {
         self.memory_priority_manager.update_rules(
             &settings.memory_priority,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -635,6 +587,7 @@ impl HiddenAutomationRunner {
         self.memory_trim_manager.update(
             &settings.memory_trim,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -644,6 +597,7 @@ impl HiddenAutomationRunner {
         self.memory_trim_manager.trim_now(
             &settings.memory_trim,
             settings.general.enabled,
+            settings.general.allow_cross_session_process_control,
             foreground_process_id(),
             &mut self.action_log,
         )
@@ -653,11 +607,15 @@ impl HiddenAutomationRunner {
         &mut self,
         settings: &Settings,
     ) -> TimerResolutionSnapshot {
-        let foreground_process_name = foreground_process_name();
+        let foreground_executable_path = timer_resolution_required(settings)
+            .then(foreground_process)
+            .flatten()
+            .filter(|process| process_is_critical(process.id) == Some(false))
+            .map(|process| process.executable_path.to_string_lossy().into_owned());
         self.timer_resolution_manager.update(
             &settings.timer_resolution,
             settings.general.enabled,
-            foreground_process_name.as_deref(),
+            foreground_executable_path.as_deref(),
             &mut self.action_log,
         )
     }
@@ -676,16 +634,18 @@ impl HiddenAutomationRunner {
 
         let activity = self.activity_snapshot(settings, Instant::now());
         self.refresh_cpu_usage();
-        let foreground_process_name = foreground_lookup_required(settings)
-            .then(foreground_process_name)
-            .flatten();
+        let foreground_executable_path = foreground_lookup_required(settings)
+            .then(foreground_process)
+            .flatten()
+            .filter(|process| process_is_critical(process.id) == Some(false))
+            .map(|process| process.executable_path.to_string_lossy().into_owned());
         let by_time_decision = current_by_time_decision(&settings.by_time);
         let by_cpu_load_decision = self
             .by_cpu_load_scheduler
             .current_decision(&settings.by_cpu_load, self.cpu_usage.percent);
         let decision_input = DecisionInput {
             activity_state: activity.state,
-            foreground_process_name,
+            foreground_executable_path,
             plugged_in: power_source::is_plugged_in(),
             by_running_app: self.by_running_app_manager.active_decision().map(
                 |(rule_name, process_name, power_plan_guid)| ByRunningAppDecision {
@@ -772,10 +732,21 @@ impl HiddenAutomationRunner {
     }
 }
 
+pub(super) fn adaptive_plan_setup_error(
+    operation_error: String,
+    cleanup: Result<(), String>,
+) -> String {
+    match cleanup {
+        Ok(()) => operation_error,
+        Err(cleanup_error) => {
+            format!("{operation_error} Adaptive plan cleanup also failed: {cleanup_error}")
+        }
+    }
+}
+
 impl Drop for HiddenAutomationRunner {
     fn drop(&mut self) {
         let _ = self.restore_adaptive_power_plan();
-        let _ = self.restore_static_processor_policy();
     }
 }
 

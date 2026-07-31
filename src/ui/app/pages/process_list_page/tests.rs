@@ -1,18 +1,192 @@
 use super::*;
 
 #[test]
+fn process_resource_columns_format_usage() {
+    let mut summary = default_process_policy_summary();
+    summary.cpu_percent = Some(12.34);
+    summary.memory_bytes = Some(512 * 1024 * 1024);
+
+    assert_eq!(
+        process_list_column_value(&summary, ProcessListColumn::CpuUsage),
+        "12.3%"
+    );
+    assert_eq!(
+        process_list_column_value(&summary, ProcessListColumn::MemoryUsage),
+        "512.0 MB"
+    );
+}
+
+#[test]
+fn inaccessible_process_uses_dash_for_unavailable_metrics() {
+    for status in [
+        t!("process_list.status_administrator_required").to_string(),
+        t!("process_list.status_access_denied").to_string(),
+    ] {
+        let mut summary = default_process_policy_summary();
+        summary.status = status;
+
+        assert_eq!(
+            process_list_column_value(&summary, ProcessListColumn::CpuUsage),
+            "\u{2014}"
+        );
+        assert_eq!(
+            process_list_column_value(&summary, ProcessListColumn::MemoryUsage),
+            "\u{2014}"
+        );
+    }
+}
+
+#[test]
+fn inaccessible_process_filter_matches_process_action_safety() {
+    let accessible = ProcessInfo {
+        id: u32::MAX,
+        parent_id: None,
+        session_id: Some(1),
+        user_name: Some("User".to_owned()),
+        is_critical: Some(false),
+        can_set_information: true,
+        name: "app.exe".to_owned(),
+        image_path: Some(PathBuf::from(r"C:\Apps\app.exe")),
+    };
+
+    assert!(!process_list_process_is_inaccessible(&accessible));
+
+    let mut inaccessible = accessible.clone();
+    inaccessible.is_critical = Some(true);
+    assert!(process_list_process_is_inaccessible(&inaccessible));
+
+    inaccessible = accessible.clone();
+    inaccessible.is_critical = None;
+    assert!(process_list_process_is_inaccessible(&inaccessible));
+
+    inaccessible = accessible.clone();
+    inaccessible.can_set_information = false;
+    assert!(process_list_process_is_inaccessible(&inaccessible));
+
+    inaccessible = accessible;
+    inaccessible.image_path = None;
+    assert!(process_list_process_is_inaccessible(&inaccessible));
+}
+
+#[test]
+fn process_list_user_column_is_last_and_groups_mixed_users() {
+    let processes = vec![
+        ProcessInfo {
+            id: 1,
+            parent_id: None,
+            session_id: Some(0),
+            user_name: Some("SYSTEM".to_owned()),
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "service.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Apps\service.exe")),
+        },
+        ProcessInfo {
+            id: 2,
+            parent_id: None,
+            session_id: Some(1),
+            user_name: Some("User".to_owned()),
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "service.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Apps\service.exe")),
+        },
+    ];
+    let groups = process_list_groups(&processes);
+
+    assert_eq!(
+        PROCESS_LIST_OVERVIEW_COLUMNS.last(),
+        Some(&ProcessListColumn::User)
+    );
+    assert_eq!(
+        process_list_group_user_label(&groups[0].processes),
+        "Multiple accounts"
+    );
+    assert_eq!(
+        process_list_user_label(Some("SYSTEM"), Some(0), 100),
+        "SYSTEM"
+    );
+    assert_eq!(
+        process_list_user_label(None, Some(2), 100),
+        "Unavailable · S2"
+    );
+    assert_eq!(process_list_user_label(None, Some(0), 4), "Windows kernel");
+}
+
+#[test]
+fn process_list_stretches_name_column_to_push_metrics_right() {
+    let mut layout = ProcessListColumnLayout {
+        name_width: 200.0,
+        column_widths: PROCESS_LIST_OVERVIEW_COLUMNS
+            .iter()
+            .map(|column| (*column, 100.0))
+            .collect(),
+    };
+
+    let memory_width = layout.column_width(ProcessListColumn::MemoryUsage);
+    stretch_process_list_layout(&mut layout, px(900.0));
+
+    assert_eq!(process_list_table_width(&layout), px(900.0));
+    assert!(layout.name_width > 200.0);
+    assert_eq!(
+        layout.column_width(ProcessListColumn::MemoryUsage),
+        memory_width
+    );
+}
+
+#[test]
+fn process_resource_columns_sort_busiest_first() {
+    let sort = ProcessListSort::default()
+        .toggled_for(ProcessListSortColumn::Column(ProcessListColumn::CpuUsage));
+
+    assert_eq!(sort.direction, ProcessListSortDirection::Descending);
+}
+
+#[test]
+fn process_status_reports_suspension_and_efficiency_mode() {
+    let snapshot = AppSuspensionSnapshot {
+        suspended_apps: vec![r"C:\Apps\editor.exe".to_owned()],
+        suspended_process_ids: vec![42],
+        ..Default::default()
+    };
+
+    assert_eq!(
+        process_list_status_label(&snapshot, Some(42), r"c:\apps\EDITOR.exe", true),
+        t!("process_list.status_suspended").to_string()
+    );
+    assert_eq!(
+        process_list_status_label(&snapshot, Some(7), r"C:\Apps\active.exe", true),
+        t!("process_list.status_efficiency_mode").to_string()
+    );
+    assert_eq!(
+        process_list_status_label(&snapshot, Some(7), r"C:\Apps\active.exe", false),
+        t!("process_list.status_active").to_string()
+    );
+}
+
+#[test]
 fn process_list_column_layout_fits_headers_and_values() {
     let settings = Settings::default();
     let processes = vec![
         ProcessInfo {
             id: 1234,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 12345,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
     ];
     let groups = process_list_groups(&processes);
@@ -24,24 +198,19 @@ fn process_list_column_layout_fits_headers_and_values() {
     let layout = process_list_column_layout(&settings, &groups, &summaries);
 
     assert!(layout.column_width(ProcessListColumn::Pid) < PROCESS_LIST_PID_MAX_WIDTH);
-    assert!(layout.column_width(ProcessListColumn::MemoryTrim) < 140.0);
-    assert!(
-        layout.column_width(ProcessListColumn::PowerPlanForeground)
-            >= process_list_estimated_cell_width(
-                &process_list_column_label(ProcessListColumn::PowerPlanForeground, &settings),
-                PROCESS_LIST_TEXT_CELL_HORIZONTAL_PADDING,
-            )
-    );
+    assert!(layout.column_width(ProcessListColumn::Status) >= 120.0);
+    assert!(layout.column_width(ProcessListColumn::CpuUsage) >= 88.0);
+    assert!(layout.column_width(ProcessListColumn::MemoryUsage) >= 112.0);
 }
 
 #[test]
 fn process_icon_cache_drops_stale_paths() {
     let kept_path = PathBuf::from("C:\\Apps\\kept.exe");
     let stale_path = PathBuf::from("C:\\Apps\\stale.exe");
-    let mut cache = HashMap::from([(kept_path.clone(), None), (stale_path.clone(), None)]);
+    let mut cache = HashMap::from([(kept_path.clone(), ()), (stale_path.clone(), ())]);
     let candidates = vec![ProcessCandidate {
         name: "kept.exe".to_owned(),
-        image_path: Some(kept_path.clone()),
+        image_path: kept_path.clone(),
         icon: None,
     }];
 
@@ -52,17 +221,161 @@ fn process_icon_cache_drops_stale_paths() {
 }
 
 #[test]
+fn process_list_icon_lookup_handles_mixed_case_windows_path() {
+    let executable_path = PathBuf::from(r"C:\Apps\MixedCase\Editor.EXE");
+    let processes = vec![ProcessInfo {
+        id: 1,
+        parent_id: None,
+        session_id: None,
+        user_name: None,
+        is_critical: Some(false),
+        can_set_information: true,
+        name: "Editor.EXE".to_owned(),
+        image_path: Some(executable_path.clone()),
+    }];
+    let groups = process_list_groups(&processes);
+    assert_eq!(
+        groups[0].executable_path,
+        executable_path.to_string_lossy().as_ref()
+    );
+    assert_ne!(
+        process_list_executable_path_group_key(&executable_path),
+        process_list_executable_path_group_key(Path::new(r"c:\apps\mixedcase\editor.exe"))
+    );
+    let rows = groups
+        .into_iter()
+        .map(|group| (group, default_process_policy_summary()))
+        .collect::<Vec<_>>();
+    let icon = Arc::new(Image::empty());
+    let candidates = vec![ProcessCandidate {
+        name: "Editor.EXE".to_owned(),
+        image_path: executable_path,
+        icon: Some(Arc::clone(&icon)),
+    }];
+    let icons_by_path = process_list_icons_by_path(&candidates);
+
+    let rendered = process_list_rendered_rows(&rows, &icons_by_path, |_| true);
+
+    let Some(ProcessListRenderedRow::Entry {
+        icon: Some(rendered_icon),
+        ..
+    }) = rendered.first()
+    else {
+        panic!("expected a process row with an icon");
+    };
+    assert!(Arc::ptr_eq(rendered_icon, &icon));
+}
+
+#[test]
+fn process_list_group_actions_target_the_root_process() {
+    let executable_path = PathBuf::from(r"C:\Apps\Editor\editor.exe");
+    let processes = vec![
+        ProcessInfo {
+            id: 10,
+            parent_id: Some(20),
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "editor.exe".to_owned(),
+            image_path: Some(executable_path.clone()),
+        },
+        ProcessInfo {
+            id: 20,
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "editor.exe".to_owned(),
+            image_path: Some(executable_path),
+        },
+    ];
+    let rows = process_list_groups(&processes)
+        .into_iter()
+        .map(|group| (group, default_process_policy_summary()))
+        .collect::<Vec<_>>();
+
+    let rendered = process_list_rendered_rows(&rows, &HashMap::new(), |_| true);
+
+    let Some(ProcessListRenderedRow::Group {
+        process_id,
+        process_ids,
+        ..
+    }) = rendered.first()
+    else {
+        panic!("expected a process group");
+    };
+    assert_eq!(*process_id, 20);
+    assert_eq!(process_ids, &[10, 20]);
+}
+
+#[test]
+fn stacked_process_actions_attempt_every_available_target() {
+    let target = |id| ProcessActionTarget {
+        id,
+        name: "editor.exe".to_owned(),
+        executable_path: PathBuf::from(r"C:\Apps\Editor\editor.exe"),
+        creation_time: u64::from(id),
+    };
+    let targets = vec![
+        Ok(target(10)),
+        Err(ProcessActionTargetError::ProcessUnavailable(5)),
+        Ok(target(20)),
+    ];
+    let mut applied = Vec::new();
+
+    let error = apply_process_list_targets(&targets, |target| {
+        applied.push(target.id);
+        Ok(())
+    })
+    .expect_err("one unavailable process should be reported");
+
+    assert_eq!(applied, [10, 20]);
+    assert!(error.starts_with("1 of 3 process actions failed:"));
+}
+
+#[test]
+fn process_list_search_matches_name_pid_and_path() {
+    let process = ProcessInfo {
+        id: 4242,
+        parent_id: None,
+        session_id: None,
+        user_name: None,
+        is_critical: Some(false),
+        can_set_information: true,
+        name: "Editor.EXE".to_owned(),
+        image_path: Some(PathBuf::from(r"C:\Apps\Editor\editor.exe")),
+    };
+
+    assert!(process_list_matches_search(&process, "editor"));
+    assert!(process_list_matches_search(&process, "4242"));
+    assert!(process_list_matches_search(&process, r"apps\editor"));
+    assert!(!process_list_matches_search(&process, "browser"));
+}
+
+#[test]
 fn process_list_sort_orders_groups_by_name_direction() {
     let processes = vec![
         ProcessInfo {
             id: 1,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 2,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
     ];
     let groups = process_list_groups(&processes);
@@ -81,6 +394,38 @@ fn process_list_sort_orders_groups_by_name_direction() {
 
     assert_eq!(rows[0].0.display_name, "worker.exe");
     assert_eq!(rows[1].0.display_name, "editor.exe");
+}
+
+#[test]
+fn process_list_keeps_same_named_executables_in_separate_groups() {
+    let processes = vec![
+        ProcessInfo {
+            id: 1,
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "game.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Games\game.exe")),
+        },
+        ProcessInfo {
+            id: 2,
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "game.exe".to_owned(),
+            image_path: Some(PathBuf::from(r"C:\Other\game.exe")),
+        },
+    ];
+
+    let groups = process_list_groups(&processes);
+
+    assert_eq!(groups.len(), 2);
+    assert_ne!(groups[0].executable_path, groups[1].executable_path);
+    assert_ne!(groups[0].display_name, groups[1].display_name);
 }
 
 #[test]
@@ -104,17 +449,32 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
         ProcessInfo {
             id: 30,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 10,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
         ProcessInfo {
             id: 20,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
     ];
     let sort = ProcessListSort {
@@ -162,12 +522,22 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
         ProcessInfo {
             id: 1,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "editor.exe".to_owned(),
+            image_path: Some(PathBuf::from("editor.exe".to_owned())),
         },
         ProcessInfo {
             id: 2,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
     ];
     let groups = process_list_groups(&processes);
@@ -189,16 +559,28 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
 }
 
 #[test]
-fn process_list_policy_value_active_tracks_state_and_custom_values() {
-    assert!(process_list_policy_value_active("Include", false));
-    assert!(process_list_policy_value_active("Include (50%)", false));
-    assert!(!process_list_policy_value_active("Exclude", true));
-    assert!(!process_list_policy_value_active(
-        process_list_default_label().as_str(),
-        true
-    ));
-    assert!(!process_list_policy_value_active("Balanced", false));
-    assert!(process_list_policy_value_active("Balanced", true));
+fn process_policy_summary_carries_typed_active_state() {
+    let mut settings = Settings::default();
+    let path = r"C:\Apps\editor.exe";
+
+    let summary = process_policy_summary(&settings, &[], path);
+    assert!(summary.value_is_active(ProcessListColumn::AdaptiveEngine));
+    assert!(summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
+    assert!(!summary.value_is_active(ProcessListColumn::ProcessPriority));
+
+    settings
+        .background_efficiency
+        .custom_rules
+        .push(new_background_efficiency_rule(path));
+    set_process_priority_rule(
+        &mut settings.process_priority,
+        path,
+        ProcessPrioritySetting::Idle,
+    );
+
+    let summary = process_policy_summary(&settings, &[], path);
+    assert!(!summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
+    assert!(summary.value_is_active(ProcessListColumn::ProcessPriority));
 }
 
 #[test]
@@ -216,7 +598,7 @@ fn process_list_split_policy_value_parses_foreground_background_pairs() {
 
 #[test]
 fn process_list_policy_cell_editing_respects_row_editability() {
-    assert!(!process_list_policy_cell_editable(
+    assert!(process_list_policy_cell_editable(
         true,
         ProcessListColumn::ProcessPriority
     ));
@@ -226,42 +608,9 @@ fn process_list_policy_cell_editing_respects_row_editability() {
     ));
     assert!(!process_list_policy_cell_editable(
         true,
-        ProcessListColumn::CoreSteering
+        ProcessListColumn::Status
     ));
 }
-
-#[test]
-fn process_policy_summary_matches_exact_process_rule() {
-    let mut settings = Settings::default();
-    settings.core_steering.enabled = true;
-    settings.core_steering.rules.push(CoreSteeringRule {
-        enabled: true,
-        mode: CoreSteeringMode::Soft,
-        process_name: "Editor.EXE".to_owned(),
-        core_mask: 0b1011,
-    });
-
-    let matching = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(matching.core_steering, "0-1, 3");
-    assert!(matching.uses_custom_rule(ProcessListColumn::CoreSteering));
-
-    let non_matching = process_policy_summary(&settings, &[], "browser.exe");
-    assert_eq!(
-        non_matching.power_plan_foreground,
-        process_list_default_label()
-    );
-    assert_eq!(
-        non_matching.power_plan_running,
-        process_list_default_label()
-    );
-    assert_eq!(non_matching.core_steering, default_core_steering_label());
-    assert_eq!(
-        non_matching.process_priority,
-        process_priority_setting_label(ProcessPrioritySetting::Default)
-    );
-    assert!(!non_matching.uses_custom_rule(ProcessListColumn::CoreSteering));
-}
-
 #[test]
 fn process_policy_summary_reports_priority_policy_values() {
     let mut settings = Settings::default();
@@ -286,50 +635,71 @@ fn process_policy_summary_reports_priority_policy_values() {
 }
 
 #[test]
+fn process_policy_summary_ignores_disabled_priority_rules() {
+    let mut settings = Settings::default();
+    let path = r"C:\Apps\editor.exe";
+    let mut rule = new_process_exclusion_rule(path);
+    rule.enabled = false;
+    rule.set_process_priority_override(true, ProcessPrioritySetting::Idle);
+    rule.set_thread_priority_override(true, ProcessThreadPrioritySetting::Lowest);
+    rule.set_dynamic_priority_boost_override(true, ProcessDynamicPriorityBoostSetting::Disabled);
+    rule.set_io_priority_override(true, ProcessIoPrioritySetting::Low);
+    rule.set_gpu_priority_override(true, ProcessGpuPrioritySetting::BelowNormal);
+    rule.set_memory_priority_override(true, ProcessMemoryPrioritySetting::Low);
+
+    settings.process_priority.exclusions.push(rule.clone());
+    settings.thread_priority.exclusions.push(rule.clone());
+    settings
+        .dynamic_priority_boost
+        .exclusions
+        .push(rule.clone());
+    settings.io_priority.exclusions.push(rule.clone());
+    settings.gpu_priority.exclusions.push(rule.clone());
+    settings.memory_priority.exclusions.push(rule);
+
+    let summary = process_policy_summary(&settings, &[], path);
+
+    for column in [
+        ProcessListColumn::ProcessPriority,
+        ProcessListColumn::ThreadPriority,
+        ProcessListColumn::DynamicPriorityBoost,
+        ProcessListColumn::IoPriority,
+        ProcessListColumn::GpuPriority,
+        ProcessListColumn::MemoryPriority,
+    ] {
+        assert!(!summary.uses_custom_rule(column));
+        assert!(!summary.value_is_active(column));
+    }
+    assert_eq!(
+        summary.io_priority,
+        io_priority_policy_label(&settings.io_priority)
+    );
+    assert_eq!(
+        summary.gpu_priority,
+        gpu_priority_policy_label(&settings.gpu_priority)
+    );
+    assert_eq!(
+        summary.memory_priority,
+        memory_priority_policy_label(&settings.memory_priority)
+    );
+}
+
+#[test]
 fn process_policy_summary_reports_process_rule_columns() {
     let mut settings = Settings::default();
     settings.by_foreground.enabled = true;
     settings.by_foreground.rules.push(ByForegroundRule {
         enabled: true,
         name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         power_plan_guid: Some("balanced-guid".to_owned()),
     });
     settings.by_running_app.enabled = true;
     settings.by_running_app.rules.push(ByRunningAppRule {
         enabled: true,
         name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: "editor.exe".to_owned(),
         power_plan_guid: Some("performance-guid".to_owned()),
-    });
-    settings.core_limiter.enabled = true;
-    settings.core_limiter.rules.push(CoreLimiterRule {
-        enabled: true,
-        process_name: "editor.exe".to_owned(),
-        threshold_percent: 80,
-        sustain_seconds: 5,
-        cooldown_seconds: 30,
-        max_logical_processors: 50,
-    });
-    settings.app_suspension.enabled = true;
-    settings
-        .app_suspension
-        .suspendable_apps
-        .push(AppSuspensionRule {
-            enabled: true,
-            process_name: "editor.exe".to_owned(),
-            network_wake_enabled: true,
-            audio_wake_enabled: true,
-            network_download_threshold_bytes: 1,
-            network_download_threshold_unit: NetworkThresholdUnit::Bytes,
-            network_upload_threshold_bytes: 0,
-            network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
-        });
-    settings.timer_resolution.enabled = true;
-    settings.timer_resolution.rules.push(TimerResolutionRule {
-        enabled: true,
-        process_name: "editor.exe".to_owned(),
-        desired_100ns: 10_000,
     });
     let plans = vec![
         PowerPlan {
@@ -348,17 +718,6 @@ fn process_policy_summary_reports_process_rule_columns() {
 
     assert_eq!(summary.power_plan_foreground, "Balanced");
     assert_eq!(summary.power_plan_running, "Performance");
-    assert_eq!(
-        summary.core_limiter,
-        process_list_include_value_label("50%")
-    );
-    assert_eq!(summary.app_suspension, process_list_include_label());
-    assert_eq!(summary.timer_resolution, "1.00 ms");
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanRunning));
-    assert!(summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-    assert!(summary.uses_custom_rule(ProcessListColumn::AppSuspension));
-    assert!(summary.uses_custom_rule(ProcessListColumn::TimerResolution));
 }
 
 #[test]
@@ -368,209 +727,11 @@ fn process_policy_summary_reports_include_exclude_columns() {
         .background_efficiency
         .custom_rules
         .push(new_background_efficiency_rule("editor.exe"));
-    settings
-        .memory_trim
-        .exclusions
-        .push(new_process_exclusion_rule("editor.exe"));
-    settings
-        .app_suspension
-        .suspendable_apps
-        .push(AppSuspensionRule {
-            enabled: true,
-            process_name: "editor.exe".to_owned(),
-            network_wake_enabled: true,
-            audio_wake_enabled: true,
-            network_download_threshold_bytes: 1,
-            network_download_threshold_unit: NetworkThresholdUnit::Bytes,
-            network_upload_threshold_bytes: 0,
-            network_upload_threshold_unit: NetworkThresholdUnit::Bytes,
-        });
 
     let summary = process_policy_summary(&settings, &[], "editor.exe");
 
     assert_eq!(summary.background_efficiency, process_list_exclude_label());
-    assert_eq!(summary.core_limiter, process_list_exclude_label());
-    assert_eq!(summary.memory_trim, process_list_exclude_label());
-    assert_eq!(summary.app_suspension, process_list_include_label());
-    assert_eq!(summary.timer_resolution, process_list_default_label());
-    assert!(summary.uses_custom_rule(ProcessListColumn::BackgroundEfficiency));
-    assert!(!summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-    assert!(summary.uses_custom_rule(ProcessListColumn::MemoryTrim));
-    assert!(summary.uses_custom_rule(ProcessListColumn::AppSuspension));
-    assert!(!summary.uses_custom_rule(ProcessListColumn::TimerResolution));
 }
-
-#[test]
-fn process_policy_summary_reports_priority_exclusions_as_exclude() {
-    let mut settings = Settings::default();
-    settings
-        .io_priority
-        .exclusions
-        .push(new_process_exclusion_rule("editor.exe"));
-    settings
-        .gpu_priority
-        .exclusions
-        .push(new_process_exclusion_rule("editor.exe"));
-    settings
-        .memory_priority
-        .exclusions
-        .push(new_process_exclusion_rule("editor.exe"));
-
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-
-    assert_eq!(summary.io_priority, process_list_exclude_label());
-    assert_eq!(summary.gpu_priority, process_list_exclude_label());
-    assert_eq!(summary.memory_priority, process_list_exclude_label());
-    assert!(summary.uses_custom_rule(ProcessListColumn::IoPriority));
-    assert!(summary.uses_custom_rule(ProcessListColumn::GpuPriority));
-    assert!(summary.uses_custom_rule(ProcessListColumn::MemoryPriority));
-}
-
-#[test]
-fn process_list_rule_edit_helpers_update_process_overrides() {
-    let mut settings = Settings::default();
-
-    set_foreground_power_plan_override(
-        &mut settings.by_foreground,
-        "Editor.EXE",
-        Some("balanced-guid".to_owned()),
-    );
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(summary.power_plan_foreground, "balanced-guid");
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-
-    set_foreground_power_plan_override(&mut settings.by_foreground, "editor.exe", None);
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(summary.power_plan_foreground, process_list_default_label());
-    assert!(!summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-
-    set_core_limiter_override(&mut settings.core_limiter, "editor.exe", Some(50));
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(
-        summary.core_limiter,
-        process_list_include_value_label("50%")
-    );
-    assert!(summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-
-    set_core_limiter_override(&mut settings.core_limiter, "editor.exe", None);
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(summary.core_limiter, process_list_exclude_label());
-    assert!(!summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-}
-
-#[test]
-fn process_list_rule_edit_helpers_update_timer_overrides() {
-    let mut settings = Settings::default();
-
-    set_timer_resolution_override(&mut settings.timer_resolution, "editor.exe", Some(20_000));
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(
-        summary.timer_resolution,
-        timer_resolution::format_resolution_ms(20_000)
-    );
-    assert!(summary.uses_custom_rule(ProcessListColumn::TimerResolution));
-
-    set_timer_resolution_override(&mut settings.timer_resolution, "editor.exe", None);
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-    assert_eq!(summary.timer_resolution, process_list_default_label());
-    assert!(!summary.uses_custom_rule(ProcessListColumn::TimerResolution));
-}
-
-#[test]
-fn process_policy_summary_reports_default_power_plan_when_unset() {
-    let mut settings = Settings::default();
-    settings.by_foreground.enabled = true;
-    settings.by_foreground.rules.push(ByForegroundRule {
-        enabled: true,
-        name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
-        power_plan_guid: None,
-    });
-    settings.by_running_app.enabled = true;
-    settings.by_running_app.rules.push(ByRunningAppRule {
-        enabled: true,
-        name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
-        power_plan_guid: None,
-    });
-
-    let summary = process_policy_summary(&settings, &[], "editor.exe");
-
-    assert_eq!(summary.power_plan_foreground, process_list_default_label());
-    assert_eq!(summary.power_plan_running, process_list_default_label());
-    assert_eq!(summary.timer_resolution, process_list_default_label());
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanRunning));
-    assert!(!summary.uses_custom_rule(ProcessListColumn::TimerResolution));
-}
-
-#[test]
-fn process_policy_summary_reports_configured_rules_when_feature_disabled() {
-    let mut settings = Settings::default();
-    settings.by_foreground.enabled = false;
-    settings.by_foreground.rules.push(ByForegroundRule {
-        enabled: true,
-        name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
-        power_plan_guid: Some("balanced-guid".to_owned()),
-    });
-    settings.by_running_app.enabled = false;
-    settings.by_running_app.rules.push(ByRunningAppRule {
-        enabled: true,
-        name: "Editor".to_owned(),
-        process_name: "editor.exe".to_owned(),
-        power_plan_guid: Some("performance-guid".to_owned()),
-    });
-    settings.core_limiter.enabled = false;
-    settings.core_limiter.rules.push(CoreLimiterRule {
-        enabled: true,
-        process_name: "editor.exe".to_owned(),
-        threshold_percent: 80,
-        sustain_seconds: 5,
-        cooldown_seconds: 30,
-        max_logical_processors: 25,
-    });
-    settings.timer_resolution.enabled = false;
-    settings.timer_resolution.rules.push(TimerResolutionRule {
-        enabled: true,
-        process_name: "editor.exe".to_owned(),
-        desired_100ns: 10_000,
-    });
-    let plans = vec![
-        PowerPlan {
-            guid: "balanced-guid".to_owned(),
-            name: "Balanced".to_owned(),
-            active: false,
-        },
-        PowerPlan {
-            guid: "performance-guid".to_owned(),
-            name: "Performance".to_owned(),
-            active: false,
-        },
-    ];
-
-    let summary = process_policy_summary(&settings, &plans, "editor.exe");
-
-    assert_eq!(summary.power_plan_foreground, "Balanced");
-    assert_eq!(summary.power_plan_running, "Performance");
-    assert_eq!(
-        summary.core_limiter,
-        process_list_include_value_label("25%")
-    );
-    assert_eq!(summary.timer_resolution, "1.00 ms");
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanForeground));
-    assert!(summary.uses_custom_rule(ProcessListColumn::PowerPlanRunning));
-    assert!(summary.uses_custom_rule(ProcessListColumn::CoreLimiter));
-    assert!(summary.uses_custom_rule(ProcessListColumn::TimerResolution));
-}
-
-#[test]
-fn cpu_mask_formatter_uses_ranges() {
-    assert_eq!(format_cpu_mask(0), t!("common.none").to_string());
-    assert_eq!(format_cpu_mask(0b1111), "0-3");
-    assert_eq!(format_cpu_mask(0b101101), "0, 2-3, 5");
-}
-
 #[test]
 fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
     let processors = vec![

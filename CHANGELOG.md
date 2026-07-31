@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## 0.4.0-alpha - 2026-07-31
+
+### Added
+
+- Add process search, grouped-process context menus, and user-session details to Process List.
+- Add startup update notifications with direct navigation to the About page update section.
+- Identify process rules by executable path so same-named applications remain distinct.
+
+### Changed
+
+- Redesign Process List for denser controls, clearer access states, and Task Manager-aligned Efficiency mode reporting.
+- Enable safe cross-session service control while retaining protected-process and identity checks.
+- Run Workload Engine only while Adaptive Engine is enabled.
+
+### Fixed
+
+- Apply stacked-process actions to every eligible process instead of only the first.
+- Stop retry spam for inaccessible or unsupported process-rule targets.
+- Use operation-specific process access checks and hide truly inaccessible processes consistently.
+- Preserve the window size and maximized state when restoring Winderust from the tray.
+
 ## 0.3.0-alpha - 2026-07-24
 
 ### Added

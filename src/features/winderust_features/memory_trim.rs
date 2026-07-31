@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::Path,
     time::{Duration, Instant},
 };
 
@@ -19,7 +20,8 @@ use crate::{
     config::MemoryTrimSettings,
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
     foreground::{
-        contains_process_name, list_processes, process_failure_key, process_session_id,
+        contains_process_name, list_processes, process_executable_path, process_failure_key,
+        process_handle_matches_executable_path, process_session_id, same_executable_path,
         should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
@@ -54,7 +56,8 @@ pub struct MemoryTrimManager {
 
 #[derive(Clone)]
 struct TrackedProcess {
-    process_name: String,
+    executable_path: String,
+    creation_time: u64,
     previous_cpu_time: Option<ProcessCpuSample>,
     idle_since: Option<Instant>,
     trimmed_while_idle: bool,
@@ -76,12 +79,14 @@ impl MemoryTrimManager {
         &mut self,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
         self.update_with_mode(
             settings,
             automation_enabled,
+            allow_cross_session_process_control,
             foreground_process_id,
             MemoryTrimMode::Automatic,
             action_log,
@@ -92,12 +97,14 @@ impl MemoryTrimManager {
         &mut self,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> MemoryTrimSnapshot {
         self.update_with_mode(
             settings,
             automation_enabled,
+            allow_cross_session_process_control,
             foreground_process_id,
             MemoryTrimMode::Manual,
             action_log,
@@ -108,6 +115,7 @@ impl MemoryTrimManager {
         &mut self,
         settings: &MemoryTrimSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         mode: MemoryTrimMode,
         action_log: &mut ActionLog,
@@ -191,32 +199,44 @@ impl MemoryTrimManager {
         };
 
         let scanned_processes = processes.len();
-        let foreground_process_name = foreground_process_id.and_then(|id| {
+        let foreground_executable_path = foreground_process_id.and_then(|id| {
             processes
                 .iter()
                 .find(|process| process.id == id)
-                .map(|process| process.name.clone())
+                .and_then(process_executable_path)
         });
 
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
+                || !process.can_set_information
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
-                || settings.exclusion_enabled_for(&process.name)
-                || should_ignore_foreground_process(
-                    true,
-                    process.id,
-                    &process.name,
-                    foreground_process_id,
-                    foreground_process_name.as_deref(),
-                )
-                || process_session_id(process.id) != Some(current_session_id)
+                || (!allow_cross_session_process_control
+                    && process_session_id(process.id) != Some(current_session_id))
             {
                 continue;
             }
 
-            target_processes.insert(process.id, process.name);
+            let Some(executable_path) = process_executable_path(&process) else {
+                continue;
+            };
+            if should_ignore_foreground_process(
+                true,
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            ) || settings.exclusion_enabled_for(executable_path.to_string_lossy().as_ref())
+            {
+                continue;
+            }
+
+            target_processes.insert(
+                process.id,
+                (process.name, executable_path.to_string_lossy().into_owned()),
+            );
         }
 
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
@@ -224,7 +244,7 @@ impl MemoryTrimManager {
             .retain(|process_id, _| target_ids.contains(process_id));
         let active_target_names = target_processes
             .values()
-            .map(|name| process_failure_key(name))
+            .map(|(_name, path)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
@@ -236,10 +256,11 @@ impl MemoryTrimManager {
         let mut auto_excluded_processes = BTreeSet::new();
         let now = Instant::now();
 
-        for (process_id, process_name) in target_processes {
+        for (process_id, (process_name, executable_path)) in target_processes {
             if self.is_process_suppressed(
                 process_id,
                 &process_name,
+                &executable_path,
                 action_log,
                 &mut auto_excluded_processes,
             ) {
@@ -247,19 +268,19 @@ impl MemoryTrimManager {
                 continue;
             }
 
-            match self.update_process(process_id, process_name.clone(), settings, mode, now) {
+            match self.update_process(process_id, executable_path.clone(), settings, mode, now) {
                 Ok(ProcessUpdate::Waiting) => {
-                    self.clear_process_failure(&process_name);
+                    self.clear_process_failure(&executable_path);
                 }
                 Ok(ProcessUpdate::Candidate) => {
                     candidate_processes += 1;
-                    self.clear_process_failure(&process_name);
+                    self.clear_process_failure(&executable_path);
                 }
                 Ok(ProcessUpdate::Trimmed { freed_bytes }) => {
                     candidate_processes += 1;
                     trimmed_processes += 1;
                     trimmed_apps.insert(process_name.clone());
-                    self.clear_process_failure(&process_name);
+                    self.clear_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
@@ -274,7 +295,8 @@ impl MemoryTrimManager {
                 }
                 Err(MemoryTrimError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&process_name);
+                    self.failure_suppression
+                        .suppress_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::MemoryTrim,
                         Some(process_id),
@@ -284,7 +306,7 @@ impl MemoryTrimManager {
                     );
                 }
                 Err(err) => {
-                    self.record_process_failure(&process_name);
+                    self.record_process_failure(&executable_path);
                     failures.record(process_id, &process_name, err, action_log);
                 }
             }
@@ -311,12 +333,19 @@ impl MemoryTrimManager {
     fn update_process(
         &mut self,
         process_id: u32,
-        process_name: String,
+        executable_path: String,
         settings: &MemoryTrimSettings,
         mode: MemoryTrimMode,
         now: Instant,
     ) -> Result<ProcessUpdate, MemoryTrimError> {
         let process = ProcessHandle::open(process_id)?;
+        if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
+            return Err(MemoryTrimError::ProcessExited);
+        }
+        let creation_time = process
+            .0
+            .process_creation_time()
+            .ok_or(MemoryTrimError::ProcessExited)?;
         let memory = process.memory_sample()?;
         let threshold_bytes = settings.process_working_set_threshold_mb.saturating_mul(MB);
         if memory.working_set_bytes < threshold_bytes {
@@ -337,16 +366,26 @@ impl MemoryTrimManager {
         }
 
         let cpu_sample = process.cpu_sample()?;
+        if self.tracked.get(&process_id).is_some_and(|state| {
+            state.creation_time != creation_time
+                || !same_executable_path(
+                    Path::new(&state.executable_path),
+                    Path::new(&executable_path),
+                )
+        }) {
+            self.tracked.remove(&process_id);
+        }
         let state = self
             .tracked
             .entry(process_id)
             .or_insert_with(|| TrackedProcess {
-                process_name: process_name.clone(),
+                executable_path: executable_path.clone(),
+                creation_time,
                 previous_cpu_time: None,
                 idle_since: None,
                 trimmed_while_idle: false,
             });
-        state.process_name = process_name;
+        state.executable_path = executable_path;
 
         let usage = state
             .previous_cpu_time
@@ -389,16 +428,19 @@ impl MemoryTrimManager {
         &mut self,
         process_id: u32,
         process_name: &str,
+        executable_path: &str,
         action_log: &mut ActionLog,
         auto_excluded_processes: &mut BTreeSet<String>,
     ) -> bool {
-        let suppression = self.failure_suppression.process_suppression(process_name);
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
         if !suppression.suppressed {
             return false;
         }
 
         if suppression.newly_suppressed {
-            auto_excluded_processes.insert(process_failure_key(process_name));
+            auto_excluded_processes.insert(executable_path.to_owned());
             action_log.record(
                 ActionLogFeature::MemoryTrim,
                 Some(process_id),
@@ -691,14 +733,33 @@ mod tests {
     fn repeated_process_failures_suppress_memory_trim_retries() {
         let mut manager = MemoryTrimManager::default();
         let mut log = ActionLog::new(8);
+        let executable_path = r"C:\Apps\app.exe";
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        manager.record_process_failure(executable_path);
+        manager.record_process_failure(r"C:/Apps/app.exe");
+        assert!(!manager.is_process_suppressed(
+            42,
+            "app.exe",
+            executable_path,
+            &mut log,
+            &mut BTreeSet::new()
+        ));
 
-        manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
+        manager.record_process_failure(executable_path);
+        assert!(manager.is_process_suppressed(
+            42,
+            "app.exe",
+            executable_path,
+            &mut log,
+            &mut BTreeSet::new()
+        ));
+        assert!(manager.is_process_suppressed(
+            43,
+            "app.exe",
+            r"C:/Apps/app.exe",
+            &mut log,
+            &mut BTreeSet::new()
+        ));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
@@ -711,14 +772,27 @@ mod tests {
     fn successful_process_clears_memory_trim_failure_suppression() {
         let mut manager = MemoryTrimManager::default();
         let mut log = ActionLog::new(8);
+        let executable_path = r"C:\Apps\app.exe";
 
-        manager.record_process_failure("app.exe");
-        manager.record_process_failure("app.exe");
-        manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        manager.record_process_failure(executable_path);
+        manager.record_process_failure(executable_path);
+        manager.record_process_failure(executable_path);
+        assert!(manager.is_process_suppressed(
+            42,
+            "app.exe",
+            executable_path,
+            &mut log,
+            &mut BTreeSet::new()
+        ));
 
-        manager.clear_process_failure("APP.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+        manager.clear_process_failure(r"C:/Apps/app.exe");
+        assert!(!manager.is_process_suppressed(
+            42,
+            "app.exe",
+            executable_path,
+            &mut log,
+            &mut BTreeSet::new()
+        ));
     }
 
     #[test]
@@ -729,27 +803,29 @@ mod tests {
     }
 
     #[test]
-    fn foreground_skip_matches_pid_or_name() {
+    fn foreground_skip_matches_pid_or_exact_path() {
+        let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
+
         assert!(should_ignore_foreground_process(
             true,
             42,
-            "helper.exe",
+            Path::new(r"C:\Apps\helper.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
         assert!(should_ignore_foreground_process(
             true,
             99,
-            "APP.EXE",
+            Path::new(r"c:\apps\foreground\APP.EXE"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
         assert!(!should_ignore_foreground_process(
             true,
             99,
-            "other.exe",
+            Path::new(r"D:\Other\app.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
     }
 
@@ -757,7 +833,8 @@ mod tests {
     fn trim_eligibility_rearms_only_after_process_activity() {
         let now = Instant::now();
         let mut process = TrackedProcess {
-            process_name: "app.exe".to_owned(),
+            executable_path: r"C:\Apps\app.exe".to_owned(),
+            creation_time: 1,
             previous_cpu_time: None,
             idle_since: None,
             trimmed_while_idle: false,

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use super::process_list::process_image_path;
 
@@ -15,10 +16,7 @@ use windows_sys::Win32::{
 pub struct ForegroundProcess {
     pub id: u32,
     pub name: String,
-}
-
-pub fn foreground_process_name() -> Option<String> {
-    foreground_process().map(|process| process.name)
+    pub executable_path: PathBuf,
 }
 
 pub fn shell_window_mouse_pressed() -> bool {
@@ -53,7 +51,8 @@ pub fn cursor_process_id() -> Option<u32> {
 }
 
 fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
-    let name = process_image_path(process_id)?
+    let executable_path = process_image_path(process_id)?;
+    let name = executable_path
         .file_name()?
         .to_string_lossy()
         .to_ascii_lowercase();
@@ -61,6 +60,7 @@ fn process_from_id(process_id: u32) -> Option<ForegroundProcess> {
     Some(ForegroundProcess {
         id: process_id,
         name,
+        executable_path,
     })
 }
 

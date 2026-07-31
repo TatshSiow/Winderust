@@ -7,9 +7,11 @@ impl WinderustApp {
         }
 
         clear_page_hovered();
+        self.process_details = None;
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
+        self.schedule_process_refresh_for_current_page();
         self.forward_stack.clear();
         cx.notify();
     }
@@ -20,9 +22,11 @@ impl WinderustApp {
         };
 
         clear_page_hovered();
+        self.process_details = None;
         Self::push_navigation_page(&mut self.forward_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
+        self.schedule_process_refresh_for_current_page();
         cx.notify();
     }
 
@@ -32,10 +36,20 @@ impl WinderustApp {
         };
 
         clear_page_hovered();
+        self.process_details = None;
         Self::push_navigation_page(&mut self.back_stack, self.page);
         self.begin_breadcrumb_transition(self.page, page);
         self.page = page;
+        self.schedule_process_refresh_for_current_page();
         cx.notify();
+    }
+
+    fn schedule_process_refresh_for_current_page(&mut self) {
+        if self.page == Page::ProcessList
+            || (self.page_uses_process_candidates() && self.process_candidates.is_empty())
+        {
+            self.next_process_refresh = Instant::now();
+        }
     }
 
     pub(in crate::ui::app) fn begin_breadcrumb_transition(

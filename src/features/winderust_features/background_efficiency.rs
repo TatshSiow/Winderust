@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
+    path::Path,
 };
 
 use windows_sys::Win32::{
@@ -8,10 +9,9 @@ use windows_sys::Win32::{
     System::Threading::{
         GetCurrentProcessId, GetPriorityClass, GetProcessInformation, OpenProcess,
         ProcessPowerThrottling, SetPriorityClass, SetProcessInformation, IDLE_PRIORITY_CLASS,
-        PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-        PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION, PROCESS_POWER_THROTTLING_STATE,
-        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
-        PROCESS_SET_LIMITED_INFORMATION,
+        NORMAL_PRIORITY_CLASS, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
     },
 };
 
@@ -22,8 +22,10 @@ use crate::{
     audio_activity::active_audio_process_ids,
     config::{BackgroundEfficiencyAggressiveness, BackgroundEfficiencySettings},
     foreground::{
-        contains_process_name, list_processes, process_failure_key, process_session_id,
-        should_ignore_foreground_process,
+        contains_process_name, ensure_process_action_target_access, list_processes,
+        process_executable_path, process_failure_key, process_handle_matches_executable_path,
+        process_session_id, should_ignore_foreground_process, ProcessActionAccess,
+        ProcessActionTarget,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -100,8 +102,8 @@ pub struct BackgroundEfficiencySnapshot {
     pub throttled_processes: usize,
     pub timer_resolution_ignored_processes: usize,
     pub skipped_processes: usize,
+    pub access_denied_processes: usize,
     pub failed_processes: usize,
-    pub auto_excluded_processes: Vec<String>,
     pub message: String,
     pub last_error: Option<String>,
 }
@@ -115,8 +117,9 @@ pub struct BackgroundEfficiencyManager {
 #[derive(Clone)]
 struct ThrottledProcess {
     process_name: String,
+    executable_path: String,
     creation_time: u64,
-    previous_state: PROCESS_POWER_THROTTLING_STATE,
+    previous_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     previous_priority: Option<u32>,
     applied_ignore_timer_resolution: bool,
 }
@@ -130,6 +133,7 @@ impl BackgroundEfficiencyManager {
         &mut self,
         settings: &BackgroundEfficiencySettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         manage_process_priority: bool,
         action_log: &mut ActionLog,
@@ -198,12 +202,13 @@ impl BackgroundEfficiencyManager {
 
         let scanned_processes = processes.len();
         let mut skipped_processes = 0;
-        let foreground_process_name = if settings.exclude_foreground_app {
+        let mut access_denied_processes = 0;
+        let foreground_executable_path = if settings.exclude_foreground_app {
             foreground_process_id.and_then(|id| {
                 processes
                     .iter()
                     .find(|process| process.id == id)
-                    .map(|process| process.name.clone())
+                    .and_then(process_executable_path)
             })
         } else {
             None
@@ -211,29 +216,38 @@ impl BackgroundEfficiencyManager {
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
+                || process.is_critical != Some(false)
+                || !process.can_set_information
                 || process.id == current_process_id
-                || should_ignore_foreground_process(
-                    settings.exclude_foreground_app,
-                    process.id,
-                    &process.name,
-                    foreground_process_id,
-                    foreground_process_name.as_deref(),
-                )
-                || is_process_excluded(&process.name, settings)
+                || is_builtin_excluded_for(&process.name, settings.aggressiveness)
+                || (!allow_cross_session_process_control
+                    && process_session_id(process.id) != Some(current_session_id))
             {
                 continue;
             }
 
-            if process_session_id(process.id) != Some(current_session_id) {
+            let Some(executable_path) = process_executable_path(&process) else {
+                continue;
+            };
+            if should_ignore_foreground_process(
+                settings.exclude_foreground_app,
+                process.id,
+                &executable_path,
+                foreground_process_id,
+                foreground_executable_path.as_deref(),
+            ) || settings.custom_rule_enabled_for(executable_path.to_string_lossy().as_ref())
+            {
                 continue;
             }
-
-            target_processes.insert(process.id, process.name);
+            target_processes.insert(
+                process.id,
+                (process.name, executable_path.to_string_lossy().into_owned()),
+            );
         }
 
         let active_target_names = target_processes
             .values()
-            .map(|name| process_failure_key(name))
+            .map(|(_name, path)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
@@ -241,32 +255,35 @@ impl BackgroundEfficiencyManager {
         let mut failures =
             self.release_non_targets(&target_ids, action_log, "process no longer matches EcoQoS");
         let mut unsupported = false;
-        let mut auto_excluded_processes = BTreeSet::new();
         let active_audio_process_ids = active_audio_process_ids().ok();
 
-        for (process_id, name) in target_processes {
-            let suppression = self.check_process_suppression(process_id, &name, action_log);
+        for (process_id, (name, executable_path)) in target_processes {
+            let suppression =
+                self.check_process_suppression(process_id, &name, &executable_path, action_log);
             if suppression.suppressed {
                 skipped_processes += 1;
-                if suppression.newly_suppressed {
-                    auto_excluded_processes.insert(process_failure_key(&name));
-                }
                 continue;
             }
 
             match apply_background_efficiency_to_process(
                 process_id,
                 name.clone(),
+                executable_path.clone(),
                 ignore_timer_resolution_allowed(process_id, active_audio_process_ids.as_ref()),
                 manage_process_priority,
                 &mut self.throttled,
                 action_log,
             ) {
-                Ok(()) => self.clear_process_failure(&name),
-                Err(BackgroundEfficiencyError::ProcessExited) => skipped_processes += 1,
+                Ok(()) => self.clear_process_failure(&executable_path),
+                Err(BackgroundEfficiencyError::ProcessExited) => {
+                    skipped_processes += 1;
+                    self.throttled.remove(&process_id);
+                }
                 Err(BackgroundEfficiencyError::AccessDenied) => {
                     skipped_processes += 1;
-                    self.record_process_failure(&name);
+                    access_denied_processes += 1;
+                    self.failure_suppression
+                        .suppress_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::BackgroundEfficiency,
                         Some(process_id),
@@ -278,7 +295,8 @@ impl BackgroundEfficiencyManager {
                 Err(BackgroundEfficiencyError::Unsupported) => {
                     skipped_processes += 1;
                     unsupported = true;
-                    self.record_process_failure(&name);
+                    self.failure_suppression
+                        .suppress_process_failure(&executable_path);
                     action_log.record(
                         ActionLogFeature::BackgroundEfficiency,
                         Some(process_id),
@@ -289,7 +307,7 @@ impl BackgroundEfficiencyManager {
                 }
                 Err(error) => {
                     failures.record_error("Apply", process_id, &name, error, action_log);
-                    self.record_process_failure(&name);
+                    self.record_process_failure(&executable_path);
                 }
             }
         }
@@ -305,8 +323,8 @@ impl BackgroundEfficiencyManager {
                 .filter(|process| process.applied_ignore_timer_resolution)
                 .count(),
             skipped_processes,
+            access_denied_processes,
             failed_processes: failures.count,
-            auto_excluded_processes: auto_excluded_processes.into_iter().collect(),
             message: "Background Efficiency active.".to_owned(),
             last_error: failures.last_error,
         }
@@ -375,9 +393,12 @@ impl BackgroundEfficiencyManager {
         &mut self,
         process_id: u32,
         process_name: &str,
+        executable_path: &str,
         action_log: &mut ActionLog,
     ) -> ExecutionSuppression {
-        let suppression = self.failure_suppression.process_suppression(process_name);
+        let suppression = self
+            .failure_suppression
+            .process_suppression(executable_path);
         if suppression.newly_suppressed {
             action_log.record(
                 ActionLogFeature::BackgroundEfficiency,
@@ -401,7 +422,7 @@ impl BackgroundEfficiencyManager {
         process_name: &str,
         action_log: &mut ActionLog,
     ) -> bool {
-        self.check_process_suppression(process_id, process_name, action_log)
+        self.check_process_suppression(process_id, process_name, process_name, action_log)
             .suppressed
     }
 
@@ -431,21 +452,26 @@ impl Default for BackgroundEfficiencySnapshot {
             throttled_processes: 0,
             timer_resolution_ignored_processes: 0,
             skipped_processes: 0,
+            access_denied_processes: 0,
             failed_processes: 0,
-            auto_excluded_processes: Vec::new(),
             message: "Background Efficiency disabled.".to_owned(),
             last_error: None,
         }
     }
 }
 
-pub fn is_process_excluded(process_name: &str, settings: &BackgroundEfficiencySettings) -> bool {
-    is_builtin_excluded_for(process_name, settings.aggressiveness)
-        || settings.custom_rule_enabled_for(process_name)
-}
-
 pub fn is_builtin_excluded(process_name: &str) -> bool {
     is_builtin_excluded_for(process_name, BackgroundEfficiencyAggressiveness::Safe)
+}
+
+#[cfg(test)]
+fn is_process_excluded(process: &str, settings: &BackgroundEfficiencySettings) -> bool {
+    let process_name = std::path::Path::new(process)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(process);
+    is_builtin_excluded_for(process_name, settings.aggressiveness)
+        || settings.custom_rule_enabled_for(process)
 }
 
 fn is_builtin_excluded_for(
@@ -526,6 +552,7 @@ impl BackgroundEfficiencyFailures {
 fn apply_background_efficiency_to_process(
     process_id: u32,
     process_name: String,
+    executable_path: String,
     ignore_timer_resolution: bool,
     manage_process_priority: bool,
     throttled: &mut BTreeMap<u32, ThrottledProcess>,
@@ -550,6 +577,7 @@ fn apply_background_efficiency_to_process(
     let process = enable_background_efficiency(
         process_id,
         process_name.clone(),
+        executable_path,
         ignore_timer_resolution,
         manage_process_priority,
     )?;
@@ -570,18 +598,24 @@ fn update_background_efficiency(
     ignore_timer_resolution: bool,
     manage_process_priority: bool,
 ) -> Result<(), BackgroundEfficiencyError> {
+    let process = ProcessHandle::open(process_id)?;
+    if process.0.process_creation_time() != Some(process_state.creation_time)
+        || !process_handle_matches_executable_path(
+            &process.0,
+            Path::new(&process_state.executable_path),
+        )
+    {
+        return Err(BackgroundEfficiencyError::ProcessExited);
+    }
     if process_state.applied_ignore_timer_resolution == ignore_timer_resolution
         && process_state.previous_priority.is_some() == manage_process_priority
     {
         return Ok(());
     }
-
-    let process = ProcessHandle::open(process_id)?;
-    if process.0.process_creation_time() != Some(process_state.creation_time) {
-        return Err(BackgroundEfficiencyError::ProcessExited);
-    }
     process.set_power_throttling_state(power_throttling_enabled_state(
-        process_state.previous_state,
+        process_state
+            .previous_state
+            .unwrap_or_else(system_managed_power_throttling_state),
         ignore_timer_resolution,
     ))?;
     if manage_process_priority && process_state.previous_priority.is_none() {
@@ -610,30 +644,42 @@ fn process_failure_message(
 fn enable_background_efficiency(
     process_id: u32,
     process_name: String,
+    executable_path: String,
     ignore_timer_resolution: bool,
     manage_process_priority: bool,
 ) -> Result<ThrottledProcess, BackgroundEfficiencyError> {
     let process = ProcessHandle::open(process_id)?;
+    if !process_handle_matches_executable_path(&process.0, Path::new(&executable_path)) {
+        return Err(BackgroundEfficiencyError::ProcessExited);
+    }
     let creation_time = process
         .0
         .process_creation_time()
         .ok_or(BackgroundEfficiencyError::ProcessExited)?;
-    let previous_state = process.power_throttling_state()?;
+    let previous_state = match process.power_throttling_state() {
+        Ok(state) => Some(state),
+        Err(BackgroundEfficiencyError::Unsupported) => None,
+        Err(error) => return Err(error),
+    };
     let previous_priority = manage_process_priority
         .then(|| process.priority_class())
         .transpose()?;
 
-    let next_state = power_throttling_enabled_state(previous_state, ignore_timer_resolution);
+    let restore_state = previous_state.unwrap_or_else(system_managed_power_throttling_state);
+    let next_state = power_throttling_enabled_state(restore_state, ignore_timer_resolution);
     process.set_power_throttling_state(next_state)?;
     if manage_process_priority {
         if let Err(err) = process.set_priority_class(IDLE_PRIORITY_CLASS) {
-            let _ = process.set_power_throttling_state(previous_state);
-            return Err(err);
+            return Err(background_efficiency_rollback_error(
+                err,
+                process.set_power_throttling_state(restore_state),
+            ));
         }
     }
 
     Ok(ThrottledProcess {
         process_name,
+        executable_path,
         creation_time,
         previous_state,
         previous_priority,
@@ -646,12 +692,21 @@ fn restore_background_efficiency(
     process_state: &ThrottledProcess,
 ) -> Result<(), BackgroundEfficiencyError> {
     let process = ProcessHandle::open(process_id)?;
-    if process.0.process_creation_time() != Some(process_state.creation_time) {
+    if process.0.process_creation_time() != Some(process_state.creation_time)
+        || !process_handle_matches_executable_path(
+            &process.0,
+            Path::new(&process_state.executable_path),
+        )
+    {
         return Err(BackgroundEfficiencyError::ProcessExited);
     }
     let mut last_error = None;
 
-    if let Err(err) = process.set_power_throttling_state(process_state.previous_state) {
+    if let Err(err) = process.set_power_throttling_state(
+        process_state
+            .previous_state
+            .unwrap_or_else(system_managed_power_throttling_state),
+    ) {
         last_error = Some(err);
     }
 
@@ -672,6 +727,14 @@ fn power_throttling_disabled_state() -> PROCESS_POWER_THROTTLING_STATE {
     PROCESS_POWER_THROTTLING_STATE {
         Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: 0,
+    }
+}
+
+fn system_managed_power_throttling_state() -> PROCESS_POWER_THROTTLING_STATE {
+    PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: 0,
         StateMask: 0,
     }
 }
@@ -704,30 +767,36 @@ fn ignore_timer_resolution_allowed(
 struct ProcessHandle(WinHandle);
 
 impl ProcessHandle {
-    fn open(process_id: u32) -> Result<Self, BackgroundEfficiencyError> {
-        let access_masks = [
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION,
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_LIMITED_INFORMATION,
-        ];
-
-        let mut last_open_error = 0;
-        for access in access_masks {
-            // SAFETY: process_id came from the current process snapshot, access is one of the two
-            // documented masks above, and no inherited handle is requested.
-            let handle = unsafe { OpenProcess(access, 0, process_id) };
-            if !handle.is_null() {
-                return Ok(Self(WinHandle::new(handle)));
-            }
-            last_open_error = last_error();
+    fn open_query(process_id: u32) -> Result<Self, BackgroundEfficiencyError> {
+        // SAFETY: process_id came from the current process snapshot, only query access is
+        // requested, and no inherited handle is requested.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id) };
+        if handle.is_null() {
+            Err(open_process_error(process_id, last_error()))
+        } else {
+            Ok(Self(WinHandle::new(handle)))
         }
+    }
 
-        Err(open_process_error(process_id, last_open_error))
+    fn open(process_id: u32) -> Result<Self, BackgroundEfficiencyError> {
+        let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SET_INFORMATION;
+        // SAFETY: process_id came from the current process snapshot, the documented query and
+        // mutation rights are requested, and no inherited handle is requested.
+        let handle = unsafe { OpenProcess(access, 0, process_id) };
+        if handle.is_null() {
+            Err(open_process_error(process_id, last_error()))
+        } else {
+            Ok(Self(WinHandle::new(handle)))
+        }
     }
 
     fn power_throttling_state(
         &self,
     ) -> Result<PROCESS_POWER_THROTTLING_STATE, BackgroundEfficiencyError> {
-        let mut state = PROCESS_POWER_THROTTLING_STATE::default();
+        let mut state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ..Default::default()
+        };
         // SAFETY: self owns a live process handle and state is writable for exactly the supplied
         // structure size.
         let ok = unsafe {
@@ -817,9 +886,196 @@ fn open_process_error(process_id: u32, error: u32) -> BackgroundEfficiencyError 
     }
 }
 
+pub(crate) fn current_efficiency_mode(target: &ProcessActionTarget) -> Result<bool, String> {
+    let process =
+        ProcessHandle::open_query(target.id).map_err(background_efficiency_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    let eco_qos = process
+        .power_throttling_state()
+        .map(|state| {
+            state.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
+                && state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
+        })
+        .map_err(background_efficiency_error_message)?;
+    process
+        .priority_class()
+        .map(|priority| eco_qos && priority == IDLE_PRIORITY_CLASS)
+        .map_err(background_efficiency_error_message)
+}
+
+pub(crate) fn apply_efficiency_mode_once(
+    target: &ProcessActionTarget,
+    enabled: bool,
+    previous_priority: Option<u32>,
+) -> Result<Option<u32>, String> {
+    ensure_process_action_target_access(target, ProcessActionAccess::SetInformation)?;
+    if is_builtin_excluded(&target.name) {
+        return Err("Built-in Windows processes cannot be modified.".to_owned());
+    }
+    let process = ProcessHandle::open(target.id).map_err(background_efficiency_error_message)?;
+    if process.0.process_creation_time() != Some(target.creation_time)
+        || !process_handle_matches_executable_path(&process.0, &target.executable_path)
+    {
+        return Err("The selected process instance has changed.".to_owned());
+    }
+    let previous_state = process
+        .power_throttling_state()
+        .map_err(background_efficiency_error_message)?;
+    let current_priority = process
+        .priority_class()
+        .map_err(background_efficiency_error_message)?;
+    let state = PROCESS_POWER_THROTTLING_STATE {
+        Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        StateMask: if enabled {
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+        } else {
+            0
+        },
+    };
+    process
+        .set_power_throttling_state(state)
+        .map_err(background_efficiency_error_message)?;
+    let target_priority = if enabled {
+        IDLE_PRIORITY_CLASS
+    } else {
+        previous_priority.unwrap_or(NORMAL_PRIORITY_CLASS)
+    };
+    if let Err(error) = process.set_priority_class(target_priority) {
+        return Err(background_efficiency_error_message(
+            background_efficiency_rollback_error(
+                error,
+                process.set_power_throttling_state(previous_state),
+            ),
+        ));
+    }
+    let changed = process.power_throttling_state().and_then(|state| {
+        process.priority_class().map(|priority| {
+            let eco_qos = state.ControlMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0
+                && state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED != 0;
+            eco_qos == enabled && priority == target_priority
+        })
+    });
+    match changed {
+        Ok(true) => Ok(enabled.then_some(current_priority)),
+        Ok(false) => {
+            let error = BackgroundEfficiencyError::Failed(
+                "Efficiency mode did not change after request.".to_owned(),
+            );
+            Err(background_efficiency_error_message(
+                background_efficiency_rollback_error(
+                    error,
+                    (|| {
+                        process.set_power_throttling_state(previous_state)?;
+                        process.set_priority_class(current_priority)
+                    })(),
+                ),
+            ))
+        }
+        Err(error) => Err(background_efficiency_error_message(
+            background_efficiency_rollback_error(
+                error,
+                (|| {
+                    process.set_power_throttling_state(previous_state)?;
+                    process.set_priority_class(current_priority)
+                })(),
+            ),
+        )),
+    }
+}
+
+fn background_efficiency_error_message(error: BackgroundEfficiencyError) -> String {
+    match error {
+        BackgroundEfficiencyError::AccessDenied => "Access denied.".to_owned(),
+        BackgroundEfficiencyError::ProcessExited => "Process exited.".to_owned(),
+        BackgroundEfficiencyError::Unsupported => "Operation unsupported.".to_owned(),
+        BackgroundEfficiencyError::Failed(message) => message,
+    }
+}
+
+fn background_efficiency_rollback_error(
+    operation_error: BackgroundEfficiencyError,
+    rollback: Result<(), BackgroundEfficiencyError>,
+) -> BackgroundEfficiencyError {
+    match rollback {
+        Ok(()) => operation_error,
+        Err(rollback_error) => BackgroundEfficiencyError::Failed(format!(
+            "{} Rollback also failed: {}",
+            background_efficiency_error_message(operation_error),
+            background_efficiency_error_message(rollback_error)
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rollback_failure_preserves_both_background_efficiency_errors() {
+        let error = background_efficiency_rollback_error(
+            BackgroundEfficiencyError::AccessDenied,
+            Err(BackgroundEfficiencyError::Failed(
+                "SetProcessInformation failed.".to_owned(),
+            )),
+        );
+
+        assert_eq!(
+            background_efficiency_error_message(error),
+            "Access denied. Rollback also failed: SetProcessInformation failed."
+        );
+    }
+
+    #[test]
+    fn successful_rollback_preserves_the_original_background_efficiency_error() {
+        let error =
+            background_efficiency_rollback_error(BackgroundEfficiencyError::AccessDenied, Ok(()));
+
+        assert_eq!(background_efficiency_error_message(error), "Access denied.");
+    }
+
+    #[test]
+    fn efficiency_mode_round_trips_on_live_process() {
+        let command = std::env::var_os("ComSpec").expect("ComSpec is defined on Windows");
+        let mut child = std::process::Command::new(&command)
+            .args(["/d", "/c", "ping -n 30 127.0.0.1 > nul"])
+            .spawn()
+            .expect("test process starts");
+        let result: Result<(), String> = (|| {
+            let target = crate::foreground::capture_process_action_target(
+                child.id(),
+                Path::new(&command),
+                false,
+            )
+            .map_err(|error| error.to_string())?;
+            let previous_priority = apply_efficiency_mode_once(&target, true, None)
+                .map_err(|error| format!("enable: {error}"))?;
+            assert!(current_efficiency_mode(&target)?);
+            apply_efficiency_mode_once(&target, false, previous_priority)
+                .map_err(|error| format!("disable: {error}"))?;
+            assert!(!current_efficiency_mode(&target)?);
+            let managed = enable_background_efficiency(
+                target.id,
+                target.name.clone(),
+                target.executable_path.to_string_lossy().into_owned(),
+                false,
+                true,
+            )
+            .map_err(background_efficiency_error_message)?;
+            assert!(current_efficiency_mode(&target)?);
+            restore_background_efficiency(target.id, &managed)
+                .map_err(background_efficiency_error_message)?;
+            assert!(!current_efficiency_mode(&target)?);
+            Ok(())
+        })();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(result, Ok(()));
+    }
 
     #[test]
     fn exclusions_include_builtin_and_user_entries() {
@@ -829,7 +1085,7 @@ mod tests {
             aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: vec![crate::config::BackgroundEfficiencyRule {
                 enabled: true,
-                process_name: "mouse.exe".to_owned(),
+                executable_path: "mouse.exe".to_owned(),
             }],
         };
 
@@ -870,7 +1126,7 @@ mod tests {
             aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: vec![crate::config::BackgroundEfficiencyRule {
                 enabled: false,
-                process_name: "mouse.exe".to_owned(),
+                executable_path: "mouse.exe".to_owned(),
             }],
         };
 
@@ -910,15 +1166,24 @@ mod tests {
     fn repeated_failures_suppress_future_efficiency_attempts_once() {
         let mut manager = BackgroundEfficiencyManager::default();
         let mut log = ActionLog::new(8);
+        let executable_path = r"C:\Apps\app.exe";
 
-        manager.record_process_failure("APP.exe");
-        manager.record_process_failure("app.exe");
-        assert!(!manager.is_process_suppressed(42, "app.exe", &mut log));
+        manager.record_process_failure(executable_path);
+        manager.record_process_failure(executable_path);
+        assert!(
+            !manager
+                .check_process_suppression(42, "app.exe", executable_path, &mut log)
+                .suppressed
+        );
         assert!(log.entries().is_empty());
 
-        manager.record_process_failure("app.exe");
-        assert!(manager.is_process_suppressed(42, "app.exe", &mut log));
-        assert!(manager.is_process_suppressed(43, "APP.exe", &mut log));
+        manager.record_process_failure(executable_path);
+        assert!(
+            manager
+                .check_process_suppression(42, "app.exe", executable_path, &mut log)
+                .suppressed
+        );
+        assert!(manager.is_process_suppressed(43, r"C:/Apps/app.exe", &mut log));
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
@@ -935,8 +1200,8 @@ mod tests {
         manager.record_process_failure("app.exe");
         manager.record_process_failure("app.exe");
 
-        let first = manager.check_process_suppression(42, "app.exe", &mut log);
-        let second = manager.check_process_suppression(42, "app.exe", &mut log);
+        let first = manager.check_process_suppression(42, "app.exe", "app.exe", &mut log);
+        let second = manager.check_process_suppression(42, "app.exe", "app.exe", &mut log);
 
         assert!(first.suppressed);
         assert!(first.newly_suppressed);
@@ -987,41 +1252,42 @@ mod tests {
     }
 
     #[test]
-    fn foreground_ignore_matches_pid_or_process_name() {
+    fn foreground_ignore_matches_pid_or_exact_path() {
         let mut settings = BackgroundEfficiencySettings {
             exclude_foreground_app: true,
             ..Default::default()
         };
+        let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
 
         assert!(should_ignore_foreground_process(
             settings.exclude_foreground_app,
             42,
-            "helper.exe",
+            Path::new(r"C:\Apps\helper.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
         assert!(should_ignore_foreground_process(
             settings.exclude_foreground_app,
             99,
-            "APP.EXE",
+            Path::new(r"c:\apps\foreground\APP.EXE"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
         assert!(!should_ignore_foreground_process(
             settings.exclude_foreground_app,
             99,
-            "other.exe",
+            Path::new(r"D:\Other\app.exe"),
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
 
         settings.exclude_foreground_app = false;
         assert!(!should_ignore_foreground_process(
             settings.exclude_foreground_app,
             42,
-            "app.exe",
+            foreground,
             Some(42),
-            Some("app.exe"),
+            Some(foreground),
         ));
     }
 
@@ -1032,8 +1298,9 @@ mod tests {
             0,
             ThrottledProcess {
                 process_name: "exited.exe".to_owned(),
+                executable_path: r"C:\Apps\exited.exe".to_owned(),
                 creation_time: 0,
-                previous_state: power_throttling_disabled_state(),
+                previous_state: Some(power_throttling_disabled_state()),
                 previous_priority: None,
                 applied_ignore_timer_resolution: false,
             },

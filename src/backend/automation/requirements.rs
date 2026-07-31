@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::CoreSteeringMode;
 
 pub(super) fn automation_refresh_interval(
     hidden_to_tray: bool,
@@ -52,18 +53,59 @@ pub(super) fn feature_refresh_required(settings: &Settings, feature_enabled: boo
     settings.general.enabled && feature_enabled
 }
 
+fn enabled_executable_path_rule(enabled: bool, executable_path: &str) -> bool {
+    enabled && std::path::Path::new(executable_path.trim()).is_absolute()
+}
+
 pub(super) fn workload_engine_required(settings: &Settings) -> bool {
     let workload = &settings.workload_engine;
-    workload.enabled
+    settings.adaptive_engine.enabled
+        && workload.enabled
         && (workload.lower_background_apps
             || workload.workload_engine_background_efficiency_enabled
             || workload.workload_engine_enabled
             || workload.boost_foreground_app)
 }
 
+pub(super) fn app_suspension_required(settings: &Settings) -> bool {
+    settings.app_suspension.enabled
+        && settings
+            .app_suspension
+            .suspendable_apps
+            .iter()
+            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+}
+
+pub(super) fn core_steering_required(settings: &Settings) -> bool {
+    settings.core_steering.enabled
+        && settings.core_steering.rules.iter().any(|rule| {
+            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+                && (rule.mode == CoreSteeringMode::EfficiencyOff || rule.core_mask != 0)
+        })
+}
+
+pub(super) fn core_limiter_required(settings: &Settings) -> bool {
+    settings.core_limiter.enabled
+        && settings
+            .core_limiter
+            .rules
+            .iter()
+            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+}
+
+pub(super) fn timer_resolution_required(settings: &Settings) -> bool {
+    settings.timer_resolution.enabled
+        && settings
+            .timer_resolution
+            .rules
+            .iter()
+            .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
+}
+
 pub(super) fn io_priority_required(settings: &Settings) -> bool {
     settings.io_priority.enabled
-        || (settings.workload_engine.enabled
+        || (settings.adaptive_engine.enabled
+            && settings.workload_engine.enabled
             && (settings
                 .workload_engine
                 .lower_background_io_priority_enabled
@@ -71,7 +113,9 @@ pub(super) fn io_priority_required(settings: &Settings) -> bool {
 }
 
 pub(super) fn workload_engine_priority_assist_required(settings: &Settings) -> bool {
-    settings.workload_engine.enabled && settings.workload_engine.workload_engine_enabled
+    settings.adaptive_engine.enabled
+        && settings.workload_engine.enabled
+        && settings.workload_engine.workload_engine_enabled
 }
 
 pub(super) fn thread_priority_required(settings: &Settings) -> bool {
@@ -217,11 +261,11 @@ pub(super) fn effective_gpu_priority_settings(
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (settings.background_efficiency.enabled
-            || settings.core_steering.enabled
+            || core_steering_required(settings)
             || settings.background_cpu_restriction.enabled
-            || settings.core_limiter.enabled
-            || settings.by_running_app.enabled
-            || settings.workload_engine.enabled
+            || core_limiter_required(settings)
+            || by_running_app_required(settings)
+            || workload_engine_required(settings)
             || settings.process_priority.enabled
             || thread_priority_required(settings)
             || dynamic_priority_boost_required(settings)
@@ -244,21 +288,9 @@ pub(super) fn automation_worker_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (power_plan_checks_required(settings)
             || adaptive_power_plan_required(settings)
-            || settings.background_efficiency.enabled
-            || settings.app_suspension.enabled
-            || settings.core_steering.enabled
-            || settings.background_cpu_restriction.enabled
-            || settings.core_limiter.enabled
-            || settings.by_running_app.enabled
-            || settings.workload_engine.enabled
-            || settings.process_priority.enabled
-            || thread_priority_required(settings)
-            || dynamic_priority_boost_required(settings)
-            || io_priority_required(settings)
-            || gpu_priority_required(settings)
-            || settings.memory_priority.enabled
-            || settings.memory_trim.enabled
-            || settings.timer_resolution.enabled)
+            || app_suspension_required(settings)
+            || process_appearance_scan_required(settings)
+            || timer_resolution_required(settings))
 }
 
 pub(super) fn windows_event_watcher_required(settings: &Settings) -> bool {
@@ -272,8 +304,8 @@ pub(super) fn automation_windows_event_watcher_required(settings: &Settings) -> 
 }
 
 pub(super) fn event_driven_process_work_required(settings: &Settings) -> bool {
-    !settings.adaptive_engine.enabled
-        && (settings.app_suspension.enabled || process_appearance_scan_required(settings))
+    app_suspension_required(settings)
+        || (!settings.adaptive_engine.enabled && process_appearance_scan_required(settings))
 }
 
 pub(super) fn windows_event_wake_required(
@@ -324,11 +356,10 @@ pub(super) fn controller_activity_poll_required(settings: &Settings) -> bool {
 
 pub(super) fn by_foreground_required(settings: &Settings) -> bool {
     settings.by_foreground.enabled
-        && (settings
-            .by_foreground
-            .rules
-            .iter()
-            .any(|rule| rule.enabled && rule.power_plan_guid.is_some()))
+        && (settings.by_foreground.rules.iter().any(|rule| {
+            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+                && rule.power_plan_guid.is_some()
+        }))
 }
 
 pub(crate) fn foreground_lookup_required(settings: &Settings) -> bool {
@@ -355,11 +386,10 @@ pub(super) fn by_cpu_load_rules_required(settings: &Settings) -> bool {
 
 pub(super) fn by_running_app_required(settings: &Settings) -> bool {
     settings.by_running_app.enabled
-        && settings
-            .by_running_app
-            .rules
-            .iter()
-            .any(|rule| rule.enabled && rule.power_plan_guid.is_some())
+        && settings.by_running_app.rules.iter().any(|rule| {
+            enabled_executable_path_rule(rule.enabled, &rule.executable_path)
+                && rule.power_plan_guid.is_some()
+        })
 }
 
 pub(super) fn has_idle_plan(power_plans: &PowerPlanSettings) -> bool {

@@ -119,7 +119,7 @@ impl WinderustApp {
             ListItemRemovalKind::AppSuspensionRule => {
                 if let Some(rule) = self.settings.app_suspension.suspendable_apps.get(index) {
                     self.expanded_rule_cards
-                        .remove(&RuleCardTarget::AppSuspension(rule.process_name.clone()));
+                        .remove(&RuleCardTarget::AppSuspension(rule.executable_path.clone()));
                 }
                 if index < self.settings.app_suspension.suspendable_apps.len() {
                     self.settings.app_suspension.suspendable_apps.remove(index);
@@ -136,7 +136,7 @@ impl WinderustApp {
             ListItemRemovalKind::CoreLimiterRule => {
                 if let Some(rule) = self.settings.core_limiter.rules.get(index) {
                     self.expanded_rule_cards
-                        .remove(&RuleCardTarget::CoreLimiter(rule.process_name.clone()));
+                        .remove(&RuleCardTarget::CoreLimiter(rule.executable_path.clone()));
                 }
                 if index < self.settings.core_limiter.rules.len() {
                     self.settings.core_limiter.rules.remove(index);
@@ -209,7 +209,7 @@ impl WinderustApp {
             ListItemRemovalKind::CoreSteeringRule => {
                 if let Some(rule) = self.settings.core_steering.rules.get(index) {
                     self.expanded_rule_cards
-                        .remove(&RuleCardTarget::CoreSteering(rule.process_name.clone()));
+                        .remove(&RuleCardTarget::CoreSteering(rule.executable_path.clone()));
                 }
                 if index < self.settings.core_steering.rules.len() {
                     self.settings.core_steering.rules.remove(index);

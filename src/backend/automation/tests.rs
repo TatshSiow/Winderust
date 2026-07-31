@@ -2,9 +2,23 @@ use super::*;
 use chrono::{Datelike, Duration as ChronoDuration, Local};
 
 use crate::config::{
-    ByForegroundRule, ByTimeRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
-    ProcessGpuPrioritySetting, ProcessThreadPrioritySetting, WeekdaySetting,
+    AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CoreLimiterRule,
+    CoreSteeringRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+    ProcessGpuPrioritySetting, ProcessThreadPrioritySetting, TimerResolutionRule, WeekdaySetting,
 };
+
+fn app_suspension_rule(executable_path: &str) -> AppSuspensionRule {
+    AppSuspensionRule {
+        enabled: true,
+        executable_path: executable_path.to_owned(),
+        network_wake_enabled: false,
+        audio_wake_enabled: false,
+        network_download_threshold_bytes: 0,
+        network_download_threshold_unit: Default::default(),
+        network_upload_threshold_bytes: 0,
+        network_upload_threshold_unit: Default::default(),
+    }
+}
 
 #[test]
 fn process_appearance_detector_ignores_initial_snapshot() {
@@ -44,6 +58,56 @@ fn repeated_power_plan_switch_failures_suppress_future_attempts() {
 }
 
 #[test]
+fn adaptive_plan_setup_error_preserves_cleanup_failure() {
+    assert_eq!(
+        adaptive_plan_setup_error(
+            "Applying the adaptive plan failed.".to_owned(),
+            Err("Deleting the adaptive plan failed.".to_owned()),
+        ),
+        "Applying the adaptive plan failed. Adaptive plan cleanup also failed: Deleting the adaptive plan failed."
+    );
+    assert_eq!(
+        adaptive_plan_setup_error("Applying the adaptive plan failed.".to_owned(), Ok(())),
+        "Applying the adaptive plan failed."
+    );
+}
+
+#[test]
+fn poisoned_automation_mutex_is_recovered() {
+    let mutex = Mutex::new(42);
+    let _ = std::panic::catch_unwind(|| {
+        let _guard = mutex.lock().expect("test mutex starts healthy");
+        panic!("poison test mutex");
+    });
+
+    assert_eq!(*lock_unpoisoned(&mutex), 42);
+}
+
+#[test]
+fn automation_worker_error_is_delivered_once() {
+    let automation = BackgroundAutomation::start(&Settings::default());
+    update_worker_error(
+        &automation.shared,
+        Some("Background automation worker stopped unexpectedly.".to_owned()),
+    );
+
+    let snapshot = automation
+        .status_snapshot_since(1)
+        .expect("worker failure advances status generation");
+    assert_eq!(
+        snapshot.worker_error.as_deref(),
+        Some("Background automation worker stopped unexpectedly.")
+    );
+    assert!(lock_unpoisoned(&automation.shared.state)
+        .status
+        .worker_error
+        .is_none());
+    assert!(automation
+        .status_snapshot_since(snapshot.generation)
+        .is_none());
+}
+
+#[test]
 fn process_appearance_detector_does_not_report_only_exits() {
     let mut known = BTreeSet::from([1, 2, 3]);
 
@@ -73,12 +137,15 @@ fn foreground_lookup_runs_only_for_configured_by_foreground() {
     settings.by_foreground.rules.push(ByForegroundRule {
         enabled: true,
         name: "editor.exe".to_owned(),
-        process_name: "editor.exe".to_owned(),
+        executable_path: String::new(),
         power_plan_guid: None,
     });
     assert!(!foreground_lookup_required(&settings));
 
     settings.by_foreground.rules[0].power_plan_guid = Some("active-guid".to_owned());
+    assert!(!foreground_lookup_required(&settings));
+
+    settings.by_foreground.rules[0].executable_path = r"C:\Apps\editor.exe".to_owned();
     assert!(foreground_lookup_required(&settings));
 
     settings.by_foreground.rules[0].enabled = false;
@@ -90,6 +157,121 @@ fn automation_worker_sleeps_when_no_automation_work_exists() {
     let settings = Settings::default();
 
     assert!(!automation_worker_required(&settings));
+}
+
+#[test]
+fn enabled_empty_rule_features_do_not_poll() {
+    let mut settings = Settings::default();
+    settings.app_suspension.enabled = true;
+    settings.core_steering.enabled = true;
+    settings.core_limiter.enabled = true;
+    settings.by_running_app.enabled = true;
+    settings.timer_resolution.enabled = true;
+    settings.by_foreground.enabled = true;
+
+    assert!(!automation_worker_required(&settings));
+
+    settings
+        .app_suspension
+        .suspendable_apps
+        .push(app_suspension_rule(" "));
+    settings.core_steering.rules.push(CoreSteeringRule {
+        enabled: true,
+        mode: Default::default(),
+        executable_path: " ".to_owned(),
+        core_mask: 1,
+    });
+    settings.core_limiter.rules.push(CoreLimiterRule {
+        enabled: true,
+        executable_path: " ".to_owned(),
+        threshold_percent: 80,
+        sustain_seconds: 1,
+        cooldown_seconds: 1,
+        max_logical_processors: 1,
+    });
+    settings.by_running_app.rules.push(ByRunningAppRule {
+        enabled: true,
+        name: "Empty".to_owned(),
+        executable_path: " ".to_owned(),
+        power_plan_guid: Some("active-guid".to_owned()),
+    });
+    settings.timer_resolution.rules.push(TimerResolutionRule {
+        enabled: true,
+        executable_path: " ".to_owned(),
+        desired_100ns: 5_000,
+    });
+    settings.by_foreground.rules.push(ByForegroundRule {
+        enabled: true,
+        name: "Empty".to_owned(),
+        executable_path: " ".to_owned(),
+        power_plan_guid: Some("active-guid".to_owned()),
+    });
+
+    assert!(!app_suspension_required(&settings));
+    assert!(!core_steering_required(&settings));
+    assert!(!core_limiter_required(&settings));
+    assert!(!by_running_app_required(&settings));
+    assert!(!timer_resolution_required(&settings));
+    assert!(!foreground_lookup_required(&settings));
+    assert!(!process_appearance_scan_required(&settings));
+    assert!(!event_driven_process_work_required(&settings));
+    assert!(!automation_worker_required(&settings));
+}
+
+#[test]
+fn enabled_nonempty_rule_features_require_runtime_work() {
+    let mut settings = Settings::default();
+    settings.app_suspension.enabled = true;
+    settings
+        .app_suspension
+        .suspendable_apps
+        .push(app_suspension_rule(r"C:\Apps\chat.exe"));
+    settings.core_steering.enabled = true;
+    settings.core_steering.rules.push(CoreSteeringRule {
+        enabled: true,
+        mode: Default::default(),
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        core_mask: 1,
+    });
+    settings.core_limiter.enabled = true;
+    settings.core_limiter.rules.push(CoreLimiterRule {
+        enabled: true,
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        threshold_percent: 80,
+        sustain_seconds: 1,
+        cooldown_seconds: 1,
+        max_logical_processors: 1,
+    });
+    settings.by_running_app.enabled = true;
+    settings.by_running_app.rules.push(ByRunningAppRule {
+        enabled: true,
+        name: "Chat".to_owned(),
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        power_plan_guid: Some("active-guid".to_owned()),
+    });
+    settings.timer_resolution.enabled = true;
+    settings.timer_resolution.rules.push(TimerResolutionRule {
+        enabled: true,
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        desired_100ns: 5_000,
+    });
+    settings.by_foreground.enabled = true;
+    settings.by_foreground.rules.push(ByForegroundRule {
+        enabled: true,
+        name: "Chat".to_owned(),
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        power_plan_guid: Some("active-guid".to_owned()),
+    });
+
+    assert!(app_suspension_required(&settings));
+    assert!(core_steering_required(&settings));
+    assert!(core_limiter_required(&settings));
+    assert!(by_running_app_required(&settings));
+    assert!(timer_resolution_required(&settings));
+    assert!(foreground_lookup_required(&settings));
+    assert!(process_appearance_scan_required(&settings));
+    assert!(event_driven_process_work_required(&settings));
+    assert!(automation_worker_required(&settings));
 }
 
 #[test]
@@ -144,24 +326,10 @@ fn pending_auto_exclusions_are_taken_only_after_generation_change() {
         .take_pending_auto_exclusions_since(&mut generation)
         .is_none());
 
-    update_background_efficiency_status(
-        &automation.shared,
-        BackgroundEfficiencySnapshot {
-            auto_excluded_processes: vec!["Editor.exe".to_owned()],
-            ..BackgroundEfficiencySnapshot::default()
-        },
-    );
-
-    let pending = automation
-        .take_pending_auto_exclusions_since(&mut generation)
-        .expect("new pending exclusions should be visible");
-    assert_eq!(pending.background_efficiency, vec!["editor.exe"]);
-    assert!(pending.core_steering.is_empty());
-    assert!(pending.background_cpu_restriction.is_empty());
     update_core_steering_status(
         &automation.shared,
         CoreSteeringSnapshot {
-            auto_excluded_processes: vec!["Game.exe".to_owned()],
+            auto_excluded_processes: vec![r"D:\Games\Game.exe".to_owned()],
             ..CoreSteeringSnapshot::default()
         },
     );
@@ -169,10 +337,75 @@ fn pending_auto_exclusions_are_taken_only_after_generation_change() {
     let pending = automation
         .take_pending_auto_exclusions_since(&mut generation)
         .expect("new pending affinity exclusions should be visible");
-    assert_eq!(pending.core_steering, vec!["game.exe"]);
+    assert_eq!(pending.core_steering, vec![r"D:\Games\Game.exe"]);
     assert!(automation
         .take_pending_auto_exclusions_since(&mut generation)
         .is_none());
+}
+
+#[test]
+fn pending_auto_exclusions_keep_same_named_executable_paths_distinct() {
+    let automation = BackgroundAutomation::start(&Settings::default());
+    let mut generation = 0;
+
+    update_process_priority_status(
+        &automation.shared,
+        ProcessPrioritySnapshot {
+            auto_excluded_processes: vec![
+                r"C:\Apps\Editor.exe".to_owned(),
+                r"D:\Tools\Editor.exe".to_owned(),
+            ],
+            ..ProcessPrioritySnapshot::default()
+        },
+    );
+
+    let pending = automation
+        .take_pending_auto_exclusions_since(&mut generation)
+        .expect("absolute executable paths should reach the pending queue");
+    assert_eq!(
+        pending.process_priority,
+        vec![r"C:\Apps\Editor.exe", r"D:\Tools\Editor.exe"]
+    );
+}
+
+#[test]
+fn app_suspension_freeze_queue_preserves_and_deduplicates_executable_paths() {
+    let automation = BackgroundAutomation::start(&Settings::default());
+
+    automation.request_app_suspension_freeze("Editor.exe");
+    automation.request_app_suspension_freeze(r"C:/Apps/Editor.exe");
+    automation.request_app_suspension_freeze(r"C:\Apps\Editor.exe");
+
+    let state = automation
+        .shared
+        .state
+        .lock()
+        .expect("automation state should remain available");
+    assert_eq!(
+        state.app_suspension_freeze_requests,
+        vec![r"C:\Apps\Editor.exe"]
+    );
+}
+
+#[test]
+fn manual_app_suspension_request_starts_worker_without_automatic_rules() {
+    let mut settings = Settings::default();
+    settings.app_suspension.enabled = true;
+    let automation = BackgroundAutomation::start(&settings);
+
+    assert!(automation
+        .thread
+        .lock()
+        .expect("automation thread state should remain available")
+        .is_none());
+
+    automation.request_app_suspension_freeze(r"C:\Apps\Editor.exe");
+
+    assert!(automation
+        .thread
+        .lock()
+        .expect("automation thread state should remain available")
+        .is_some());
 }
 
 #[test]
@@ -204,6 +437,7 @@ fn workload_engine_fast_refresh_requires_enabled_feature() {
     ));
 
     settings.general.enabled = true;
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     let deadline = workload_engine_fast_refresh_deadline(&settings, now)
         .expect("Workload Engine should enable fast refresh");
@@ -226,6 +460,7 @@ fn workload_engine_fast_refresh_requires_enabled_feature() {
 #[test]
 fn workload_engine_io_assist_waits_for_pressure() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings
         .workload_engine
@@ -251,6 +486,7 @@ fn workload_engine_io_assist_waits_for_pressure() {
 #[test]
 fn workload_engine_pressure_feeds_priority_defaults() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.workload_engine_enabled = true;
     settings
@@ -303,7 +539,7 @@ fn workload_engine_pressure_feeds_priority_defaults() {
         .workload_engine_gpu_priority
         .preserve_background_priority = false;
     settings.workload_engine.workload_engine_exclusions = vec![ProcessExclusionRule {
-        process_name: "game.exe".to_owned(),
+        executable_path: "game.exe".to_owned(),
         ..Default::default()
     }];
 
@@ -360,6 +596,7 @@ fn workload_engine_pressure_feeds_priority_defaults() {
 #[test]
 fn workload_engine_page_enabled_without_runtime_work_does_not_poll() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.lower_background_apps = false;
     settings
@@ -378,6 +615,7 @@ fn workload_engine_page_enabled_without_runtime_work_does_not_poll() {
 #[test]
 fn workload_engine_priority_assist_temporarily_overrides_global_priority_defaults() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.workload_engine_enabled = true;
     settings.thread_priority.enabled = true;
@@ -428,6 +666,7 @@ fn workload_engine_priority_assist_temporarily_overrides_global_priority_default
 #[test]
 fn workload_engine_without_io_assist_does_not_require_io_refresh() {
     let mut settings = Settings::default();
+    settings.adaptive_engine.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.workload_engine_enabled = true;
     settings.workload_engine.boost_foreground_app = false;
@@ -446,10 +685,14 @@ fn default_settings_do_not_poll_power_plans_without_plan_targets() {
 fn app_suspension_uses_own_refresh_without_process_appearance_scan() {
     let mut settings = Settings::default();
     settings.app_suspension.enabled = true;
+    settings
+        .app_suspension
+        .suspendable_apps
+        .push(app_suspension_rule(r"C:\Apps\chat.exe"));
 
     assert!(feature_refresh_required(
         &settings,
-        settings.app_suspension.enabled
+        app_suspension_required(&settings)
     ));
     assert!(!process_appearance_scan_required(&settings));
 }
@@ -458,6 +701,10 @@ fn app_suspension_uses_own_refresh_without_process_appearance_scan() {
 fn app_suspension_uses_windows_events_without_enabling_process_scan() {
     let mut settings = Settings::default();
     settings.app_suspension.enabled = true;
+    settings
+        .app_suspension
+        .suspendable_apps
+        .push(app_suspension_rule(r"C:\Apps\chat.exe"));
 
     assert!(windows_event_watcher_required(&settings));
     assert!(windows_event_wake_required(
@@ -497,10 +744,14 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
     ));
 
     settings.app_suspension.enabled = true;
+    settings
+        .app_suspension
+        .suspendable_apps
+        .push(app_suspension_rule(r"C:\Apps\chat.exe"));
 
     assert!(automation_worker_required(&settings));
-    assert!(!windows_event_watcher_required(&settings));
-    assert!(!windows_event_wake_required(
+    assert!(windows_event_watcher_required(&settings));
+    assert!(windows_event_wake_required(
         &settings,
         WindowsAutomationEvent::WindowCreated
     ));
@@ -514,8 +765,8 @@ fn adaptive_engine_skips_appearance_only_windows_events() {
         mouse_click: true,
         ..InputHookEvents::default()
     };
-    assert!(!input_hook_should_check_app_switch(&settings, input_events));
-    assert!(!input_hook_should_check_app_switch_mouse_click(
+    assert!(input_hook_should_check_app_switch(&settings, input_events));
+    assert!(input_hook_should_check_app_switch_mouse_click(
         &settings,
         input_events
     ));
@@ -529,7 +780,7 @@ fn event_driven_power_checks_drop_idle_polling_for_foreground_only_rules() {
     settings.by_foreground.rules.push(ByForegroundRule {
         enabled: true,
         name: "chat.exe".to_owned(),
-        process_name: "chat.exe".to_owned(),
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
         power_plan_guid: Some("active-guid".to_owned()),
     });
 
@@ -665,7 +916,6 @@ fn adaptive_plan_follows_adaptive_engine_processor_policy() {
     settings.adaptive_engine.processor_policy_enabled = true;
 
     assert!(adaptive_power_plan_required(&settings));
-    assert_eq!(static_processor_power_values(&settings), None);
 
     settings.adaptive_engine.processor_policy_enabled = false;
     assert!(!adaptive_power_plan_required(&settings));
@@ -713,25 +963,19 @@ fn adaptive_plan_uses_fast_cpu_and_slow_aggregate_telemetry() {
 }
 
 #[test]
-fn by_running_app_keeps_its_static_processor_target() {
+fn workload_engine_requires_adaptive_engine() {
     let mut settings = Settings::default();
     settings.general.enabled = true;
     settings.workload_engine.enabled = true;
     settings.workload_engine.workload_engine_enabled = true;
-    settings.adaptive_engine.processor_policy_values = ProcessorPowerValues::new_with_boost_mode(
-        100,
-        25,
-        100,
-        85,
-        crate::power::ProcessorBoostMode::EfficientAggressive,
-    );
 
-    assert_eq!(
-        static_processor_power_values(&settings),
-        Some(settings.adaptive_engine.processor_policy_values)
-    );
+    assert!(!workload_engine_required(&settings));
+    assert!(!workload_engine_priority_assist_required(&settings));
+
+    settings.adaptive_engine.enabled = true;
+    assert!(workload_engine_required(&settings));
+    assert!(workload_engine_priority_assist_required(&settings));
 }
-
 #[test]
 fn power_plan_checks_sleep_when_decision_features_are_off() {
     let mut settings = Settings::default();

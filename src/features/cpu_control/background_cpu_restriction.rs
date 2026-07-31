@@ -1,11 +1,15 @@
+use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+
 use crate::{
     action_log::{ActionLog, ActionLogFeature},
     config::{
-        BackgroundCpuRestrictionSettings, CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings,
+        BackgroundCpuRestrictionSettings, CoreSteeringMode, CoreSteeringSettings,
         CpuRestrictionControlStyle, CpuRestrictionMode, CpuRestrictionStrategy,
     },
-    core_steering::{self, CoreSteeringManager, CoreSteeringSnapshot, LogicalProcessorKind},
-    foreground::list_processes,
+    core_steering::{
+        self, CoreSteeringManager, CoreSteeringSnapshot, CoreSteeringTarget, LogicalProcessorKind,
+    },
+    foreground::{list_processes_with_paths, process_session_id, same_executable_path},
 };
 
 pub struct BackgroundCpuRestrictionManager {
@@ -27,18 +31,20 @@ impl BackgroundCpuRestrictionManager {
         &mut self,
         settings: &BackgroundCpuRestrictionSettings,
         automation_enabled: bool,
+        allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
     ) -> CoreSteeringSnapshot {
-        let mut update_affinity = |enabled: bool, rules: Vec<CoreSteeringRule>, message: &str| {
+        let mut disable_affinity = |message: &str| {
             let affinity_settings = CoreSteeringSettings {
-                enabled,
+                enabled: false,
                 exclude_foreground_app: settings.exclude_foreground_app,
-                rules,
+                rules: Vec::new(),
             };
             let mut snapshot = self.affinity.update(
                 &affinity_settings,
                 automation_enabled,
+                allow_cross_session_process_control,
                 foreground_process_id,
                 action_log,
             );
@@ -52,12 +58,11 @@ impl BackgroundCpuRestrictionManager {
             } else {
                 "Automation disabled."
             };
-            return update_affinity(false, Vec::new(), message);
+            return disable_affinity(message);
         }
 
         let Some(core_mask) = background_restriction_core_mask(settings) else {
-            let mut snapshot =
-                update_affinity(false, Vec::new(), "No usable CPU restriction target.");
+            let mut snapshot = disable_affinity("No usable CPU restriction target.");
             snapshot.enabled = true;
             return snapshot;
         };
@@ -66,31 +71,81 @@ impl BackgroundCpuRestrictionManager {
             CpuRestrictionMode::SoftCpuSets => CoreSteeringMode::Soft,
             CpuRestrictionMode::HardAffinity => CoreSteeringMode::Hard,
         };
-        let processes = match list_processes() {
+        let processes = match list_processes_with_paths() {
             Ok(processes) => processes,
             Err(error) => {
-                let mut snapshot = update_affinity(false, Vec::new(), &error);
+                let mut snapshot = disable_affinity(&error);
                 snapshot.enabled = true;
                 snapshot.last_error = Some(error);
                 return snapshot;
             }
         };
-        let rules = processes
+        let scanned_processes = processes.len();
+        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+            return self.affinity.update_discovered_targets(
+                Vec::new(),
+                scanned_processes,
+                "Paused: foreground app is unknown.",
+                action_log,
+            );
+        }
+        // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
+        let current_process_id = unsafe { GetCurrentProcessId() };
+        let Some(current_session_id) = process_session_id(current_process_id) else {
+            return self.affinity.update_discovered_targets(
+                Vec::new(),
+                scanned_processes,
+                "Paused: current Windows session is unknown.",
+                action_log,
+            );
+        };
+        let foreground_path = foreground_process_id.and_then(|id| {
+            processes
+                .iter()
+                .find(|process| process.id == id)
+                .and_then(|process| process.image_path.clone())
+        });
+        let targets = processes
             .into_iter()
             .filter(|process| {
                 process.id != 0
+                    && process.is_critical == Some(false)
+                    && process.can_set_information
+                    && process.id != current_process_id
                     && !core_steering::is_builtin_excluded(&process.name)
-                    && !settings.exclusion_enabled_for(&process.name)
+                    && (allow_cross_session_process_control
+                        || process_session_id(process.id) == Some(current_session_id))
+                    && !(settings.exclude_foreground_app
+                        && (Some(process.id) == foreground_process_id
+                            || process
+                                .image_path
+                                .as_deref()
+                                .zip(foreground_path.as_deref())
+                                .is_some_and(|(path, foreground)| {
+                                    same_executable_path(path, foreground)
+                                })))
+                    && process.image_path.as_deref().is_some_and(|path| {
+                        !settings.exclusion_enabled_for(path.to_string_lossy().as_ref())
+                    })
             })
-            .map(|process| CoreSteeringRule {
-                enabled: true,
-                mode,
-                process_name: process.name,
-                core_mask,
+            .filter_map(|process| {
+                process.image_path.map(|path| CoreSteeringTarget {
+                    process_id: process.id,
+                    process_name: process.name,
+                    executable_path: path.to_string_lossy().into_owned(),
+                    mode,
+                    core_mask,
+                    expected_creation_time: None,
+                })
             })
             .collect();
 
-        update_affinity(true, rules, "Background CPU Restriction active.")
+        self.affinity.update_discovered_targets(
+            targets,
+            scanned_processes,
+            "Background CPU Restriction active.",
+            action_log,
+        )
     }
 }
 fn background_restriction_core_mask(settings: &BackgroundCpuRestrictionSettings) -> Option<u64> {

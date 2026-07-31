@@ -63,7 +63,12 @@ pub(in crate::ui::app) fn can_add_process_candidate(
     is_builtin_excluded: impl FnOnce(&str) -> bool,
 ) -> bool {
     let process = process.trim();
-    !process.is_empty() && !contains_process(process) && !is_builtin_excluded(process)
+    let process_path = Path::new(process);
+    let process_name = process_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(process);
+    process_path.is_absolute() && !contains_process(process) && !is_builtin_excluded(process_name)
 }
 
 pub(in crate::ui::app) fn can_add_foreground_process(
@@ -76,7 +81,7 @@ pub(in crate::ui::app) fn can_add_foreground_process(
             settings
                 .rules
                 .iter()
-                .any(|rule| same_process_name(&rule.process_name, process))
+                .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         |_| false,
     )
@@ -89,7 +94,7 @@ pub(in crate::ui::app) fn foreground_power_plan_override_guid(
     settings
         .rules
         .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .find(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
         .and_then(|rule| rule.power_plan_guid.clone())
 }
 
@@ -102,7 +107,7 @@ pub(in crate::ui::app) fn set_foreground_power_plan_override(
         if let Some(rule) = settings
             .rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
             rule.power_plan_guid = Some(power_plan_guid);
@@ -114,7 +119,7 @@ pub(in crate::ui::app) fn set_foreground_power_plan_override(
     } else {
         settings
             .rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -122,11 +127,15 @@ pub(in crate::ui::app) fn new_foreground_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByForegroundRule {
-    let process_name = process_name_key(process);
+    let executable_path = executable_path_key(Path::new(process));
     ByForegroundRule {
         enabled: true,
-        name: process_name.clone(),
-        process_name,
+        name: Path::new(process)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(process)
+            .to_owned(),
+        executable_path,
         power_plan_guid,
     }
 }
@@ -164,7 +173,7 @@ pub(in crate::ui::app) fn can_add_memory_trim_exclusion(
                 || settings
                     .exclusions
                     .iter()
-                    .any(|rule| same_process_name(&rule.process_name, process))
+                    .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         memory_trim::is_builtin_excluded,
     )
@@ -172,7 +181,7 @@ pub(in crate::ui::app) fn can_add_memory_trim_exclusion(
 
 pub(in crate::ui::app) fn new_process_exclusion_rule(process: &str) -> ProcessExclusionRule {
     ProcessExclusionRule {
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         ..Default::default()
     }
 }
@@ -182,7 +191,7 @@ pub(in crate::ui::app) fn new_background_efficiency_rule(
 ) -> BackgroundEfficiencyRule {
     BackgroundEfficiencyRule {
         enabled: true,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
     }
 }
 
@@ -195,7 +204,7 @@ pub(in crate::ui::app) fn set_background_efficiency_custom_rule(
         if let Some(rule) = settings
             .custom_rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
         } else {
@@ -206,7 +215,7 @@ pub(in crate::ui::app) fn set_background_efficiency_custom_rule(
     } else {
         settings
             .custom_rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -218,14 +227,14 @@ pub(in crate::ui::app) fn set_process_exclusion(
     if excluded {
         if let Some(rule) = rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
         } else {
             rules.push(new_process_exclusion_rule(process_name));
         }
     } else {
-        rules.retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+        rules.retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
 
@@ -234,21 +243,54 @@ pub(in crate::ui::app) fn set_process_priority_rule(
     process_name: &str,
     priority: ProcessPrioritySetting,
 ) {
-    let rule = settings
-        .exclusions
-        .iter_mut()
-        .find(|rule| process_setting_matches(&rule.process_name, process_name));
-    let rule = if let Some(rule) = rule {
-        rule
-    } else {
-        settings
-            .exclusions
-            .push(new_process_exclusion_rule(process_name));
-        settings.exclusions.last_mut().expect("rule was just added")
-    };
-    rule.enabled = true;
-    rule.set_process_priority_override(true, priority);
-    rule.set_process_priority_override(false, priority);
+    set_priority_rule(&mut settings.exclusions, process_name, |rule| {
+        rule.set_process_priority_override(true, priority);
+        rule.set_process_priority_override(false, priority);
+    });
+}
+
+pub(in crate::ui::app) fn set_thread_priority_rule(
+    settings: &mut ThreadPrioritySettings,
+    process_name: &str,
+    priority: ProcessThreadPrioritySetting,
+) {
+    set_priority_rule(&mut settings.exclusions, process_name, |rule| {
+        rule.set_thread_priority_override(true, priority);
+        rule.set_thread_priority_override(false, priority);
+    });
+}
+
+pub(in crate::ui::app) fn set_dynamic_priority_boost_rule(
+    settings: &mut DynamicPriorityBoostSettings,
+    process_name: &str,
+    boost: ProcessDynamicPriorityBoostSetting,
+) {
+    set_priority_rule(&mut settings.exclusions, process_name, |rule| {
+        rule.set_dynamic_priority_boost_override(true, boost);
+        rule.set_dynamic_priority_boost_override(false, boost);
+    });
+}
+
+pub(in crate::ui::app) fn set_io_priority_rule(
+    settings: &mut IoPrioritySettings,
+    process_name: &str,
+    priority: ProcessIoPrioritySetting,
+) {
+    set_priority_rule(&mut settings.exclusions, process_name, |rule| {
+        rule.set_io_priority_override(true, priority);
+        rule.set_io_priority_override(false, priority);
+    });
+}
+
+pub(in crate::ui::app) fn set_gpu_priority_rule(
+    settings: &mut GpuPrioritySettings,
+    process_name: &str,
+    priority: ProcessGpuPrioritySetting,
+) {
+    set_priority_rule(&mut settings.exclusions, process_name, |rule| {
+        rule.set_gpu_priority_override(true, priority);
+        rule.set_gpu_priority_override(false, priority);
+    });
 }
 
 pub(in crate::ui::app) fn set_memory_priority_rule(
@@ -256,21 +298,27 @@ pub(in crate::ui::app) fn set_memory_priority_rule(
     process_name: &str,
     priority: ProcessMemoryPrioritySetting,
 ) {
-    let rule = settings
-        .exclusions
-        .iter_mut()
-        .find(|rule| process_setting_matches(&rule.process_name, process_name));
-    let rule = if let Some(rule) = rule {
-        rule
-    } else {
-        settings
-            .exclusions
-            .push(new_process_exclusion_rule(process_name));
-        settings.exclusions.last_mut().expect("rule was just added")
-    };
+    set_priority_rule(&mut settings.exclusions, process_name, |rule| {
+        rule.set_memory_priority_override(true, priority);
+        rule.set_memory_priority_override(false, priority);
+    });
+}
+
+fn set_priority_rule(
+    rules: &mut Vec<ProcessExclusionRule>,
+    process_name: &str,
+    update: impl FnOnce(&mut ProcessExclusionRule),
+) {
+    let index = rules
+        .iter()
+        .position(|rule| process_setting_matches(&rule.executable_path, process_name));
+    let index = index.unwrap_or_else(|| {
+        rules.push(new_process_exclusion_rule(process_name));
+        rules.len() - 1
+    });
+    let rule = &mut rules[index];
     rule.enabled = true;
-    rule.set_memory_priority_override(true, priority);
-    rule.set_memory_priority_override(false, priority);
+    update(rule);
 }
 
 pub(in crate::ui::app) fn can_add_app_suspension_process(
@@ -404,7 +452,7 @@ pub(in crate::ui::app) fn can_add_core_limiter_process(
             settings
                 .rules
                 .iter()
-                .any(|rule| same_process_name(&rule.process_name, process))
+                .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         core_limiter::is_builtin_excluded,
     )
@@ -420,7 +468,7 @@ pub(in crate::ui::app) fn can_add_by_running_app_process(
             settings
                 .rules
                 .iter()
-                .any(|rule| same_process_name(&rule.process_name, process))
+                .any(|rule| process_setting_matches(&rule.executable_path, process))
         },
         crate::features::power_plan_control::by_running_app::is_builtin_excluded,
     )
@@ -429,7 +477,7 @@ pub(in crate::ui::app) fn can_add_by_running_app_process(
 pub(in crate::ui::app) fn new_app_suspension_rule(process: &str) -> AppSuspensionRule {
     AppSuspensionRule {
         enabled: true,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         network_wake_enabled: true,
         audio_wake_enabled: true,
         network_download_threshold_bytes: 1,
@@ -443,7 +491,7 @@ pub(in crate::ui::app) fn new_core_steering_rule(process: &str) -> CoreSteeringR
     CoreSteeringRule {
         enabled: true,
         mode: CoreSteeringMode::Soft,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         core_mask: default_affinity_mask(),
     }
 }
@@ -454,107 +502,20 @@ pub(in crate::ui::app) fn new_timer_resolution_rule(
 ) -> TimerResolutionRule {
     TimerResolutionRule {
         enabled: true,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         desired_100ns,
     }
 }
-
-pub(in crate::ui::app) fn set_timer_resolution_override(
-    settings: &mut TimerResolutionSettings,
-    process_name: &str,
-    desired_100ns: Option<u32>,
-) {
-    if let Some(desired_100ns) = desired_100ns {
-        if let Some(rule) = settings
-            .rules
-            .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
-        {
-            rule.enabled = true;
-            rule.desired_100ns = desired_100ns;
-        } else {
-            settings
-                .rules
-                .push(new_timer_resolution_rule(process_name, desired_100ns));
-        }
-    } else {
-        settings
-            .rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
-    }
-}
-
 pub(in crate::ui::app) fn new_core_limiter_rule(process: &str) -> CoreLimiterRule {
     CoreLimiterRule {
         enabled: true,
-        process_name: process_name_key(process),
+        executable_path: executable_path_key(Path::new(process)),
         threshold_percent: 75,
         sustain_seconds: 5,
         cooldown_seconds: 10,
         max_logical_processors: 1,
     }
 }
-
-pub(in crate::ui::app) fn core_limiter_override_percent(
-    settings: &CoreLimiterSettings,
-    process_name: &str,
-) -> Option<u8> {
-    settings
-        .rules
-        .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
-        .map(|rule| rule.max_logical_processors.min(100))
-}
-
-pub(in crate::ui::app) fn set_core_limiter_override(
-    settings: &mut CoreLimiterSettings,
-    process_name: &str,
-    max_logical_processors: Option<u8>,
-) {
-    if let Some(max_logical_processors) = max_logical_processors {
-        if let Some(rule) = settings
-            .rules
-            .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
-        {
-            rule.enabled = true;
-            rule.max_logical_processors = max_logical_processors.min(100);
-        } else {
-            let mut rule = new_core_limiter_rule(process_name);
-            rule.max_logical_processors = max_logical_processors.min(100);
-            settings.rules.push(rule);
-        }
-    } else {
-        settings
-            .rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
-    }
-}
-
-pub(in crate::ui::app) fn set_app_suspension_override(
-    settings: &mut AppSuspensionSettings,
-    process_name: &str,
-    included: bool,
-) {
-    if included {
-        if let Some(rule) = settings
-            .suspendable_apps
-            .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
-        {
-            rule.enabled = true;
-        } else {
-            settings
-                .suspendable_apps
-                .push(new_app_suspension_rule(process_name));
-        }
-    } else {
-        settings
-            .suspendable_apps
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
-    }
-}
-
 pub(in crate::ui::app) fn by_running_app_power_plan_override_guid(
     settings: &ByRunningAppSettings,
     process_name: &str,
@@ -562,7 +523,7 @@ pub(in crate::ui::app) fn by_running_app_power_plan_override_guid(
     settings
         .rules
         .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .find(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
         .and_then(|rule| rule.power_plan_guid.clone())
 }
 
@@ -575,7 +536,7 @@ pub(in crate::ui::app) fn set_by_running_app_power_plan_override(
         if let Some(rule) = settings
             .rules
             .iter_mut()
-            .find(|rule| process_setting_matches(&rule.process_name, process_name))
+            .find(|rule| process_setting_matches(&rule.executable_path, process_name))
         {
             rule.enabled = true;
             rule.power_plan_guid = Some(power_plan_guid);
@@ -587,28 +548,9 @@ pub(in crate::ui::app) fn set_by_running_app_power_plan_override(
     } else {
         settings
             .rules
-            .retain(|rule| !process_setting_matches(&rule.process_name, process_name));
+            .retain(|rule| !process_setting_matches(&rule.executable_path, process_name));
     }
 }
-
-pub(in crate::ui::app) fn process_list_timer_resolution_options(
-    app: &WinderustApp,
-) -> Vec<Option<u32>> {
-    let mut options = Vec::new();
-    for option in [
-        None,
-        Some(app.settings.timer_resolution.desired_100ns),
-        Some(10_000),
-        Some(20_000),
-        Some(160_000),
-    ] {
-        if !options.contains(&option) {
-            options.push(option);
-        }
-    }
-    options
-}
-
 pub(in crate::ui::app) fn core_limiter_indicator(
     status: &CoreLimiterSnapshot,
     process: &str,
@@ -642,18 +584,22 @@ pub(in crate::ui::app) fn core_limiter_indicator(
 
 pub(in crate::ui::app) fn core_limiter_app_contains(apps: &[String], process: &str) -> bool {
     apps.iter()
-        .any(|app| app.trim().eq_ignore_ascii_case(process.trim()))
+        .any(|app| same_executable_path(Path::new(app), Path::new(process)))
 }
 
 pub(in crate::ui::app) fn new_by_running_app_rule(
     process: &str,
     power_plan_guid: Option<String>,
 ) -> ByRunningAppRule {
-    let process_name = process_name_key(process);
+    let executable_path = executable_path_key(Path::new(process));
     ByRunningAppRule {
         enabled: true,
-        name: process_name.clone(),
-        process_name,
+        name: Path::new(process)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(process)
+            .to_owned(),
+        executable_path,
         power_plan_guid,
     }
 }
@@ -677,133 +623,213 @@ pub(in crate::ui::app) fn process_policy_summary(
 
     summary.power_plan_foreground =
         foreground_power_plan_policy_label(settings, plans, process_name);
-    if foreground_power_plan_policy_is_custom(settings, process_name) {
+    let foreground_power_plan_custom =
+        foreground_power_plan_policy_is_custom(settings, process_name);
+    if foreground_power_plan_custom {
         summary.mark_custom(ProcessListColumn::PowerPlanForeground);
     }
+    summary.set_active(
+        ProcessListColumn::PowerPlanForeground,
+        foreground_power_plan_override_guid(&settings.by_foreground, process_name).is_some(),
+    );
     summary.power_plan_running =
         running_app_power_plan_policy_label(&settings.by_running_app, plans, process_name);
-    if running_app_power_plan_policy_is_custom(&settings.by_running_app, process_name) {
+    let running_power_plan_custom =
+        running_app_power_plan_policy_is_custom(&settings.by_running_app, process_name);
+    if running_power_plan_custom {
         summary.mark_custom(ProcessListColumn::PowerPlanRunning);
     }
-    summary.background_efficiency = process_list_include_exclude_label(
-        !settings
-            .background_efficiency
-            .custom_rule_enabled_for(process_name),
+    summary.set_active(
+        ProcessListColumn::PowerPlanRunning,
+        by_running_app_power_plan_override_guid(&settings.by_running_app, process_name).is_some(),
     );
-    if settings
+    let adaptive_engine_excluded = settings
+        .workload_engine
+        .workload_engine_exclusion_enabled_for(process_name);
+    summary.adaptive_engine = process_list_include_exclude_label(!adaptive_engine_excluded);
+    summary.set_active(ProcessListColumn::AdaptiveEngine, !adaptive_engine_excluded);
+    if adaptive_engine_excluded {
+        summary.mark_custom(ProcessListColumn::AdaptiveEngine);
+    }
+    let background_efficiency_excluded = settings
         .background_efficiency
-        .custom_rule_enabled_for(process_name)
-    {
+        .custom_rule_enabled_for(process_name);
+    summary.background_efficiency =
+        process_list_include_exclude_label(!background_efficiency_excluded);
+    summary.set_active(
+        ProcessListColumn::BackgroundEfficiency,
+        !background_efficiency_excluded,
+    );
+    if background_efficiency_excluded {
         summary.mark_custom(ProcessListColumn::BackgroundEfficiency);
     }
 
-    for rule in
-        settings.workload_engine.rules.iter().filter(|rule| {
-            rule.enabled && process_setting_matches(&rule.process_name, process_name)
-        })
-    {
-        summary.process_priority = process_priority_label(rule.priority);
+    let process_rule = process_rule_state(
+        settings.process_priority.override_for(process_name, true),
+        settings.process_priority.override_for(process_name, false),
+    );
+    summary.process_priority = priority_pair_label(
+        process_rule.foreground,
+        process_rule.background,
+        process_priority_setting_label,
+    );
+    if process_rule.configured {
         summary.mark_custom(ProcessListColumn::ProcessPriority);
     }
+    summary.set_active(ProcessListColumn::ProcessPriority, process_rule.active);
 
-    for rule in
-        settings.core_limiter.rules.iter().filter(|rule| {
-            rule.enabled && process_setting_matches(&rule.process_name, process_name)
-        })
-    {
-        summary.core_limiter =
-            process_list_include_value_label(format!("{}%", rule.max_logical_processors.min(100)));
-        summary.mark_custom(ProcessListColumn::CoreLimiter);
+    let thread_rule = process_rule_state(
+        settings.thread_priority.override_for(process_name, true),
+        settings.thread_priority.override_for(process_name, false),
+    );
+    summary.thread_priority = priority_pair_label(
+        thread_rule.foreground,
+        thread_rule.background,
+        process_thread_priority_setting_label,
+    );
+    if thread_rule.configured {
+        summary.mark_custom(ProcessListColumn::ThreadPriority);
     }
+    summary.set_active(ProcessListColumn::ThreadPriority, thread_rule.active);
 
-    if settings
-        .background_cpu_restriction
-        .exclusion_enabled_for(process_name)
-    {
-        summary.mark_custom(ProcessListColumn::BackgroundCpuRestriction);
-    } else {
-        summary.background_cpu_restriction =
-            background_cpu_restriction_policy_label(&settings.background_cpu_restriction);
+    let boost_rule = process_rule_state(
+        settings
+            .dynamic_priority_boost
+            .override_for(process_name, true),
+        settings
+            .dynamic_priority_boost
+            .override_for(process_name, false),
+    );
+    summary.dynamic_priority_boost = priority_pair_label(
+        boost_rule.foreground,
+        boost_rule.background,
+        process_dynamic_priority_boost_setting_label,
+    );
+    if boost_rule.configured {
+        summary.mark_custom(ProcessListColumn::DynamicPriorityBoost);
     }
+    summary.set_active(ProcessListColumn::DynamicPriorityBoost, boost_rule.active);
 
-    for rule in
-        settings.core_steering.rules.iter().filter(|rule| {
-            rule.enabled && process_setting_matches(&rule.process_name, process_name)
-        })
-    {
-        summary.core_steering = core_steering_rule_label(rule);
-        summary.mark_custom(ProcessListColumn::CoreSteering);
-    }
-
-    if settings.io_priority.exclusion_enabled_for(process_name) {
-        summary.io_priority = process_list_exclude_label();
+    let io_rule = process_rule_state(
+        settings.io_priority.override_for(process_name, true),
+        settings.io_priority.override_for(process_name, false),
+    );
+    if io_rule.configured {
+        summary.io_priority = if settings.io_priority.exclusion_enabled_for(process_name) {
+            process_list_exclude_label()
+        } else {
+            priority_pair_label(
+                io_rule.foreground,
+                io_rule.background,
+                process_io_priority_setting_label,
+            )
+        };
         summary.mark_custom(ProcessListColumn::IoPriority);
     } else {
         summary.io_priority = io_priority_policy_label(&settings.io_priority);
     }
+    summary.set_active(ProcessListColumn::IoPriority, io_rule.active);
 
-    if settings.gpu_priority.exclusion_enabled_for(process_name) {
-        summary.gpu_priority = process_list_exclude_label();
+    let gpu_rule = process_rule_state(
+        settings.gpu_priority.override_for(process_name, true),
+        settings.gpu_priority.override_for(process_name, false),
+    );
+    if gpu_rule.configured {
+        summary.gpu_priority = if settings.gpu_priority.exclusion_enabled_for(process_name) {
+            process_list_exclude_label()
+        } else {
+            priority_pair_label(
+                gpu_rule.foreground,
+                gpu_rule.background,
+                process_gpu_priority_setting_label,
+            )
+        };
         summary.mark_custom(ProcessListColumn::GpuPriority);
     } else {
         summary.gpu_priority = gpu_priority_policy_label(&settings.gpu_priority);
     }
+    summary.set_active(ProcessListColumn::GpuPriority, gpu_rule.active);
 
-    if settings.memory_priority.exclusion_enabled_for(process_name) {
-        summary.memory_priority = process_list_exclude_label();
+    let memory_rule = process_rule_state(
+        settings.memory_priority.override_for(process_name, true),
+        settings.memory_priority.override_for(process_name, false),
+    );
+    if memory_rule.configured {
+        summary.memory_priority = if settings.memory_priority.exclusion_enabled_for(process_name) {
+            process_list_exclude_label()
+        } else {
+            priority_pair_label(
+                memory_rule.foreground,
+                memory_rule.background,
+                process_memory_priority_setting_label,
+            )
+        };
         summary.mark_custom(ProcessListColumn::MemoryPriority);
     } else {
         summary.memory_priority = memory_priority_policy_label(&settings.memory_priority);
     }
-
-    summary.memory_trim = process_list_include_exclude_label(
-        !settings.memory_trim.exclusion_enabled_for(process_name),
-    );
-    if settings.memory_trim.exclusion_enabled_for(process_name) {
-        summary.mark_custom(ProcessListColumn::MemoryTrim);
-    }
-    summary.app_suspension = process_list_include_exclude_label(
-        settings
-            .app_suspension
-            .suspendable_app_enabled_for(process_name),
-    );
-    if settings
-        .app_suspension
-        .suspendable_app_enabled_for(process_name)
-    {
-        summary.mark_custom(ProcessListColumn::AppSuspension);
-    }
-    let timer_resolution_rule = settings
-        .timer_resolution
-        .desired_resolution_for_foreground(process_name);
-    if let Some((_, desired_100ns)) = timer_resolution_rule {
-        summary.timer_resolution = timer_resolution::format_resolution_ms(desired_100ns);
-        summary.mark_custom(ProcessListColumn::TimerResolution);
-    } else {
-        summary.timer_resolution = process_list_default_label();
-    }
+    summary.set_active(ProcessListColumn::MemoryPriority, memory_rule.active);
 
     summary
 }
 
+struct ProcessRuleState<T> {
+    foreground: T,
+    background: T,
+    configured: bool,
+    active: bool,
+}
+
+fn process_rule_state<T: Copy + Default>(
+    foreground: Option<Option<T>>,
+    background: Option<Option<T>>,
+) -> ProcessRuleState<T> {
+    ProcessRuleState {
+        foreground: foreground.flatten().unwrap_or_default(),
+        background: background.flatten().unwrap_or_default(),
+        configured: foreground.is_some() || background.is_some(),
+        active: foreground.flatten().is_some() || background.flatten().is_some(),
+    }
+}
+
 pub(in crate::ui::app) fn default_process_policy_summary() -> ProcessPolicySummary {
     ProcessPolicySummary {
+        status: t!("process_list.status_active").to_string(),
+        cpu_percent: None,
+        memory_bytes: None,
         power_plan_foreground: process_list_default_label(),
         power_plan_running: process_list_default_label(),
+        adaptive_engine: process_list_include_label(),
         background_efficiency: process_list_include_label(),
-        core_limiter: process_list_exclude_label(),
-        background_cpu_restriction: process_list_off_label(),
-        core_steering: default_core_steering_label(),
         process_priority: process_priority_setting_label(ProcessPrioritySetting::Default),
+        thread_priority: process_thread_priority_setting_label(
+            ProcessThreadPrioritySetting::Default,
+        ),
+        dynamic_priority_boost: process_dynamic_priority_boost_setting_label(
+            ProcessDynamicPriorityBoostSetting::Default,
+        ),
         io_priority: process_io_priority_setting_label(ProcessIoPrioritySetting::Default),
         gpu_priority: process_gpu_priority_setting_label(ProcessGpuPrioritySetting::Default),
         memory_priority: process_memory_priority_setting_label(
             ProcessMemoryPrioritySetting::Default,
         ),
-        memory_trim: process_list_include_label(),
-        app_suspension: process_list_exclude_label(),
-        timer_resolution: process_list_default_label(),
         custom_columns: HashSet::new(),
+        active_columns: HashSet::from([
+            ProcessListColumn::AdaptiveEngine,
+            ProcessListColumn::BackgroundEfficiency,
+        ]),
+    }
+}
+
+fn priority_pair_label<T: Copy + PartialEq>(
+    foreground: T,
+    background: T,
+    label: impl Fn(T) -> String,
+) -> String {
+    if foreground == background {
+        label(foreground)
+    } else {
+        format!("{} / {}", label(foreground), label(background))
     }
 }
 
@@ -812,7 +838,21 @@ pub(in crate::ui::app) fn process_setting_matches(
     process_name: &str,
 ) -> bool {
     let configured_process = configured_process.trim();
-    !configured_process.is_empty() && same_process_name(configured_process, process_name)
+    !configured_process.is_empty()
+        && same_executable_path(
+            Path::new(configured_process),
+            Path::new(process_name.trim()),
+        )
+}
+
+pub(in crate::ui::app) fn process_path_matches_display_name(
+    executable_path: &str,
+    display_name: &str,
+) -> bool {
+    Path::new(executable_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(display_name.trim()))
 }
 
 pub(in crate::ui::app) fn foreground_power_plan_policy_label(
@@ -820,11 +860,10 @@ pub(in crate::ui::app) fn foreground_power_plan_policy_label(
     plans: &[PowerPlan],
     process_name: &str,
 ) -> String {
-    if let Some(rule) = settings
-        .by_foreground
-        .rules
-        .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+    if let Some(rule) =
+        settings.by_foreground.rules.iter().find(|rule| {
+            rule.enabled && process_setting_matches(&rule.executable_path, process_name)
+        })
     {
         return power_plan_policy_value_label(plans, rule.power_plan_guid.as_deref());
     }
@@ -840,7 +879,7 @@ pub(in crate::ui::app) fn foreground_power_plan_policy_is_custom(
         .by_foreground
         .rules
         .iter()
-        .any(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .any(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
 }
 
 pub(in crate::ui::app) fn running_app_power_plan_policy_label(
@@ -851,7 +890,7 @@ pub(in crate::ui::app) fn running_app_power_plan_policy_label(
     if let Some(rule) = settings
         .rules
         .iter()
-        .find(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .find(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
     {
         return power_plan_policy_value_label(plans, rule.power_plan_guid.as_deref());
     }
@@ -866,7 +905,7 @@ pub(in crate::ui::app) fn running_app_power_plan_policy_is_custom(
     settings
         .rules
         .iter()
-        .any(|rule| rule.enabled && process_setting_matches(&rule.process_name, process_name))
+        .any(|rule| rule.enabled && process_setting_matches(&rule.executable_path, process_name))
 }
 
 pub(in crate::ui::app) fn power_plan_policy_value_label(
@@ -883,11 +922,6 @@ pub(in crate::ui::app) fn power_plan_policy_value_label(
         .map(|plan| plan.name.clone())
         .unwrap_or_else(|| guid.to_owned())
 }
-
-pub(in crate::ui::app) fn process_list_off_label() -> String {
-    "Off".to_owned()
-}
-
 pub(in crate::ui::app) fn process_list_include_exclude_label(included: bool) -> String {
     if included {
         process_list_include_label()
@@ -895,13 +929,6 @@ pub(in crate::ui::app) fn process_list_include_exclude_label(included: bool) -> 
         process_list_exclude_label()
     }
 }
-
-pub(in crate::ui::app) fn process_list_include_value_label(
-    value: impl std::fmt::Display,
-) -> String {
-    format!("{} ({value})", process_list_include_label())
-}
-
 pub(in crate::ui::app) fn process_list_include_label() -> String {
     "Include".to_owned()
 }
@@ -913,30 +940,6 @@ pub(in crate::ui::app) fn process_list_exclude_label() -> String {
 pub(in crate::ui::app) fn process_list_default_label() -> String {
     t!("process_list.default").to_string()
 }
-
-pub(in crate::ui::app) fn background_cpu_restriction_policy_label(
-    settings: &BackgroundCpuRestrictionSettings,
-) -> String {
-    if settings.control_style == CpuRestrictionControlStyle::CoreToggle && settings.core_mask != 0 {
-        return format_cpu_mask(settings.core_mask);
-    }
-
-    format!("{}%", settings.percent.min(100))
-}
-
-pub(in crate::ui::app) fn core_steering_rule_label(rule: &CoreSteeringRule) -> String {
-    match rule.mode {
-        CoreSteeringMode::EfficiencyOff => {
-            core_steering_mode_label(CoreSteeringMode::EfficiencyOff)
-        }
-        CoreSteeringMode::Hard | CoreSteeringMode::Soft => format_cpu_mask(rule.core_mask),
-    }
-}
-
-pub(in crate::ui::app) fn default_core_steering_label() -> String {
-    format_cpu_mask(default_affinity_mask())
-}
-
 pub(in crate::ui::app) fn io_priority_has_foreground_background_split(
     settings: &IoPrioritySettings,
 ) -> bool {
@@ -998,36 +1001,6 @@ pub(in crate::ui::app) fn memory_priority_policy_label(
         process_memory_priority_setting_label(settings.background_priority)
     }
 }
-
-pub(in crate::ui::app) fn format_cpu_mask(mask: u64) -> String {
-    if mask == 0 {
-        return t!("common.none").to_string();
-    }
-
-    let mut ranges = Vec::new();
-    let mut index = 0;
-    while index < u64::BITS {
-        if mask & (1_u64 << index) == 0 {
-            index += 1;
-            continue;
-        }
-
-        let start = index;
-        while index + 1 < u64::BITS && mask & (1_u64 << (index + 1)) != 0 {
-            index += 1;
-        }
-        let end = index;
-        if start == end {
-            ranges.push(start.to_string());
-        } else {
-            ranges.push(format!("{start}-{end}"));
-        }
-        index += 1;
-    }
-
-    ranges.join(", ")
-}
-
 pub(in crate::ui::app) fn process_priority_label(priority: ProcessPriority) -> String {
     match priority {
         ProcessPriority::Normal => format!("8 ({})", t!("workload_engine.priority_normal")),
@@ -1164,5 +1137,22 @@ pub(in crate::ui::app) fn process_memory_priority_label(priority: ProcessMemoryP
             t!("workload_engine.memory_priority_below_normal").to_string()
         }
         ProcessMemoryPriority::Normal => t!("workload_engine.memory_priority_normal").to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_path_matches_display_name;
+
+    #[test]
+    fn selected_process_path_requires_its_display_name() {
+        assert!(process_path_matches_display_name(
+            r"C:\Apps\Example.exe",
+            "example.EXE"
+        ));
+        assert!(!process_path_matches_display_name(
+            r"C:\Apps\Example.exe",
+            "Other.exe"
+        ));
     }
 }

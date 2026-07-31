@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     cmp::Ordering as CmpOrdering,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
     sync::{
@@ -15,10 +15,11 @@ use rust_i18n::t;
 
 use chrono::{Local, TimeZone};
 use gpui::{
-    canvas, deferred, div, img, percentage, prelude::*, px, relative, rgb, size, Animation,
+    canvas, deferred, div, img, percentage, prelude::*, px, relative, rgb, rgba, size, Animation,
     AnimationExt, AnyElement, App, Bounds, Context, DragMoveEvent, Empty, Entity, EntityId,
-    Focusable, Hsla, Image, IntoElement, MouseButton, NavigationDirection, Pixels, Point, Render,
-    ScrollHandle, SharedString, Subscription, Task, Timer, Window, WindowControlArea,
+    FocusHandle, Focusable, Hsla, Image, IntoElement, MouseButton, NavigationDirection, Pixels,
+    Point, PromptButton, PromptLevel, Render, ScrollAnchor, ScrollHandle, SharedString,
+    Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
     animation::cubic_bezier,
@@ -28,7 +29,7 @@ use gpui_component::{
     h_flex,
     input::{Escape as InputEscape, Input, InputEvent, InputState},
     label::Label,
-    menu::{ContextMenuExt, PopupMenuItem},
+    menu::{ContextMenuExt, PopupMenu, PopupMenuItem},
     scroll::{Scrollable, ScrollableElement, Scrollbar},
     slider::{SliderEvent, SliderState, SliderValue},
     theme::Colorize,
@@ -56,7 +57,7 @@ use crate::{
         CpuRestrictionStrategy, CpuUsageComparison, DynamicPriorityBoostSettings,
         ForegroundBoostPriority, GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings,
         MemoryTrimSettings, NetworkThresholdUnit, ProcessDynamicPriorityBoostSetting,
-        ProcessExclusionRule, ProcessGpuPrioritySetting, ProcessIoPriority,
+        ProcessExclusionRule, ProcessGpuPriority, ProcessGpuPrioritySetting, ProcessIoPriority,
         ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
         ProcessPriority, ProcessPrioritySetting, ProcessPrioritySettings,
         ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings, TimerResolutionRule,
@@ -65,7 +66,7 @@ use crate::{
     },
     core_limiter::{self, CoreLimiterSnapshot},
     core_steering::{self, CoreSteeringSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
-    cpu::{CpuUsageMonitor, CpuUsageSnapshot},
+    cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
     dashboard_metrics::{
         sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
         NetworkUsageMonitor, NetworkUsageSnapshot,
@@ -77,9 +78,12 @@ use crate::{
     },
     file_dialog::{choose_action_log_export_file, choose_settings_file, FileDialogMode},
     foreground::{
-        capture_process_action_target, foreground_process_name, list_process_candidates,
-        list_processes, process_name_key, same_process_name, ProcessActionTarget,
-        ProcessActionTargetError, ProcessCandidateInfo, ProcessInfo,
+        capture_process_action_target, contains_process_name, ensure_process_action_target_access,
+        executable_path_key, foreground_process, list_process_candidates,
+        list_processes_with_paths, open_process_location, process_candidates_from_processes,
+        same_executable_path, sample_process_resources, terminate_process, terminate_process_tree,
+        ProcessActionAccess, ProcessActionTarget, ProcessActionTargetError, ProcessCandidateInfo,
+        ProcessInfo, ProcessResourceSample, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     gpu_priority::{self, GpuPrioritySnapshot},
     io_priority::{self, IoPrioritySnapshot},
@@ -120,6 +124,7 @@ mod list_removal;
 mod navigation_state;
 mod pages;
 mod process_refresh;
+pub(in crate::ui::app) use process_refresh::process_load_state_message;
 mod runtime;
 mod settings_io;
 mod shared;
@@ -156,6 +161,7 @@ const MOTION_EXPAND_SECONDS: f64 = 0.24;
 const MOTION_EXPAND_MIN_SECONDS: f64 = 0.1;
 const UNSAVED_POPUP_VANISH_SECONDS: f64 = 0.18;
 const PROCESS_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+const PROCESS_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const TITLE_BAR_HEIGHT: f32 = 40.0;
 const TITLE_BAR_CONTROL_WIDTH: f32 = 46.0;
 const TITLE_BAR_CONTROL_ICON_SIZE: f32 = 12.0;
@@ -276,37 +282,29 @@ static UI_ANIMATIONS_ENABLED: AtomicBool = AtomicBool::new(true);
 
 const NAV_HISTORY_LIMIT: usize = 64;
 
-#[derive(Clone)]
 struct ProcessCandidate {
     name: String,
-    image_path: Option<PathBuf>,
+    image_path: PathBuf,
     icon: Option<Arc<Image>>,
 }
 
-impl PartialEq for ProcessCandidate {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.image_path == other.image_path
-    }
-}
-
-impl Eq for ProcessCandidate {}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ProcessPolicySummary {
+    status: String,
+    cpu_percent: Option<f32>,
+    memory_bytes: Option<u64>,
     power_plan_foreground: String,
     power_plan_running: String,
+    adaptive_engine: String,
     background_efficiency: String,
-    core_limiter: String,
-    background_cpu_restriction: String,
-    core_steering: String,
     process_priority: String,
+    thread_priority: String,
+    dynamic_priority_boost: String,
     io_priority: String,
     gpu_priority: String,
     memory_priority: String,
-    memory_trim: String,
-    app_suspension: String,
-    timer_resolution: String,
     custom_columns: HashSet<ProcessListColumn>,
+    active_columns: HashSet<ProcessListColumn>,
 }
 
 impl ProcessPolicySummary {
@@ -316,6 +314,18 @@ impl ProcessPolicySummary {
 
     fn uses_custom_rule(&self, column: ProcessListColumn) -> bool {
         self.custom_columns.contains(&column)
+    }
+
+    fn set_active(&mut self, column: ProcessListColumn, active: bool) {
+        if active {
+            self.active_columns.insert(column);
+        } else {
+            self.active_columns.remove(&column);
+        }
+    }
+
+    fn value_is_active(&self, column: ProcessListColumn) -> bool {
+        self.active_columns.contains(&column)
     }
 }
 
@@ -355,6 +365,28 @@ struct DashboardDualLinePoint {
 struct MemoryCapacityParts {
     value: f64,
     unit: &'static str,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum ProcessLoadState {
+    #[default]
+    Loading,
+    Loaded,
+    Failed(String),
+    Paused,
+}
+
+#[derive(Clone)]
+struct ProcessDetailsDraft {
+    display_name: String,
+    executable_path: String,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ProcessResourceUsage {
+    cpu_percent: Option<f32>,
+    working_set_bytes: Option<u64>,
+    efficiency_mode: Option<bool>,
 }
 
 pub struct WinderustApp {
@@ -422,7 +454,15 @@ pub struct WinderustApp {
     tray_icon: Option<TrayIcon>,
     status_message: String,
     process_candidates: Vec<ProcessCandidate>,
+    process_candidate_load_state: ProcessLoadState,
+    selected_process_paths: HashMap<SuggestionTarget, String>,
     running_processes: Vec<ProcessInfo>,
+    process_resource_samples: BTreeMap<u32, ProcessResourceSample>,
+    process_resource_usage: HashMap<u32, ProcessResourceUsage>,
+    process_efficiency_mode_overrides: HashMap<u32, (u64, bool, Option<u32>)>,
+    hide_inaccessible_processes: bool,
+    running_process_load_state: ProcessLoadState,
+    process_refresh_in_progress: bool,
     app_icon: Option<Arc<Image>>,
     process_icon_cache: HashMap<PathBuf, Option<Arc<Image>>>,
     active_power_plan_picker: Option<String>,
@@ -451,15 +491,20 @@ pub struct WinderustApp {
     expanded_rule_cards: HashSet<RuleCardTarget>,
     expanded_setting_groups: HashSet<SettingGroupTarget>,
     expanded_process_list_groups: HashSet<String>,
-    hidden_process_list_columns: HashSet<ProcessListColumn>,
     process_list_sort: ProcessListSort,
     selected_process_id: Option<u32>,
+    process_details: Option<ProcessDetailsDraft>,
     breadcrumb_transition: Option<BreadcrumbTransition>,
     page_transition_generation: u64,
     available_update: Option<AvailableUpdate>,
     latest_version: Option<String>,
     update_check_in_progress: bool,
     update_check_message: Option<String>,
+    startup_update_modal_visible: bool,
+    startup_update_modal_closing: bool,
+    about_updates_focus_handle: FocusHandle,
+    about_page_scroll_handle: ScrollHandle,
+    about_updates_scroll_anchor: ScrollAnchor,
     admin_rights_prompt_visible: bool,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
@@ -467,8 +512,10 @@ pub struct WinderustApp {
     dropdown_anchor_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
     accent_color_picker: Entity<ColorPickerState>,
     _rule_title_input_subscriptions: Vec<Subscription>,
+    _process_picker_input_subscriptions: Vec<Subscription>,
     _numeric_input_subscription: Option<Subscription>,
     _dashboard_search_subscription: Option<Subscription>,
+    _process_list_search_subscription: Option<Subscription>,
     _processor_power_slider_subscriptions: Vec<Subscription>,
     _cpu_threshold_slider_subscriptions: Vec<Subscription>,
     _activity_slider_subscriptions: Vec<Subscription>,
@@ -616,14 +663,13 @@ impl ListItemRemovalTarget {
 
 struct UiInputs {
     dashboard_search: Entity<InputState>,
+    process_list_search: Entity<InputState>,
     by_cpu_load_rule_names: Vec<Entity<InputState>>,
     cpu_rule_thresholds: Vec<Entity<SliderState>>,
     cpu_rule_upper_thresholds: Vec<Entity<SliderState>>,
     by_time_rule_names: Vec<Entity<InputState>>,
     schedule_start_times: Vec<Entity<InputState>>,
     schedule_end_times: Vec<Entity<InputState>>,
-    foreground_rule_names: Vec<Entity<InputState>>,
-    foreground_rule_processes: Vec<Entity<InputState>>,
     foreground_process: Entity<InputState>,
     background_efficiency_process: Entity<InputState>,
     background_cpu_exclusion: Entity<InputState>,
@@ -752,6 +798,7 @@ impl WinderustApp {
                 }
             });
         let adaptive_plan_recovery_error = restore_stale_adaptive_plans().err();
+        let debug_privilege_error = privilege::enable_debug_privilege().err();
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
@@ -768,7 +815,15 @@ impl WinderustApp {
         if let Some(error) = settings_load_error {
             initial_processor_power.status_message = error;
         }
+        if let Some(error) = debug_privilege_error {
+            initial_processor_power.status_message = error;
+        }
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
+        let initial_process_load_state = if settings.advanced.pause_process_population {
+            ProcessLoadState::Paused
+        } else {
+            ProcessLoadState::Loading
+        };
         let (win32_priority_separation_value, win32_priority_separation_status) =
             read_win32_priority_separation_with_status();
         let win32_priority_separation_edit_value = win32_priority_separation_value
@@ -804,6 +859,9 @@ impl WinderustApp {
             },
         );
 
+        let about_page_scroll_handle = ScrollHandle::new();
+        let about_updates_scroll_anchor =
+            ScrollAnchor::for_handle(about_page_scroll_handle.clone());
         let mut app = Self {
             saved_settings: settings.clone(),
             last_background_settings: Arc::new(settings.clone()),
@@ -876,7 +934,15 @@ impl WinderustApp {
             tray_icon: None,
             status_message: initial_processor_power.status_message,
             process_candidates: Vec::new(),
+            process_candidate_load_state: initial_process_load_state.clone(),
+            selected_process_paths: HashMap::new(),
             running_processes: Vec::new(),
+            process_resource_samples: BTreeMap::new(),
+            process_resource_usage: HashMap::new(),
+            process_efficiency_mode_overrides: HashMap::new(),
+            hide_inaccessible_processes: true,
+            running_process_load_state: initial_process_load_state,
+            process_refresh_in_progress: false,
             app_icon,
             process_icon_cache: HashMap::new(),
             active_power_plan_picker: None,
@@ -913,15 +979,20 @@ impl WinderustApp {
             expanded_rule_cards: HashSet::new(),
             expanded_setting_groups: HashSet::new(),
             expanded_process_list_groups: HashSet::new(),
-            hidden_process_list_columns: HashSet::new(),
             process_list_sort: ProcessListSort::default(),
             selected_process_id: None,
+            process_details: None,
             breadcrumb_transition: None,
             page_transition_generation: 0,
             available_update: None,
             latest_version: None,
             update_check_in_progress: false,
             update_check_message: None,
+            startup_update_modal_visible: false,
+            startup_update_modal_closing: false,
+            about_updates_focus_handle: cx.focus_handle(),
+            about_page_scroll_handle,
+            about_updates_scroll_anchor,
             admin_rights_prompt_visible: !privilege::is_running_as_admin(),
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
@@ -929,8 +1000,10 @@ impl WinderustApp {
             dropdown_anchor_bounds: Rc::new(RefCell::new(HashMap::new())),
             accent_color_picker,
             _rule_title_input_subscriptions: Vec::new(),
+            _process_picker_input_subscriptions: Vec::new(),
             _numeric_input_subscription: None,
             _dashboard_search_subscription: None,
+            _process_list_search_subscription: None,
             _processor_power_slider_subscriptions: Vec::new(),
             _cpu_threshold_slider_subscriptions: Vec::new(),
             _activity_slider_subscriptions: Vec::new(),
@@ -941,8 +1014,10 @@ impl WinderustApp {
         };
 
         app.rebuild_rule_title_input_subscriptions(window, cx);
+        app.rebuild_process_picker_input_subscriptions(window, cx);
         app.subscribe_to_numeric_input(window, cx);
         app.subscribe_to_dashboard_search_input(window, cx);
+        app.subscribe_to_process_list_search_input(window, cx);
         app.subscribe_to_processor_power_sliders(window, cx);
         app.rebuild_cpu_threshold_slider_subscriptions(window, cx);
         app.subscribe_to_activity_sliders(window, cx);
@@ -1039,12 +1114,7 @@ impl Render for WinderustApp {
         let show_admin_rights_prompt = self.admin_rights_prompt_visible;
         let admin_rights_prompt_bottom = if show_unsaved_popup { 190.0 } else { 54.0 };
         let page_content = animated_page_content_frame(
-            page_content_frame(
-                page_header,
-                page_body,
-                page_uses_inner_scroll,
-                !search_active && self.page == Page::ProcessList,
-            ),
+            page_content_frame(page_header, page_body, page_uses_inner_scroll),
             self.active_breadcrumb_transition(self.page),
         );
         let page_scroll_area = if page_uses_inner_scroll {
@@ -1054,6 +1124,18 @@ impl Render for WinderustApp {
                 .min_w(px(0.0))
                 .min_h(px(0.0))
                 .overflow_hidden()
+                .child(page_content)
+                .into_any_element()
+        } else if self.page == Page::About {
+            v_flex()
+                .id("about-page-scroll")
+                .flex_1()
+                .h_full()
+                .min_w(px(0.0))
+                .min_h(px(0.0))
+                .overflow_y_scroll()
+                .track_scroll(&self.about_page_scroll_handle)
+                .vertical_scrollbar(&self.about_page_scroll_handle)
                 .child(page_content)
                 .into_any_element()
         } else {
@@ -1079,7 +1161,13 @@ impl Render for WinderustApp {
                 handle_navigation_mouse_button(app, event.button, cx);
             }))
             .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
-                clear_input(&app.inputs.dashboard_search, window, cx);
+                if app.startup_update_modal_visible {
+                    app.dismiss_startup_update_modal(cx);
+                } else if app.process_details.is_some() {
+                    app.save_process_details(cx);
+                } else {
+                    clear_input(&app.inputs.dashboard_search, window, cx);
+                }
                 window.blur();
                 cx.notify();
             }))
@@ -1127,6 +1215,11 @@ impl Render for WinderustApp {
             })
             .child(if show_admin_rights_prompt {
                 self.render_admin_rights_prompt(admin_rights_prompt_bottom, cx)
+            } else {
+                div().into_any_element()
+            })
+            .child(if self.startup_update_modal_visible {
+                self.render_update_available_modal(cx)
             } else {
                 div().into_any_element()
             })
@@ -1389,7 +1482,7 @@ mod tests {
             &settings,
             PowerModePreset::Performance
         ));
-        assert!(!settings.adaptive_engine.enabled);
+        assert!(settings.adaptive_engine.enabled);
         assert!(!settings.background_efficiency.enabled);
         assert!(settings.workload_engine.enabled);
         assert!(settings.workload_engine.workload_engine_enabled);
@@ -1401,7 +1494,7 @@ mod tests {
 
         apply_power_mode_preset(&mut settings, PowerModePreset::Speed);
         assert!(power_mode_matches_preset(&settings, PowerModePreset::Speed));
-        assert!(!settings.adaptive_engine.enabled);
+        assert!(settings.adaptive_engine.enabled);
         assert!(settings.workload_engine.enabled);
         assert!(settings.workload_engine.workload_engine_enabled);
         assert!(settings.adaptive_engine.processor_policy_enabled);
@@ -1450,7 +1543,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_engine_toggle_keeps_power_mode_preset() {
+    fn adaptive_engine_toggle_disables_power_mode_preset_match() {
         let mut settings = Settings::default();
 
         for preset in PowerModePreset::ALL {
@@ -1458,7 +1551,7 @@ mod tests {
             let enabled = !settings.adaptive_engine.enabled;
             apply_adaptive_engine(&mut settings, enabled);
 
-            assert!(power_mode_matches_preset(&settings, preset));
+            assert!(!power_mode_matches_preset(&settings, preset));
         }
     }
 
@@ -1660,7 +1753,7 @@ mod tests {
         assert!(input_hook_required(&settings));
 
         settings.adaptive_engine.enabled = true;
-        assert!(!input_hook_required(&settings));
+        assert!(input_hook_required(&settings));
 
         settings.adaptive_engine.enabled = false;
         settings.general.enabled = false;
@@ -1715,8 +1808,8 @@ mod tests {
         assert_eq!(
             input_hook_config(&settings),
             InputHookConfig {
-                keyboard: false,
-                mouse: false,
+                keyboard: true,
+                mouse: true,
             }
         );
     }

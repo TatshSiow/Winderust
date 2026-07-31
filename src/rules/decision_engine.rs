@@ -2,8 +2,9 @@ use crate::{
     activity::ActivityState,
     config::Settings,
     features::power_plan_control::{ByCpuLoadDecision, ByTimeDecision},
-    foreground::same_process_name,
+    foreground::same_executable_path,
 };
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionState {
@@ -21,7 +22,7 @@ pub enum DecisionState {
 #[derive(Debug, Clone)]
 pub struct DecisionInput {
     pub activity_state: ActivityState,
-    pub foreground_process_name: Option<String>,
+    pub foreground_executable_path: Option<String>,
     pub plugged_in: Option<bool>,
     pub by_running_app: Option<ByRunningAppDecision>,
     pub by_time: Option<ByTimeDecision>,
@@ -59,19 +60,24 @@ pub fn decide(settings: &Settings, input: DecisionInput) -> DecisionOutcome {
         );
     }
 
-    let foreground_process_name = input.foreground_process_name.as_deref();
+    let foreground_executable_path = input.foreground_executable_path.as_deref();
 
-    if let Some(foreground_process_name) =
-        foreground_process_name.filter(|_| settings.by_foreground.enabled)
+    if let Some(foreground_executable_path) =
+        foreground_executable_path.filter(|_| settings.by_foreground.enabled)
     {
         for rule in &settings.by_foreground.rules {
-            if rule.enabled && same_process_name(&rule.process_name, foreground_process_name) {
+            if rule.enabled
+                && same_executable_path(
+                    Path::new(&rule.executable_path),
+                    Path::new(foreground_executable_path),
+                )
+            {
                 if let Some(power_plan_guid) = rule.power_plan_guid.clone() {
                     return DecisionOutcome::with_power_plan(
                         Some(power_plan_guid),
                         DecisionState::ByForeground,
                         format!(
-                            "{foreground_process_name} matched foreground rule '{}'.",
+                            "{foreground_executable_path} matched foreground rule '{}'.",
                             rule.name
                         ),
                     );
@@ -221,7 +227,7 @@ mod tests {
             &test_settings(),
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -246,7 +252,7 @@ mod tests {
             &test_settings(),
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -270,7 +276,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -294,7 +300,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -315,7 +321,7 @@ mod tests {
             &test_settings(),
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -336,7 +342,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: Some("backup.exe".to_owned()),
+                foreground_executable_path: Some("backup.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -357,7 +363,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: Some(true),
                 by_running_app: None,
                 by_time: None,
@@ -379,7 +385,7 @@ mod tests {
         settings.by_foreground.rules = vec![ByForegroundRule {
             enabled: true,
             name: "Game".to_owned(),
-            process_name: "game.exe".to_owned(),
+            executable_path: "game.exe".to_owned(),
             power_plan_guid: Some("foreground-custom".to_owned()),
         }];
 
@@ -387,7 +393,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
-                foreground_process_name: Some("game.exe".to_owned()),
+                foreground_executable_path: Some("game.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -404,7 +410,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -424,7 +430,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -442,7 +448,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -458,7 +464,7 @@ mod tests {
         settings.by_foreground.rules = vec![ByForegroundRule {
             enabled: true,
             name: "Editing".to_owned(),
-            process_name: "editor.exe".to_owned(),
+            executable_path: "editor.exe".to_owned(),
             power_plan_guid: Some("balanced-guid".to_owned()),
         }];
 
@@ -466,7 +472,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: Some("editor.exe".to_owned()),
+                foreground_executable_path: Some("editor.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -484,7 +490,7 @@ mod tests {
         settings.by_foreground.rules = vec![ByForegroundRule {
             enabled: true,
             name: "Editing".to_owned(),
-            process_name: "editor.exe".to_owned(),
+            executable_path: "editor.exe".to_owned(),
             power_plan_guid: None,
         }];
 
@@ -492,7 +498,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: Some("editor.exe".to_owned()),
+                foreground_executable_path: Some("editor.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: Some(ByTimeDecision {
@@ -517,7 +523,7 @@ mod tests {
         settings.by_foreground.rules = vec![ByForegroundRule {
             enabled: true,
             name: "Rendering".to_owned(),
-            process_name: "render.exe".to_owned(),
+            executable_path: "render.exe".to_owned(),
             power_plan_guid: None,
         }];
 
@@ -525,7 +531,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: Some("render.exe".to_owned()),
+                foreground_executable_path: Some("render.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -547,7 +553,7 @@ mod tests {
             &test_settings(),
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: Some(ByRunningAppDecision {
                     rule_name: "Game".to_owned(),
@@ -579,7 +585,7 @@ mod tests {
         settings.by_foreground.rules = vec![ByForegroundRule {
             enabled: true,
             name: "Game focus".to_owned(),
-            process_name: "game.exe".to_owned(),
+            executable_path: "game.exe".to_owned(),
             power_plan_guid: Some("foreground-guid".to_owned()),
         }];
 
@@ -587,7 +593,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: Some("game.exe".to_owned()),
+                foreground_executable_path: Some("game.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: Some(ByRunningAppDecision {
                     rule_name: "Game running".to_owned(),
@@ -609,7 +615,7 @@ mod tests {
         settings.by_foreground.rules = vec![ByForegroundRule {
             enabled: false,
             name: "Editing".to_owned(),
-            process_name: "editor.exe".to_owned(),
+            executable_path: "editor.exe".to_owned(),
             power_plan_guid: Some("balanced-guid".to_owned()),
         }];
 
@@ -617,7 +623,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Idle,
-                foreground_process_name: Some("editor.exe".to_owned()),
+                foreground_executable_path: Some("editor.exe".to_owned()),
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,
@@ -638,7 +644,7 @@ mod tests {
             &settings,
             DecisionInput {
                 activity_state: ActivityState::Active,
-                foreground_process_name: None,
+                foreground_executable_path: None,
                 plugged_in: None,
                 by_running_app: None,
                 by_time: None,

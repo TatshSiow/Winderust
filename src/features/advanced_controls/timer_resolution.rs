@@ -34,7 +34,7 @@ impl TimerResolutionManager {
         &mut self,
         settings: &TimerResolutionSettings,
         automation_enabled: bool,
-        foreground_process_name: Option<&str>,
+        foreground_executable_path: Option<&str>,
         action_log: &mut ActionLog,
     ) -> TimerResolutionSnapshot {
         if !automation_enabled {
@@ -43,6 +43,18 @@ impl TimerResolutionManager {
 
         if !settings.enabled {
             return self.disable(action_log, "timer resolution control disabled");
+        }
+
+        if !settings.rules.iter().any(|rule| {
+            rule.enabled && std::path::Path::new(rule.executable_path.trim()).is_absolute()
+        }) {
+            return self.release_inactive(
+                true,
+                None,
+                action_log,
+                "no timer resolution foreground rules are enabled",
+                "No timer resolution foreground rules configured.",
+            );
         }
 
         let info = match query_timer_resolution() {
@@ -66,8 +78,8 @@ impl TimerResolutionManager {
             }
         };
 
-        let Some(foreground_process_name) =
-            foreground_process_name.filter(|name| !name.trim().is_empty())
+        let Some(foreground_executable_path) =
+            foreground_executable_path.filter(|path| !path.trim().is_empty())
         else {
             return self.release_inactive(
                 true,
@@ -79,19 +91,14 @@ impl TimerResolutionManager {
         };
 
         let Some((rule_process_name, requested_100ns)) =
-            settings.desired_resolution_for_foreground(foreground_process_name)
+            settings.desired_resolution_for_foreground(foreground_executable_path)
         else {
-            let message = if settings.rules.iter().any(|rule| rule.enabled) {
-                "Waiting for a matching foreground app."
-            } else {
-                "No timer resolution foreground rules configured."
-            };
             return self.release_inactive(
                 true,
                 Some(info),
                 action_log,
                 "no foreground timer resolution rule matched",
-                message,
+                "Waiting for a matching foreground app.",
             );
         };
 

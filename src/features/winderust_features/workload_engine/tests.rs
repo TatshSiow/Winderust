@@ -5,19 +5,20 @@ use crate::config::{ProcessMemoryPrioritySetting, WorkloadEngineSettings};
 fn repeated_failures_suppress_future_workload_engine_attempts_once() {
     let mut manager = WorkloadEngineManager::default();
     let mut log = ActionLog::new(8);
+    let executable_path = r"C:\Apps\app.exe";
 
-    manager.record_process_failure("APP.exe");
-    manager.record_process_failure("app.exe");
-    assert!(!manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
+    manager.record_process_failure(executable_path);
+    manager.record_process_failure(r"C:/Apps/app.exe");
+    assert!(!manager.is_process_suppressed(42, executable_path, &mut log, &mut BTreeSet::new()));
     assert!(log.entries().is_empty());
 
-    manager.record_process_failure("app.exe");
-    assert!(manager.is_process_suppressed(42, "app.exe", &mut log, &mut BTreeSet::new()));
-    assert!(manager.is_process_suppressed(43, "APP.exe", &mut log, &mut BTreeSet::new()));
+    manager.record_process_failure(executable_path);
+    assert!(manager.is_process_suppressed(42, executable_path, &mut log, &mut BTreeSet::new()));
+    assert!(manager.is_process_suppressed(43, r"C:/Apps/app.exe", &mut log, &mut BTreeSet::new()));
 
     let entries = log.entries();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].process_name, "app.exe");
+    assert_eq!(entries[0].process_name, executable_path);
     assert_eq!(entries[0].result, ActionLogResult::Skipped);
 }
 
@@ -178,13 +179,33 @@ fn matching_rule_is_case_insensitive() {
         foreground_stability_delay_ms: 750,
         rules: vec![PriorityRule {
             enabled: true,
-            process_name: " Worker.EXE ".to_owned(),
+            executable_path: " Worker.EXE ".to_owned(),
             priority: ProcessPriority::BelowNormal,
         }],
     };
 
-    assert!(matching_rule(&settings, "worker.exe").is_some());
-    assert!(matching_rule(&settings, "other.exe").is_none());
+    let worker = ProcessInfo {
+        id: 1,
+        parent_id: None,
+        session_id: None,
+        user_name: None,
+        is_critical: Some(false),
+        can_set_information: true,
+        name: "worker.exe".to_owned(),
+        image_path: Some(PathBuf::from("worker.exe")),
+    };
+    let other = ProcessInfo {
+        id: 2,
+        parent_id: None,
+        session_id: None,
+        user_name: None,
+        is_critical: Some(false),
+        can_set_information: true,
+        name: "other.exe".to_owned(),
+        image_path: Some(PathBuf::from("other.exe")),
+    };
+    assert!(matching_rule(&settings, &worker).is_some());
+    assert!(matching_rule(&settings, &other).is_none());
 }
 
 #[test]
@@ -195,28 +216,22 @@ fn builtin_exclusions_cover_system_shell_processes() {
 }
 
 #[test]
-fn foreground_skip_matches_pid_or_process_name() {
-    let foreground_group = BTreeSet::from([42]);
+fn foreground_skip_matches_pid_or_process_group() {
+    let foreground_group = BTreeSet::from([42, 43]);
     assert!(should_skip_foreground_process(
         42,
-        "helper.exe",
         Some(42),
-        &foreground_group,
-        Some("app.exe"),
+        &foreground_group
     ));
     assert!(should_skip_foreground_process(
-        99,
-        "APP.EXE",
+        43,
         Some(42),
-        &foreground_group,
-        Some("app.exe"),
+        &foreground_group
     ));
     assert!(!should_skip_foreground_process(
         99,
-        "other.exe",
         Some(42),
-        &foreground_group,
-        Some("app.exe"),
+        &foreground_group
     ));
 }
 
@@ -226,22 +241,42 @@ fn foreground_group_includes_child_processes() {
         ProcessInfo {
             id: 42,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "foreground.exe".to_owned(),
+            image_path: Some(PathBuf::from("foreground.exe".to_owned())),
         },
         ProcessInfo {
             id: 99,
             parent_id: Some(42),
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "worker.exe".to_owned(),
+            image_path: Some(PathBuf::from("worker.exe".to_owned())),
         },
         ProcessInfo {
             id: 100,
             parent_id: Some(99),
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "helper.exe".to_owned(),
+            image_path: Some(PathBuf::from("helper.exe".to_owned())),
         },
         ProcessInfo {
             id: 101,
             parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_critical: Some(false),
+            can_set_information: true,
             name: "background.exe".to_owned(),
+            image_path: Some(PathBuf::from("background.exe".to_owned())),
         },
     ];
 
@@ -332,6 +367,8 @@ fn workload_engine_selection_can_replace_cooler_selected_process() {
     let now = Instant::now();
     let selected = WorkloadEngineProcess {
         process_name: "selected.exe".to_owned(),
+        executable_path: r"C:\Apps\selected.exe".to_owned(),
+        creation_time: 1,
         previous_cpu_time: None,
         last_usage_tenths: Some(100),
         high_since: Some(now - Duration::from_secs(60)),
@@ -345,6 +382,8 @@ fn workload_engine_selection_can_replace_cooler_selected_process() {
     };
     let hotter = WorkloadEngineProcess {
         process_name: "hotter.exe".to_owned(),
+        executable_path: r"C:\Apps\hotter.exe".to_owned(),
+        creation_time: 2,
         previous_cpu_time: None,
         last_usage_tenths: Some(900),
         high_since: Some(now),
@@ -376,6 +415,8 @@ fn workload_engine_status_treats_unselected_hot_process_as_watching() {
         42,
         WorkloadEngineProcess {
             process_name: "worker.exe".to_owned(),
+            executable_path: r"C:\Apps\worker.exe".to_owned(),
+            creation_time: 42,
             previous_cpu_time: None,
             last_usage_tenths: Some(900),
             high_since: Some(now - Duration::from_secs(2)),
@@ -649,6 +690,7 @@ fn release_processes_skips_restore_when_process_identity_is_unknown() {
         0,
         AdjustedProcess {
             process_name: "exited.exe".to_owned(),
+            executable_path: r"C:\Apps\exited.exe".to_owned(),
             creation_time: 0,
             previous_priority: NORMAL_PRIORITY_CLASS,
             applied_priority: BELOW_NORMAL_PRIORITY_CLASS,
@@ -661,7 +703,7 @@ fn release_processes_skips_restore_when_process_identity_is_unknown() {
     );
     let mut log = ActionLog::new(8);
 
-    let failures = manager.release_processes(&[0], Some(&BTreeMap::new()), &mut log, "test");
+    let failures = manager.release_processes(&[0], &mut log, "test");
 
     assert_eq!(failures.count, 0);
     assert!(log.entries().is_empty());
