@@ -298,10 +298,41 @@ fn process_list_group_actions_target_the_root_process() {
 
     let rendered = process_list_rendered_rows(&rows, &HashMap::new(), |_| true);
 
-    assert!(matches!(
-        rendered.first(),
-        Some(ProcessListRenderedRow::Group { process_id: 20, .. })
-    ));
+    let Some(ProcessListRenderedRow::Group {
+        process_id,
+        process_ids,
+        ..
+    }) = rendered.first()
+    else {
+        panic!("expected a process group");
+    };
+    assert_eq!(*process_id, 20);
+    assert_eq!(process_ids, &[10, 20]);
+}
+
+#[test]
+fn stacked_process_actions_attempt_every_available_target() {
+    let target = |id| ProcessActionTarget {
+        id,
+        name: "editor.exe".to_owned(),
+        executable_path: PathBuf::from(r"C:\Apps\Editor\editor.exe"),
+        creation_time: u64::from(id),
+    };
+    let targets = vec![
+        Ok(target(10)),
+        Err(ProcessActionTargetError::ProcessUnavailable(5)),
+        Ok(target(20)),
+    ];
+    let mut applied = Vec::new();
+
+    let error = apply_process_list_targets(&targets, |target| {
+        applied.push(target.id);
+        Ok(())
+    })
+    .expect_err("one unavailable process should be reported");
+
+    assert_eq!(applied, [10, 20]);
+    assert!(error.starts_with("1 of 3 process actions failed:"));
 }
 
 #[test]

@@ -103,6 +103,7 @@ pub(in crate::ui::app) struct ProcessListEntryRowState {
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) struct ProcessListGroupRowData<'a> {
     pub(in crate::ui::app) process_id: u32,
+    pub(in crate::ui::app) process_ids: &'a [u32],
     pub(in crate::ui::app) process_name: &'a str,
     pub(in crate::ui::app) executable_path: &'a str,
     pub(in crate::ui::app) process_count: usize,
@@ -122,6 +123,7 @@ pub(in crate::ui::app) enum ProcessListRenderedRow {
     },
     Group {
         process_id: u32,
+        process_ids: Vec<u32>,
         process_name: String,
         executable_path: String,
         process_count: usize,
@@ -280,6 +282,7 @@ pub(in crate::ui::app) fn process_list_rendered_rows(
             .unwrap_or(group.processes[0].id);
         rendered_rows.push(ProcessListRenderedRow::Group {
             process_id,
+            process_ids: group.processes.iter().map(|process| process.id).collect(),
             process_name: group.display_name.clone(),
             executable_path: group.executable_path.clone(),
             process_count: group.processes.len(),
