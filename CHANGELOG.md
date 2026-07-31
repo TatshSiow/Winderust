@@ -9,22 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 
 ### Added
 
-- Add process search, grouped-process context menus, and user-session details to Process List.
-- Add startup update notifications with direct navigation to the About page update section.
-- Identify process rules by executable path so same-named applications remain distinct.
+- Add process search, grouped-process context menus, and user-session details to Process List
+- Add startup update notifications
+- Identify process rules by executable path so same-named applications remain distinct
 
 ### Changed
 
-- Redesign Process List for denser controls, clearer access states, and Task Manager-aligned Efficiency mode reporting.
-- Enable safe cross-session service control while retaining protected-process and identity checks.
-- Run Workload Engine only while Adaptive Engine is enabled.
+- Redesign Process List for better UI/UX
+- Improve the process rule to be cross session/user instead of only current user session (changeable in settings)
+
 
 ### Fixed
-
-- Apply stacked-process actions to every eligible process instead of only the first.
-- Stop retry spam for inaccessible or unsupported process-rule targets.
-- Use operation-specific process access checks and hide truly inaccessible processes consistently.
-- Preserve the window size and maximized state when restoring Winderust from the tray.
+- Run Workload Engine only when Adaptive Engine is enabled
+- Preserve the window size and maximized state when restoring Winderust from the tray (Fixes Issue #11 )
+- Stop retry spam for inaccessible or unsupported process-rule targets
 
 ## 0.3.0-alpha - 2026-07-24
 
