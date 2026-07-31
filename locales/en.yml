@@ -266,7 +266,7 @@ home:
 process_list:
   search_placeholder: "Search processes..."
   no_matches: "No matching processes"
-  hide_limited_access_items: "Hide inaccessible processes"
+  hide_inaccessible_processes: "Hide inaccessible processes"
   app_name: "App name"
   title: "Process List"
   count: "%{count} running processes"

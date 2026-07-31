@@ -318,7 +318,9 @@ pub(in crate::ui::app) fn process_list_render_data(
     let visible_processes = app
         .running_processes
         .iter()
-        .filter(|process| !app.hide_limited_access_processes || process.image_path.is_some())
+        .filter(|process| {
+            !app.hide_inaccessible_processes || !process_list_process_is_inaccessible(process)
+        })
         .filter(|process| process_list_matches_search(process, search_query))
         .cloned()
         .collect::<Vec<_>>();
@@ -522,6 +524,14 @@ pub(in crate::ui::app) fn process_list_user_label(
 pub(in crate::ui::app) fn process_list_process_is_protected(process: &ProcessInfo) -> bool {
     process.is_critical == Some(true)
         || contains_process_name(CORE_BUILT_IN_PROCESS_EXCLUSIONS, &process.name)
+}
+
+pub(in crate::ui::app) fn process_list_process_is_inaccessible(process: &ProcessInfo) -> bool {
+    process.image_path.is_none()
+        || process.id == 0
+        || process.id == std::process::id()
+        || process.is_critical.is_none()
+        || process_list_process_is_protected(process)
 }
 
 pub(in crate::ui::app) fn process_list_group_is_protected(processes: &[&ProcessInfo]) -> bool {

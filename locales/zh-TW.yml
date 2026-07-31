@@ -271,7 +271,7 @@ process_list:
   windows_kernel: "Windows \u6838\u5fc3"
   search_placeholder: "搜尋處理程序..."
   no_matches: "找不到符合的處理程序"
-  hide_limited_access_items: "\u96b1\u85cf\u7121\u6cd5\u5b58\u53d6\u7684\u8655\u7406\u7a0b\u5e8f"
+  hide_inaccessible_processes: "\u96b1\u85cf\u7121\u6cd5\u5b58\u53d6\u7684\u8655\u7406\u7a0b\u5e8f"
   app_name: "應用程式名稱"
   selected_summary: "%{name} · PID %{pid} · %{count} 個自訂原則"
   apply_once_priority: "僅套用一次：%{priority} 優先順序"

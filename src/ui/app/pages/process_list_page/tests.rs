@@ -37,6 +37,33 @@ fn inaccessible_process_uses_dash_for_unavailable_metrics() {
 }
 
 #[test]
+fn inaccessible_process_filter_matches_process_action_safety() {
+    let accessible = ProcessInfo {
+        id: u32::MAX,
+        parent_id: None,
+        session_id: Some(1),
+        user_name: Some("User".to_owned()),
+        is_critical: Some(false),
+        name: "app.exe".to_owned(),
+        image_path: Some(PathBuf::from(r"C:\Apps\app.exe")),
+    };
+
+    assert!(!process_list_process_is_inaccessible(&accessible));
+
+    let mut inaccessible = accessible.clone();
+    inaccessible.is_critical = Some(true);
+    assert!(process_list_process_is_inaccessible(&inaccessible));
+
+    inaccessible = accessible.clone();
+    inaccessible.is_critical = None;
+    assert!(process_list_process_is_inaccessible(&inaccessible));
+
+    inaccessible = accessible;
+    inaccessible.image_path = None;
+    assert!(process_list_process_is_inaccessible(&inaccessible));
+}
+
+#[test]
 fn process_list_user_column_is_last_and_groups_mixed_users() {
     let processes = vec![
         ProcessInfo {

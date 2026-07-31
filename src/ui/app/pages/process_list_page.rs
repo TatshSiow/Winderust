@@ -52,12 +52,12 @@ impl WinderustApp {
                     cx.notify();
                 }
             }));
-        let hide_limited_access = checkbox(
-            "hide-limited-access-processes",
-            t!("process_list.hide_limited_access_items").to_string(),
-            self.hide_limited_access_processes,
+        let hide_inaccessible = checkbox(
+            "hide-inaccessible-processes",
+            t!("process_list.hide_inaccessible_processes").to_string(),
+            self.hide_inaccessible_processes,
             cx.listener(|app, checked, _, cx| {
-                app.hide_limited_access_processes = *checked;
+                app.hide_inaccessible_processes = *checked;
                 cx.notify();
             }),
         );
@@ -131,7 +131,7 @@ impl WinderustApp {
                             .items_center()
                             .gap_2()
                             .child(text_muted(process_list_toolbar_label(self, process_count)))
-                            .child(div().flex_none().child(hide_limited_access))
+                            .child(div().flex_none().child(hide_inaccessible))
                             .child(refresh_button),
                     ),
             )
