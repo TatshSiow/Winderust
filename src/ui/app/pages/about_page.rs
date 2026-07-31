@@ -15,6 +15,7 @@ impl WinderustApp {
             .as_deref()
             .map(|version| format!("v{version}"))
             .unwrap_or_else(|| "—".to_string());
+        let updates_focused = self.about_updates_focus_handle.is_focused(window);
         let current_status = self.latest_version.as_ref().map(|_| {
             if self.available_update.is_some() {
                 t!("about.old").to_string()
@@ -115,6 +116,12 @@ impl WinderustApp {
             .child(section_title_text(t!("about.updates").to_string()))
             .child(
                 branded_panel()
+                    .id("about-updates-section")
+                    .track_focus(&self.about_updates_focus_handle)
+                    .anchor_scroll(Some(self.about_updates_scroll_anchor.clone()))
+                    .when(updates_focused, |panel| {
+                        panel.border_color(rgb(accent_color()))
+                    })
                     .p_4()
                     .gap_3()
                     .child(
@@ -188,8 +195,8 @@ impl WinderustApp {
                             ),
                     )
                     .child(checkbox(
-                        "check-for-updates",
-                        t!("about.automatic_check_for_updates").to_string(),
+                        "check-for-updates-on-startup",
+                        t!("about.automatic_check_for_updates_on_startup").to_string(),
                         self.settings.general.check_for_updates,
                         cx.listener(|app, checked, _, cx| {
                             app.settings.general.check_for_updates = *checked;

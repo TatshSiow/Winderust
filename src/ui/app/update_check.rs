@@ -24,6 +24,13 @@ impl WinderustApp {
                 }
                 match result {
                     Ok(check) => {
+                        if should_show_startup_update_modal(
+                            manual,
+                            check.available_update.is_some(),
+                        ) {
+                            app.startup_update_modal_visible = true;
+                            app.startup_update_modal_closing = false;
+                        }
                         app.latest_version = Some(check.latest_version);
                         app.available_update = check.available_update;
                     }
@@ -37,5 +44,43 @@ impl WinderustApp {
             });
         })
         .detach();
+    }
+
+    pub(in crate::ui::app) fn dismiss_startup_update_modal(&mut self, cx: &mut Context<Self>) {
+        if !self.startup_update_modal_visible || self.startup_update_modal_closing {
+            return;
+        }
+        if !ui_animations_enabled() {
+            self.startup_update_modal_visible = false;
+            cx.notify();
+            return;
+        }
+
+        self.startup_update_modal_closing = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            Timer::after(Duration::from_secs_f64(MOTION_FAST_SECONDS)).await;
+            let _ = this.update(cx, |app, cx| {
+                app.startup_update_modal_visible = false;
+                app.startup_update_modal_closing = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+fn should_show_startup_update_modal(manual: bool, update_available: bool) -> bool {
+    !manual && update_available
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_update_modal_only_follows_automatic_available_updates() {
+        assert!(should_show_startup_update_modal(false, true));
+        assert!(!should_show_startup_update_modal(true, true));
+        assert!(!should_show_startup_update_modal(false, false));
     }
 }

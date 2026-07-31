@@ -15,11 +15,11 @@ use rust_i18n::t;
 
 use chrono::{Local, TimeZone};
 use gpui::{
-    canvas, deferred, div, img, percentage, prelude::*, px, relative, rgb, size, Animation,
+    canvas, deferred, div, img, percentage, prelude::*, px, relative, rgb, rgba, size, Animation,
     AnimationExt, AnyElement, App, Bounds, Context, DragMoveEvent, Empty, Entity, EntityId,
-    Focusable, Hsla, Image, IntoElement, MouseButton, NavigationDirection, Pixels, Point,
-    PromptButton, PromptLevel, Render, ScrollHandle, SharedString, Subscription, Task, Timer,
-    Window, WindowControlArea,
+    FocusHandle, Focusable, Hsla, Image, IntoElement, MouseButton, NavigationDirection, Pixels,
+    Point, PromptButton, PromptLevel, Render, ScrollAnchor, ScrollHandle, SharedString,
+    Subscription, Task, Timer, Window, WindowControlArea,
 };
 use gpui_component::{
     animation::cubic_bezier,
@@ -500,6 +500,11 @@ pub struct WinderustApp {
     latest_version: Option<String>,
     update_check_in_progress: bool,
     update_check_message: Option<String>,
+    startup_update_modal_visible: bool,
+    startup_update_modal_closing: bool,
+    about_updates_focus_handle: FocusHandle,
+    about_page_scroll_handle: ScrollHandle,
+    about_updates_scroll_anchor: ScrollAnchor,
     admin_rights_prompt_visible: bool,
     unsaved_popup_was_visible: bool,
     unsaved_popup_vanish_started: Option<Instant>,
@@ -854,6 +859,9 @@ impl WinderustApp {
             },
         );
 
+        let about_page_scroll_handle = ScrollHandle::new();
+        let about_updates_scroll_anchor =
+            ScrollAnchor::for_handle(about_page_scroll_handle.clone());
         let mut app = Self {
             saved_settings: settings.clone(),
             last_background_settings: Arc::new(settings.clone()),
@@ -980,6 +988,11 @@ impl WinderustApp {
             latest_version: None,
             update_check_in_progress: false,
             update_check_message: None,
+            startup_update_modal_visible: false,
+            startup_update_modal_closing: false,
+            about_updates_focus_handle: cx.focus_handle(),
+            about_page_scroll_handle,
+            about_updates_scroll_anchor,
             admin_rights_prompt_visible: !privilege::is_running_as_admin(),
             unsaved_popup_was_visible: false,
             unsaved_popup_vanish_started: None,
@@ -1113,6 +1126,18 @@ impl Render for WinderustApp {
                 .overflow_hidden()
                 .child(page_content)
                 .into_any_element()
+        } else if self.page == Page::About {
+            v_flex()
+                .id("about-page-scroll")
+                .flex_1()
+                .h_full()
+                .min_w(px(0.0))
+                .min_h(px(0.0))
+                .overflow_y_scroll()
+                .track_scroll(&self.about_page_scroll_handle)
+                .vertical_scrollbar(&self.about_page_scroll_handle)
+                .child(page_content)
+                .into_any_element()
         } else {
             v_flex()
                 .flex_1()
@@ -1136,7 +1161,9 @@ impl Render for WinderustApp {
                 handle_navigation_mouse_button(app, event.button, cx);
             }))
             .on_action(cx.listener(|app, _: &InputEscape, window, cx| {
-                if app.process_details.is_some() {
+                if app.startup_update_modal_visible {
+                    app.dismiss_startup_update_modal(cx);
+                } else if app.process_details.is_some() {
                     app.save_process_details(cx);
                 } else {
                     clear_input(&app.inputs.dashboard_search, window, cx);
@@ -1188,6 +1215,11 @@ impl Render for WinderustApp {
             })
             .child(if show_admin_rights_prompt {
                 self.render_admin_rights_prompt(admin_rights_prompt_bottom, cx)
+            } else {
+                div().into_any_element()
+            })
+            .child(if self.startup_update_modal_visible {
+                self.render_update_available_modal(cx)
             } else {
                 div().into_any_element()
             })

@@ -483,7 +483,7 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
         Page::About => vec![
             t!("about.intro_1").to_string(),
             t!("about.intro_2").to_string(),
-            "about version project winderust update automatic check stable pre-release channel"
+            "about version project winderust update automatic check startup stable pre-release channel"
                 .to_string(),
         ],
     };

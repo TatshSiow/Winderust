@@ -1134,12 +1134,16 @@ about:
   current_version: "Current version"
   latest_version: "Latest version"
   old: "Old"
-  automatic_check_for_updates: "Automatically check for updates"
+  automatic_check_for_updates_on_startup: "Automatically check for updates on startup"
   update_channel: "Update channel"
   download_update: "Update"
   check_for_updates: "Check for updates"
   up_to_date: "Up to date"
   update_check_failed: "Could not check for updates."
+  update_available_title: "Winderust update available"
+  update_available_message: "Version %{version} is available. Open About to view the update details."
+  update_available_view: "View update"
+  update_available_not_now: "Not now"
   version: "Version"
 
 update_channel:
