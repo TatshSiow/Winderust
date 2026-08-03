@@ -36,6 +36,13 @@
 - Rule-only fallbacks use disabled rules: Core Steering, Core Limiter, App Suspension.
 - Exclusion-list features append `ProcessExclusionRule`.
 - Timer Resolution does not use process failure suppression.
+- Clean-exit restoration is a product safety barrier: every reversible runtime
+  change owned by Winderust must capture its pre-Winderust value and restore it
+  in reverse application order. If the original state cannot be captured,
+  Winderust must not make that reversible change.
+- The barrier covers automation managers, Process List quick actions, and
+  automatic power-plan switches. Process termination, memory trimming, forced
+  termination, crashes, and power loss are inherently outside this guarantee.
 
 ## User Constraints
 

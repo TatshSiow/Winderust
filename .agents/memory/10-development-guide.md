@@ -205,6 +205,18 @@ Process-control features must keep these defaults:
 - Do not target protected/system processes. Cross-session targeting follows `general.allow_cross_session_process_control`; even when enabled, preserve Windows access checks, built-in exclusions, and identity revalidation.
 - Treat access denied as skipped unless it indicates a real implementation bug.
 - Restore previous process state on disable, process exit, app shutdown, or rule mismatch when the backend can observe it.
+- Treat restoration as a barrier, not best-effort bookkeeping. Capture the
+  original value before the first mutation, bind it to the validated process
+  identity, and refuse the mutation when its original reversible state cannot
+  be preserved.
+- On clean shutdown, stop applying new work and restore overlapping changes in
+  reverse application order so one feature cannot restore another feature's
+  intermediate value. `HiddenAutomationRunner::shutdown` owns the automation
+  order; `WinderustApp` owns the reverse-order Process List quick-action stack.
+- Restore the power plan that preceded Winderust's first automatic switch.
+  Irreversible operations such as process termination and memory trimming, and
+  abnormal termination that bypasses destructors, cannot be covered by the
+  clean-shutdown barrier.
 - Keep High/Realtime priority out of automatic paths.
 - Keep broad app suspension opt-in and narrow.
 

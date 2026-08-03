@@ -58,6 +58,7 @@ pub(super) struct ActiveAdaptivePowerPlan {
 pub(super) struct HiddenAutomationRunner {
     last_settings: Option<Settings>,
     current_guid: Option<String>,
+    original_power_plan_guid: Option<String>,
     next_active_plan_refresh: Option<Instant>,
     last_switch_attempt: Option<(String, Instant)>,
     switch_failure_suppression: ExecutionFailureTracker,
@@ -98,6 +99,31 @@ pub(super) struct HiddenAutomationRunner {
 }
 
 impl HiddenAutomationRunner {
+    pub(super) fn shutdown(&mut self) {
+        let mut settings = self.last_settings.clone().unwrap_or_default();
+        settings.general.enabled = false;
+
+        // Restore in the reverse order used by the automation loop. Several features can touch
+        // the same process state, so relying on field drop order can restore an intermediate
+        // Winderust-managed value instead of the value that preceded Winderust.
+        self.run_timer_resolution_update(&settings);
+        self.run_memory_priority_update(&settings);
+        self.run_gpu_priority_update(&settings);
+        self.run_dynamic_priority_boost_update(&settings);
+        self.run_thread_priority_update(&settings);
+        self.run_process_priority_update(&settings);
+        self.run_io_priority_update(&settings);
+        self.run_workload_engine_update(&settings);
+        self.run_by_running_app_update(&settings);
+        self.run_core_limiter_update(&settings);
+        self.run_background_cpu_restriction_update(&settings);
+        self.run_core_steering_update(&settings);
+        self.run_app_suspension_update(&settings, &[], &[]);
+        self.run_background_efficiency_update(&settings);
+        let _ = self.restore_adaptive_power_plan();
+        self.restore_original_power_plan();
+    }
+
     pub(super) fn note_settings(&mut self, settings: &Settings) -> bool {
         self.action_log.set_mode(settings.advanced.action_log_mode);
         set_execution_failure_suppression_threshold(
@@ -706,13 +732,31 @@ impl HiddenAutomationRunner {
         }
 
         self.last_switch_attempt = Some((plan_guid.to_owned(), Instant::now()));
+        let previous_guid = self
+            .current_guid
+            .clone()
+            .or_else(|| active_plan().ok().map(|plan| plan.guid));
 
         match set_active(plan_guid) {
             Ok(()) => {
+                if self.original_power_plan_guid.is_none() {
+                    self.original_power_plan_guid = previous_guid;
+                }
                 self.current_guid = Some(plan_guid.to_owned());
                 self.clear_switch_failure(plan_guid);
             }
             Err(_) => self.record_switch_failure(plan_guid),
+        }
+    }
+
+    fn restore_original_power_plan(&mut self) {
+        let Some(plan_guid) = self.original_power_plan_guid.take() else {
+            return;
+        };
+        if set_active(&plan_guid).is_ok() {
+            self.current_guid = Some(plan_guid);
+        } else {
+            self.original_power_plan_guid = Some(plan_guid);
         }
     }
 
@@ -746,7 +790,7 @@ pub(super) fn adaptive_plan_setup_error(
 
 impl Drop for HiddenAutomationRunner {
     fn drop(&mut self) {
-        let _ = self.restore_adaptive_power_plan();
+        self.shutdown();
     }
 }
 

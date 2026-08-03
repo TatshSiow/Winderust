@@ -459,7 +459,9 @@ pub struct WinderustApp {
     running_processes: Vec<ProcessInfo>,
     process_resource_samples: BTreeMap<u32, ProcessResourceSample>,
     process_resource_usage: HashMap<u32, ProcessResourceUsage>,
-    process_efficiency_mode_overrides: HashMap<u32, (u64, bool, Option<u32>)>,
+    process_efficiency_mode_overrides: HashMap<u32, ProcessEfficiencyModeOverride>,
+    process_quick_action_restore_keys: HashSet<(u32, u64, &'static str)>,
+    process_quick_action_restores: Vec<Box<dyn Fn()>>,
     hide_inaccessible_processes: bool,
     running_process_load_state: ProcessLoadState,
     process_refresh_in_progress: bool,
@@ -940,6 +942,8 @@ impl WinderustApp {
             process_resource_samples: BTreeMap::new(),
             process_resource_usage: HashMap::new(),
             process_efficiency_mode_overrides: HashMap::new(),
+            process_quick_action_restore_keys: HashSet::new(),
+            process_quick_action_restores: Vec::new(),
             hide_inaccessible_processes: true,
             running_process_load_state: initial_process_load_state,
             process_refresh_in_progress: false,
@@ -1037,8 +1041,38 @@ impl WinderustApp {
 }
 impl Drop for WinderustApp {
     fn drop(&mut self) {
+        restore_process_quick_actions(&mut self.process_quick_action_restores);
         let _ = self_power::disable_adaptive_engine();
     }
+}
+
+fn restore_process_quick_actions(restores: &mut Vec<Box<dyn Fn()>>) {
+    while let Some(restore) = restores.pop() {
+        restore();
+    }
+}
+
+impl WinderustApp {
+    fn track_process_quick_action_restore(
+        &mut self,
+        feature: &'static str,
+        target: &ProcessActionTarget,
+        restore: impl Fn() + 'static,
+    ) {
+        if self
+            .process_quick_action_restore_keys
+            .insert((target.id, target.creation_time, feature))
+        {
+            self.process_quick_action_restores.push(Box::new(restore));
+        }
+    }
+}
+
+struct ProcessEfficiencyModeOverride {
+    target: ProcessActionTarget,
+    original_enabled: bool,
+    enabled: bool,
+    original_priority: Option<u32>,
 }
 
 fn runtime_settings_from(current: &Settings, saved: &Settings) -> Settings {
@@ -1229,6 +1263,20 @@ impl Render for WinderustApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_quick_actions_restore_in_reverse_application_order() {
+        let restored = Rc::new(RefCell::new(Vec::new()));
+        let mut restores: Vec<Box<dyn Fn()>> = Vec::new();
+        for value in [1, 2] {
+            let restored = Rc::clone(&restored);
+            restores.push(Box::new(move || restored.borrow_mut().push(value)));
+        }
+
+        restore_process_quick_actions(&mut restores);
+
+        assert_eq!(*restored.borrow(), vec![2, 1]);
+    }
 
     #[test]
     fn runtime_status_localizes_known_messages_and_preserves_errors() {

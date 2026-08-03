@@ -833,8 +833,8 @@ fn process_list_context_menu(
             .read(menu_cx)
             .process_efficiency_mode_overrides
             .get(&target.id)
-            .filter(|(creation_time, _, _)| *creation_time == target.creation_time)
-            .map(|(_, enabled, _)| *enabled)
+            .filter(|process| process.target.creation_time == target.creation_time)
+            .map(|process| process.enabled)
     });
     let efficiency_enabled = queried_efficiency.or(cached_efficiency).unwrap_or(false);
     menu = menu.item({
@@ -858,17 +858,50 @@ fn process_list_context_menu(
                     let previous_priority = app
                         .process_efficiency_mode_overrides
                         .get(&target.id)
-                        .filter(|(creation_time, _, _)| *creation_time == target.creation_time)
-                        .and_then(|(_, _, previous_priority)| *previous_priority);
+                        .filter(|process| process.target.creation_time == target.creation_time)
+                        .and_then(|process| process.original_priority);
+                    let original_enabled = app
+                        .process_efficiency_mode_overrides
+                        .get(&target.id)
+                        .filter(|process| process.target.creation_time == target.creation_time)
+                        .map(|process| process.original_enabled)
+                        .map(Ok)
+                        .unwrap_or_else(|| {
+                            background_efficiency::current_efficiency_mode(target)
+                        })?;
+                    let first_change = !app.process_quick_action_restore_keys.contains(&(
+                        target.id,
+                        target.creation_time,
+                        "background-efficiency",
+                    ));
                     let result = background_efficiency::apply_efficiency_mode_once(
                         target,
                         enabled,
                         previous_priority,
                     );
                     if let Ok(original_priority) = result {
+                        if first_change {
+                            let restore_target = target.clone();
+                            app.track_process_quick_action_restore(
+                                "background-efficiency",
+                                target,
+                                move || {
+                                    let _ = background_efficiency::apply_efficiency_mode_once(
+                                        &restore_target,
+                                        original_enabled,
+                                        original_priority,
+                                    );
+                                },
+                            );
+                        }
                         app.process_efficiency_mode_overrides.insert(
                             target.id,
-                            (target.creation_time, enabled, original_priority),
+                            ProcessEfficiencyModeOverride {
+                                target: target.clone(),
+                                original_enabled,
+                                enabled,
+                                original_priority: previous_priority.or(original_priority),
+                            },
                         );
                     }
                     result.map(|_| ())
@@ -961,6 +994,8 @@ fn process_list_priority_controls_submenu(
                 targets.clone(),
                 process_priority_setting_label,
                 quick_apply_process_priority,
+                current_process_priority,
+                "process-priority",
                 window,
                 menu_cx,
             );
@@ -990,6 +1025,8 @@ fn process_list_priority_controls_submenu(
                 targets.clone(),
                 process_thread_priority_setting_label,
                 quick_apply_thread_priority,
+                thread_priority::current_priority,
+                "thread-priority",
                 window,
                 menu_cx,
             );
@@ -1008,6 +1045,8 @@ fn process_list_priority_controls_submenu(
                 targets.clone(),
                 dynamic_boost_quick_label,
                 dynamic_priority_boost::apply_once,
+                current_dynamic_priority_boost,
+                "dynamic-priority-boost",
                 window,
                 menu_cx,
             );
@@ -1034,6 +1073,8 @@ fn process_list_priority_controls_submenu(
                 targets.clone(),
                 io_priority_quick_label,
                 io_priority::apply_once,
+                current_io_priority,
+                "io-priority",
                 window,
                 menu_cx,
             );
@@ -1060,6 +1101,8 @@ fn process_list_priority_controls_submenu(
                 targets.clone(),
                 gpu_priority_quick_label,
                 gpu_priority::apply_once,
+                current_gpu_priority,
+                "gpu-priority",
                 window,
                 menu_cx,
             );
@@ -1082,6 +1125,8 @@ fn process_list_priority_controls_submenu(
                 targets.clone(),
                 process_memory_priority_setting_label,
                 quick_apply_memory_priority,
+                current_memory_priority,
+                "memory-priority",
                 window,
                 menu_cx,
             )
@@ -1144,6 +1189,8 @@ fn process_list_priority_value_submenu<T: Copy + PartialEq + 'static>(
     targets: Vec<Result<ProcessActionTarget, ProcessActionTargetError>>,
     label: fn(T) -> String,
     apply: fn(&ProcessActionTarget, T) -> Result<(), String>,
+    current_for_target: fn(&ProcessActionTarget) -> Result<Option<T>, String>,
+    restore_key: &'static str,
     window: &mut Window,
     menu_cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -1168,8 +1215,32 @@ fn process_list_priority_value_submenu<T: Copy + PartialEq + 'static>(
                 .disabled(disabled)
                 .on_click(move |_, _, cx| {
                     app_entity.update(cx, |app, cx| {
-                        let result =
-                            apply_process_list_targets(&targets, |target| apply(target, option));
+                        let result = apply_process_list_targets(&targets, |target| {
+                            let first_change = !app.process_quick_action_restore_keys.contains(&(
+                                target.id,
+                                target.creation_time,
+                                restore_key,
+                            ));
+                            let original = if first_change {
+                                Some(current_for_target(target)?.ok_or_else(|| {
+                                    "The original process state could not be preserved.".to_owned()
+                                })?)
+                            } else {
+                                None
+                            };
+                            apply(target, option)?;
+                            if let Some(original) = original {
+                                let restore_target = target.clone();
+                                app.track_process_quick_action_restore(
+                                    restore_key,
+                                    target,
+                                    move || {
+                                        let _ = apply(&restore_target, original);
+                                    },
+                                );
+                            }
+                            Ok(())
+                        });
                         app.finish_process_quick_action(&process_name, &action, result, cx);
                     });
                 }),
@@ -1249,6 +1320,12 @@ fn quick_apply_process_priority(
     process_priority::apply_once(target, priority).map(|_| ())
 }
 
+fn current_process_priority(
+    target: &ProcessActionTarget,
+) -> Result<Option<ProcessPrioritySetting>, String> {
+    process_priority::current_priority(target).map(Some)
+}
+
 fn quick_apply_thread_priority(
     target: &ProcessActionTarget,
     priority: ProcessThreadPrioritySetting,
@@ -1256,11 +1333,31 @@ fn quick_apply_thread_priority(
     thread_priority::apply_once(target, priority).map(|_| ())
 }
 
+fn current_dynamic_priority_boost(target: &ProcessActionTarget) -> Result<Option<bool>, String> {
+    dynamic_priority_boost::current_boost_disabled(target).map(Some)
+}
+
+fn current_io_priority(target: &ProcessActionTarget) -> Result<Option<ProcessIoPriority>, String> {
+    io_priority::current_priority(target).map(Some)
+}
+
+fn current_gpu_priority(
+    target: &ProcessActionTarget,
+) -> Result<Option<ProcessGpuPriority>, String> {
+    gpu_priority::current_priority(target).map(Some)
+}
+
 fn quick_apply_memory_priority(
     target: &ProcessActionTarget,
     priority: ProcessMemoryPrioritySetting,
 ) -> Result<(), String> {
     memory_priority::apply_once(target, priority).map(|_| ())
+}
+
+fn current_memory_priority(
+    target: &ProcessActionTarget,
+) -> Result<Option<ProcessMemoryPrioritySetting>, String> {
+    memory_priority::current_priority(target).map(Some)
 }
 
 fn dynamic_boost_quick_label(disabled: bool) -> String {
