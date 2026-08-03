@@ -557,9 +557,16 @@ impl ProcessHandle {
     }
 
     fn set_priority_class(&self, priority_class: u32) -> Result<(), ProcessPriorityError> {
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::PriorityClass(self.priority_class()?),
+            crate::crash_recovery::ProcessValue::PriorityClass(priority_class),
+        )
+        .map_err(ProcessPriorityError::Failed)?;
         // SAFETY: self owns a live process handle and priority_class is a documented class chosen
         // by the validated settings mapping.
         if unsafe { SetPriorityClass(self.0.raw(), priority_class) } != 0 {
+            recovery.commit().map_err(ProcessPriorityError::Failed)?;
             Ok(())
         } else {
             Err(ProcessPriorityError::Failed(format!(

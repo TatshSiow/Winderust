@@ -10,8 +10,8 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
-        ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
+        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER,
+        ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
     },
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, GetPerTcp6ConnectionEStats,
@@ -1826,6 +1826,7 @@ mod tests {
     fn inert_freezer() -> ProcessFreezer {
         ProcessFreezer {
             job_handle: None,
+            job_name: None,
             process_handle: None,
             process_creation_time: None,
             can_wait_for_process: false,
@@ -1947,6 +1948,7 @@ mod tests {
             process_id,
             ProcessFreezer {
                 job_handle: None,
+                job_name: None,
                 process_handle: None,
                 process_creation_time: Some(1),
                 can_wait_for_process: false,

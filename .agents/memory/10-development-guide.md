@@ -213,10 +213,17 @@ Process-control features must keep these defaults:
   reverse application order so one feature cannot restore another feature's
   intermediate value. `HiddenAutomationRunner::shutdown` owns the automation
   order; `WinderustApp` owns the reverse-order Process List quick-action stack.
+- Before every reversible process, thread, App Suspension, or automatic
+  power-plan mutation, synchronously send the captured original and expected
+  state to the external crash-recovery watchdog and wait for its acknowledgement.
+  Block the mutation if the watchdog is unavailable. For App Suspension, the
+  watchdog must retain its own Job Object handle before acknowledging the freeze.
+  Recovery must revalidate process/thread identity and
+  only unwind a journal segment while its expected state still matches.
 - Restore the power plan that preceded Winderust's first automatic switch.
-  Irreversible operations such as process termination and memory trimming, and
-  abnormal termination that bypasses destructors, cannot be covered by the
-  clean-shutdown barrier.
+- Irreversible operations such as process termination and memory trimming,
+  watchdog termination, Windows shutdown, and power loss cannot be covered by
+  the runtime-restoration barrier.
 - Keep High/Realtime priority out of automatic paths.
 - Keep broad app suspension opt-in and narrow.
 

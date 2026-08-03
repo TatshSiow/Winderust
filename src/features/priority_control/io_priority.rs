@@ -567,6 +567,12 @@ impl ProcessHandle {
 
     fn set_io_priority(&self, priority: ProcessIoPriority) -> Result<(), IoPriorityError> {
         let mut raw = io_priority_raw(priority);
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::IoPriority(io_priority_raw(self.io_priority()?)),
+            crate::crash_recovery::ProcessValue::IoPriority(raw),
+        )
+        .map_err(IoPriorityError::Failed)?;
         // SAFETY: self owns a live process handle and raw points to exactly the supplied u32 size.
         let status = unsafe {
             NtSetInformationProcess(
@@ -576,7 +582,8 @@ impl ProcessHandle {
                 std::mem::size_of::<u32>() as u32,
             )
         };
-        ntstatus_result(status)
+        ntstatus_result(status)?;
+        recovery.commit().map_err(IoPriorityError::Failed)
     }
 }
 

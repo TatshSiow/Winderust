@@ -357,7 +357,13 @@ impl WinderustApp {
 
         self.last_switch_attempt = Some((target_guid.to_owned(), Instant::now()));
 
-        match set_active(target_guid) {
+        let switch_result = active_plan().and_then(|current| {
+            let recovery =
+                crate::crash_recovery::record_power_plan_change(&current.guid, target_guid)?;
+            set_active(target_guid)?;
+            recovery.commit()
+        });
+        match switch_result {
             Ok(()) => {
                 self.status_message =
                     t!("status.switched_power_plan", reason = self.decision.reason).to_string();

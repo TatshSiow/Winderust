@@ -666,13 +666,20 @@ impl ThreadHandle {
         expected_path: &Path,
     ) -> Result<(), ThreadPriorityError> {
         let owner = process.verify_thread_owner(self, expected_path)?;
+        let recovery = crate::crash_recovery::record_thread_priority_change(
+            owner._handle.raw(),
+            self.0.raw(),
+            self.priority()?,
+            priority,
+        )
+        .map_err(ThreadPriorityError::Failed)?;
         // SAFETY: self owns a live thread handle, its owner was revalidated against the pinned
         // process instance immediately above, and priority is a documented Win32 constant.
         let changed = unsafe { SetThreadPriority(self.0.raw(), priority) };
         let error = (changed == 0).then(last_error);
         drop(owner);
         match error {
-            None => Ok(()),
+            None => recovery.commit().map_err(ThreadPriorityError::Failed),
             Some(ERROR_ACCESS_DENIED) => Err(ThreadPriorityError::AccessDenied),
             Some(ERROR_INVALID_PARAMETER) => Err(ThreadPriorityError::ProcessExited),
             Some(error) => Err(ThreadPriorityError::Failed(format!(

@@ -655,11 +655,18 @@ impl ProcessHandle {
     }
 
     fn set_gpu_priority_raw(&self, priority: u32) -> Result<(), GpuPriorityError> {
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::GpuPriority(self.gpu_priority_raw()?),
+            crate::crash_recovery::ProcessValue::GpuPriority(priority),
+        )
+        .map_err(GpuPriorityError::Failed)?;
         let priority = D3DKMT_SCHEDULINGPRIORITYCLASS::try_from(priority)
             .map_err(|_| GpuPriorityError::Failed(format!("Invalid GPU priority {priority}.")))?;
         // SAFETY: self owns a live process handle and priority is a validated scheduling class.
         let status = unsafe { D3DKMTSetProcessSchedulingPriorityClass(self.0.raw(), priority) };
-        ntstatus_result(status)
+        ntstatus_result(status)?;
+        recovery.commit().map_err(GpuPriorityError::Failed)
     }
 }
 

@@ -26,7 +26,10 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::win_util::{last_error, WinHandle};
+use crate::{
+    crash_recovery::{self, ProcessValue},
+    win_util::{last_error, WinHandle},
+};
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -1289,6 +1292,13 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), AffinityError> {
+        let original = self.affinity_mask()?.0;
+        let recovery = crash_recovery::record_process_change(
+            self.0.raw(),
+            ProcessValue::Affinity(original as u64),
+            ProcessValue::Affinity(affinity_mask as u64),
+        )
+        .map_err(AffinityError::Failed)?;
         // SAFETY: self owns a live process handle and affinity_mask was normalized against the
         // system mask read from this process.
         let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
@@ -1298,6 +1308,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery.commit().map_err(AffinityError::Failed)?;
             Ok(())
         }
     }
@@ -1335,6 +1346,12 @@ impl ProcessHandle {
     }
 
     fn set_default_cpu_set_ids(&self, ids: &[u32]) -> Result<(), AffinityError> {
+        let recovery = crash_recovery::record_process_change(
+            self.0.raw(),
+            ProcessValue::CpuSets(self.default_cpu_set_ids()?),
+            ProcessValue::CpuSets(ids.to_vec()),
+        )
+        .map_err(AffinityError::Failed)?;
         let (ptr, count) = if ids.is_empty() {
             (null_mut(), 0)
         } else {
@@ -1349,6 +1366,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery.commit().map_err(AffinityError::Failed)?;
             Ok(())
         }
     }
@@ -1379,6 +1397,12 @@ impl ProcessHandle {
         &self,
         state: PROCESS_POWER_THROTTLING_STATE,
     ) -> Result<(), AffinityError> {
+        let recovery = crash_recovery::record_process_change(
+            self.0.raw(),
+            ProcessValue::power_throttling(self.power_throttling_state()?),
+            ProcessValue::power_throttling(state),
+        )
+        .map_err(AffinityError::Failed)?;
         // SAFETY: self owns a live process handle and state is fully initialized for exactly the
         // supplied structure size.
         let ok = unsafe {
@@ -1395,6 +1419,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery.commit().map_err(AffinityError::Failed)?;
             Ok(())
         }
     }

@@ -453,7 +453,7 @@ impl HiddenAutomationRunner {
                 &plan_guid,
                 desired_profile.calibrated_power_values(baseline, has_efficiency_cores),
             )
-            .and_then(|()| set_active(&plan_guid))
+            .and_then(|()| set_active_with_recovery(&plan_guid))
             {
                 return Err(adaptive_plan_setup_error(error, delete_plan(&plan_guid)));
             }
@@ -483,7 +483,7 @@ impl HiddenAutomationRunner {
             .as_deref()
             .is_none_or(|guid| !guid.eq_ignore_ascii_case(&plan.plan_guid))
         {
-            set_active(&plan.plan_guid)?;
+            set_active_with_recovery(&plan.plan_guid)?;
             self.current_guid = Some(plan.plan_guid.clone());
         }
 
@@ -513,7 +513,7 @@ impl HiddenAutomationRunner {
         let Some(plan) = self.adaptive_power_plan.take() else {
             return Ok(());
         };
-        if let Err(error) = set_active(&plan.original_guid) {
+        if let Err(error) = set_active_with_recovery(&plan.original_guid) {
             self.adaptive_power_plan = Some(plan);
             return Err(error);
         }
@@ -737,7 +737,7 @@ impl HiddenAutomationRunner {
             .clone()
             .or_else(|| active_plan().ok().map(|plan| plan.guid));
 
-        match set_active(plan_guid) {
+        match set_active_with_recovery(plan_guid) {
             Ok(()) => {
                 if self.original_power_plan_guid.is_none() {
                     self.original_power_plan_guid = previous_guid;
@@ -753,7 +753,7 @@ impl HiddenAutomationRunner {
         let Some(plan_guid) = self.original_power_plan_guid.take() else {
             return;
         };
-        if set_active(&plan_guid).is_ok() {
+        if set_active_with_recovery(&plan_guid).is_ok() {
             self.current_guid = Some(plan_guid);
         } else {
             self.original_power_plan_guid = Some(plan_guid);
@@ -792,6 +792,13 @@ impl Drop for HiddenAutomationRunner {
     fn drop(&mut self) {
         self.shutdown();
     }
+}
+
+fn set_active_with_recovery(plan_guid: &str) -> Result<(), String> {
+    let current_guid = active_plan()?.guid;
+    let recovery = crate::crash_recovery::record_power_plan_change(&current_guid, plan_guid)?;
+    set_active(plan_guid)?;
+    recovery.commit()
 }
 
 pub(super) fn switch_failure_key(target_guid: &str) -> String {

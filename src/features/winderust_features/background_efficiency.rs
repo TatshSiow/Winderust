@@ -15,7 +15,10 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::win_util::{last_error, WinHandle};
+use crate::{
+    crash_recovery::{self, ProcessValue},
+    win_util::{last_error, WinHandle},
+};
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -834,6 +837,12 @@ impl ProcessHandle {
         &self,
         state: PROCESS_POWER_THROTTLING_STATE,
     ) -> Result<(), BackgroundEfficiencyError> {
+        let recovery = crash_recovery::record_process_change(
+            self.0.raw(),
+            ProcessValue::power_throttling(self.power_throttling_state()?),
+            ProcessValue::power_throttling(state),
+        )
+        .map_err(BackgroundEfficiencyError::Failed)?;
         // SAFETY: self owns a live process handle and state is fully initialized for exactly the
         // supplied structure size.
         let ok = unsafe {
@@ -850,11 +859,20 @@ impl ProcessHandle {
                 last_error(),
             ))
         } else {
+            recovery
+                .commit()
+                .map_err(BackgroundEfficiencyError::Failed)?;
             Ok(())
         }
     }
 
     fn set_priority_class(&self, priority_class: u32) -> Result<(), BackgroundEfficiencyError> {
+        let recovery = crash_recovery::record_process_change(
+            self.0.raw(),
+            ProcessValue::PriorityClass(self.priority_class()?),
+            ProcessValue::PriorityClass(priority_class),
+        )
+        .map_err(BackgroundEfficiencyError::Failed)?;
         // SAFETY: self owns a live process handle and priority_class is a documented class or a
         // previously read value.
         let ok = unsafe { SetPriorityClass(self.0.raw(), priority_class) };
@@ -864,6 +882,9 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery
+                .commit()
+                .map_err(BackgroundEfficiencyError::Failed)?;
             Ok(())
         }
     }

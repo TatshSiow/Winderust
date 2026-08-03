@@ -1,5 +1,6 @@
 pub(crate) mod audio_activity;
 pub(crate) mod automation;
+pub(crate) mod crash_recovery;
 pub(crate) mod dashboard_metrics;
 pub(crate) mod file_dialog;
 pub(crate) mod power_source;

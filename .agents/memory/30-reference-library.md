@@ -22,6 +22,7 @@ window rendering and infrastructure calls are not duplicated here.
 | Power Plan Control and Advanced Power Plan Tuning | `src/power/powercfg.rs` | Power scheme enumeration, activation, duplication, deletion, and processor setting values |
 | Automation event wake handling | `src/backend/windows_events.rs` | Foreground/window WinEvent hooks plus power, suspend/resume, and session notifications |
 | System tray lifecycle | `src/backend/tray.rs` | Notification-area icon, window-procedure subclassing, popup menu, and restore/quit messages |
+| Crash recovery watchdog | `src/backend/crash_recovery.rs` | Private inherited stdin journal, process/thread identity validation, reversible state replay, named App Suspension jobs, and automatic power-plan recovery |
 | Adaptive Engine | `src/features/winderust_features/workload_engine.rs` and `workload_engine/process_control.rs` | Workload decisions plus the process QoS, process priority, and Dynamic Priority Boost boundary; affinity masks, CPU Sets, and Memory Priority use their feature managers |
 | Background Efficiency | `src/features/winderust_features/background_efficiency.rs` | Process power throttling and optional process-priority management |
 | Memory Trim | `src/features/winderust_features/memory_trim.rs` | Memory-pressure checks and process working-set trimming |
@@ -92,6 +93,38 @@ User-facing behavior:
 | `ShowWindow` | Hides the window with `SW_HIDE` and shows it with `SW_SHOW`, preserving its current size and maximized state instead of resetting it with `SW_RESTORE`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-showwindow |
 | `SetWindowLongPtrW` | Installs and restores the temporary `GWLP_WNDPROC` tray callback. A zero return is a failure only when `GetLastError` is nonzero after first clearing it with `SetLastError(0)`. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowlongptrw |
 | `CallWindowProcW` | Forwards unhandled messages to the exact original window procedure. | https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-callwindowprocw |
+
+## Crash Recovery Watchdog
+
+`src/backend/crash_recovery.rs` starts `winderust.exe` in a hidden watchdog
+mode before runtime mutations are allowed. The parent sends a pending recovery
+intent through the child's inherited standard-input pipe before each reversible
+mutation and waits for the child's acknowledgement, then commits or cancels it
+after the Win32 result. Pipe closure triggers replay after a crash or forced
+termination; a clean shutdown first restores normal feature ownership, then
+closes the pipe. The watchdog also invokes the existing narrowly identified
+`Winderust Adaptive` stale-plan cleanup. No recovery journal is persisted to
+disk.
+
+Recovery reopens a process only when its PID, creation time, and executable path
+still identify the recorded instance. It restores a property only while the
+live value matches the value Winderust expected, so later external changes stop
+that recovery chain. Thread recovery additionally validates the thread creation
+time and owning process. Named-job recovery also validates that the recorded
+process instance remains assigned to that job before thawing it. If the watchdog cannot accept an intent, Winderust
+blocks the corresponding mutation.
+
+For App Suspension intents, the watchdog opens and retains its own Job Object
+handle before acknowledging the pending freeze. This keeps the object alive if
+the main process is force-terminated. The handle requests both
+`JOB_OBJECT_QUERY` for membership validation and `JOB_OBJECT_SET_ATTRIBUTES` for
+the thaw operation.
+
+| API | Used for | Reference |
+| --- | --- | --- |
+| `GetProcessId`, `GetProcessTimes`, and `QueryFullProcessImageNameW` | Bind recovery entries to a process instance and prevent PID-reuse restoration. | [ID](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessid) / [Times](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) / [Path](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-queryfullprocessimagenamew) |
+| `GetThreadTimes` and `GetProcessIdOfThread` | Revalidate a recorded thread instance and owner before restoring thread priority. | [Times](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes) / [Owner](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessidofthread) |
+| `OpenJobObjectW` | Reopens a named App Suspension job so the watchdog can thaw it. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-openjobobjectw |
 
 ## Background Efficiency / EcoQoS
 
@@ -253,8 +286,8 @@ Implementation paths:
 User-facing behavior:
 
 - Winderust finds selected background apps from `Suspendable Apps`.
-- After the configured background delay, Winderust opens the target process and assigns it to a private Windows Job Object.
-- It freezes that private job with `SetInformationJobObject` and thaws the same job when the focused or clicked app needs to recover, when the process is removed from the list, App Suspension is disabled, automation is disabled, or Winderust exits.
+- After the configured background delay, Winderust opens the target process and assigns it to an instance-bound named Windows Job Object.
+- It freezes that job with `SetInformationJobObject` and thaws the same job when the focused or clicked app needs to recover, when the process is removed from the list, App Suspension is disabled, automation is disabled, Winderust exits, or the recovery watchdog observes abnormal termination.
 - Taskbar and tray shell clicks temporarily thaw suspended top-level window owner processes only, so minimized and tray-hidden apps can restore without thawing unrelated non-window worker processes. Repeated shell clicks do not keep extending the thaw window.
 
 ### Job Object Freeze APIs
@@ -262,7 +295,7 @@ User-facing behavior:
 | API | Used for | Reference |
 | --- | --- | --- |
 | `OpenProcess` | Opens a process handle with the rights needed for job assignment and process liveness checks. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-openprocess |
-| `CreateJobObjectW` | Creates the private job object used to isolate one target process. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw |
+| `CreateJobObjectW` | Creates the instance-bound named job object used to isolate one target process. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-createjobobjectw |
 | `AssignProcessToJobObject` | Assigns the target process to Winderust's private job object. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject |
 | `IsProcessInJob` | Adds context to assignment failures when the target process is already in a job object. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi/nf-jobapi-isprocessinjob |
 | `SetInformationJobObject` | Freezes or thaws the private job object using the Windows Job Object freeze information class. | https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-setinformationjobobject |
@@ -271,9 +304,9 @@ User-facing behavior:
 Compatibility note: `SetInformationJobObject` is public, but Microsoft does
 not document information class 18 or Winderust's
 `JobObjectFreezeInformation` layout as a public SDK contract. Keep the class
-constant, structure, call site, thaw-on-drop behavior, and layout test together
-in `app_suspension/process_freezer.rs`; revalidate this boundary against supported Windows
-versions when it changes.
+constant, structure, freeze/thaw call sites, and layout test aligned between
+`app_suspension/process_freezer.rs` and `backend/crash_recovery.rs`; revalidate
+this boundary against supported Windows versions when it changes.
 
 Winderust keeps App Suspension opt-in and limited to explicitly selected apps because freezing a process is disruptive by design. Built-in exclusions also block Windows shell/input/UWP lifecycle processes such as `SearchApp.exe`, `SearchHost.exe`, and `SystemSettings.exe`, even if they are added to Suspendable Apps.
 
@@ -372,7 +405,7 @@ processes as unavailable rather than failing the complete refresh.
 | --- | --- | --- |
 | `GetProcessTimes` | Samples per-process kernel and user time; consecutive samples are converted to total-system CPU percentage. Creation time prevents PID-reuse comparisons. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes |
 | `K32GetProcessMemoryInfo` | Reads the current working-set size displayed in the Process List. | https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessmemoryinfo |
-| `GetProcessInformation(ProcessPowerThrottling)` | Reads the execution-speed control and state masks used to report Efficiency mode where supported. The query is unavailable before Windows 11 22H2 even though `SetProcessInformation` can still apply the state. Query failure therefore leaves status unavailable; managed application falls back to restoring the documented system-managed state (`ControlMask = 0`, `StateMask = 0`) instead of skipping every target. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation |
+| `GetProcessInformation(ProcessPowerThrottling)` | Reads the execution-speed control and state masks used to report Efficiency mode where supported. The query is unavailable before Windows 11 22H2 even though `SetProcessInformation` can still apply the state. Query failure leaves status unavailable and blocks a reversible mutation because Winderust cannot capture the original state for clean-exit or crash recovery. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessinformation |
 | `TerminateProcess` | Implements the confirmed Stop Process and Stop Process Tree actions. Winderust validates the root and every captured descendant against its built-in process exclusions before the first termination, requests only `PROCESS_TERMINATE` plus identity-query access, revalidates creation time and executable path before acting, and terminates children before the selected root. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess |
 | `GetSystemWindowsDirectoryW` | Resolves the shared Windows directory and launches its absolute `explorer.exe` path for Open Process Location, avoiding executable-name search through application-controlled directories. | [Microsoft](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemwindowsdirectoryw) / [Rust `Command`](https://doc.rust-lang.org/stable/std/process/struct.Command.html#method.new) |
 | Process security and access rights | Defines the minimal `PROCESS_TERMINATE` right required by `TerminateProcess`; inaccessible processes remain unavailable rather than triggering privilege escalation. | https://learn.microsoft.com/en-us/windows/win32/procthread/process-security-and-access-rights |

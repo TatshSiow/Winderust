@@ -669,6 +669,14 @@ impl ProcessHandle {
         &self,
         priority: ProcessMemoryPriority,
     ) -> Result<(), MemoryPriorityError> {
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::MemoryPriority(memory_priority_raw(
+                self.memory_priority()?,
+            )),
+            crate::crash_recovery::ProcessValue::MemoryPriority(memory_priority_raw(priority)),
+        )
+        .map_err(MemoryPriorityError::Failed)?;
         let info = MEMORY_PRIORITY_INFORMATION {
             MemoryPriority: memory_priority_raw(priority),
         };
@@ -685,6 +693,7 @@ impl ProcessHandle {
         if ok == 0 {
             Err(process_error("SetProcessInformation", last_error()))
         } else {
+            recovery.commit().map_err(MemoryPriorityError::Failed)?;
             Ok(())
         }
     }

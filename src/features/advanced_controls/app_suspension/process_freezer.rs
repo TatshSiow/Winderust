@@ -47,6 +47,7 @@ impl JobObjectFreezeInformation {
 
 pub(super) struct ProcessFreezer {
     pub(super) job_handle: Option<WinHandle>,
+    pub(super) job_name: Option<String>,
     pub(super) process_handle: Option<WinHandle>,
     pub(super) process_creation_time: Option<u64>,
     pub(super) can_wait_for_process: bool,
@@ -64,17 +65,29 @@ impl ProcessFreezer {
         let process_creation_time = process_handle
             .process_creation_time()
             .ok_or(SuspensionError::ProcessExited)?;
+        let job_name =
+            crate::crash_recovery::suspension_job_name(process_id, process_creation_time);
+        let wide_job_name = job_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
 
-        // SAFETY: Null security attributes and name request a private job object owned by the
-        // returned handle.
-        let job_handle = unsafe { CreateJobObjectW(null(), null()) };
+        // SAFETY: Null security attributes request default security, job_name is terminated
+        // UTF-16, and the returned handle is owned by this function.
+        let job_handle = unsafe { CreateJobObjectW(null(), wide_job_name.as_ptr()) };
         if job_handle.is_null() {
             let error = last_error();
             return Err(SuspensionError::Failed(format!(
                 "CreateJobObjectW failed with error {error}."
             )));
         }
+        let job_already_existed = last_error() == ERROR_ALREADY_EXISTS;
         let job_handle = WinHandle::new(job_handle);
+        if job_already_existed {
+            return Err(SuspensionError::Failed(
+                "Suspension job name collision.".to_owned(),
+            ));
+        }
 
         // SAFETY: both handles are live and owned by this function; assignment does not retain
         // borrowed Rust pointers.
@@ -89,6 +102,7 @@ impl ProcessFreezer {
 
         Ok(Self {
             job_handle: Some(job_handle),
+            job_name: Some(job_name),
             process_creation_time: Some(process_creation_time),
             process_handle: Some(process_handle),
             can_wait_for_process,
@@ -99,6 +113,22 @@ impl ProcessFreezer {
         let mut info = JobObjectFreezeInformation::new(frozen);
         let Some(job_handle) = &self.job_handle else {
             return Ok(());
+        };
+        let recovery = if frozen {
+            let process = self
+                .process_handle
+                .as_ref()
+                .ok_or(SuspensionError::ProcessExited)?;
+            let job_name = self
+                .job_name
+                .as_deref()
+                .ok_or(SuspensionError::ProcessExited)?;
+            Some(
+                crate::crash_recovery::record_suspended_job(job_name, process.raw())
+                    .map_err(SuspensionError::Failed)?,
+            )
+        } else {
+            None
         };
 
         // SAFETY: job_handle is live and info is writable for exactly the supplied structure size.
@@ -114,6 +144,12 @@ impl ProcessFreezer {
         if ok == 0 {
             Err(job_freeze_error(frozen, last_error()))
         } else {
+            if let Some(recovery) = recovery {
+                recovery.commit().map_err(SuspensionError::Failed)?;
+            } else if let Some(job_name) = &self.job_name {
+                crate::crash_recovery::forget_suspended_job(job_name)
+                    .map_err(SuspensionError::Failed)?;
+            }
             Ok(())
         }
     }
@@ -138,6 +174,7 @@ impl ProcessFreezer {
 
     pub(super) fn close(&mut self) {
         self.job_handle = None;
+        self.job_name = None;
         self.process_handle = None;
     }
 }

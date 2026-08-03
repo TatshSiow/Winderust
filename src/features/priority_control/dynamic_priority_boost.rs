@@ -529,9 +529,20 @@ impl ProcessHandle {
         &self,
         disabled: bool,
     ) -> Result<(), DynamicPriorityBoostError> {
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::DynamicPriorityBoostDisabled(
+                self.dynamic_priority_boost_disabled()?,
+            ),
+            crate::crash_recovery::ProcessValue::DynamicPriorityBoostDisabled(disabled),
+        )
+        .map_err(DynamicPriorityBoostError::Failed)?;
         // SAFETY: self owns a live process handle and disabled is converted to the documented BOOL
         // representation.
         if unsafe { SetProcessPriorityBoost(self.0.raw(), i32::from(disabled)) } != 0 {
+            recovery
+                .commit()
+                .map_err(DynamicPriorityBoostError::Failed)?;
             Ok(())
         } else {
             Err(DynamicPriorityBoostError::Failed(format!(

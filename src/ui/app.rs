@@ -67,6 +67,7 @@ use crate::{
     core_limiter::{self, CoreLimiterSnapshot},
     core_steering::{self, CoreSteeringSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
+    crash_recovery,
     dashboard_metrics::{
         sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
         NetworkUsageMonitor, NetworkUsageSnapshot,
@@ -831,6 +832,9 @@ impl WinderustApp {
             initial_processor_power.status_message = error;
         }
         if let Some(error) = debug_privilege_error {
+            initial_processor_power.status_message = error;
+        }
+        if let Some(error) = crash_recovery::startup_error() {
             initial_processor_power.status_message = error;
         }
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);

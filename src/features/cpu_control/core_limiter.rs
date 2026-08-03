@@ -17,6 +17,7 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     config::{CoreLimiterRule, CoreLimiterSettings},
     cpu::{process_cpu_usage_percent, ProcessCpuSample},
+    crash_recovery::{self, ProcessValue},
     foreground::{
         contains_process_name, list_processes, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_executable_path,
@@ -802,6 +803,13 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), CoreLimiterError> {
+        let original = self.affinity_mask()?.0;
+        let recovery = crash_recovery::record_process_change(
+            self.0.raw(),
+            ProcessValue::Affinity(original as u64),
+            ProcessValue::Affinity(affinity_mask as u64),
+        )
+        .map_err(CoreLimiterError::Failed)?;
         // SAFETY: self owns a live process handle and affinity_mask was normalized against the
         // system mask read from this process.
         let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
@@ -811,6 +819,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery.commit().map_err(CoreLimiterError::Failed)?;
             Ok(())
         }
     }
