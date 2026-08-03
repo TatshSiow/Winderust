@@ -12,7 +12,11 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 - Keep the app shell as custom title bar, left navigation, and right work area.
 - The title bar is compact: app icon/name, short description, native-feeling window controls.
-- The sidebar is fixed-width, searchable, and grouped by product area through `Page::sections()`.
+- The sidebar is grouped by product area through `Page::sections()`. It is
+  searchable when expanded and keeps a search action in its remembered compact
+  icon rail; the quiet navigation-styled toggle stays below a divider in normal
+  sidebar flow rather than floating over content. Keep icon and row geometry
+  stable across the animated expanded/compact transition.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::render_page` in `src/ui/app/pages/app_shell.rs`.
@@ -103,4 +107,3 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - No new icon system while Lucide assets are active.
 - No custom table abstraction unless the current process-list helpers become impossible to maintain.
 - No UI-only refactor that moves many unrelated pages at once.
-

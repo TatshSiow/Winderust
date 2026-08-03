@@ -117,6 +117,8 @@ pub struct GeneralSettings {
     #[serde(default)]
     pub animation_mode: AnimationMode,
     #[serde(default)]
+    pub navigation_collapsed: bool,
+    #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
 }
@@ -1418,6 +1420,7 @@ impl Default for Settings {
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
                 animation_mode: AnimationMode::System,
+                navigation_collapsed: false,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
             },

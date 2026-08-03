@@ -81,7 +81,7 @@ impl WinderustApp {
             .id("sidebar-search")
             .occlude()
             .w_full()
-            .h(px(CARD_ROW_HEIGHT))
+            .h(px(40.0))
             .min_w(px(0.0))
             .flex()
             .items_center()
@@ -89,7 +89,20 @@ impl WinderustApp {
                 window.blur();
                 cx.notify();
             }))
-            .child(app_input(&self.inputs.dashboard_search, search_focused, cx))
+            .child(
+                app_input(&self.inputs.dashboard_search, search_focused, cx)
+                    .pl(px(28.0))
+                    .child(
+                        nav_action_icon(
+                            NavIcon::Search,
+                            if search_focused { 0.9 } else { 0.68 },
+                            cx,
+                        )
+                        .absolute()
+                        .left(px(0.0))
+                        .top(px(5.0)),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -98,19 +111,41 @@ impl WinderustApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let collapsed = self.settings.general.navigation_collapsed;
+        let expanded = !collapsed;
+        let nav_width =
+            navigation_pane_width_at_progress(control_motion_progress("navigation-pane", expanded));
         let mut nav = v_flex()
-            .w(px(NAV_PANE_WIDTH))
-            .min_w(px(NAV_PANE_WIDTH))
+            .w(px(nav_width))
+            .min_w(px(nav_width))
             .h_full()
+            .overflow_hidden()
             .border_r_1()
             .border_color(cx.theme().sidebar_border)
             .bg(cx.theme().sidebar);
 
         let drawer = v_flex().flex_1().min_h(px(0.0)).overflow_y_scrollbar();
-        let mut drawer_items = v_flex()
-            .gap_1()
-            .p_3()
-            .child(self.render_sidebar_search(window, cx));
+        let mut drawer_items = v_flex().gap_1().p_3();
+        if collapsed {
+            drawer_items = drawer_items.child(
+                nav_action_row(
+                    "navigation-search",
+                    NavIcon::Search,
+                    t!("home.search_placeholder").to_string(),
+                    true,
+                    cx,
+                )
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.toggle_navigation_collapsed(cx);
+                    if !app.settings.general.navigation_collapsed {
+                        let focus_handle = app.inputs.dashboard_search.read(cx).focus_handle(cx);
+                        window.on_next_frame(move |window, _| focus_handle.focus(window));
+                    }
+                })),
+            );
+        } else {
+            drawer_items = drawer_items.child(self.render_sidebar_search(window, cx));
+        }
         let mut footer = v_flex()
             .flex_shrink_0()
             .gap_1()
@@ -125,7 +160,7 @@ impl WinderustApp {
             let page = section.landing_page;
             let selected = self.page.section_landing_page() == page;
             let target = page;
-            let row = nav_row(page, selected, cx)
+            let row = nav_row(page, selected, collapsed, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                     app.navigate_to(target, cx);
                 }))
@@ -138,8 +173,56 @@ impl WinderustApp {
             }
         }
 
+        footer = footer
+            .child(
+                div()
+                    .w_full()
+                    .h(px(1.0))
+                    .my_2()
+                    .bg(cx.theme().sidebar_border),
+            )
+            .child(self.render_navigation_toggle(collapsed, cx));
         nav = nav.child(drawer.child(drawer_items)).child(footer);
         nav.into_any_element()
+    }
+
+    fn render_navigation_toggle(&self, collapsed: bool, cx: &mut Context<Self>) -> AnyElement {
+        let tooltip = t!(if collapsed {
+            "nav.expand_navigation"
+        } else {
+            "nav.collapse_navigation"
+        })
+        .to_string();
+        nav_action_row(
+            "toggle-navigation",
+            if collapsed {
+                NavIcon::PanelLeftOpen
+            } else {
+                NavIcon::PanelLeftClose
+            },
+            tooltip,
+            collapsed,
+            cx,
+        )
+        .on_click(cx.listener(|app, _, _, cx| {
+            app.toggle_navigation_collapsed(cx);
+        }))
+        .into_any_element()
+    }
+
+    fn toggle_navigation_collapsed(&mut self, cx: &mut Context<Self>) {
+        let collapsed = !self.settings.general.navigation_collapsed;
+        let mut persisted = self.saved_settings.clone();
+        persisted.general.navigation_collapsed = collapsed;
+        match config::storage::save(&persisted) {
+            Ok(()) => {
+                self.settings.general.navigation_collapsed = collapsed;
+                self.saved_settings.general.navigation_collapsed = collapsed;
+                begin_control_motion("navigation-pane", !collapsed, cx);
+            }
+            Err(error) => self.status_message = error,
+        }
+        cx.notify();
     }
 
     pub(in crate::ui::app) fn nav_section_visible(&self, page: Page) -> bool {

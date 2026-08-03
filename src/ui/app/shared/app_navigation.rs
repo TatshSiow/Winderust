@@ -132,6 +132,7 @@ pub(in crate::ui::app) fn section_landing_card(
 pub(in crate::ui::app) fn nav_row(
     page: Page,
     selected: bool,
+    collapsed: bool,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let row_id = SharedString::from(format!("nav-row-{page:?}"));
@@ -146,9 +147,8 @@ pub(in crate::ui::app) fn nav_row(
         .h(px(40.0))
         .w_full()
         .items_center()
-        .gap_3()
         .pl(px(0.0))
-        .pr(px(12.0))
+        .when(!collapsed, |row| row.pr(px(12.0)))
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_CONTROL))
@@ -164,16 +164,83 @@ pub(in crate::ui::app) fn nav_row(
         .child(bg_layer)
         .child(nav_selection_indicator(page, selected))
         .child(nav_icon(page, selected, cx))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .opacity(content_opacity)
-                .text_size(px(TEXT_CONTROL_SIZE))
-                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                .truncate()
-                .child(page.label()),
-        )
+        .when(!collapsed, |row| {
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .opacity(content_opacity)
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .truncate()
+                    .child(page.label()),
+            )
+        })
+        .when(collapsed, |row| {
+            let label = page.label();
+            row.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+        })
+}
+
+pub(in crate::ui::app) fn nav_action_row(
+    id: &'static str,
+    icon: NavIcon,
+    label: String,
+    collapsed: bool,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let (hovered, _) = card_hover_snapshot(id);
+    let hover_id = id.to_owned();
+    let content_opacity = if hovered { 0.9 } else { 0.68 };
+
+    h_flex()
+        .id(id)
+        .h(px(40.0))
+        .w_full()
+        .items_center()
+        .when(!collapsed, |row| row.pr(px(12.0)))
+        .relative()
+        .overflow_hidden()
+        .rounded(px(BRAND_RADIUS_CONTROL))
+        .text_color(cx.theme().muted_foreground)
+        .on_hover(move |hovered, _, cx| {
+            set_card_hovered(hover_id.clone(), *hovered, cx);
+        })
+        .cursor_pointer()
+        .child(animated_nav_row_bg(id, false))
+        .child(nav_action_icon(icon, content_opacity, cx))
+        .when(!collapsed, |row| {
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .opacity(content_opacity)
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .truncate()
+                    .child(label.clone()),
+            )
+        })
+        .when(collapsed, |row| {
+            row.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+        })
+}
+
+pub(in crate::ui::app) fn nav_action_icon(
+    icon: NavIcon,
+    opacity: f32,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Div {
+    div()
+        .w(px(40.0))
+        .h(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .opacity(opacity)
+        .text_color(cx.theme().muted_foreground)
+        .child(Icon::new(icon).with_size(px(18.0)))
 }
 
 pub(in crate::ui::app) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyElement {
@@ -195,16 +262,18 @@ pub(in crate::ui::app) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyEl
     div()
         .absolute()
         .inset_0()
-        .child(with_optional_motion(
+        .child(with_state_change_motion(
             selected_layer,
-            SharedString::from(format!("nav-row-selected-{id}-{selected}")),
+            SharedString::from(format!("nav-row-selected-{id}")),
+            selected.to_string(),
             MotionSpeed::Fast,
             |layer| layer,
             move |layer, delta| layer.opacity(if selected { delta } else { 1.0 - delta }),
         ))
-        .child(with_optional_motion(
+        .child(with_state_change_motion(
             hover_layer,
-            SharedString::from(format!("nav-row-hover-{id}-{hover_active}")),
+            SharedString::from(format!("nav-row-hover-{id}")),
+            hover_active.to_string(),
             MotionSpeed::Fast,
             |layer| layer,
             move |layer, delta| {
@@ -221,11 +290,14 @@ pub(in crate::ui::app) fn nav_selection_indicator(page: Page, selected: bool) ->
         .h(px(20.0))
         .rounded(px(BRAND_RADIUS_CONTROL))
         .bg(rgb(accent_color()))
-        .opacity(if selected { 1.0 } else { 0.0 });
+        .opacity(if selected { 1.0 } else { 0.0 })
+        .absolute()
+        .left(px(0.0));
 
-    with_optional_motion(
+    with_state_change_motion(
         indicator,
-        SharedString::from(format!("nav-selection-indicator-{page:?}-{selected}")),
+        SharedString::from(format!("nav-selection-indicator-{page:?}")),
+        selected.to_string(),
         MotionSpeed::Fast,
         |indicator| indicator,
         move |indicator, delta| {
@@ -248,7 +320,7 @@ pub(in crate::ui::app) fn nav_icon(
     };
 
     let icon = div()
-        .w(px(22.0))
+        .w(px(40.0))
         .h(px(22.0))
         .flex()
         .items_center()
@@ -330,10 +402,13 @@ pub(in crate::ui::app) enum NavIcon {
     MonitorX,
     OctagonMinus,
     Palette,
+    PanelLeftClose,
+    PanelLeftOpen,
     PanelsTopLeft,
     Play,
     Rotate3d,
     Scissors,
+    Search,
     Settings,
     Snowflake,
     Spline,
@@ -375,10 +450,13 @@ impl IconNamed for NavIcon {
             Self::MonitorX => "icons/monitor-x.svg",
             Self::OctagonMinus => "icons/octagon-minus.svg",
             Self::Palette => "icons/palette.svg",
+            Self::PanelLeftClose => "icons/panel-left-close.svg",
+            Self::PanelLeftOpen => "icons/panel-left-open.svg",
             Self::PanelsTopLeft => "icons/panels-top-left.svg",
             Self::Play => "icons/play.svg",
             Self::Rotate3d => "icons/rotate-3d.svg",
             Self::Scissors => "icons/scissors.svg",
+            Self::Search => "icons/search.svg",
             Self::Settings => "icons/settings.svg",
             Self::Snowflake => "icons/snowflake.svg",
             Self::Spline => "icons/spline.svg",

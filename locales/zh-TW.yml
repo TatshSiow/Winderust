@@ -9,6 +9,8 @@ tray:
   quit: "結束"
 
 nav:
+  collapse_navigation: "收合導覽列"
+  expand_navigation: "展開導覽列"
   home: "首頁"
   winderust_features: "Winderust 功能"
   power_plan_control: "電源計畫控制"

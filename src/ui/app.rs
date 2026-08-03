@@ -170,6 +170,19 @@ const PAGE_HEADER_HEIGHT: f32 = 48.0;
 const PAGE_CONTENT_VERTICAL_PADDING: f32 = 24.0;
 const CONTENT_MAX_WIDTH: f32 = 1040.0;
 const NAV_PANE_WIDTH: f32 = 276.0;
+const NAV_PANE_COMPACT_WIDTH: f32 = 64.0;
+
+const fn navigation_pane_width(collapsed: bool) -> f32 {
+    if collapsed {
+        NAV_PANE_COMPACT_WIDTH
+    } else {
+        NAV_PANE_WIDTH
+    }
+}
+
+fn navigation_pane_width_at_progress(progress: f32) -> f32 {
+    NAV_PANE_COMPACT_WIDTH + (NAV_PANE_WIDTH - NAV_PANE_COMPACT_WIDTH) * progress
+}
 const BRAND_RADIUS_CONTROL: f32 = 5.0;
 const BRAND_RADIUS_SURFACE: f32 = 7.0;
 const BRAND_RADIUS_OVERLAY: f32 = 8.0;
@@ -1263,6 +1276,17 @@ impl Render for WinderustApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_width_tracks_collapsed_state() {
+        assert_eq!(navigation_pane_width(false), NAV_PANE_WIDTH);
+        assert_eq!(navigation_pane_width(true), NAV_PANE_COMPACT_WIDTH);
+        assert_eq!(
+            navigation_pane_width_at_progress(0.0),
+            NAV_PANE_COMPACT_WIDTH
+        );
+        assert_eq!(navigation_pane_width_at_progress(1.0), NAV_PANE_WIDTH);
+    }
 
     #[test]
     fn process_quick_actions_restore_in_reverse_application_order() {

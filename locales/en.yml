@@ -9,6 +9,8 @@ tray:
   quit: "Quit"
 
 nav:
+  collapse_navigation: "Collapse navigation"
+  expand_navigation: "Expand navigation"
   home: "Home"
   winderust_features: "Winderust Features"
   power_plan_control: "Power Plan Control"
