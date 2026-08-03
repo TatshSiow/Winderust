@@ -32,6 +32,7 @@ impl AssetSource for Assets {
 
 const ICON_ASSETS: &[(&str, &IconData)] = &[
     ("icons/app-window.svg", icondata_lu::LuAppWindow),
+    ("icons/brain-circuit.svg", icondata_lu::LuBrainCircuit),
     ("icons/bring-to-front.svg", icondata_lu::LuBringToFront),
     ("icons/calendar-days.svg", icondata_lu::LuCalendarDays),
     ("icons/chart-column.svg", icondata_lu::LuChartColumn),
@@ -43,9 +44,9 @@ const ICON_ASSETS: &[(&str, &IconData)] = &[
         icondata_lu::LuCircleFadingArrowUp,
     ),
     ("icons/cog.svg", icondata_lu::LuCog),
+    ("icons/computer.svg", icondata_lu::LuComputer),
     ("icons/cpu.svg", icondata_lu::LuCpu),
     ("icons/drill.svg", icondata_lu::LuDrill),
-    ("icons/feather.svg", icondata_lu::LuFeather),
     ("icons/flask-conical.svg", icondata_lu::LuFlaskConical),
     ("icons/footprints.svg", icondata_lu::LuFootprints),
     ("icons/gpu.svg", icondata_lu::LuGpu),

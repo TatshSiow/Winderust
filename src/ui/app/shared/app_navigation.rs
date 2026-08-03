@@ -339,7 +339,7 @@ pub(in crate::ui::app) fn nav_icon_name(page: Page) -> NavIcon {
     match page {
         Page::Home => NavIcon::House,
         Page::PowerPlanControl => NavIcon::Zap,
-        Page::WinderustFeatures => NavIcon::Feather,
+        Page::WinderustFeatures => NavIcon::Computer,
         Page::CpuControl => NavIcon::Cpu,
         Page::PriorityControl => NavIcon::CircleFadingArrowUp,
         Page::SettingsHome => NavIcon::Settings,
@@ -353,7 +353,7 @@ pub(in crate::ui::app) fn nav_icon_name(page: Page) -> NavIcon {
         Page::CoreLimiter => NavIcon::OctagonMinus,
         Page::BackgroundCpuRestriction => NavIcon::MonitorX,
         Page::ProcessList => NavIcon::List,
-        Page::AdaptiveEngine => NavIcon::Leaf,
+        Page::AdaptiveEngine => NavIcon::BrainCircuit,
         Page::BackgroundEfficiency => NavIcon::Leaf,
         Page::AppSuspension => NavIcon::MonitorPause,
         Page::ByRunningApp => NavIcon::Footprints,
@@ -377,6 +377,7 @@ pub(in crate::ui::app) fn nav_icon_name(page: Page) -> NavIcon {
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) enum NavIcon {
     AppWindow,
+    BrainCircuit,
     BringToFront,
     CalendarDays,
     ChartColumn,
@@ -385,9 +386,9 @@ pub(in crate::ui::app) enum NavIcon {
     ChevronRight,
     CircleFadingArrowUp,
     Cog,
+    Computer,
     Cpu,
     Drill,
-    Feather,
     FlaskConical,
     Footprints,
     Gpu,
@@ -425,6 +426,7 @@ impl IconNamed for NavIcon {
     fn path(self) -> SharedString {
         match self {
             Self::AppWindow => "icons/app-window.svg",
+            Self::BrainCircuit => "icons/brain-circuit.svg",
             Self::BringToFront => "icons/bring-to-front.svg",
             Self::CalendarDays => "icons/calendar-days.svg",
             Self::ChartColumn => "icons/chart-column.svg",
@@ -433,9 +435,9 @@ impl IconNamed for NavIcon {
             Self::ChevronRight => "icons/chevron-right.svg",
             Self::CircleFadingArrowUp => "icons/circle-fading-arrow-up.svg",
             Self::Cog => "icons/cog.svg",
+            Self::Computer => "icons/computer.svg",
             Self::Cpu => "icons/cpu.svg",
             Self::Drill => "icons/drill.svg",
-            Self::Feather => "icons/feather.svg",
             Self::FlaskConical => "icons/flask-conical.svg",
             Self::Footprints => "icons/footprints.svg",
             Self::Gpu => "icons/gpu.svg",
