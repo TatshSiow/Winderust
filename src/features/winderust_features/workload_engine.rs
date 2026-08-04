@@ -28,13 +28,14 @@ use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
     audio_activity::active_audio_process_ids,
     config::{
-        CoreSteeringMode, CoreSteeringSettings, CpuRestrictionMode, ForegroundBoostPriority,
-        PriorityRule, ProcessPriority, WorkloadEngineSettings,
-    },
-    core_steering::{
-        self, CoreSteeringManager, CoreSteeringTarget, LogicalProcessorInfo, LogicalProcessorKind,
+        CpuAllocationSettings, CpuRestrictionMode, ForegroundBoostPriority, PriorityRule,
+        ProcessPriority, WorkloadEngineSettings,
     },
     cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
+    cpu_allocation::{
+        self, CpuAllocationManager, CpuAllocationMode, CpuAllocationTarget, LogicalProcessorInfo,
+        LogicalProcessorKind,
+    },
     foreground::{
         contains_process_name, list_processes, list_processes_with_paths, process_count_label,
         process_executable_path, process_failure_key, process_handle_matches_executable_path,
@@ -108,10 +109,9 @@ pub struct WorkloadEngineManager {
     boosted: BTreeMap<u32, BoostedProcess>,
     foreground_candidate: Option<ForegroundCandidate>,
     foreground_cpu_sample: Option<(BTreeSet<u32>, ProcessCpuSample)>,
-    lower_background_affinity: CoreSteeringManager,
     workload_engine: BTreeMap<u32, WorkloadEngineProcess>,
     workload_engine_pressure_active: bool,
-    workload_engine_affinity: CoreSteeringManager,
+    workload_engine_affinity: CpuAllocationManager,
     workload_engine_memory_priority: MemoryPriorityManager,
     workload_engine_core_selection: Option<WorkloadEngineCoreSelection>,
     last_background_apply_summary_logged_at: Option<Instant>,
@@ -126,12 +126,9 @@ impl Default for WorkloadEngineManager {
             boosted: BTreeMap::new(),
             foreground_candidate: None,
             foreground_cpu_sample: None,
-            lower_background_affinity: CoreSteeringManager::with_action_log_feature(
-                ActionLogFeature::WorkloadEngine,
-            ),
             workload_engine: BTreeMap::new(),
             workload_engine_pressure_active: false,
-            workload_engine_affinity: CoreSteeringManager::with_action_log_feature(
+            workload_engine_affinity: CpuAllocationManager::with_action_log_feature(
                 ActionLogFeature::WorkloadEngine,
             ),
             workload_engine_memory_priority: MemoryPriorityManager::default(),
@@ -233,7 +230,8 @@ pub struct WorkloadEngineUpdate<'a> {
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
     pub background_efficiency_managed: bool,
-    pub background_efficiency_process_ids: &'a BTreeSet<u32>,
+    pub excluded_process_ids: &'a BTreeSet<u32>,
+    pub explicit_cpu_allocation_paths: &'a [String],
 }
 
 struct ForegroundBoostGroup<'a> {
@@ -280,7 +278,8 @@ impl WorkloadEngineManager {
             foreground_process_id,
             total_cpu_usage_percent,
             background_efficiency_managed,
-            background_efficiency_process_ids,
+            excluded_process_ids,
+            explicit_cpu_allocation_paths,
         } = input;
 
         if !automation_enabled {
@@ -381,7 +380,7 @@ impl WorkloadEngineManager {
                     current_process_id,
                     foreground_process_id,
                     &foreground_process_group_ids,
-                    background_efficiency_process_ids,
+                    excluded_process_ids,
                 )
             {
                 continue;
@@ -400,7 +399,7 @@ impl WorkloadEngineManager {
         let foreground_launch_boost_target = foreground_process_id
             .zip(foreground_process_name.as_deref())
             .is_some_and(|(process_id, process_name)| {
-                !background_efficiency_process_ids.contains(&process_id)
+                !excluded_process_ids.contains(&process_id)
                     && foreground_boost_eligible(
                         process_id,
                         process_name,
@@ -472,27 +471,7 @@ impl WorkloadEngineManager {
             total_cpu_usage_percent,
         );
         let workload_engine_restraints_running = workload_engine_running && !launch_boost_running;
-        let lower_background_affinity_settings = CoreSteeringSettings {
-            enabled: false,
-            exclude_foreground_app: true,
-            rules: Vec::new(),
-        };
-        let lower_background_affinity_snapshot = self.lower_background_affinity.update(
-            &lower_background_affinity_settings,
-            automation_enabled,
-            allow_cross_session_process_control,
-            foreground_process_id,
-            action_log,
-        );
-        let mut auto_excluded_processes = lower_background_affinity_snapshot
-            .auto_excluded_processes
-            .iter()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        failures.count += lower_background_affinity_snapshot.failed_processes;
-        if failures.last_error.is_none() {
-            failures.last_error = lower_background_affinity_snapshot.last_error;
-        }
+        let mut auto_excluded_processes = BTreeSet::new();
 
         let mut workload_engine_affinity_targets = Vec::new();
         let mut workload_engine_memory_targets = Vec::new();
@@ -507,7 +486,7 @@ impl WorkloadEngineManager {
                         process.is_critical == Some(false) && process.can_set_information
                     })
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
-                    .filter(|process| !background_efficiency_process_ids.contains(&process.id))
+                    .filter(|process| !excluded_process_ids.contains(&process.id))
                     .filter(|process| {
                         !settings
                             .workload_engine_exclusions
@@ -631,9 +610,14 @@ impl WorkloadEngineManager {
                         preserve_background_priority: true,
                     });
                 }
-                if candidate.decision == WorkloadEngineDecision::RestrictAffinity {
+                if candidate.decision == WorkloadEngineDecision::RestrictAffinity
+                    && !cpu_allocation::contains_process(
+                        explicit_cpu_allocation_paths,
+                        &executable_path,
+                    )
+                {
                     if let Some(core_mask) = workload_engine_core_mask {
-                        workload_engine_affinity_targets.push(CoreSteeringTarget {
+                        workload_engine_affinity_targets.push(CpuAllocationTarget {
                             process_id: candidate.process_id,
                             process_name: candidate.process_name.clone(),
                             executable_path,
@@ -663,11 +647,11 @@ impl WorkloadEngineManager {
                 )
             } else {
                 self.workload_engine_affinity.update(
-                    &CoreSteeringSettings {
-                        enabled: false,
-                        exclude_foreground_app: true,
-                        rules: Vec::new(),
-                    },
+                    &CpuAllocationSettings::default(),
+                    (
+                        CpuAllocationMode::SoftCpuSets,
+                        ActionLogFeature::WorkloadEngine,
+                    ),
                     automation_enabled,
                     allow_cross_session_process_control,
                     foreground_process_id,
@@ -846,7 +830,7 @@ impl WorkloadEngineManager {
 
         if let Some(foreground_id) = foreground_process_id {
             if (settings.boost_foreground_app || launch_boost_running)
-                && !background_efficiency_process_ids.contains(&foreground_id)
+                && !excluded_process_ids.contains(&foreground_id)
             {
                 let boost_targets = processes
                     .iter()
@@ -854,7 +838,7 @@ impl WorkloadEngineManager {
                         process.is_critical == Some(false) && process.can_set_information
                     })
                     .filter(|process| foreground_process_group_ids.contains(&process.id))
-                    .filter(|process| !background_efficiency_process_ids.contains(&process.id))
+                    .filter(|process| !excluded_process_ids.contains(&process.id))
                     .filter(|process| {
                         foreground_boost_eligible(
                             process.id,
@@ -969,25 +953,17 @@ impl WorkloadEngineManager {
         self.workload_engine.clear();
         self.workload_engine_pressure_active = false;
         self.last_background_apply_summary_logged_at = None;
-        let affinity_settings = CoreSteeringSettings {
-            enabled: false,
-            exclude_foreground_app: true,
-            rules: Vec::new(),
-        };
-        let lower_affinity_snapshot = self.lower_background_affinity.update(
-            &affinity_settings,
+        let affinity_snapshot = self.workload_engine_affinity.update(
+            &CpuAllocationSettings::default(),
+            (
+                CpuAllocationMode::SoftCpuSets,
+                ActionLogFeature::WorkloadEngine,
+            ),
             true,
             false,
             None,
             action_log,
         );
-        failures.count += lower_affinity_snapshot.failed_processes;
-        if failures.last_error.is_none() {
-            failures.last_error = lower_affinity_snapshot.last_error;
-        }
-        let affinity_snapshot =
-            self.workload_engine_affinity
-                .update(&affinity_settings, true, false, None, action_log);
         failures.count += affinity_snapshot.failed_processes;
         if failures.last_error.is_none() {
             failures.last_error = affinity_snapshot.last_error;
@@ -1653,7 +1629,7 @@ impl WorkloadEngineManager {
         max_logical_processors: u8,
         now: Instant,
     ) -> Option<u64> {
-        let processors = core_steering::logical_processors();
+        let processors = cpu_allocation::logical_processors();
         let usages = self.per_processor_usage.sample()?;
         let next_mask =
             load_aware_limited_core_mask(&processors, &usages, percent, max_logical_processors)?;

@@ -18,7 +18,7 @@
 
 ## Current Decisions
 
-- UI wording is the naming source of truth. Current feature names include Adaptive Engine, Background Efficiency, Memory Trim, By Foreground, By Running App, By CPU Load, By Activity, By Time, Core Limiter, Core Steering, and Dynamic Priority Boost.
+- UI wording is the naming source of truth. Current feature names include Adaptive Engine, Background Efficiency, Memory Trim, By Foreground, By Running App, By CPU Load, By Activity, By Time, Core Limiter, CPU Sets (Soft), Processor Affinity (Hard), and Dynamic Priority Boost.
 - Use native mechanism names only at Windows boundaries: EcoQoS, affinity masks, CPU Sets, and exact Win32 function names remain technical terms.
 - Winderust is public pre-release software under GPL-3.0-only, Copyright (C) 2026 Tatsh Siow. Settings use only the current schema; do not add serde aliases, migration code, old brand paths, or compatibility-only fallbacks.
 - Keep personal tooling local-only: .codex/, .agents/skills/, and graphify-out/ must remain ignored and excluded from release artifacts.
@@ -33,7 +33,8 @@
 - Repeated process failure suppression uses `ExecutionFailureTracker` in `src/rules/execution_failure.rs`; the threshold comes from `settings.advanced.execution_failure_suppression_threshold`.
 - Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
-- Rule-only fallbacks use disabled rules: Core Steering, Core Limiter, App Suspension.
+- Rule-only fallbacks use disabled rules: CPU Sets (Soft), Processor Affinity (Hard), Core Limiter, App Suspension.
+- Explicit CPU Sets (Soft) and Processor Affinity (Hard) rules take precedence over Workload Engine CPU allocation for the same process.
 - Exclusion-list features append `ProcessExclusionRule`.
 - Timer Resolution does not use process failure suppression.
 - Runtime restoration is a product safety barrier: every reversible runtime

@@ -442,10 +442,8 @@ pub(in crate::ui::app) fn action_log_result_tag(result: ActionLogResult) -> AnyE
 pub(in crate::ui::app) fn action_log_feature_label(feature: ActionLogFeature) -> String {
     match feature {
         ActionLogFeature::AppSuspension => t!("nav.app_suspension").to_string(),
-        ActionLogFeature::BackgroundCpuRestriction => {
-            t!("nav.background_cpu_restriction").to_string()
-        }
-        ActionLogFeature::CoreSteering => t!("nav.core_steering").to_string(),
+        ActionLogFeature::CpuSetsSoft => t!("nav.cpu_sets_soft").to_string(),
+        ActionLogFeature::ProcessorAffinityHard => t!("nav.processor_affinity_hard").to_string(),
         ActionLogFeature::BackgroundEfficiency => t!("nav.background_efficiency").to_string(),
         ActionLogFeature::CoreLimiter => t!("nav.core_limiter").to_string(),
         ActionLogFeature::ByRunningApp => t!("nav.by_running_app").to_string(),
@@ -626,8 +624,8 @@ impl ActionLogFeatureFilter {
     const ALL: [Self; 16] = [
         Self::All,
         Self::Feature(ActionLogFeature::AppSuspension),
-        Self::Feature(ActionLogFeature::BackgroundCpuRestriction),
-        Self::Feature(ActionLogFeature::CoreSteering),
+        Self::Feature(ActionLogFeature::CpuSetsSoft),
+        Self::Feature(ActionLogFeature::ProcessorAffinityHard),
         Self::Feature(ActionLogFeature::BackgroundEfficiency),
         Self::Feature(ActionLogFeature::CoreLimiter),
         Self::Feature(ActionLogFeature::ByRunningApp),

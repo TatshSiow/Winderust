@@ -198,14 +198,6 @@ pub(in crate::ui::app) fn process_memory_priority_setting_label(
     }
 }
 
-pub(in crate::ui::app) fn core_steering_mode_label(mode: CoreSteeringMode) -> String {
-    match mode {
-        CoreSteeringMode::Hard => t!("core_steering.mode_hard").to_string(),
-        CoreSteeringMode::Soft => t!("core_steering.mode_soft").to_string(),
-        CoreSteeringMode::EfficiencyOff => t!("core_steering.mode_efficiency_off").to_string(),
-    }
-}
-
 pub(in crate::ui::app) fn workload_engine_escalation_tuning_label(auto: bool) -> String {
     if auto {
         t!("workload_engine.priority_auto").to_string()

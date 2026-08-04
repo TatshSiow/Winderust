@@ -12,8 +12,8 @@ pub(in crate::ui::app) fn process_target_can_accept(
         SuggestionTarget::BackgroundEfficiency => {
             can_add_background_efficiency_process(&settings.background_efficiency, process)
         }
-        SuggestionTarget::BackgroundCpu => {
-            can_add_background_cpu_exclusion(&settings.background_cpu_restriction, process)
+        SuggestionTarget::CpuSetsSoft | SuggestionTarget::ProcessorAffinityHard => {
+            can_add_cpu_allocation_process(settings, process)
         }
         SuggestionTarget::MemoryTrim => {
             can_add_memory_trim_exclusion(&settings.memory_trim, process)
@@ -50,9 +50,6 @@ pub(in crate::ui::app) fn process_target_can_accept(
         }
         SuggestionTarget::TimerResolution => {
             can_add_timer_resolution_process(&settings.timer_resolution, process)
-        }
-        SuggestionTarget::CoreSteering => {
-            can_add_core_steering_process(&settings.core_steering, process)
         }
     }
 }
@@ -148,17 +145,6 @@ pub(in crate::ui::app) fn can_add_background_efficiency_process(
         process,
         |process| settings.contains_custom_rule(process),
         background_efficiency::is_builtin_excluded,
-    )
-}
-
-pub(in crate::ui::app) fn can_add_background_cpu_exclusion(
-    settings: &BackgroundCpuRestrictionSettings,
-    process: &str,
-) -> bool {
-    can_add_process_candidate(
-        process,
-        |process| settings.contains_exclusion(process),
-        core_steering::is_builtin_excluded,
     )
 }
 
@@ -332,14 +318,17 @@ pub(in crate::ui::app) fn can_add_app_suspension_process(
     )
 }
 
-pub(in crate::ui::app) fn can_add_core_steering_process(
-    settings: &CoreSteeringSettings,
+pub(in crate::ui::app) fn can_add_cpu_allocation_process(
+    settings: &Settings,
     process: &str,
 ) -> bool {
     can_add_process_candidate(
         process,
-        |process| settings.contains_rule_for(process),
-        core_steering::is_builtin_excluded,
+        |process| {
+            settings.cpu_sets_soft.contains_rule_for(process)
+                || settings.processor_affinity_hard.contains_rule_for(process)
+        },
+        cpu_allocation::is_builtin_excluded,
     )
 }
 
@@ -487,10 +476,9 @@ pub(in crate::ui::app) fn new_app_suspension_rule(process: &str) -> AppSuspensio
     }
 }
 
-pub(in crate::ui::app) fn new_core_steering_rule(process: &str) -> CoreSteeringRule {
-    CoreSteeringRule {
+pub(in crate::ui::app) fn new_cpu_allocation_rule(process: &str) -> CpuAllocationRule {
+    CpuAllocationRule {
         enabled: true,
-        mode: CoreSteeringMode::Soft,
         executable_path: executable_path_key(Path::new(process)),
         core_mask: default_affinity_mask(),
     }
@@ -557,7 +545,7 @@ pub(in crate::ui::app) fn core_limiter_indicator(
 ) -> (String, u32, u32) {
     if core_limiter::is_builtin_excluded(process) {
         (
-            t!("core_steering.indicator.protected").to_string(),
+            t!("cpu_allocation.indicator.protected").to_string(),
             settings_card_hover_color(),
             accent_color(),
         )
@@ -569,13 +557,13 @@ pub(in crate::ui::app) fn core_limiter_indicator(
         )
     } else if status.enabled {
         (
-            t!("core_steering.indicator.ready").to_string(),
+            t!("cpu_allocation.indicator.ready").to_string(),
             panel_active_color(),
             muted_text_color(),
         )
     } else {
         (
-            t!("core_steering.indicator.off").to_string(),
+            t!("cpu_allocation.indicator.off").to_string(),
             panel_active_color(),
             dim_text_color(),
         )

@@ -230,12 +230,6 @@ impl WinderustApp {
         )
     }
 
-    pub(in crate::ui::app) fn effective_background_cpu_restriction_strategy(
-        &self,
-    ) -> CpuRestrictionStrategy {
-        self.settings.background_cpu_restriction.strategy
-    }
-
     pub(in crate::ui::app) fn render_background_custom_rules(
         &self,
         cx: &mut Context<Self>,

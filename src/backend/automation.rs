@@ -16,17 +16,17 @@ use crate::{
         IdleDetector, InputHookEvents, CONTROLLER_ACTIVITY_POLL_INTERVAL,
     },
     app_suspension::{AppSuspensionManager, AppSuspensionSnapshot},
-    background_cpu::BackgroundCpuRestrictionManager,
     background_efficiency::{BackgroundEfficiencyManager, BackgroundEfficiencySnapshot},
     config::{
-        AccentColorSource, AnimationMode, AppThemeMode, PowerPlanSettings, ProcessIoPriority,
-        Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+        AccentColorSource, AnimationMode, AppThemeMode, CpuAllocationSettings, PowerPlanSettings,
+        ProcessIoPriority, Settings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
     core_limiter::{CoreLimiterManager, CoreLimiterSnapshot},
-    core_steering::{
-        self, CoreSteeringManager, CoreSteeringSnapshot, LogicalProcessorInfo, LogicalProcessorKind,
-    },
     cpu::{CpuUsageMonitor, CpuUsageSnapshot, PerProcessorUsageMonitor},
+    cpu_allocation::{
+        self, CpuAllocationManager, CpuAllocationSnapshot, LogicalProcessorInfo,
+        LogicalProcessorKind,
+    },
     dashboard_metrics::{IoUsageMonitor, IoUsageSnapshot},
     dynamic_priority_boost::{DynamicPriorityBoostManager, DynamicPriorityBoostSnapshot},
     features::power_plan_control::by_running_app::{ByRunningAppManager, ByRunningAppSnapshot},
@@ -78,8 +78,7 @@ const ECO_QOS_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const APP_SUSPENSION_FOREGROUND_RELEASE_INTERVAL: Duration = Duration::from_millis(500);
 const APP_SUSPENSION_SHELL_USER_INTENT_INTERVAL: Duration = Duration::from_millis(750);
-const CPU_AFFINITY_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-const BACKGROUND_CPU_RESTRICTION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const CPU_ALLOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const CPU_LIMITER_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const PERFORMANCE_MODE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const WORKLOAD_ENGINE_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
@@ -113,8 +112,8 @@ pub struct AutomationStatusSnapshot {
     pub worker_error: Option<String>,
     pub background_efficiency: BackgroundEfficiencySnapshot,
     pub app_suspension: AppSuspensionSnapshot,
-    pub core_steering: CoreSteeringSnapshot,
-    pub background_cpu_restriction: CoreSteeringSnapshot,
+    pub cpu_sets_soft: CpuAllocationSnapshot,
+    pub processor_affinity_hard: CpuAllocationSnapshot,
     pub core_limiter: CoreLimiterSnapshot,
     pub by_running_app: ByRunningAppSnapshot,
     pub workload_engine: WorkloadEngineSnapshot,
@@ -161,8 +160,8 @@ struct AutomationWorkerState {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PendingAutoExclusions {
     pub app_suspension: Vec<String>,
-    pub core_steering: Vec<String>,
-    pub background_cpu_restriction: Vec<String>,
+    pub cpu_sets_soft: Vec<String>,
+    pub processor_affinity_hard: Vec<String>,
     pub core_limiter: Vec<String>,
     pub workload_engine: Vec<String>,
     pub io_priority: Vec<String>,
@@ -422,8 +421,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
     let mut next_background_efficiency_refresh = Instant::now();
     let mut next_app_suspension_refresh = Instant::now();
     let mut next_app_suspension_foreground_release = Instant::now();
-    let mut next_core_steering_refresh = Instant::now();
-    let mut next_background_cpu_restriction_refresh = Instant::now();
+    let mut next_cpu_sets_soft_refresh = Instant::now();
+    let mut next_processor_affinity_hard_refresh = Instant::now();
     let mut next_core_limiter_refresh = Instant::now();
     let mut next_by_running_app_refresh = Instant::now();
     let mut next_workload_engine_refresh = Instant::now();
@@ -462,15 +461,15 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             adaptive_engine_enabled,
             APP_SUSPENSION_REFRESH_INTERVAL,
         );
-        let core_steering_refresh_interval = automation_refresh_interval(
+        let cpu_sets_soft_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
-            CPU_AFFINITY_REFRESH_INTERVAL,
+            CPU_ALLOCATION_REFRESH_INTERVAL,
         );
-        let background_cpu_restriction_refresh_interval = automation_refresh_interval(
+        let processor_affinity_hard_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
             adaptive_engine_enabled,
-            BACKGROUND_CPU_RESTRICTION_REFRESH_INTERVAL,
+            CPU_ALLOCATION_REFRESH_INTERVAL,
         );
         let core_limiter_refresh_interval = automation_refresh_interval(
             hidden_to_tray,
@@ -542,8 +541,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 &mut next_background_efficiency_refresh,
                 &mut next_app_suspension_refresh,
                 &mut next_app_suspension_foreground_release,
-                &mut next_core_steering_refresh,
-                &mut next_background_cpu_restriction_refresh,
+                &mut next_cpu_sets_soft_refresh,
+                &mut next_processor_affinity_hard_refresh,
                 &mut next_core_limiter_refresh,
                 &mut next_by_running_app_refresh,
                 &mut next_workload_engine_refresh,
@@ -566,8 +565,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             for refresh_at in [
                 &mut next_check,
                 &mut next_background_efficiency_refresh,
-                &mut next_core_steering_refresh,
-                &mut next_background_cpu_restriction_refresh,
+                &mut next_cpu_sets_soft_refresh,
+                &mut next_processor_affinity_hard_refresh,
                 &mut next_core_limiter_refresh,
                 &mut next_workload_engine_refresh,
                 &mut next_process_priority_refresh,
@@ -633,10 +632,10 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             || !app_suspension_freeze_requests.is_empty()
             || !app_suspension_process_requests.is_empty()
             || runner.app_suspension_manager.has_suspended_processes();
-        let core_steering_refresh_required = settings_changed
-            || feature_refresh_required(&settings, core_steering_required(&settings));
-        let background_cpu_restriction_refresh_required = settings_changed
-            || feature_refresh_required(&settings, settings.background_cpu_restriction.enabled);
+        let cpu_sets_soft_refresh_required = settings_changed
+            || feature_refresh_required(&settings, cpu_sets_soft_required(&settings));
+        let processor_affinity_hard_refresh_required = settings_changed
+            || feature_refresh_required(&settings, processor_affinity_hard_required(&settings));
         let core_limiter_refresh_required = settings_changed
             || feature_refresh_required(&settings, core_limiter_required(&settings));
         let by_running_app_refresh_required = settings_changed
@@ -679,8 +678,8 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
             if runner.detect_process_appearance() {
                 for refresh_at in [
                     &mut next_background_efficiency_refresh,
-                    &mut next_core_steering_refresh,
-                    &mut next_background_cpu_restriction_refresh,
+                    &mut next_cpu_sets_soft_refresh,
+                    &mut next_processor_affinity_hard_refresh,
                     &mut next_core_limiter_refresh,
                     &mut next_by_running_app_refresh,
                     &mut next_workload_engine_refresh,
@@ -769,18 +768,15 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 next_app_suspension_foreground_release = now;
             }
         }
-        if core_steering_refresh_required && now >= next_core_steering_refresh {
-            let core_steering_status = runner.run_core_steering_update(&settings);
-            update_core_steering_status(&shared, core_steering_status);
-            next_core_steering_refresh = now + core_steering_refresh_interval;
+        if cpu_sets_soft_refresh_required && now >= next_cpu_sets_soft_refresh {
+            let status = runner.run_cpu_sets_soft_update(&settings);
+            update_cpu_sets_soft_status(&shared, status);
+            next_cpu_sets_soft_refresh = now + cpu_sets_soft_refresh_interval;
         }
-        if background_cpu_restriction_refresh_required
-            && now >= next_background_cpu_restriction_refresh
-        {
-            let status = runner.run_background_cpu_restriction_update(&settings);
-            update_background_cpu_restriction_status(&shared, status);
-            next_background_cpu_restriction_refresh =
-                now + background_cpu_restriction_refresh_interval;
+        if processor_affinity_hard_refresh_required && now >= next_processor_affinity_hard_refresh {
+            let status = runner.run_processor_affinity_hard_update(&settings);
+            update_processor_affinity_hard_status(&shared, status);
+            next_processor_affinity_hard_refresh = now + processor_affinity_hard_refresh_interval;
         }
         if core_limiter_refresh_required && now >= next_core_limiter_refresh {
             let core_limiter_status = runner.run_core_limiter_update(&settings);
@@ -851,14 +847,14 @@ fn run_background_automation(shared: Arc<SharedAutomationState>) {
                 app_suspension_refresh_interval,
             ),
             (
-                core_steering_refresh_required,
-                next_core_steering_refresh,
-                core_steering_refresh_interval,
+                cpu_sets_soft_refresh_required,
+                next_cpu_sets_soft_refresh,
+                cpu_sets_soft_refresh_interval,
             ),
             (
-                background_cpu_restriction_refresh_required,
-                next_background_cpu_restriction_refresh,
-                background_cpu_restriction_refresh_interval,
+                processor_affinity_hard_refresh_required,
+                next_processor_affinity_hard_refresh,
+                processor_affinity_hard_refresh_interval,
             ),
             (
                 core_limiter_refresh_required,

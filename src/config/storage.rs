@@ -94,19 +94,18 @@ mod tests {
     use crate::config::{
         AccentSettings, ActionLogMode, AdaptiveEngineSettings, AdvancedSettings, AnimationMode,
         AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
-        BackgroundCpuRestrictionSettings, BackgroundEfficiencyAggressiveness,
-        BackgroundEfficiencyRule, BackgroundEfficiencySettings, ByActivitySettings, ByCpuLoadRule,
-        ByCpuLoadSettings, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
-        ByRunningAppSettings, ByTimeRule, ByTimeSettings, CoreLimiterRule, CoreLimiterSettings,
-        CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings, CpuRestrictionMode,
-        CpuUsageComparison, DynamicPriorityBoostSettings, ForegroundBoostPriority, GeneralSettings,
-        GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings,
-        MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings, PriorityRule,
-        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
-        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
-        ProcessMemoryPrioritySetting, ProcessPriority, ProcessPrioritySetting,
-        ProcessPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
-        WorkloadEngineSettings,
+        BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
+        ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByForegroundRule,
+        ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings,
+        CoreLimiterRule, CoreLimiterSettings, CpuAllocationRule, CpuAllocationSettings,
+        CpuRestrictionMode, CpuUsageComparison, DynamicPriorityBoostSettings,
+        ForegroundBoostPriority, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
+        IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+        PowerPlanSettings, PriorityRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
+        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
+        ProcessPrioritySetting, ProcessPrioritySettings, TimerResolutionRule,
+        TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
     };
 
     #[test]
@@ -281,31 +280,31 @@ mod tests {
                     },
                 ],
             },
-            core_steering: CoreSteeringSettings {
+            cpu_sets_soft: CpuAllocationSettings {
                 enabled: true,
                 exclude_foreground_app: true,
                 rules: vec![
-                    CoreSteeringRule {
+                    CpuAllocationRule {
                         enabled: true,
-                        mode: CoreSteeringMode::Hard,
                         executable_path: "backup.exe".to_owned(),
                         core_mask: 0b0011,
                     },
-                    CoreSteeringRule {
+                    CpuAllocationRule {
                         enabled: false,
-                        mode: CoreSteeringMode::Soft,
                         executable_path: "indexer.exe".to_owned(),
                         core_mask: 0b1100,
                     },
-                    CoreSteeringRule {
-                        enabled: true,
-                        mode: CoreSteeringMode::EfficiencyOff,
-                        executable_path: "game.exe".to_owned(),
-                        core_mask: 0,
-                    },
                 ],
             },
-            background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
+            processor_affinity_hard: CpuAllocationSettings {
+                enabled: true,
+                exclude_foreground_app: true,
+                rules: vec![CpuAllocationRule {
+                    enabled: true,
+                    executable_path: "game.exe".to_owned(),
+                    core_mask: 0b0101,
+                }],
+            },
             core_limiter: CoreLimiterSettings {
                 enabled: true,
                 exclude_foreground_app: true,

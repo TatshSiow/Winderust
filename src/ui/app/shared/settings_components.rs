@@ -221,7 +221,7 @@ pub(in crate::ui::app) fn setting_group_body_animation_height(
     row_count: usize,
 ) -> Option<f32> {
     match target {
-        SettingGroupTarget::AccentColor | SettingGroupTarget::BackgroundCpuRestriction => None,
+        SettingGroupTarget::AccentColor => None,
         _ => Some(CARD_ROW_HEIGHT * row_count.max(1) as f32),
     }
 }

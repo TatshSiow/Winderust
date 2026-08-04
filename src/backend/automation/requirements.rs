@@ -1,5 +1,4 @@
 use super::*;
-use crate::config::CoreSteeringMode;
 
 pub(super) fn automation_refresh_interval(
     hidden_to_tray: bool,
@@ -76,11 +75,21 @@ pub(super) fn app_suspension_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
-pub(super) fn core_steering_required(settings: &Settings) -> bool {
-    settings.core_steering.enabled
-        && settings.core_steering.rules.iter().any(|rule| {
+pub(super) fn cpu_sets_soft_required(settings: &Settings) -> bool {
+    settings.cpu_sets_soft.enabled
+        && settings.cpu_sets_soft.rules.iter().any(|rule| {
+            enabled_executable_path_rule(rule.enabled, &rule.executable_path) && rule.core_mask != 0
+        })
+}
+
+pub(super) fn processor_affinity_hard_required(settings: &Settings) -> bool {
+    settings.processor_affinity_hard.enabled
+        && settings.processor_affinity_hard.rules.iter().any(|rule| {
             enabled_executable_path_rule(rule.enabled, &rule.executable_path)
-                && (rule.mode == CoreSteeringMode::EfficiencyOff || rule.core_mask != 0)
+                && rule.core_mask != 0
+                && !settings
+                    .cpu_sets_soft
+                    .contains_rule_for(&rule.executable_path)
         })
 }
 
@@ -261,8 +270,8 @@ pub(super) fn effective_gpu_priority_settings(
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (settings.background_efficiency.enabled
-            || core_steering_required(settings)
-            || settings.background_cpu_restriction.enabled
+            || cpu_sets_soft_required(settings)
+            || processor_affinity_hard_required(settings)
             || core_limiter_required(settings)
             || by_running_app_required(settings)
             || workload_engine_required(settings)

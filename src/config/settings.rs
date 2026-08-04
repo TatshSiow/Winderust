@@ -29,9 +29,9 @@ pub struct Settings {
     #[serde(default)]
     pub app_suspension: AppSuspensionSettings,
     #[serde(default)]
-    pub core_steering: CoreSteeringSettings,
+    pub cpu_sets_soft: CpuAllocationSettings,
     #[serde(default)]
-    pub background_cpu_restriction: BackgroundCpuRestrictionSettings,
+    pub processor_affinity_hard: CpuAllocationSettings,
     #[serde(default)]
     pub core_limiter: CoreLimiterSettings,
     #[serde(default)]
@@ -362,28 +362,6 @@ impl CpuRestrictionMode {
     pub const ALL: [Self; 2] = [Self::SoftCpuSets, Self::HardAffinity];
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CpuRestrictionStrategy {
-    Off,
-    #[default]
-    Auto,
-    PreferEfficiencyCores,
-    LimitLogicalCpus,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CpuRestrictionControlStyle {
-    #[default]
-    Percentage,
-    CoreToggle,
-}
-
-impl CpuRestrictionControlStyle {
-    pub const ALL: [Self; 2] = [Self::Percentage, Self::CoreToggle];
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSuspensionSettings {
     pub enabled: bool,
@@ -407,33 +385,12 @@ pub struct AppSuspensionSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoreSteeringSettings {
+pub struct CpuAllocationSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
     pub exclude_foreground_app: bool,
     #[serde(default)]
-    pub rules: Vec<CoreSteeringRule>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackgroundCpuRestrictionSettings {
-    pub enabled: bool,
-    #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
-    #[serde(default)]
-    pub mode: CpuRestrictionMode,
-    #[serde(default)]
-    pub strategy: CpuRestrictionStrategy,
-    #[serde(default)]
-    pub control_style: CpuRestrictionControlStyle,
-    #[serde(default = "default_cpu_restriction_percent")]
-    pub percent: u8,
-    #[serde(default = "default_cpu_restriction_max_logical_processors")]
-    pub max_logical_processors: u8,
-    #[serde(default)]
-    pub core_mask: u64,
-    #[serde(default)]
-    pub exclusions: Vec<ProcessExclusionRule>,
+    pub rules: Vec<CpuAllocationRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -639,11 +596,9 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoreSteeringRule {
+pub struct CpuAllocationRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
-    pub mode: CoreSteeringMode,
     pub executable_path: String,
     pub core_mask: u64,
 }
@@ -1320,19 +1275,6 @@ impl ForegroundBoostPriority {
     pub const ALL: [Self; 3] = [Self::Auto, Self::Normal, Self::AboveNormal];
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CoreSteeringMode {
-    #[default]
-    Hard,
-    Soft,
-    EfficiencyOff,
-}
-
-impl CoreSteeringMode {
-    pub const ALL: [Self; 3] = [Self::Hard, Self::Soft, Self::EfficiencyOff];
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSuspensionRule {
     #[serde(default = "default_true")]
@@ -1448,8 +1390,8 @@ impl Default for Settings {
             by_cpu_load: ByCpuLoadSettings::default(),
             background_efficiency: BackgroundEfficiencySettings::default(),
             app_suspension: AppSuspensionSettings::default(),
-            core_steering: CoreSteeringSettings::default(),
-            background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
+            cpu_sets_soft: CpuAllocationSettings::default(),
+            processor_affinity_hard: CpuAllocationSettings::default(),
             core_limiter: CoreLimiterSettings::default(),
             by_running_app: ByRunningAppSettings::default(),
             workload_engine: WorkloadEngineSettings::default(),
@@ -1710,10 +1652,6 @@ const fn default_timer_resolution_100ns() -> u32 {
     10_000
 }
 
-const fn default_cpu_restriction_percent() -> u8 {
-    50
-}
-
 const fn default_cpu_restriction_max_logical_processors() -> u8 {
     0
 }
@@ -1818,28 +1756,12 @@ impl Default for AppSuspensionSettings {
     }
 }
 
-impl Default for CoreSteeringSettings {
+impl Default for CpuAllocationSettings {
     fn default() -> Self {
         Self {
             enabled: false,
             exclude_foreground_app: default_true(),
             rules: Vec::new(),
-        }
-    }
-}
-
-impl Default for BackgroundCpuRestrictionSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            exclude_foreground_app: default_true(),
-            mode: CpuRestrictionMode::HardAffinity,
-            strategy: CpuRestrictionStrategy::Auto,
-            control_style: CpuRestrictionControlStyle::Percentage,
-            percent: default_cpu_restriction_percent(),
-            max_logical_processors: default_cpu_restriction_max_logical_processors(),
-            core_mask: 0,
-            exclusions: Vec::new(),
         }
     }
 }
@@ -2270,21 +2192,7 @@ impl BackgroundEfficiencySettings {
     }
 }
 
-impl BackgroundCpuRestrictionSettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
-    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
-        })
-    }
-}
-
-impl CoreSteeringSettings {
+impl CpuAllocationSettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules
             .iter()
@@ -2417,8 +2325,8 @@ mod tests {
             settings.by_cpu_load.enabled,
             settings.background_efficiency.enabled,
             settings.app_suspension.enabled,
-            settings.core_steering.enabled,
-            settings.background_cpu_restriction.enabled,
+            settings.cpu_sets_soft.enabled,
+            settings.processor_affinity_hard.enabled,
             settings.core_limiter.enabled,
             settings.by_running_app.enabled,
             settings.workload_engine.enabled,

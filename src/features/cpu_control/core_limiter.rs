@@ -74,7 +74,7 @@ impl CoreLimiterManager {
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
-        core_steering_process_ids: &BTreeSet<u32>,
+        cpu_allocation_process_ids: &BTreeSet<u32>,
         action_log: &mut ActionLog,
     ) -> CoreLimiterSnapshot {
         if !automation_enabled {
@@ -199,14 +199,14 @@ impl CoreLimiterManager {
                 continue;
             }
 
-            if core_steering_process_ids.contains(&process.id) {
+            if cpu_allocation_process_ids.contains(&process.id) {
                 if self.limited.contains_key(&process.id) {
                     action_log.record(
                         ActionLogFeature::CoreLimiter,
                         Some(process.id),
                         process.name.clone(),
                         ActionLogResult::Skipped,
-                        "Skipped because Core Steering is already managing this process.",
+                        "Skipped because CPU allocation is already managing this process.",
                     );
                 }
                 continue;

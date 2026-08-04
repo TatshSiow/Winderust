@@ -1699,7 +1699,7 @@ function Summarize-Method {
 $assistCoverage = [pscustomobject][ordered]@{
     process_priority = 'applied to generated background workers'
     foreground_process_priority = 'applied to the benchmark process'
-    affinity = 'applied as hard affinity for Max Foreground, and for adaptive presets on standard/all-P CPUs to approximate runtime Soft CPU Sets'
+    affinity = 'applied as hard affinity for Max Foreground, and for adaptive presets on standard/all-P CPUs to approximate runtime CPU Sets (Soft)'
     foreground_priority_boost = 'applied to the benchmark process when preset enables it'
     foreground_thread_priority = 'applied to the benchmark thread when preset enables it'
     foreground_io_priority = 'applied to the benchmark process when preset enables it; CPU loop has minimal I/O'

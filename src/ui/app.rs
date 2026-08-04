@@ -49,24 +49,22 @@ use crate::{
     background_efficiency::{self, BackgroundEfficiencySnapshot},
     config::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
-        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
-        BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
-        ByCpuLoadRule, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
-        ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings, CoreSteeringMode,
-        CoreSteeringRule, CoreSteeringSettings, CpuRestrictionControlStyle, CpuRestrictionMode,
-        CpuRestrictionStrategy, CpuUsageComparison, DynamicPriorityBoostSettings,
-        ForegroundBoostPriority, GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings,
-        MemoryTrimSettings, NetworkThresholdUnit, ProcessDynamicPriorityBoostSetting,
-        ProcessExclusionRule, ProcessGpuPriority, ProcessGpuPrioritySetting, ProcessIoPriority,
-        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
-        ProcessPriority, ProcessPrioritySetting, ProcessPrioritySettings,
-        ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings, TimerResolutionRule,
-        TimerResolutionSettings, UpdateChannel, WeekdaySetting, WorkloadEngineSettings,
-        CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
+        BackgroundEfficiencyRule, BackgroundEfficiencySettings, ByCpuLoadRule, ByForegroundRule,
+        ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, CoreLimiterRule,
+        CoreLimiterSettings, CpuAllocationRule, CpuRestrictionMode, CpuUsageComparison,
+        DynamicPriorityBoostSettings, ForegroundBoostPriority, GpuPrioritySettings,
+        IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPriority,
+        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
+        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
+        ProcessPrioritySetting, ProcessPrioritySettings, ProcessThreadPrioritySetting, Settings,
+        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, UpdateChannel,
+        WeekdaySetting, WorkloadEngineSettings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
     core_limiter::{self, CoreLimiterSnapshot},
-    core_steering::{self, CoreSteeringSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
+    cpu_allocation::{self, CpuAllocationSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     crash_recovery,
     dashboard_metrics::{
         sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
@@ -424,8 +422,8 @@ pub struct WinderustApp {
     background_efficiency_status: BackgroundEfficiencySnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     core_limiter_status: CoreLimiterSnapshot,
-    core_steering_status: CoreSteeringSnapshot,
-    background_cpu_restriction_status: CoreSteeringSnapshot,
+    cpu_sets_soft_status: CpuAllocationSnapshot,
+    processor_affinity_hard_status: CpuAllocationSnapshot,
     by_running_app_status: ByRunningAppSnapshot,
     workload_engine_status: WorkloadEngineSnapshot,
     process_priority_status: ProcessPrioritySnapshot,
@@ -644,7 +642,8 @@ enum ListItemRemovalKind {
     ByCpuLoadRule,
     BackgroundEfficiencyExclusion,
     AppSuspensionRule,
-    BackgroundCpuExclusion,
+    CpuSetsSoftRule,
+    ProcessorAffinityHardRule,
     CoreLimiterRule,
     ByRunningAppRule,
     WorkloadEngineExclusion,
@@ -656,7 +655,6 @@ enum ListItemRemovalKind {
     MemoryPriorityExclusion,
     TimerResolutionRule,
     MemoryTrimExclusion,
-    CoreSteeringRule,
 }
 
 impl ListItemRemovalTarget {
@@ -688,12 +686,12 @@ struct UiInputs {
     schedule_end_times: Vec<Entity<InputState>>,
     foreground_process: Entity<InputState>,
     background_efficiency_process: Entity<InputState>,
-    background_cpu_exclusion: Entity<InputState>,
     memory_trim_exclusion: Entity<InputState>,
     app_suspension_process: Entity<InputState>,
     core_limiter_process: Entity<InputState>,
     performance_process: Entity<InputState>,
-    core_steering_process: Entity<InputState>,
+    cpu_sets_soft_process: Entity<InputState>,
+    processor_affinity_hard_process: Entity<InputState>,
     workload_engine_process: Entity<InputState>,
     process_priority_process: Entity<InputState>,
     thread_priority_process: Entity<InputState>,
@@ -905,8 +903,8 @@ impl WinderustApp {
             background_efficiency_status: BackgroundEfficiencySnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
             core_limiter_status: CoreLimiterSnapshot::default(),
-            core_steering_status: CoreSteeringSnapshot::default(),
-            background_cpu_restriction_status: CoreSteeringSnapshot::default(),
+            cpu_sets_soft_status: CpuAllocationSnapshot::default(),
+            processor_affinity_hard_status: CpuAllocationSnapshot::default(),
             by_running_app_status: ByRunningAppSnapshot::default(),
             workload_engine_status: WorkloadEngineSnapshot::default(),
             process_priority_status: ProcessPrioritySnapshot::default(),
@@ -1122,8 +1120,8 @@ fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Set
         && settings.by_cpu_load == saved.by_cpu_load
         && settings.background_efficiency == saved.background_efficiency
         && settings.app_suspension == saved.app_suspension
-        && settings.core_steering == saved.core_steering
-        && settings.background_cpu_restriction == saved.background_cpu_restriction
+        && settings.cpu_sets_soft == saved.cpu_sets_soft
+        && settings.processor_affinity_hard == saved.processor_affinity_hard
         && settings.core_limiter == saved.core_limiter
         && settings.by_running_app == saved.by_running_app
         && settings.workload_engine == saved.workload_engine
@@ -1757,8 +1755,8 @@ mod tests {
         saved.advanced.action_log_mode = ActionLogMode::Full;
         current.by_activity.power_plans.performance_guid = Some("current".to_owned());
         saved.by_activity.power_plans.performance_guid = Some("saved".to_owned());
-        current.background_cpu_restriction.enabled = true;
-        saved.background_cpu_restriction.enabled = false;
+        current.processor_affinity_hard.enabled = true;
+        saved.processor_affinity_hard.enabled = false;
         current.io_priority.enabled = true;
         saved.io_priority.enabled = false;
         current.timer_resolution.enabled = true;
@@ -1775,7 +1773,7 @@ mod tests {
             settings.by_activity.power_plans.performance_guid.as_deref(),
             Some("saved")
         );
-        assert!(!settings.background_cpu_restriction.enabled);
+        assert!(!settings.processor_affinity_hard.enabled);
         assert!(!settings.io_priority.enabled);
         assert!(!settings.timer_resolution.enabled);
         assert!(settings.memory_trim.enabled);

@@ -185,7 +185,7 @@ Important behavior from Microsoft: enabling `PROCESS_POWER_THROTTLING_EXECUTION_
 
 ## Advanced Power Plan Tuning
 
-Winderust can apply separate AC and battery processor-power percentages and processor boost modes to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process Core Steering.
+Winderust can apply separate AC and battery processor-power percentages and processor boost modes to a selected Windows power plan, with presets available as quick-fill values. This is system-wide power-plan tuning, not per-process CPU allocation.
 
 Implementation paths:
 
@@ -248,16 +248,16 @@ Implementation entry points:
 | `SetProcessWorkingSetSize` | Passes `SIZE_T(-1)` for both bounds to remove as many pages as possible from a target process working set. | https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-setprocessworkingsetsize |
 
 
-## Core Steering
+## CPU Sets (Soft) and Processor Affinity (Hard)
 
-Winderust Core Steering can apply hard process affinity masks, soft Windows CPU Sets, or Efficiency Mode OFF to selected current-session processes. On systems with more than one processor group, the status message warns that hard affinity uses the process primary processor group.
+Winderust exposes two separate per-app rule features. CPU Sets (Soft) applies preferred Windows CPU Sets and is the recommended default. Processor Affinity (Hard) applies a strict process affinity mask and warns that, on systems with more than one processor group, the mask covers only the process primary group. The current rule mask covers the first processor group only, so CPU Sets (Soft) discloses that limit when multiple groups are present. An app can belong to only one of these features; CPU Sets (Soft) takes precedence if a hand-edited settings file contains the same path in both. Explicit CPU allocation rules also take precedence over Workload Engine CPU allocation for the same process.
 
 Implementation paths:
 
-- `src/features/cpu_control/core_steering.rs`: shared affinity, CPU Set, and Efficiency Mode state manager.
-- `src/features/cpu_control/background_cpu_restriction.rs`: reuses the Core Steering manager with generated restriction rules.
+- `src/features/cpu_control/cpu_allocation.rs`: shared affinity and CPU Set mechanism and restoration manager.
+- `src/backend/automation/runner.rs`: keeps CPU Sets (Soft) and Processor Affinity (Hard) managers, status, Action Log ownership, and conflict handling separate.
 
-### Core Steering APIs
+### CPU Allocation APIs
 
 | API | Used for | Reference |
 | --- | --- | --- |
@@ -266,12 +266,9 @@ Implementation paths:
 | `GetSystemCpuSetInformation` | Maps selected logical CPUs to Windows CPU Set IDs for soft affinity mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation |
 | `GetProcessDefaultCpuSets` | Reads existing process default CPU Set IDs so soft mode can restore them later. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessdefaultcpusets |
 | `SetProcessDefaultCpuSets` | Applies or clears process default CPU Set IDs for soft affinity mode. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessdefaultcpusets |
-| `GetProcessInformation` / `SetProcessInformation` | Reads and clears `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` for Efficiency Mode OFF rules. | https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation |
 | `GetActiveProcessorGroupCount` | Detects multi-group systems where single-mask affinity APIs are group-relative. | https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getactiveprocessorgroupcount |
 | Processor Groups | Explains why hard affinity masks are group-relative and why multi-group systems need special handling. | https://learn.microsoft.com/en-us/windows/win32/procthread/processor-groups |
 | CPU Sets | Explains soft processor preference while remaining more compatible with OS power management. | https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets |
-
-Efficiency Mode Off is applied only after the complete current power-throttling state is read successfully. Winderust retains that exact state and restores it when ownership ends.
 
 ## App Suspension
 

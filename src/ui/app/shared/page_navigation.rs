@@ -368,12 +368,11 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
             t!("dynamic_priority_boost.exclusions_help").to_string(),
             "dynamic priority boost process scheduler enabled disabled background foreground exclusion".to_string(),
         ],
-        Page::BackgroundCpuRestriction => vec![
-            t!("background_cpu.intro_1").to_string(),
-            t!("background_cpu.intro_2").to_string(),
-            t!("background_cpu.focus_detection_help").to_string(),
-            t!("background_cpu.exclusions_help").to_string(),
-            "background cpu restriction cpu set affinity limit e cores foreground exclusion".to_string(),
+        Page::CpuSetsSoft => vec![
+            t!("cpu_sets_soft.intro_1").to_string(),
+            t!("cpu_sets_soft.intro_2").to_string(),
+            t!("cpu_allocation.rules_help").to_string(),
+            "cpu sets soft preferred processors per app foreground".to_string(),
         ],
         Page::ProcessList => vec![
             t!("process_list.title").to_string(),
@@ -444,15 +443,12 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
             t!("memory_trim.intro_3").to_string(),
             "memory ram trim working set idle background exclusion".to_string(),
         ],
-        Page::CoreSteering => vec![
-            t!("core_steering.intro_1").to_string(),
-            t!("core_steering.intro_2").to_string(),
-            t!("core_steering.intro_3").to_string(),
-            t!("core_steering.rules_help").to_string(),
-            t!("core_steering.p_cores_help").to_string(),
-            t!("core_steering.e_cores_help").to_string(),
-            t!("core_steering.no_smt_help").to_string(),
-            "core steering affinity cpu sets p cores e cores smt logical processor background process".to_string(),
+        Page::ProcessorAffinityHard => vec![
+            t!("processor_affinity_hard.intro_1").to_string(),
+            t!("processor_affinity_hard.intro_2").to_string(),
+            t!("processor_affinity_hard.warning").to_string(),
+            t!("cpu_allocation.rules_help").to_string(),
+            "processor affinity hard allowed processors per app foreground".to_string(),
         ],
         Page::WinderustBehaviour => vec![
             t!("settings.intro_1").to_string(),

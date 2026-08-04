@@ -16,8 +16,8 @@ pub(in crate::ui::app) struct AffinityIndicator {
 
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) enum CoreTileGridAction {
-    BackgroundCpuRestriction { available_mask: u64 },
-    CoreSteeringRule { index: usize },
+    CpuSetsSoftRule { index: usize },
+    ProcessorAffinityHardRule { index: usize },
 }
 
 pub(in crate::ui::app) fn app_suspension_indicator(
@@ -99,39 +99,39 @@ pub(in crate::ui::app) fn app_suspension_indicator(
     }
 }
 
-pub(in crate::ui::app) fn core_steering_indicator(
-    status: &CoreSteeringSnapshot,
+pub(in crate::ui::app) fn cpu_allocation_indicator(
+    status: &CpuAllocationSnapshot,
     process: &str,
 ) -> AffinityIndicator {
     let accent = accent_color();
     let accent_bg = settings_card_hover_color();
-    if core_steering::is_builtin_excluded(process) {
+    if cpu_allocation::is_builtin_excluded(process) {
         AffinityIndicator {
-            label: t!("core_steering.indicator.protected").to_string(),
+            label: t!("cpu_allocation.indicator.protected").to_string(),
             bg: accent_bg,
             fg: accent,
-            hover: t!("core_steering.indicator.protected_help").to_string(),
+            hover: t!("cpu_allocation.indicator.protected_help").to_string(),
         }
-    } else if core_steering::contains_process(&status.adjusted_apps, process) {
+    } else if cpu_allocation::contains_process(&status.adjusted_apps, process) {
         AffinityIndicator {
-            label: t!("core_steering.indicator.pinned").to_string(),
+            label: t!("cpu_allocation.indicator.pinned").to_string(),
             bg: success_bg_color(),
             fg: success_text_color(),
-            hover: t!("core_steering.indicator.pinned_help").to_string(),
+            hover: t!("cpu_allocation.indicator.pinned_help").to_string(),
         }
     } else if status.enabled {
         AffinityIndicator {
-            label: t!("core_steering.indicator.ready").to_string(),
+            label: t!("cpu_allocation.indicator.ready").to_string(),
             bg: panel_active_color(),
             fg: muted_text_color(),
-            hover: t!("core_steering.indicator.ready_help").to_string(),
+            hover: t!("cpu_allocation.indicator.ready_help").to_string(),
         }
     } else {
         AffinityIndicator {
-            label: t!("core_steering.indicator.off").to_string(),
+            label: t!("cpu_allocation.indicator.off").to_string(),
             bg: panel_active_color(),
             fg: dim_text_color(),
-            hover: t!("core_steering.indicator.off_help").to_string(),
+            hover: t!("cpu_allocation.indicator.off_help").to_string(),
         }
     }
 }
@@ -141,7 +141,7 @@ pub(in crate::ui::app) fn can_manual_freeze(status: &AppSuspensionSnapshot, proc
 }
 
 pub(in crate::ui::app) fn logical_core_count() -> usize {
-    core_steering::logical_processors().len().clamp(1, 64)
+    cpu_allocation::logical_processors().len().clamp(1, 64)
 }
 
 pub(in crate::ui::app) fn action_log_mode_label(mode: ActionLogMode) -> String {
@@ -173,37 +173,9 @@ pub(in crate::ui::app) fn cpu_restriction_mode_label(mode: CpuRestrictionMode) -
     }
 }
 
-pub(in crate::ui::app) fn cpu_restriction_strategy_label(
-    strategy: CpuRestrictionStrategy,
-) -> String {
-    match strategy {
-        CpuRestrictionStrategy::Off => t!("background_efficiency.cpu_set_off").to_string(),
-        CpuRestrictionStrategy::Auto => t!("background_efficiency.cpu_set_auto").to_string(),
-        CpuRestrictionStrategy::PreferEfficiencyCores => {
-            t!("background_efficiency.cpu_set_prefer_e_cores").to_string()
-        }
-        CpuRestrictionStrategy::LimitLogicalCpus => {
-            t!("background_efficiency.cpu_set_limit_logical").to_string()
-        }
-    }
-}
-
-pub(in crate::ui::app) fn cpu_restriction_control_style_label(
-    style: CpuRestrictionControlStyle,
-) -> String {
-    match style {
-        CpuRestrictionControlStyle::Percentage => {
-            t!("background_efficiency.control_style_percentage").to_string()
-        }
-        CpuRestrictionControlStyle::CoreToggle => {
-            t!("background_efficiency.control_style_core_toggle").to_string()
-        }
-    }
-}
-
 pub(in crate::ui::app) fn default_affinity_mask() -> u64 {
-    let processors = core_steering::logical_processors();
-    let mask = core_steering_processors_mask(&processors);
+    let processors = cpu_allocation::logical_processors();
+    let mask = cpu_allocation_processors_mask(&processors);
     if mask == 0 {
         let core_count = logical_core_count();
         if core_count >= 64 {
@@ -233,47 +205,27 @@ pub(in crate::ui::app) fn toggle_affinity_core(mask: &mut u64, core: usize) {
     }
 }
 
-pub(in crate::ui::app) fn toggle_affinity_core_with_available_mask(
-    mask: &mut u64,
-    core: usize,
-    available_mask: u64,
-) {
-    *mask &= available_mask;
-    let Some(bit) = core_steering_processor_bit(core) else {
-        return;
-    };
-    if (available_mask & bit) == 0 {
-        return;
-    }
-
-    if (*mask & bit) == 0 {
-        *mask |= bit;
-    } else if mask.count_ones() > 1 {
-        *mask &= !bit;
-    }
-}
-
-pub(in crate::ui::app) fn core_steering_processors_mask(
+pub(in crate::ui::app) fn cpu_allocation_processors_mask(
     processors: &[LogicalProcessorInfo],
 ) -> u64 {
     processors
         .iter()
-        .filter_map(|processor| core_steering_processor_bit(processor.index))
+        .filter_map(|processor| cpu_allocation_processor_bit(processor.index))
         .fold(0, |mask, bit| mask | bit)
 }
 
-pub(in crate::ui::app) fn core_steering_processors_kind_mask(
+pub(in crate::ui::app) fn cpu_allocation_processors_kind_mask(
     processors: &[LogicalProcessorInfo],
     kind: LogicalProcessorKind,
 ) -> u64 {
     processors
         .iter()
         .filter(|processor| processor.kind == kind)
-        .filter_map(|processor| core_steering_processor_bit(processor.index))
+        .filter_map(|processor| cpu_allocation_processor_bit(processor.index))
         .fold(0, |mask, bit| mask | bit)
 }
 
-pub(in crate::ui::app) fn core_steering_processors_no_smt_mask(
+pub(in crate::ui::app) fn cpu_allocation_processors_no_smt_mask(
     processors: &[LogicalProcessorInfo],
 ) -> u64 {
     let mut seen_cores = Vec::new();
@@ -284,7 +236,7 @@ pub(in crate::ui::app) fn core_steering_processors_no_smt_mask(
             continue;
         }
         seen_cores.push(processor.core_index);
-        if let Some(bit) = core_steering_processor_bit(processor.index) {
+        if let Some(bit) = cpu_allocation_processor_bit(processor.index) {
             mask |= bit;
         }
     }
@@ -292,29 +244,7 @@ pub(in crate::ui::app) fn core_steering_processors_no_smt_mask(
     mask
 }
 
-pub(in crate::ui::app) fn background_efficiency_strategy_core_mask(
-    processors: &[LogicalProcessorInfo],
-    strategy: CpuRestrictionStrategy,
-) -> u64 {
-    match strategy {
-        CpuRestrictionStrategy::Off => 0,
-        CpuRestrictionStrategy::Auto => {
-            let efficiency_mask =
-                core_steering_processors_kind_mask(processors, LogicalProcessorKind::Efficiency);
-            if efficiency_mask != 0 {
-                efficiency_mask
-            } else {
-                core_steering_processors_mask(processors)
-            }
-        }
-        CpuRestrictionStrategy::PreferEfficiencyCores => {
-            core_steering_processors_kind_mask(processors, LogicalProcessorKind::Efficiency)
-        }
-        CpuRestrictionStrategy::LimitLogicalCpus => core_steering_processors_mask(processors),
-    }
-}
-
-pub(in crate::ui::app) fn core_steering_processor_bit(index: usize) -> Option<u64> {
+pub(in crate::ui::app) fn cpu_allocation_processor_bit(index: usize) -> Option<u64> {
     (index < 64).then_some(1_u64 << index)
 }
 

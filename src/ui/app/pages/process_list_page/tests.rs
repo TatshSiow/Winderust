@@ -761,26 +761,24 @@ fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
         },
     ];
 
-    assert_eq!(core_steering_processors_no_smt_mask(&processors), 0b0101);
+    assert_eq!(cpu_allocation_processors_no_smt_mask(&processors), 0b0101);
 }
 
 #[test]
-fn topology_aware_core_toggle_keeps_one_available_cpu_selected() {
-    let mut mask = (1_u64 << 63) | 0b0001;
-    toggle_affinity_core_with_available_mask(&mut mask, 0, 0b0011);
+fn new_cpu_allocation_rules_select_available_cpus() {
+    let rule = new_cpu_allocation_rule(r"C:\Games\game.exe");
 
-    assert_eq!(mask, 0b0001);
-
-    toggle_affinity_core_with_available_mask(&mut mask, 1, 0b0011);
-    assert_eq!(mask, 0b0011);
-
-    toggle_affinity_core_with_available_mask(&mut mask, 0, 0b0011);
-    assert_eq!(mask, 0b0010);
+    assert_ne!(rule.core_mask, 0);
 }
 
 #[test]
-fn new_core_steering_rules_default_to_soft_cpu_sets() {
-    let rule = new_core_steering_rule("game.exe");
+fn cpu_allocation_rule_cannot_be_added_to_both_pages() {
+    let mut settings = Settings::default();
+    let process = r"C:\Games\game.exe";
+    settings
+        .cpu_sets_soft
+        .rules
+        .push(new_cpu_allocation_rule(process));
 
-    assert_eq!(rule.mode, CoreSteeringMode::Soft);
+    assert!(!can_add_cpu_allocation_process(&settings, process));
 }

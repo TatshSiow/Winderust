@@ -1,4 +1,5 @@
 use super::*;
+use crate::action_log::ActionLogFeature;
 
 pub(super) fn adaptive_power_plan_required(settings: &Settings) -> bool {
     settings.adaptive_engine.enabled && settings.adaptive_engine.processor_policy_enabled
@@ -78,8 +79,8 @@ pub(super) struct HiddenAutomationRunner {
     background_efficiency_manager: BackgroundEfficiencyManager,
     pub(super) app_suspension_manager: AppSuspensionManager,
     last_app_suspension_shell_user_intent: Option<Instant>,
-    core_steering_manager: CoreSteeringManager,
-    background_cpu_restriction_manager: BackgroundCpuRestrictionManager,
+    cpu_sets_soft_manager: CpuAllocationManager,
+    processor_affinity_hard_manager: CpuAllocationManager,
     core_limiter_manager: CoreLimiterManager,
     pub(super) by_running_app_manager: ByRunningAppManager,
     pub(super) action_log: ActionLog,
@@ -107,6 +108,11 @@ impl HiddenAutomationRunner {
         // the same process state, so relying on field drop order can restore an intermediate
         // Winderust-managed value instead of the value that preceded Winderust.
         self.run_timer_resolution_update(&settings);
+        self.run_by_running_app_update(&settings);
+        self.run_core_limiter_update(&settings);
+        self.run_processor_affinity_hard_update(&settings);
+        self.run_cpu_sets_soft_update(&settings);
+        self.run_app_suspension_update(&settings, &[], &[]);
         self.run_memory_priority_update(&settings);
         self.run_gpu_priority_update(&settings);
         self.run_dynamic_priority_boost_update(&settings);
@@ -114,11 +120,6 @@ impl HiddenAutomationRunner {
         self.run_process_priority_update(&settings);
         self.run_io_priority_update(&settings);
         self.run_workload_engine_update(&settings);
-        self.run_by_running_app_update(&settings);
-        self.run_core_limiter_update(&settings);
-        self.run_background_cpu_restriction_update(&settings);
-        self.run_core_steering_update(&settings);
-        self.run_app_suspension_update(&settings, &[], &[]);
         self.run_background_efficiency_update(&settings);
         let _ = self.restore_adaptive_power_plan();
         self.restore_original_power_plan();
@@ -297,10 +298,17 @@ impl HiddenAutomationRunner {
             })
     }
 
-    pub(super) fn run_core_steering_update(&mut self, settings: &Settings) -> CoreSteeringSnapshot {
+    pub(super) fn run_cpu_sets_soft_update(
+        &mut self,
+        settings: &Settings,
+    ) -> CpuAllocationSnapshot {
         let foreground_process_id = foreground_process_id();
-        self.core_steering_manager.update(
-            &settings.core_steering,
+        self.cpu_sets_soft_manager.update(
+            &settings.cpu_sets_soft,
+            (
+                cpu_allocation::CpuAllocationMode::SoftCpuSets,
+                ActionLogFeature::CpuSetsSoft,
+            ),
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
@@ -308,12 +316,17 @@ impl HiddenAutomationRunner {
         )
     }
 
-    pub(super) fn run_background_cpu_restriction_update(
+    pub(super) fn run_processor_affinity_hard_update(
         &mut self,
         settings: &Settings,
-    ) -> CoreSteeringSnapshot {
-        self.background_cpu_restriction_manager.update(
-            &settings.background_cpu_restriction,
+    ) -> CpuAllocationSnapshot {
+        let processor_affinity_hard = processor_affinity_hard_settings(settings);
+        self.processor_affinity_hard_manager.update(
+            &processor_affinity_hard,
+            (
+                cpu_allocation::CpuAllocationMode::HardAffinity,
+                ActionLogFeature::ProcessorAffinityHard,
+            ),
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id(),
@@ -323,13 +336,14 @@ impl HiddenAutomationRunner {
 
     pub(super) fn run_core_limiter_update(&mut self, settings: &Settings) -> CoreLimiterSnapshot {
         let foreground_process_id = foreground_process_id();
-        let core_steering_process_ids = self.core_steering_manager.adjusted_process_ids();
+        let mut allocated_process_ids = self.cpu_sets_soft_manager.adjusted_process_ids();
+        allocated_process_ids.extend(self.processor_affinity_hard_manager.adjusted_process_ids());
         self.core_limiter_manager.update(
             &settings.core_limiter,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
-            &core_steering_process_ids,
+            &allocated_process_ids,
             &mut self.action_log,
         )
     }
@@ -355,6 +369,7 @@ impl HiddenAutomationRunner {
         workload_settings.enabled &= settings.adaptive_engine.enabled;
         let mut excluded_process_ids = self.background_efficiency_manager.throttled_process_ids();
         excluded_process_ids.extend(self.by_running_app_manager.active_process_ids());
+        let explicit_cpu_allocation_paths = explicit_cpu_allocation_paths(settings);
         let mut snapshot = self.workload_engine_manager.update(
             WorkloadEngineUpdate {
                 settings: &workload_settings,
@@ -365,7 +380,8 @@ impl HiddenAutomationRunner {
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
                 background_efficiency_managed: settings.background_efficiency.enabled,
-                background_efficiency_process_ids: &excluded_process_ids,
+                excluded_process_ids: &excluded_process_ids,
+                explicit_cpu_allocation_paths: &explicit_cpu_allocation_paths,
             },
             &mut self.action_log,
         );
@@ -422,7 +438,7 @@ impl HiddenAutomationRunner {
         }
         let io_usage = self.adaptive_io_usage;
         if self.adaptive_processor_topology.is_empty() {
-            self.adaptive_processor_topology = core_steering::logical_processors();
+            self.adaptive_processor_topology = cpu_allocation::logical_processors();
         }
         let processor_demand = self
             .per_processor_cpu_monitor
@@ -774,6 +790,30 @@ impl HiddenAutomationRunner {
         self.switch_failure_suppression
             .clear_key_failure(&switch_failure_key(target_guid));
     }
+}
+
+pub(super) fn processor_affinity_hard_settings(settings: &Settings) -> CpuAllocationSettings {
+    let mut processor_affinity_hard = settings.processor_affinity_hard.clone();
+    processor_affinity_hard.rules.retain(|rule| {
+        !settings
+            .cpu_sets_soft
+            .contains_rule_for(&rule.executable_path)
+    });
+    processor_affinity_hard
+}
+
+pub(super) fn explicit_cpu_allocation_paths(settings: &Settings) -> Vec<String> {
+    [&settings.cpu_sets_soft, &settings.processor_affinity_hard]
+        .into_iter()
+        .filter(|feature| feature.enabled)
+        .flat_map(|feature| &feature.rules)
+        .filter(|rule| {
+            rule.enabled
+                && rule.core_mask != 0
+                && Path::new(rule.executable_path.trim()).is_absolute()
+        })
+        .map(|rule| rule.executable_path.clone())
+        .collect()
 }
 
 pub(super) fn adaptive_plan_setup_error(

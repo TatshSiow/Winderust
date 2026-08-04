@@ -507,9 +507,7 @@ impl WinderustApp {
             Page::ThreadPriority => self.render_thread_priority_page(window, cx),
             Page::DynamicPriorityBoost => self.render_dynamic_priority_boost_page(window, cx),
             Page::CoreLimiter => self.render_core_limiter_page(window, cx),
-            Page::BackgroundCpuRestriction => {
-                self.render_background_cpu_restriction_page(window, cx)
-            }
+            Page::CpuSetsSoft => self.render_cpu_sets_soft_page(window, cx),
             Page::AdaptiveEngine => self.render_adaptive_engine_page(window, cx),
             Page::BackgroundEfficiency => self.render_background_efficiency_page(window, cx),
             Page::AppSuspension => self.render_app_suspension_page(window, cx),
@@ -519,7 +517,7 @@ impl WinderustApp {
             Page::GpuPriority => self.render_gpu_priority_page(window, cx),
             Page::MemoryPriority => self.render_memory_priority_page(window, cx),
             Page::MemoryTrim => self.render_memory_trim_page(window, cx),
-            Page::CoreSteering => self.render_core_steering_page(window, cx),
+            Page::ProcessorAffinityHard => self.render_processor_affinity_hard_page(window, cx),
             Page::ActionLog => self.render_action_log_page(window, cx),
             Page::WinderustBehaviour => self.render_winderust_behaviour_page(window, cx),
             Page::LanguageAndAppearance => self.render_language_and_appearance_page(window, cx),

@@ -271,13 +271,13 @@ impl WinderustApp {
                 .to_string(),
             ));
         }
-        if settings.background_cpu_restriction.enabled {
+        if settings.cpu_sets_soft.enabled {
             items.push((
-                Some(Page::BackgroundCpuRestriction),
-                t!("nav.background_cpu_restriction").to_string(),
+                Some(Page::CpuSetsSoft),
+                t!("nav.cpu_sets_soft").to_string(),
                 t!(
                     "home.adjusted_count",
-                    count = self.background_cpu_restriction_status.adjusted_processes
+                    count = self.cpu_sets_soft_status.adjusted_processes
                 )
                 .to_string(),
             ));
@@ -355,13 +355,13 @@ impl WinderustApp {
                 .to_string(),
             ));
         }
-        if settings.core_steering.enabled {
+        if settings.processor_affinity_hard.enabled {
             items.push((
-                Some(Page::CoreSteering),
-                t!("nav.core_steering").to_string(),
+                Some(Page::ProcessorAffinityHard),
+                t!("nav.processor_affinity_hard").to_string(),
                 t!(
                     "home.adjusted_count",
-                    count = self.core_steering_status.adjusted_processes
+                    count = self.processor_affinity_hard_status.adjusted_processes
                 )
                 .to_string(),
             ));

@@ -53,11 +53,6 @@ impl WinderustApp {
         enabled: bool,
     ) {
         let rule = match kind {
-            ListItemRemovalKind::BackgroundCpuExclusion => self
-                .settings
-                .background_cpu_restriction
-                .exclusions
-                .get_mut(index),
             ListItemRemovalKind::WorkloadEngineExclusion => self
                 .settings
                 .workload_engine

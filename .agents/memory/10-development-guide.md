@@ -146,7 +146,7 @@ and the corrected commit must be the tagged source.
 - `src/backend/file_dialog.rs`: native settings and Action Log file dialogs.
 - `src/backend/update_checker.rs`: GitHub release checks and Stable/Pre-release filtering.
 - `src/rules/decision_engine.rs`: power-plan decision priority.
-- Feature backends use the UI names: `background_efficiency`, `workload_engine`, `memory_trim`, `app_suspension`, `core_limiter`, `core_steering`, `by_running_app`, and the priority-control modules. Workload Engine Win32 process control lives in `workload_engine/process_control.rs`; pure workload decisions and core-selection calculations live in `workload_engine/policy.rs`; stateful manager lifecycle remains in `workload_engine.rs`.
+- Feature backends use the UI names. CPU Sets (Soft) and Processor Affinity (Hard) share only the Win32 mechanism layer in `cpu_allocation.rs`; their settings, page state, status, rules, and Action Log ownership remain separate. Workload Engine Win32 process control lives in `workload_engine/process_control.rs`; pure workload decisions and core-selection calculations live in `workload_engine/policy.rs`; stateful manager lifecycle remains in `workload_engine.rs`.
 
 ## Navigation
 
@@ -158,7 +158,7 @@ Pages are grouped in `src/ui.rs`:
 - Power Plan Control: By Foreground, By Running App, By CPU Load, By Activity, By Time, Advanced Power Plan Tuning.
 - Priority Control: Process Priority, Thread Priority, Dynamic Priority Boost,
   IO Priority, GPU Priority, Memory Priority.
-- CPU Control: Core Limiter, Background CPU Restriction, Core Steering.
+- CPU Control: Core Limiter, CPU Sets (Soft), Processor Affinity (Hard).
 - Action Log.
 - Settings: Winderust Behaviour, Language and Appearance, Experimental
   Features.
@@ -186,15 +186,15 @@ Keep navigation changes in `Page`, `PAGE_SECTIONS`, labels, locale files, and
 ## Naming
 
 - Start from the English UI label, then keep page variants, settings types/fields, feature modules, backend snapshots, tests, locale keys, scripts, and docs as close to that label as Rust naming permits.
-- Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CoreLimiter`, `CoreSteering`, and `DynamicPriorityBoost`.
+- Current canonical examples: `AdaptiveEngine`, `BackgroundEfficiency`, `ByRunningApp`, `CoreLimiter`, `CpuSetsSoft`, `ProcessorAffinityHard`, and `DynamicPriorityBoost`.
 - Workload Engine is the CPU-scheduling subsystem exposed inside Adaptive Engine; keep that name for its settings and implementation, not as a separate top-level product feature.
-- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, CPU Affinity feature names, or CPU Limiter feature names. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
+- Do not use retired product identifiers such as Smart Saver, EcoQos settings/managers, Background CPU Restriction, Core Steering, Soft CPU Sets, Hard CPU Affinity, or CPU Limiter feature names. `Performance Mode` is valid only for the active state held by By Running App, not as a standalone feature or settings page.
 - Native Windows vocabulary is allowed when it describes the implementation rather than the product surface, for example EcoQoS flags, affinity masks, CPU Sets, and `SetProcessPriorityBoost`.
 
 Run this quick compatibility/naming check before handoff:
 
 ```powershell
-rg -n -i --glob '!target/**' --glob '!graphify-out/**' --glob '!.git/**' --glob '!.agents/**' 'PowerLeaf|Smart Saver|Smart Trim|serde.*alias|fill_missing_power_plan_mappings|Settings::power_plans' .
+rg -n -i --glob '!target/**' --glob '!graphify-out/**' --glob '!.git/**' --glob '!.agents/**' --glob '!CONTRIBUTING.md' 'PowerLeaf|Smart Saver|Smart Trim|Background CPU Restriction|Core Steering|Soft CPU Sets|Hard CPU Affinity|background_cpu_restriction|core_steering|soft_cpu_sets|hard_cpu_affinity|serde.*alias|fill_missing_power_plan_mappings|Settings::power_plans' .
 ```
 
 ## Runtime Safety

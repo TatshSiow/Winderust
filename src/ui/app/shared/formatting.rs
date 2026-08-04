@@ -152,7 +152,10 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
         "Automation disabled." => "runtime_status.automation_disabled",
         "Paused: foreground app is unknown." => "runtime_status.foreground_unknown",
         "Paused: current Windows session is unknown." => "runtime_status.session_unknown",
-        "Core Steering disabled." => "runtime_status.core_steering_disabled",
+        "CPU Sets (Soft) disabled." => "runtime_status.cpu_sets_soft_disabled",
+        "Processor Affinity (Hard) disabled." => {
+            "runtime_status.processor_affinity_hard_disabled"
+        }
         "Core Limiter disabled." => "runtime_status.core_limiter_disabled",
         "Core Limiter active." => "runtime_status.core_limiter_active",
         "Timer resolution query failed." => "runtime_status.timer_resolution_query_failed",
@@ -205,8 +208,10 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
         "Process priority defaults active." => "runtime_status.process_priority_active",
         "Workload Engine disabled." => "runtime_status.workload_engine_disabled",
         "Workload Engine active." => "runtime_status.workload_engine_active",
-        "No usable CPU restriction target." => "runtime_status.background_cpu_no_target",
-        "Background CPU Restriction active." => "runtime_status.background_cpu_active",
+        "CPU Sets (Soft) active." => "runtime_status.cpu_sets_soft_active",
+        "Processor Affinity (Hard) active." => {
+            "runtime_status.processor_affinity_hard_active"
+        }
         _ => return message.to_owned(),
     };
     t!(key).to_string()
