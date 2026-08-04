@@ -19,7 +19,8 @@ use windows_sys::Win32::{
         INVALID_HANDLE_VALUE, NTSTATUS,
     },
     Security::{
-        GetTokenInformation, LookupAccountSidW, TokenUser, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
+        GetTokenInformation, IsWellKnownSid, LookupAccountSidW, TokenUser, WinLocalServiceSid,
+        WinLocalSystemSid, WinNetworkServiceSid, PSID, SID_NAME_USE, TOKEN_QUERY, TOKEN_USER,
     },
     System::{
         Diagnostics::ToolHelp::{
@@ -112,6 +113,7 @@ pub struct ProcessInfo {
     pub parent_id: Option<u32>,
     pub session_id: Option<u32>,
     pub user_name: Option<String>,
+    pub is_service_account: Option<bool>,
     pub is_critical: Option<bool>,
     pub can_set_information: bool,
     pub name: String,
@@ -211,6 +213,8 @@ pub struct ProcessActionTarget {
     pub name: String,
     pub executable_path: PathBuf,
     pub creation_time: u64,
+    pub(crate) session_id: Option<u32>,
+    pub(crate) is_service_account: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,10 +282,11 @@ pub fn capture_process_action_target(
     if process_id == 0 || process_id == current_process_id {
         return Err(ProcessActionTargetError::ProtectedProcess);
     }
+    let session_id = process_session_id(process_id);
     if !allow_cross_session {
         let current_session_id = process_session_id(current_process_id)
             .ok_or(ProcessActionTargetError::CurrentSessionUnavailable)?;
-        if process_session_id(process_id) != Some(current_session_id) {
+        if session_id != Some(current_session_id) {
             return Err(ProcessActionTargetError::DifferentSession);
         }
     }
@@ -316,11 +321,14 @@ pub fn capture_process_action_target(
     let creation_time = process
         .process_creation_time()
         .ok_or(ProcessActionTargetError::IdentityUnavailable)?;
+    let is_service_account = process_runs_as_service_account_from_handle(&process);
     Ok(ProcessActionTarget {
         id: process_id,
         name,
         executable_path,
         creation_time,
+        session_id,
+        is_service_account,
     })
 }
 
@@ -338,28 +346,22 @@ pub fn terminate_process(target: &ProcessActionTarget) -> Result<(), String> {
     }
 }
 
-pub fn terminate_process_tree(
-    root: &ProcessActionTarget,
+pub fn terminate_process_trees(
+    roots: &[ProcessActionTarget],
     processes: &[ProcessInfo],
     allow_cross_session: bool,
 ) -> Result<usize, String> {
-    ensure_process_action_target_access(root, ProcessActionAccess::Terminate)?;
-    let mut process_ids = vec![root.id];
-    let mut selected = BTreeSet::from([root.id]);
-    let mut index = 0;
-    while index < process_ids.len() {
-        let parent_id = process_ids[index];
-        for process in processes {
-            if process.parent_id == Some(parent_id) && selected.insert(process.id) {
-                process_ids.push(process.id);
-            }
-        }
-        index += 1;
+    if roots.is_empty() {
+        return Err("No process targets were available.".to_owned());
     }
+    let process_ids = process_tree_ids_postorder(
+        &roots.iter().map(|root| root.id).collect::<Vec<_>>(),
+        processes,
+    );
 
     let mut targets = Vec::with_capacity(process_ids.len());
-    for process_id in process_ids.into_iter().rev() {
-        if process_id == root.id {
+    for process_id in process_ids {
+        if let Some(root) = roots.iter().find(|root| root.id == process_id) {
             targets.push(root.clone());
             continue;
         }
@@ -384,6 +386,33 @@ pub fn terminate_process_tree(
         terminate_process(&target)?;
     }
     Ok(count)
+}
+
+fn process_tree_ids_postorder(root_ids: &[u32], processes: &[ProcessInfo]) -> Vec<u32> {
+    let mut selected = BTreeSet::new();
+    let mut ordered = Vec::new();
+    let mut pending = root_ids
+        .iter()
+        .rev()
+        .map(|process_id| (*process_id, false))
+        .collect::<Vec<_>>();
+    while let Some((process_id, expanded)) = pending.pop() {
+        if expanded {
+            ordered.push(process_id);
+            continue;
+        }
+        if !selected.insert(process_id) {
+            continue;
+        }
+        pending.push((process_id, true));
+        pending.extend(
+            processes
+                .iter()
+                .filter(|process| process.parent_id == Some(process_id))
+                .map(|process| (process.id, false)),
+        );
+    }
+    ordered
 }
 
 pub(crate) fn ensure_process_action_target_access(
@@ -470,6 +499,7 @@ fn open_verified_action_process(
 pub struct ProcessCandidateInfo {
     pub name: String,
     pub image_path: PathBuf,
+    pub has_suspendable_instance: bool,
 }
 
 pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
@@ -479,7 +509,7 @@ pub fn list_process_candidates() -> Result<Vec<ProcessCandidateInfo>, String> {
 }
 
 pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<ProcessCandidateInfo> {
-    let mut candidates = BTreeMap::new();
+    let mut candidates: BTreeMap<String, ProcessCandidateInfo> = BTreeMap::new();
     for process in processes {
         if process.is_critical != Some(false) || !process.can_set_information {
             continue;
@@ -487,11 +517,17 @@ pub fn process_candidates_from_processes(processes: &[ProcessInfo]) -> Vec<Proce
         let Some(image_path) = process.image_path.as_ref() else {
             continue;
         };
+        let has_suspendable_instance = process.session_id.is_some_and(|session_id| session_id != 0)
+            && process.is_service_account == Some(false);
         candidates
             .entry(executable_path_key(image_path))
+            .and_modify(|candidate| {
+                candidate.has_suspendable_instance |= has_suspendable_instance;
+            })
             .or_insert(ProcessCandidateInfo {
                 name: process.name.clone(),
                 image_path: image_path.clone(),
+                has_suspendable_instance,
             });
     }
     candidates.into_values().collect()
@@ -514,6 +550,7 @@ pub fn list_processes() -> Result<Vec<ProcessInfo>, String> {
                 parent_id: (entry.th32ParentProcessID != 0).then_some(entry.th32ParentProcessID),
                 session_id: process_session_id(entry.th32ProcessID),
                 user_name: None,
+                is_service_account: None,
                 is_critical: None,
                 can_set_information: false,
                 name,
@@ -544,7 +581,7 @@ pub fn list_processes_with_paths() -> Result<Vec<ProcessInfo>, String> {
             continue;
         };
         process.image_path = process_image_path_from_handle(&handle);
-        process.user_name = process_user_name_from_handle(&handle);
+        (process.user_name, process.is_service_account) = process_identity_from_handle(&handle);
         process.is_critical = process_critical_from_handle(&handle);
     }
     Ok(processes)
@@ -779,7 +816,90 @@ fn process_critical_from_handle(process: &WinHandle) -> Option<bool> {
     (unsafe { IsProcessCritical(process.raw(), &mut critical) } != 0).then_some(critical != 0)
 }
 
-fn process_user_name_from_handle(process: &WinHandle) -> Option<String> {
+fn process_identity_from_handle(process: &WinHandle) -> (Option<String>, Option<bool>) {
+    let Some(token_buffer) = process_token_user_buffer(process) else {
+        return (None, None);
+    };
+    // SAFETY: successful TokenUser output starts with a valid aligned TOKEN_USER whose SID remains
+    // valid while token_buffer is alive.
+    let token_user = unsafe { &*token_buffer.as_ptr().cast::<TOKEN_USER>() };
+    (
+        process_user_name_from_sid(token_user.User.Sid),
+        Some(sid_is_service_account(token_user.User.Sid)),
+    )
+}
+
+fn process_user_name_from_sid(sid: PSID) -> Option<String> {
+    let mut name_len = 0;
+    let mut domain_len = 0;
+    let mut sid_use: SID_NAME_USE = 0;
+    // SAFETY: the SID comes from the live TokenUser buffer; null outputs request required lengths.
+    let first_result = unsafe {
+        LookupAccountSidW(
+            std::ptr::null(),
+            sid,
+            std::ptr::null_mut(),
+            &mut name_len,
+            std::ptr::null_mut(),
+            &mut domain_len,
+            &mut sid_use,
+        )
+    };
+    // SAFETY: GetLastError reads thread-local state immediately after LookupAccountSidW.
+    let first_error = unsafe { GetLastError() };
+    if first_result != 0 || name_len == 0 || first_error != ERROR_INSUFFICIENT_BUFFER {
+        return None;
+    }
+
+    let mut name = vec![0u16; name_len as usize];
+    let mut domain = vec![0u16; domain_len as usize];
+    // SAFETY: the SID remains valid; both UTF-16 buffers are writable for their declared lengths.
+    if unsafe {
+        LookupAccountSidW(
+            std::ptr::null(),
+            sid,
+            name.as_mut_ptr(),
+            &mut name_len,
+            domain.as_mut_ptr(),
+            &mut domain_len,
+            &mut sid_use,
+        )
+    } == 0
+    {
+        return None;
+    }
+
+    let name_len = name
+        .iter()
+        .position(|character| *character == 0)
+        .unwrap_or(name.len());
+    (name_len != 0).then(|| String::from_utf16_lossy(&name[..name_len]))
+}
+
+pub(crate) fn process_runs_as_service_account(process_id: u32) -> Option<bool> {
+    let process = open_process_for_query(process_id)?;
+    process_runs_as_service_account_from_handle(&process)
+}
+
+fn process_runs_as_service_account_from_handle(process: &WinHandle) -> Option<bool> {
+    let token_buffer = process_token_user_buffer(process)?;
+    // SAFETY: successful TokenUser output starts with a valid aligned TOKEN_USER whose SID remains
+    // valid while token_buffer is alive.
+    let token_user = unsafe { &*token_buffer.as_ptr().cast::<TOKEN_USER>() };
+    Some(sid_is_service_account(token_user.User.Sid))
+}
+
+fn sid_is_service_account(sid: PSID) -> bool {
+    [WinLocalSystemSid, WinLocalServiceSid, WinNetworkServiceSid]
+        .into_iter()
+        .any(|sid_type| {
+            // SAFETY: callers provide a valid SID and sid_type is a documented
+            // WELL_KNOWN_SID_TYPE value.
+            unsafe { IsWellKnownSid(sid, sid_type) != 0 }
+        })
+}
+
+fn process_token_user_buffer(process: &WinHandle) -> Option<Vec<usize>> {
     let mut token = std::ptr::null_mut();
     // SAFETY: process is live, token is writable, and the requested token access is query-only.
     if unsafe { OpenProcessToken(process.raw(), TOKEN_QUERY, &mut token) } == 0 {
@@ -820,53 +940,7 @@ fn process_user_name_from_handle(process: &WinHandle) -> Option<String> {
         return None;
     }
 
-    // SAFETY: successful TokenUser output starts with a valid aligned TOKEN_USER whose SID remains
-    // valid while token_buffer is alive.
-    let token_user = unsafe { &*token_buffer.as_ptr().cast::<TOKEN_USER>() };
-    let mut name_len = 0;
-    let mut domain_len = 0;
-    let mut sid_use: SID_NAME_USE = 0;
-    // SAFETY: the SID comes from the live TokenUser buffer; null outputs request required lengths.
-    let first_result = unsafe {
-        LookupAccountSidW(
-            std::ptr::null(),
-            token_user.User.Sid,
-            std::ptr::null_mut(),
-            &mut name_len,
-            std::ptr::null_mut(),
-            &mut domain_len,
-            &mut sid_use,
-        )
-    };
-    // SAFETY: GetLastError reads thread-local state immediately after LookupAccountSidW.
-    let first_error = unsafe { GetLastError() };
-    if first_result != 0 || name_len == 0 || first_error != ERROR_INSUFFICIENT_BUFFER {
-        return None;
-    }
-
-    let mut name = vec![0u16; name_len as usize];
-    let mut domain = vec![0u16; domain_len as usize];
-    // SAFETY: the SID remains valid; both UTF-16 buffers are writable for their declared lengths.
-    if unsafe {
-        LookupAccountSidW(
-            std::ptr::null(),
-            token_user.User.Sid,
-            name.as_mut_ptr(),
-            &mut name_len,
-            domain.as_mut_ptr(),
-            &mut domain_len,
-            &mut sid_use,
-        )
-    } == 0
-    {
-        return None;
-    }
-
-    let name_len = name
-        .iter()
-        .position(|character| *character == 0)
-        .unwrap_or(name.len());
-    (name_len != 0).then(|| String::from_utf16_lossy(&name[..name_len]))
+    Some(token_buffer)
 }
 
 fn process_image_path_from_handle(process: &WinHandle) -> Option<PathBuf> {
@@ -941,14 +1015,78 @@ mod tests {
     }
 
     #[test]
+    fn process_tree_postorder_covers_multiple_roots_once_and_children_first() {
+        let process = |id, parent_id| ProcessInfo {
+            id,
+            parent_id,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: format!("process-{id}.exe"),
+            image_path: Some(PathBuf::from(format!(r"C:\Apps\process-{id}.exe"))),
+        };
+        let processes = [
+            process(10, None),
+            process(11, Some(10)),
+            process(20, None),
+            process(21, Some(20)),
+        ];
+
+        assert_eq!(
+            process_tree_ids_postorder(&[10, 11, 20], &processes),
+            vec![11, 10, 21, 20]
+        );
+    }
+
+    #[test]
     fn current_process_account_name_is_available() {
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let process_id = unsafe { GetCurrentProcessId() };
         let process = open_process_for_query(process_id).expect("current process is queryable");
-        let user_name =
-            process_user_name_from_handle(&process).expect("current process token resolves");
+        let user_name = process_identity_from_handle(&process)
+            .0
+            .expect("current process token resolves");
 
         assert!(!user_name.is_empty());
+    }
+
+    #[test]
+    fn service_account_sids_are_identified() {
+        use windows_sys::Win32::Security::{
+            CreateWellKnownSid, WinBuiltinUsersSid, SECURITY_MAX_SID_SIZE,
+        };
+
+        let make_sid = |sid_type| {
+            let mut sid = vec![
+                0usize;
+                (SECURITY_MAX_SID_SIZE as usize)
+                    .div_ceil(std::mem::size_of::<usize>())
+            ];
+            let mut sid_len = SECURITY_MAX_SID_SIZE;
+            assert_ne!(
+                // SAFETY: sid is writable for sid_len bytes, the domain SID is optional, and
+                // sid_type is a documented WELL_KNOWN_SID_TYPE value.
+                unsafe {
+                    CreateWellKnownSid(
+                        sid_type,
+                        std::ptr::null_mut(),
+                        sid.as_mut_ptr().cast(),
+                        &mut sid_len,
+                    )
+                },
+                0
+            );
+            sid
+        };
+
+        for sid_type in [WinLocalSystemSid, WinLocalServiceSid, WinNetworkServiceSid] {
+            let mut sid = make_sid(sid_type);
+            assert!(sid_is_service_account(sid.as_mut_ptr().cast()));
+        }
+        let mut users_sid = make_sid(WinBuiltinUsersSid);
+        assert!(!sid_is_service_account(users_sid.as_mut_ptr().cast()));
     }
 
     #[test]
@@ -971,6 +1109,8 @@ mod tests {
             name: "explorer.exe".to_owned(),
             executable_path: PathBuf::from(r"C:\Windows\explorer.exe"),
             creation_time: 1,
+            session_id: Some(1),
+            is_service_account: Some(false),
         };
 
         assert!(
@@ -997,6 +1137,7 @@ mod tests {
             parent_id: None,
             session_id: Some(1),
             user_name: Some("User".to_owned()),
+            is_service_account: Some(false),
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -1017,11 +1158,31 @@ mod tests {
         inaccessible.name = "protected-service.exe".to_owned();
         inaccessible.image_path = Some(PathBuf::from(r"C:\Apps\protected-service.exe"));
         inaccessible.can_set_information = false;
+        let mut session_zero = process.clone();
+        session_zero.id = 46;
+        session_zero.session_id = Some(0);
+        let mut service_account = process.clone();
+        service_account.id = 47;
+        service_account.is_service_account = Some(true);
 
-        let candidates =
-            process_candidates_from_processes(&[process, critical, unverifiable, inaccessible]);
+        let candidates = process_candidates_from_processes(&[
+            session_zero.clone(),
+            process,
+            critical,
+            unverifiable,
+            inaccessible,
+        ]);
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].name, "editor.exe");
+        assert!(candidates[0].has_suspendable_instance);
+
+        let candidates = process_candidates_from_processes(&[session_zero]);
+        assert_eq!(candidates.len(), 1);
+        assert!(!candidates[0].has_suspendable_instance);
+
+        let candidates = process_candidates_from_processes(&[service_account]);
+        assert_eq!(candidates.len(), 1);
+        assert!(!candidates[0].has_suspendable_instance);
     }
 
     #[test]
@@ -1039,6 +1200,7 @@ mod tests {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "game.exe".to_owned(),

@@ -645,6 +645,8 @@ app_suspension:
   download_threshold: "Download Threshold"
   upload_threshold: "Upload Threshold"
   indicator:
+    unavailable: "Unavailable"
+    unavailable_help: "This app is running only in Session 0 or under a Windows service account, so Winderust will not suspend it."
     protected: "Protected"
     protected_help: "Winderust does not suspend this app because it can fail to restore correctly."
     network: "Network"

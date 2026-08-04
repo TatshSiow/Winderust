@@ -4,6 +4,7 @@ pub(in crate::ui::app) fn process_target_can_accept(
     target: SuggestionTarget,
     settings: &Settings,
     process: &str,
+    has_suspendable_instance: bool,
 ) -> bool {
     match target {
         SuggestionTarget::Foreground => {
@@ -19,7 +20,8 @@ pub(in crate::ui::app) fn process_target_can_accept(
             can_add_memory_trim_exclusion(&settings.memory_trim, process)
         }
         SuggestionTarget::AppSuspension => {
-            can_add_app_suspension_process(&settings.app_suspension, process)
+            has_suspendable_instance
+                && can_add_app_suspension_process(&settings.app_suspension, process)
         }
         SuggestionTarget::CoreLimiter => {
             can_add_core_limiter_process(&settings.core_limiter, process)
@@ -1130,7 +1132,7 @@ pub(in crate::ui::app) fn process_memory_priority_label(priority: ProcessMemoryP
 
 #[cfg(test)]
 mod tests {
-    use super::process_path_matches_display_name;
+    use super::*;
 
     #[test]
     fn selected_process_path_requires_its_display_name() {
@@ -1141,6 +1143,31 @@ mod tests {
         assert!(!process_path_matches_display_name(
             r"C:\Apps\Example.exe",
             "Other.exe"
+        ));
+    }
+
+    #[test]
+    fn app_suspension_requires_a_suspendable_process_instance() {
+        let settings = Settings::default();
+        let process = "C:/Apps/Example.exe";
+
+        assert!(process_target_can_accept(
+            SuggestionTarget::AppSuspension,
+            &settings,
+            process,
+            true,
+        ));
+        assert!(!process_target_can_accept(
+            SuggestionTarget::AppSuspension,
+            &settings,
+            process,
+            false,
+        ));
+        assert!(process_target_can_accept(
+            SuggestionTarget::Foreground,
+            &settings,
+            process,
+            false,
         ));
     }
 }

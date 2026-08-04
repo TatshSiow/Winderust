@@ -647,6 +647,8 @@ app_suspension:
   download_threshold: "下載門檻"
   upload_threshold: "上傳門檻"
   indicator:
+    unavailable: "無法使用"
+    unavailable_help: "此應用程式只在工作階段 0 或 Windows 服務帳戶下執行，因此 Winderust 不會暫停它。"
     protected: "受保護"
     protected_help: "Winderust 不會暫停此應用程式，因為它可能無法正確恢復。"
     network: "網路"

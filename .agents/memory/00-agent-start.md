@@ -34,6 +34,10 @@
 - Auto-exclusion fallback is shared through `PendingAutoExclusions` in `src/backend/automation.rs`.
 - On newly suppressed process failures, features emit `auto_excluded_processes`; `WinderustApp::apply_pending_auto_exclusions` persists them into each feature's existing exclusion/rule list.
 - Rule-only fallbacks use disabled rules: CPU Sets (Soft), Processor Affinity (Hard), Core Limiter, App Suspension.
+- App Suspension rejects Session 0, LocalSystem, LocalService, and NetworkService processes plus
+  curated Windows shell/shared-host processes. Process List and the App Suspension picker keep
+  unavailable targets visible, labeled, and disabled; grouped Process List actions cover every
+  captured process in the group. Other process controls are unaffected.
 - Explicit CPU Sets (Soft) and Processor Affinity (Hard) rules take precedence over Workload Engine CPU allocation for the same process.
 - Exclusion-list features append `ProcessExclusionRule`.
 - Timer Resolution does not use process failure suppression.

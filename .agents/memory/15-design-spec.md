@@ -73,6 +73,8 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Keep Windows-critical processes visible as read-only `Protected system process` rows in Process List, omit them from every Add process picker, and fail closed when criticality cannot be verified.
 - For other inaccessible rows, show `Administrator required` before elevation and `Access denied` when Winderust is already elevated.
 - When elevated, enable Task Manager-level service access before process discovery and automation while retaining every critical, built-in, identity, and protected-process barrier.
+- With Advanced Controls enabled, keep Suspend/Resume present in the context menu and use the existing disabled style when the selected process cannot be safely suspended. Grouped rows apply the action to every captured process in the group. Keep unavailable App Suspension picker candidates visible, disabled, and explicitly labeled `Unavailable`. App Suspension safety must not disable unrelated process controls.
+- Stacked Process List parent rows expose only `Stop process tree`, covering every process in the stack and the union of their descendants; their expanded sub-items expose both stop actions. Non-stacked rows always expose `Stop process` and expose `Stop process tree` only while the selected process has a child in the current process snapshot.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Column visibility belongs in the existing dropdown/checkbox pattern.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.

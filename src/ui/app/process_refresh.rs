@@ -26,7 +26,11 @@ fn process_candidates_with_icons(
     let candidates = processes
         .into_iter()
         .map(|process| {
-            let ProcessCandidateInfo { name, image_path } = process;
+            let ProcessCandidateInfo {
+                name,
+                image_path,
+                has_suspendable_instance,
+            } = process;
             let icon = if let Some(icon) = icon_cache.get(&image_path) {
                 icon.clone()
             } else {
@@ -37,6 +41,7 @@ fn process_candidates_with_icons(
             ProcessCandidate {
                 name,
                 image_path,
+                has_suspendable_instance,
                 icon,
             }
         })

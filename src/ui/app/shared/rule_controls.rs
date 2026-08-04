@@ -383,15 +383,12 @@ impl WinderustApp {
                         .to_ascii_lowercase()
                         .contains(query.as_str())
             })
-            .filter(|process| {
-                process_target_can_accept(
-                    target,
-                    &self.settings,
-                    process.image_path.to_string_lossy().as_ref(),
-                )
-            })
+            .filter(|process| process_candidate_is_visible(target, &self.settings, process))
             .collect::<Vec<_>>();
         matches.sort_by(|left, right| left.name.cmp(&right.name));
+        let selected_index = matches
+            .iter()
+            .position(|process| process_candidate_can_accept(target, &self.settings, process));
         let mut suggestions = dropdown_surface(cx, max_height);
         if matches.is_empty() {
             suggestions = suggestions.child(dropdown_empty_row(
@@ -409,14 +406,16 @@ impl WinderustApp {
         }
         for (count, process) in matches.into_iter().enumerate() {
             let executable_path = process.image_path.to_string_lossy().into_owned();
-            suggestions = suggestions.child(
-                dropdown_process_option_row(
-                    SharedString::from(format!("{id}-{count}")),
-                    process,
-                    count == 0,
-                    cx,
-                )
-                .on_mouse_down(
+            let enabled = process_candidate_can_accept(target, &self.settings, process);
+            let row = dropdown_process_option_row(
+                SharedString::from(format!("{id}-{count}")),
+                process,
+                selected_index == Some(count),
+                !enabled,
+                cx,
+            );
+            suggestions = suggestions.child(if enabled {
+                row.on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |app, _: &gpui::MouseDownEvent, window, cx| {
                         cx.stop_propagation();
@@ -424,8 +423,10 @@ impl WinderustApp {
                         window.blur();
                         cx.notify();
                     }),
-                ),
-            );
+                )
+            } else {
+                row
+            });
         }
 
         suggestions.into_any_element()
@@ -552,13 +553,7 @@ impl WinderustApp {
                         .to_ascii_lowercase()
                         .contains(normalized_query.as_str())
             })
-            .filter(|process| {
-                process_target_can_accept(
-                    target,
-                    &self.settings,
-                    process.image_path.to_string_lossy().as_ref(),
-                )
-            })
+            .filter(|process| process_candidate_is_visible(target, &self.settings, process))
             .count()
             .max(1);
         let selected_path = self.process_picker_path(target, input, cx);
@@ -636,4 +631,26 @@ impl WinderustApp {
             .cloned()
             .unwrap_or_default()
     }
+}
+
+fn process_candidate_can_accept(
+    target: SuggestionTarget,
+    settings: &Settings,
+    process: &ProcessCandidate,
+) -> bool {
+    process_target_can_accept(
+        target,
+        settings,
+        process.image_path.to_string_lossy().as_ref(),
+        process.has_suspendable_instance,
+    )
+}
+
+fn process_candidate_is_visible(
+    target: SuggestionTarget,
+    settings: &Settings,
+    process: &ProcessCandidate,
+) -> bool {
+    target == SuggestionTarget::AppSuspension
+        || process_candidate_can_accept(target, settings, process)
 }

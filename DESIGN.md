@@ -65,7 +65,12 @@
 - Empty: Explain that no applications are configured and provide the process picker.
 - Error: Show actionable status and Action Log entries without repeated spam.
 - Success: Reflect applied process counts and per-rule indicators.
-- Disabled: Preserve configured rules while restoring managed process state.
+- Process actions: Stacked parent rows show only `Stop process tree`, covering every process in the stack and their descendants; expanded sub-items show both stop actions. Non-stacked rows show `Stop process`, plus `Stop process tree` only when the process currently has children.
+- Disabled: Preserve configured rules while restoring managed process state. Process List keeps
+  Advanced Suspend/Resume visible but disables Suspend for inaccessible, protected, Session 0,
+  service-account, and curated Windows host processes. The App Suspension picker uses the same
+  visible-disabled behavior with an `Unavailable` label without disabling unrelated controls.
+  Grouped Process List rows apply Suspend/Resume to every captured process in the group.
 - Offline/slow network, if applicable: Not applicable to CPU allocation.
 
 ## Content voice

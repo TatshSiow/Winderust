@@ -80,7 +80,7 @@ use crate::{
         capture_process_action_target, contains_process_name, ensure_process_action_target_access,
         executable_path_key, foreground_process, list_process_candidates,
         list_processes_with_paths, open_process_location, process_candidates_from_processes,
-        same_executable_path, sample_process_resources, terminate_process, terminate_process_tree,
+        same_executable_path, sample_process_resources, terminate_process, terminate_process_trees,
         ProcessActionAccess, ProcessActionTarget, ProcessActionTargetError, ProcessCandidateInfo,
         ProcessInfo, ProcessResourceSample, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
@@ -297,6 +297,7 @@ const NAV_HISTORY_LIMIT: usize = 64;
 struct ProcessCandidate {
     name: String,
     image_path: PathBuf,
+    has_suspendable_instance: bool,
     icon: Option<Arc<Image>>,
 }
 
@@ -1340,7 +1341,7 @@ mod tests {
             ..Default::default()
         };
 
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
 
         assert_eq!(
             indicator.label,
@@ -1353,6 +1354,26 @@ mod tests {
     }
 
     #[test]
+    fn app_suspension_indicator_reports_unavailable_before_runtime_state() {
+        let status = AppSuspensionSnapshot {
+            enabled: true,
+            running_apps: vec!["service.exe".to_owned()],
+            ..Default::default()
+        };
+
+        let indicator = app_suspension_indicator(&status, "service.exe", true);
+
+        assert_eq!(
+            indicator.label,
+            t!("app_suspension.indicator.unavailable").to_string()
+        );
+        assert_eq!(
+            indicator.hover,
+            t!("app_suspension.indicator.unavailable_help").to_string()
+        );
+    }
+
+    #[test]
     fn app_suspension_indicator_reports_running_before_not_running() {
         let status = AppSuspensionSnapshot {
             enabled: true,
@@ -1360,7 +1381,7 @@ mod tests {
             ..Default::default()
         };
 
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
 
         assert_eq!(
             indicator.label,
@@ -1381,7 +1402,7 @@ mod tests {
             ..Default::default()
         };
 
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
 
         assert_eq!(
             indicator.label,

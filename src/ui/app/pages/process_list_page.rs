@@ -650,9 +650,10 @@ fn process_list_context_menu(
     executable_path: String,
     allow_cross_session: bool,
     suspended: bool,
-    show_suspend: bool,
+    advanced_controls_enabled: bool,
     expose_all_priorities: bool,
-    hide_stop_process: bool,
+    show_stop_process: bool,
+    show_stop_process_tree: bool,
     window: &mut Window,
     menu_cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
@@ -674,16 +675,23 @@ fn process_list_context_menu(
         })
     };
     let termination_disabled = action_disabled(ProcessActionAccess::Terminate);
+    let tree_termination_disabled = !targets.iter().all(|target| {
+        target.as_ref().is_ok_and(|target| {
+            ensure_process_action_target_access(target, ProcessActionAccess::Terminate).is_ok()
+        })
+    });
     let suspend = !suspended;
     let suspension_access = if suspend {
         ProcessActionAccess::AssignToJob
     } else {
         ProcessActionAccess::SafetyOnly
     };
-    let suspension_disabled = action_disabled(suspension_access)
-        || target
-            .as_ref()
-            .is_ok_and(|target| app_suspension::is_builtin_excluded(&target.name));
+    let suspension_disabled = !targets.iter().any(|target| {
+        target.as_ref().is_ok_and(|target| {
+            ensure_process_action_target_access(target, suspension_access).is_ok()
+                && (!suspend || app_suspension::process_is_suspendable(target))
+        })
+    });
     let efficiency_disabled = !targets.iter().any(|target| {
         target.as_ref().is_ok_and(|target| {
             ensure_process_action_target_access(target, ProcessActionAccess::SetInformation).is_ok()
@@ -702,19 +710,25 @@ fn process_list_context_menu(
         (false, "process_list.stop_process"),
         (true, "process_list.stop_process_tree"),
     ] {
-        if hide_stop_process && !tree {
+        if (tree && !show_stop_process_tree) || (!tree && !show_stop_process) {
             continue;
         }
         let app_entity = app_entity.clone();
         let process_name = process_name.clone();
         let target = target.clone();
+        let targets = targets.clone();
+        let disabled = if tree {
+            tree_termination_disabled
+        } else {
+            termination_disabled
+        };
         menu = menu.item(
             process_list_value_menu_item(
                 t!(label_key).to_string(),
                 ProcessListMenuItemTone::Danger,
-                termination_disabled,
+                disabled,
             )
-            .disabled(termination_disabled)
+            .disabled(disabled)
             .on_click(move |_, window, cx| {
                 let description = t!(
                     if tree {
@@ -739,25 +753,30 @@ fn process_list_context_menu(
                 let app_entity = app_entity.clone();
                 let process_name = process_name.clone();
                 let target = target.clone();
+                let targets = targets.clone();
                 cx.spawn(async move |cx| {
                     if answer.await != Ok(0) {
                         return;
                     }
                     let _ = app_entity.update(cx, |app, cx| {
-                        let result = target
-                            .map_err(|error| error.to_string())
-                            .and_then(|target| {
-                                if tree {
-                                    terminate_process_tree(
-                                        &target,
+                        let result = if tree {
+                            targets
+                                .into_iter()
+                                .collect::<Result<Vec<_>, _>>()
+                                .map_err(|error| error.to_string())
+                                .and_then(|targets| {
+                                    terminate_process_trees(
+                                        &targets,
                                         &app.running_processes,
                                         allow_cross_session,
                                     )
                                     .map(|_| ())
-                                } else {
-                                    terminate_process(&target)
-                                }
-                            });
+                                })
+                        } else {
+                            target
+                                .map_err(|error| error.to_string())
+                                .and_then(|target| terminate_process(&target))
+                        };
                         app.finish_process_quick_action(
                             &process_name,
                             t!(label_key).as_ref(),
@@ -771,10 +790,10 @@ fn process_list_context_menu(
         );
     }
 
-    if show_suspend {
+    if advanced_controls_enabled {
         let app_entity = app_entity.clone();
         let process_name = process_name.clone();
-        let target = target.clone();
+        let targets = targets.clone();
         let label_key = if suspend {
             "process_list.suspend_process"
         } else {
@@ -793,29 +812,22 @@ fn process_list_context_menu(
             .disabled(suspension_disabled)
             .on_click(move |_, _, cx| {
                 app_entity.update(cx, |app, cx| {
-                    let result = target
-                        .clone()
-                        .map_err(|error| error.to_string())
-                        .map(|target| {
-                            app.background_automation
-                                .request_app_suspension_process_action(target, suspend);
-                        });
-                    app.status_message = match result {
-                        Ok(()) => t!(
-                            "process_list.quick_action_queued",
-                            action = t!(label_key).as_ref(),
-                            name = process_name.as_str()
-                        )
-                        .to_string(),
-                        Err(error) => t!(
-                            "process_list.quick_action_failed",
-                            action = t!(label_key).as_ref(),
-                            name = process_name.as_str(),
-                            error = error
-                        )
-                        .to_string(),
-                    };
-                    cx.notify();
+                    let result = apply_process_list_targets(&targets, |target| {
+                        ensure_process_action_target_access(target, suspension_access)
+                            .map_err(|error| error.to_string())?;
+                        if suspend && !app_suspension::process_is_suspendable(target) {
+                            return Err("Process is protected from App Suspension.".to_owned());
+                        }
+                        app.background_automation
+                            .request_app_suspension_process_action(target.clone(), suspend);
+                        Ok(())
+                    });
+                    app.finish_process_quick_action(
+                        &process_name,
+                        t!(label_key).as_ref(),
+                        result,
+                        cx,
+                    );
                 });
             }),
         );
@@ -1276,6 +1288,10 @@ fn apply_process_list_targets(
         ))
     }
 }
+
+fn process_list_stop_action_visibility(nested: bool, has_children: bool) -> (bool, bool) {
+    (true, nested || has_children)
+}
 fn process_list_priority_option_available<T>(_: T) -> bool {
     true
 }
@@ -1409,11 +1425,19 @@ pub(in crate::ui::app) fn process_list_entry_row(
         .settings
         .advanced
         .expose_all_priority_values;
+    let advanced_controls_enabled = edit_context.app.settings.advanced.show_advanced_controls;
     let allow_cross_session = edit_context
         .app
         .settings
         .general
         .allow_cross_session_process_control;
+    let has_children = edit_context
+        .app
+        .running_processes
+        .iter()
+        .any(|candidate| candidate.parent_id == Some(process.id));
+    let (show_stop_process, show_stop_process_tree) =
+        process_list_stop_action_visibility(state.nested, has_children);
     let mut row = h_flex()
         .id(row_id)
         .w_full()
@@ -1469,9 +1493,10 @@ pub(in crate::ui::app) fn process_list_entry_row(
                 executable_path.clone().unwrap_or_default(),
                 allow_cross_session,
                 suspended,
-                false,
+                advanced_controls_enabled,
                 expose_all_priorities,
-                state.nested,
+                show_stop_process,
+                show_stop_process_tree,
                 window,
                 menu_cx,
             )
@@ -1558,21 +1583,25 @@ pub(in crate::ui::app) fn process_list_group_row(
     let menu_executable_path = executable_path.clone();
     let menu_process_ids = data.process_ids.to_vec();
     let app_entity = cx.entity();
-    let suspended = edit_context
-        .app
-        .app_suspension_status
-        .suspended_process_ids
-        .contains(&data.process_id);
+    let suspended = data.process_ids.iter().all(|process_id| {
+        edit_context
+            .app
+            .app_suspension_status
+            .suspended_process_ids
+            .contains(process_id)
+    });
     let expose_all_priorities = edit_context
         .app
         .settings
         .advanced
         .expose_all_priority_values;
+    let advanced_controls_enabled = edit_context.app.settings.advanced.show_advanced_controls;
     let allow_cross_session = edit_context
         .app
         .settings
         .general
         .allow_cross_session_process_control;
+    let (show_stop_process, show_stop_process_tree) = (false, true);
 
     let mut row = h_flex()
         .id(row_id)
@@ -1614,9 +1643,10 @@ pub(in crate::ui::app) fn process_list_group_row(
                 menu_executable_path.clone(),
                 allow_cross_session,
                 suspended,
-                true,
+                advanced_controls_enabled,
                 expose_all_priorities,
-                true,
+                show_stop_process,
+                show_stop_process_tree,
                 window,
                 menu_cx,
             )

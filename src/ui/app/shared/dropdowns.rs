@@ -419,6 +419,7 @@ pub(in crate::ui::app) fn dropdown_process_option_row(
     id: SharedString,
     process: &ProcessCandidate,
     selected: bool,
+    disabled: bool,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let executable_path = process.image_path.to_string_lossy().into_owned();
@@ -446,8 +447,11 @@ pub(in crate::ui::app) fn dropdown_process_option_row(
                     .bg(cx.theme().accent),
             )
         })
-        .hover(|style| style.bg(rgb(dropdown_option_hover_color())))
-        .cursor_pointer()
+        .when(!disabled, |row| {
+            row.hover(|style| style.bg(rgb(dropdown_option_hover_color())))
+                .cursor_pointer()
+        })
+        .when(disabled, |row| row.opacity(0.5))
         .child(process_icon_cell(process.icon.as_ref(), cx))
         .child(
             v_flex()
@@ -462,6 +466,15 @@ pub(in crate::ui::app) fn dropdown_process_option_row(
                         .child(executable_path),
                 ),
         )
+        .when(disabled, |row| {
+            row.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(TEXT_LABEL_SIZE))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(t!("app_suspension.indicator.unavailable").to_string()),
+            )
+        })
 }
 
 pub(in crate::ui::app) fn process_icon_cell(

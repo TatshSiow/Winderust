@@ -43,6 +43,7 @@ fn inaccessible_process_filter_matches_process_action_safety() {
         parent_id: None,
         session_id: Some(1),
         user_name: Some("User".to_owned()),
+        is_service_account: None,
         is_critical: Some(false),
         can_set_information: true,
         name: "app.exe".to_owned(),
@@ -76,6 +77,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
             parent_id: None,
             session_id: Some(0),
             user_name: Some("SYSTEM".to_owned()),
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "service.exe".to_owned(),
@@ -86,6 +88,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
             parent_id: None,
             session_id: Some(1),
             user_name: Some("User".to_owned()),
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "service.exe".to_owned(),
@@ -173,6 +176,7 @@ fn process_list_column_layout_fits_headers_and_values() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -183,6 +187,7 @@ fn process_list_column_layout_fits_headers_and_values() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "worker.exe".to_owned(),
@@ -211,6 +216,7 @@ fn process_icon_cache_drops_stale_paths() {
     let candidates = vec![ProcessCandidate {
         name: "kept.exe".to_owned(),
         image_path: kept_path.clone(),
+        has_suspendable_instance: true,
         icon: None,
     }];
 
@@ -228,6 +234,7 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
         parent_id: None,
         session_id: None,
         user_name: None,
+        is_service_account: None,
         is_critical: Some(false),
         can_set_information: true,
         name: "Editor.EXE".to_owned(),
@@ -250,6 +257,7 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
     let candidates = vec![ProcessCandidate {
         name: "Editor.EXE".to_owned(),
         image_path: executable_path,
+        has_suspendable_instance: true,
         icon: Some(Arc::clone(&icon)),
     }];
     let icons_by_path = process_list_icons_by_path(&candidates);
@@ -275,6 +283,7 @@ fn process_list_group_actions_target_the_root_process() {
             parent_id: Some(20),
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -285,6 +294,7 @@ fn process_list_group_actions_target_the_root_process() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -317,6 +327,8 @@ fn stacked_process_actions_attempt_every_available_target() {
         name: "editor.exe".to_owned(),
         executable_path: PathBuf::from(r"C:\Apps\Editor\editor.exe"),
         creation_time: u64::from(id),
+        session_id: Some(1),
+        is_service_account: Some(false),
     };
     let targets = vec![
         Ok(target(10)),
@@ -336,12 +348,29 @@ fn stacked_process_actions_attempt_every_available_target() {
 }
 
 #[test]
+fn stop_action_visibility_matches_process_row_shape() {
+    assert_eq!(
+        process_list_stop_action_visibility(true, false),
+        (true, true)
+    );
+    assert_eq!(
+        process_list_stop_action_visibility(false, true),
+        (true, true)
+    );
+    assert_eq!(
+        process_list_stop_action_visibility(false, false),
+        (true, false)
+    );
+}
+
+#[test]
 fn process_list_search_matches_name_pid_and_path() {
     let process = ProcessInfo {
         id: 4242,
         parent_id: None,
         session_id: None,
         user_name: None,
+        is_service_account: None,
         is_critical: Some(false),
         can_set_information: true,
         name: "Editor.EXE".to_owned(),
@@ -362,6 +391,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -372,6 +402,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "worker.exe".to_owned(),
@@ -404,6 +435,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "game.exe".to_owned(),
@@ -414,6 +446,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "game.exe".to_owned(),
@@ -451,6 +484,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -461,6 +495,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "worker.exe".to_owned(),
@@ -471,6 +506,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -524,6 +560,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -534,6 +571,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "worker.exe".to_owned(),

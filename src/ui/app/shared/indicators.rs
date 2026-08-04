@@ -23,6 +23,7 @@ pub(in crate::ui::app) enum CoreTileGridAction {
 pub(in crate::ui::app) fn app_suspension_indicator(
     status: &AppSuspensionSnapshot,
     process: &str,
+    unavailable: bool,
 ) -> SuspensionIndicator {
     let accent = accent_color();
     let accent_bg = settings_card_hover_color();
@@ -32,6 +33,13 @@ pub(in crate::ui::app) fn app_suspension_indicator(
             bg: accent_bg,
             fg: accent,
             hover: t!("app_suspension.indicator.protected_help").to_string(),
+        }
+    } else if unavailable {
+        SuspensionIndicator {
+            label: t!("app_suspension.indicator.unavailable").to_string(),
+            bg: panel_active_color(),
+            fg: muted_text_color(),
+            hover: t!("app_suspension.indicator.unavailable_help").to_string(),
         }
     } else if app_suspension::contains_process(&status.network_wake_apps, process) {
         SuspensionIndicator {

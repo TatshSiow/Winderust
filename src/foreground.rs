@@ -12,11 +12,11 @@ pub use process_list::{
     process_executable_path, process_failure_key, process_is_critical,
     process_matches_executable_path, process_session_id, same_executable_path, same_process_name,
     sample_process_resources, should_ignore_foreground_process, terminate_process,
-    terminate_process_tree, unique_app_names, ProcessActionTarget, ProcessActionTargetError,
+    terminate_process_trees, unique_app_names, ProcessActionTarget, ProcessActionTargetError,
     ProcessCandidateInfo, ProcessInfo, ProcessResourceSample, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 pub(crate) use process_list::{
     ensure_process_action_target_access, process_handle_matches_executable_path,
-    ProcessActionAccess,
+    process_runs_as_service_account, ProcessActionAccess,
 };
