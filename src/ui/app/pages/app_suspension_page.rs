@@ -304,8 +304,8 @@ impl WinderustApp {
                 t!("app_suspension.network").to_string(),
                 SUSPENSION_DETECT_COLUMN_WIDTH,
             ),
-            rule_table_centered_header("Download".to_string(), 172.0),
-            rule_table_centered_header("Upload".to_string(), 172.0),
+            rule_table_centered_header(t!("app_suspension.download").to_string(), 172.0),
+            rule_table_centered_header(t!("app_suspension.upload").to_string(), 172.0),
             rule_table_centered_header(
                 t!("action_log.action").to_string(),
                 SUSPENSION_ACTION_COLUMN_WIDTH,

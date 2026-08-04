@@ -9,8 +9,8 @@ tray:
   quit: "結束"
 
 nav:
-  collapse_navigation: "收合導覽列"
-  expand_navigation: "展開導覽列"
+  collapse_navigation: "收起側欄"
+  expand_navigation: "展開側欄"
   home: "首頁"
   winderust_features: "Winderust 功能"
   power_plan_control: "電源計畫控制"
@@ -28,7 +28,7 @@ nav:
   thread_priority: "執行緒優先順序"
   dynamic_priority_boost: "動態優先順序提升"
   core_limiter: "核心限制器"
-  cpu_sets_soft: "CPU 集合（軟式）"
+  cpu_sets_soft: "CPU 集合（軟性）"
   process_list: "程序清單"
   adaptive_engine: "自適應引擎"
   background_efficiency: "背景效率"
@@ -39,7 +39,7 @@ nav:
   memory_priority: "記憶體優先順序"
   memory_trim: "記憶體修剪"
   by_running_app: "執行中應用程式電源計畫"
-  processor_affinity_hard: "處理器親和性（硬式）"
+  processor_affinity_hard: "處理器親和性（硬性）"
   by_foreground: "前景電源計畫"
   by_time: "時間規則"
   action_log: "記錄"
@@ -60,6 +60,10 @@ common:
   discard: "放棄"
   done: "完成"
   edit: "編輯"
+  "on": "開啟"
+  "off": "關閉"
+  active: "啟用"
+  actions: "操作"
   enabled: "已啟用"
   disabled: "已停用"
   none: "無"
@@ -109,8 +113,6 @@ theme:
 
 animation:
   system: "跟隨系統"
-  on: "開啟"
-  off: "關閉"
 
 accent:
   recent_colors: "最近使用的色彩"
@@ -266,6 +268,8 @@ home:
   launch_boost: "啟動提升"
 
 process_list:
+  include: "包含"
+  exclude: "排除"
   user: "使用者"
   multiple_users: "多個"
   user_unavailable: "\u7121\u6cd5\u53d6\u5f97"
@@ -624,6 +628,8 @@ adaptive_engine:
   restrained: "已限制"
 
 app_suspension:
+  download: "下載"
+  upload: "上傳"
   intro_1: "應用程式暫停會在延遲後暫停選取的背景應用程式，以降低 CPU 使用率。"
   intro_2: "當你切回暫停的應用程式或退出 Winderust 時，系統會自動恢復它們。"
   intro_3: "請只對適合在背景暫停的應用程式使用此功能。"
@@ -987,6 +993,9 @@ processor_affinity_hard:
   warning: "硬式親和性可能降低效能或回應速度。在多處理器群組系統上，它只會套用至程序的主要群組。"
 
 cpu_allocation:
+  p_core: "P 核心"
+  e_core: "E 核心"
+  core: "核心"
   focus_detection: "前景應用程式偵測"
   focus_detection_help: "使用應用程式時，保留目前前景應用程式的 CPU 設定。"
   rules: "自訂規則"

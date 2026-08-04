@@ -920,11 +920,11 @@ pub(in crate::ui::app) fn process_list_include_exclude_label(included: bool) -> 
     }
 }
 pub(in crate::ui::app) fn process_list_include_label() -> String {
-    "Include".to_owned()
+    t!("process_list.include").to_string()
 }
 
 pub(in crate::ui::app) fn process_list_exclude_label() -> String {
-    "Exclude".to_owned()
+    t!("process_list.exclude").to_string()
 }
 
 pub(in crate::ui::app) fn process_list_default_label() -> String {
@@ -1077,12 +1077,25 @@ pub(in crate::ui::app) fn process_io_priority_setting_label(
     match priority {
         ProcessIoPrioritySetting::Default => t!("io_priority.priority_default").to_string(),
         ProcessIoPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
-        ProcessIoPrioritySetting::Critical => t!("io_priority.priority_critical").to_string(),
-        ProcessIoPrioritySetting::High => t!("io_priority.priority_high").to_string(),
-        ProcessIoPrioritySetting::Normal => t!("io_priority.priority_normal").to_string(),
-        ProcessIoPrioritySetting::Low => t!("io_priority.priority_low").to_string(),
-        ProcessIoPrioritySetting::VeryLow => t!("io_priority.priority_very_low").to_string(),
+        ProcessIoPrioritySetting::Critical => {
+            process_io_priority_label(ProcessIoPriority::Critical)
+        }
+        ProcessIoPrioritySetting::High => process_io_priority_label(ProcessIoPriority::High),
+        ProcessIoPrioritySetting::Normal => process_io_priority_label(ProcessIoPriority::Normal),
+        ProcessIoPrioritySetting::Low => process_io_priority_label(ProcessIoPriority::Low),
+        ProcessIoPrioritySetting::VeryLow => process_io_priority_label(ProcessIoPriority::VeryLow),
     }
+}
+
+pub(in crate::ui::app) fn process_io_priority_label(priority: ProcessIoPriority) -> String {
+    match priority {
+        ProcessIoPriority::Critical => t!("io_priority.priority_critical"),
+        ProcessIoPriority::High => t!("io_priority.priority_high"),
+        ProcessIoPriority::Normal => t!("io_priority.priority_normal"),
+        ProcessIoPriority::Low => t!("io_priority.priority_low"),
+        ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low"),
+    }
+    .to_string()
 }
 
 pub(in crate::ui::app) fn process_gpu_priority_setting_label(
@@ -1091,17 +1104,31 @@ pub(in crate::ui::app) fn process_gpu_priority_setting_label(
     match priority {
         ProcessGpuPrioritySetting::Default => t!("gpu_priority.priority_default").to_string(),
         ProcessGpuPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
-        ProcessGpuPrioritySetting::Realtime => t!("gpu_priority.priority_realtime").to_string(),
-        ProcessGpuPrioritySetting::High => t!("gpu_priority.priority_high").to_string(),
+        ProcessGpuPrioritySetting::Realtime => {
+            process_gpu_priority_label(ProcessGpuPriority::Realtime)
+        }
+        ProcessGpuPrioritySetting::High => process_gpu_priority_label(ProcessGpuPriority::High),
         ProcessGpuPrioritySetting::AboveNormal => {
-            t!("gpu_priority.priority_above_normal").to_string()
+            process_gpu_priority_label(ProcessGpuPriority::AboveNormal)
         }
-        ProcessGpuPrioritySetting::Normal => t!("gpu_priority.priority_normal").to_string(),
+        ProcessGpuPrioritySetting::Normal => process_gpu_priority_label(ProcessGpuPriority::Normal),
         ProcessGpuPrioritySetting::BelowNormal => {
-            t!("gpu_priority.priority_below_normal").to_string()
+            process_gpu_priority_label(ProcessGpuPriority::BelowNormal)
         }
-        ProcessGpuPrioritySetting::Idle => t!("gpu_priority.priority_idle").to_string(),
+        ProcessGpuPrioritySetting::Idle => process_gpu_priority_label(ProcessGpuPriority::Idle),
     }
+}
+
+pub(in crate::ui::app) fn process_gpu_priority_label(priority: ProcessGpuPriority) -> String {
+    match priority {
+        ProcessGpuPriority::Realtime => t!("gpu_priority.priority_realtime"),
+        ProcessGpuPriority::High => t!("gpu_priority.priority_high"),
+        ProcessGpuPriority::AboveNormal => t!("gpu_priority.priority_above_normal"),
+        ProcessGpuPriority::Normal => t!("gpu_priority.priority_normal"),
+        ProcessGpuPriority::BelowNormal => t!("gpu_priority.priority_below_normal"),
+        ProcessGpuPriority::Idle => t!("gpu_priority.priority_idle"),
+    }
+    .to_string()
 }
 
 pub(in crate::ui::app) fn timer_resolution_edit_value(value_100ns: u32) -> String {

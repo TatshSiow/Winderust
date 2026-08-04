@@ -94,7 +94,7 @@ pub(in crate::ui::app) fn switch_indicator(id: SharedString, enabled: bool) -> g
     let switch_off_border = border_color();
     let knob_on_bg = accent_glyph_color(accent);
     let knob_off_bg = if ui_is_dark() { 0xd0d0d0 } else { 0x5f5f5f };
-    let state_label = if enabled { "On" } else { "Off" };
+    let state_label = t!(if enabled { "common.on" } else { "common.off" }).to_string();
     let progress = control_motion_progress(&format!("switch-{id}"), enabled);
     let switch_bg = lerp_rgb(switch_off_bg, switch_on_bg, progress);
     let switch_border = lerp_rgb(switch_off_border, switch_on_border, progress);

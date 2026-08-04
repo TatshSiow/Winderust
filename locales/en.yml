@@ -9,8 +9,8 @@ tray:
   quit: "Quit"
 
 nav:
-  collapse_navigation: "Collapse navigation"
-  expand_navigation: "Expand navigation"
+  collapse_navigation: "Hide sidebar"
+  expand_navigation: "Show sidebar"
   home: "Home"
   winderust_features: "Winderust Features"
   power_plan_control: "Power Plan Control"
@@ -60,6 +60,10 @@ common:
   discard: "Discard"
   done: "Done"
   edit: "Edit"
+  "on": "On"
+  "off": "Off"
+  active: "Active"
+  actions: "Actions"
   enabled: "Enabled"
   disabled: "Disabled"
   none: "None"
@@ -109,8 +113,6 @@ theme:
 
 animation:
   system: "Follow system"
-  on: "On"
-  off: "Off"
 
 accent:
   source: "Accent color"
@@ -266,6 +268,8 @@ home:
   launch_boost: "Launch boost"
 
 process_list:
+  include: "Include"
+  exclude: "Exclude"
   search_placeholder: "Search processes..."
   no_matches: "No matching processes"
   hide_inaccessible_processes: "Hide inaccessible processes"
@@ -622,6 +626,8 @@ adaptive_engine:
   restrained: "Restrained"
 
 app_suspension:
+  download: "Download"
+  upload: "Upload"
   intro_1: "App Suspension pauses selected background apps after a delay to reduce CPU usage."
   intro_2: "Suspended apps are resumed automatically when you switch back to them or quit Winderust."
   intro_3: "Use it only for apps that are safe to pause in the background."
@@ -984,6 +990,9 @@ processor_affinity_hard:
   warning: "Hard affinity can reduce performance or responsiveness. On multi-group systems it applies only to the process primary group."
 
 cpu_allocation:
+  p_core: "P-core"
+  e_core: "E-core"
+  core: "Core"
   focus_detection: "Focus App Detection"
   focus_detection_help: "Leaves the current foreground app unchanged while you are actively using it."
   rules: "Custom Rules"

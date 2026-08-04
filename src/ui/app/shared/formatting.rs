@@ -18,8 +18,8 @@ pub(in crate::ui::app) fn update_channel_label(channel: UpdateChannel) -> String
 pub(in crate::ui::app) fn animation_mode_label(mode: AnimationMode) -> String {
     match mode {
         AnimationMode::System => t!("animation.system").to_string(),
-        AnimationMode::On => t!("animation.on").to_string(),
-        AnimationMode::Off => t!("animation.off").to_string(),
+        AnimationMode::On => t!("common.on").to_string(),
+        AnimationMode::Off => t!("common.off").to_string(),
     }
 }
 

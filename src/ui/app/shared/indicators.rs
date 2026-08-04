@@ -258,9 +258,9 @@ pub(in crate::ui::app) fn cpu_allocation_processor_bit(index: usize) -> Option<u
 
 pub(in crate::ui::app) fn core_tile_kind_label(processor: &LogicalProcessorInfo) -> String {
     match processor.kind {
-        LogicalProcessorKind::Performance => "P-Core".to_owned(),
-        LogicalProcessorKind::Efficiency => "E-Core".to_owned(),
-        LogicalProcessorKind::Standard => "Core".to_owned(),
+        LogicalProcessorKind::Performance => t!("cpu_allocation.p_core").to_string(),
+        LogicalProcessorKind::Efficiency => t!("cpu_allocation.e_core").to_string(),
+        LogicalProcessorKind::Standard => t!("cpu_allocation.core").to_string(),
     }
 }
 

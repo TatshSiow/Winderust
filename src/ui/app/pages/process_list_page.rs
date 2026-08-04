@@ -1385,11 +1385,11 @@ fn dynamic_boost_quick_label(disabled: bool) -> String {
 }
 
 fn io_priority_quick_label(priority: ProcessIoPriority) -> String {
-    io_priority::io_priority_label(priority).to_owned()
+    process_io_priority_label(priority)
 }
 
 fn gpu_priority_quick_label(priority: ProcessGpuPriority) -> String {
-    gpu_priority::gpu_priority_label(priority).to_owned()
+    process_gpu_priority_label(priority)
 }
 
 pub(in crate::ui::app) fn process_list_entry_row(

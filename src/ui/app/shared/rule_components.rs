@@ -29,7 +29,10 @@ pub(in crate::ui::app) fn rule_list(headers: Vec<AnyElement>) -> gpui::Div {
 }
 
 pub(in crate::ui::app) fn rule_table_active_header() -> AnyElement {
-    rule_table_centered_header("Active".to_string(), SUSPENSION_ACTIVE_COLUMN_WIDTH)
+    rule_table_centered_header(
+        t!("common.active").to_string(),
+        SUSPENSION_ACTIVE_COLUMN_WIDTH,
+    )
 }
 
 pub(in crate::ui::app) fn rule_table_title_header(title: impl Into<SharedString>) -> AnyElement {
@@ -89,7 +92,10 @@ pub(in crate::ui::app) fn rule_table_left_header(
 }
 
 pub(in crate::ui::app) fn rule_table_action_header() -> AnyElement {
-    rule_table_centered_header("Actions".to_string(), SUSPENSION_ACTION_COLUMN_WIDTH)
+    rule_table_centered_header(
+        t!("common.actions").to_string(),
+        SUSPENSION_ACTION_COLUMN_WIDTH,
+    )
 }
 
 pub(in crate::ui::app) fn rule_table_action_cell(action: AnyElement) -> AnyElement {

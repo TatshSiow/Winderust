@@ -32,7 +32,7 @@ impl WinderustApp {
             "processor-power-preset",
             selected_preset
                 .map(processor_power_preset_label)
-                .unwrap_or_else(|| "Custom".to_owned()),
+                .unwrap_or_else(|| t!("common.custom").to_string()),
             true,
             DropdownSelectWidth::Standard,
             processor_power_presets.len(),
