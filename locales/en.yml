@@ -371,6 +371,8 @@ settings:
   expose_all_priority_values_help: "Shows high-risk or reserved priority values in priority selectors. Use with care."
   show_advanced_controls: "Show advanced controls"
   show_advanced_controls_help: "Shows expert-only Advanced Controls pages in the sidebar and dashboard."
+  show_enabled_feature_counts_in_sidebar: "Show enabled feature counts in sidebar"
+  show_enabled_feature_counts_in_sidebar_help: "Shows how many features are enabled in Winderust Features, Power Plan Control, Priority Control, and CPU Control."
   pause_dashboard_metrics: "Pause Dashboard metrics"
   pause_dashboard_metrics_help: "Stops updating CPU, memory, disk, and network metrics on the Dashboard. Background automation continues running."
   pause_process_population: "Pause process population"

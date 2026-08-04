@@ -118,6 +118,8 @@ pub struct GeneralSettings {
     pub animation_mode: AnimationMode,
     #[serde(default)]
     pub navigation_collapsed: bool,
+    #[serde(default = "default_true")]
+    pub show_enabled_feature_counts_in_sidebar: bool,
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
@@ -1363,6 +1365,7 @@ impl Default for Settings {
                 language: AppLanguage::English,
                 animation_mode: AnimationMode::System,
                 navigation_collapsed: false,
+                show_enabled_feature_counts_in_sidebar: true,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
             },
@@ -2349,6 +2352,15 @@ mod tests {
             Settings::default()
                 .general
                 .allow_cross_session_process_control
+        );
+    }
+
+    #[test]
+    fn sidebar_feature_counts_are_enabled_by_default() {
+        assert!(
+            Settings::default()
+                .general
+                .show_enabled_feature_counts_in_sidebar
         );
     }
 

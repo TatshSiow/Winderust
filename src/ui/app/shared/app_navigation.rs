@@ -133,6 +133,7 @@ pub(in crate::ui::app) fn nav_row(
     page: Page,
     selected: bool,
     collapsed: bool,
+    enabled_feature_count: Option<usize>,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let row_id = SharedString::from(format!("nav-row-{page:?}"));
@@ -175,6 +176,14 @@ pub(in crate::ui::app) fn nav_row(
                     .truncate()
                     .child(page.label()),
             )
+            .when_some(enabled_feature_count, |row, count| {
+                let (background, foreground) = if count == 0 {
+                    (sidebar_hover_color(), muted_text_color())
+                } else {
+                    (success_bg_color(), success_text_color())
+                };
+                row.child(status_pill_div(count.to_string(), background, foreground))
+            })
         })
         .when(collapsed, |row| {
             let label = page.label();

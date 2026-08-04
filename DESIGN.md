@@ -66,6 +66,7 @@
 - Error: Show actionable status and Action Log entries without repeated spam.
 - Success: Reflect applied process counts and per-rule indicators.
 - Process actions: Stacked parent rows show only `Stop process tree`, covering every process in the stack and their descendants; expanded sub-items show both stop actions. Non-stacked rows show `Stop process`, plus `Stop process tree` only when the process currently has children.
+- Navigation: Language and Appearance can show enabled-feature count pills beside Winderust Features, Power Plan Control, Priority Control, and CPU Control while the sidebar is expanded; collapsed navigation keeps icons unbadged and aligned.
 - Disabled: Preserve configured rules while restoring managed process state. Process List keeps
   Advanced Suspend/Resume visible but disables Suspend for inaccessible, protected, Session 0,
   service-account, and curated Windows host processes. The App Suspension picker uses the same

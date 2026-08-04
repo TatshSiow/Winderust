@@ -458,7 +458,7 @@ pub(in crate::ui::app) fn dashboard_page_search_text(page: Page) -> String {
             "winderust behaviour startup tray automation toggle action log detail fail failure suppression export import".to_string(),
         ],
         Page::LanguageAndAppearance => vec![
-            "language appearance theme dark light system accent color palette localization display ui".to_string(),
+            "language appearance theme dark light system accent color palette localization display ui sidebar enabled feature counts pills".to_string(),
         ],
         Page::ExperimentalFeatures => vec![
             t!("settings.expose_all_priority_values_help").to_string(),

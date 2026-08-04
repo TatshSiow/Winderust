@@ -77,6 +77,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Stacked Process List parent rows expose only `Stop process tree`, covering every process in the stack and the union of their descendants; their expanded sub-items expose both stop actions. Non-stacked rows always expose `Stop process` and expose `Stop process tree` only while the selected process has a child in the current process snapshot.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Column visibility belongs in the existing dropdown/checkbox pattern.
+- Language and Appearance owns the enabled-feature counts toggle. When enabled, expanded navigation shows numeric pills beside Winderust Features, Power Plan Control, Priority Control, and CPU Control based on each section's enabled modules; collapsed navigation keeps the pills hidden to preserve icon alignment.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.
 - Preserve fixed column layout calculations and tests when adding columns.
 
