@@ -15,11 +15,21 @@ impl WinderustApp {
         let body = feature_body(enabled)
             .child(feature_toggle_switch_with_help(
                 "core-limiter-foreground",
-                t!("core_limiter.focus_detection").to_string(),
-                t!("core_limiter.focus_detection_help").to_string(),
-                self.settings.core_limiter.exclude_foreground_app,
+                t!("common.protect_foreground_app").to_string(),
+                t!("common.protect_foreground_app_help").to_string(),
+                self.settings.core_limiter.protect_foreground_app,
                 cx.listener(|app, checked, _, cx| {
-                    app.settings.core_limiter.exclude_foreground_app = *checked;
+                    app.settings.core_limiter.protect_foreground_app = *checked;
+                    cx.notify();
+                }),
+            ))
+            .child(feature_toggle_switch_with_help(
+                "core-limiter-visible-windows",
+                t!("common.protect_visible_window_apps").to_string(),
+                t!("common.protect_visible_window_apps_help").to_string(),
+                self.settings.core_limiter.protect_visible_window_apps,
+                cx.listener(|app, checked, _, cx| {
+                    app.settings.core_limiter.protect_visible_window_apps = *checked;
                     cx.notify();
                 }),
             ))

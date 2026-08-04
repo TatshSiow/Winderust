@@ -302,7 +302,9 @@ pub struct ByCpuLoadSettings {
 pub struct BackgroundEfficiencySettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
+    pub protect_foreground_app: bool,
+    #[serde(default)]
+    pub protect_visible_window_apps: bool,
     #[serde(default)]
     pub aggressiveness: BackgroundEfficiencyAggressiveness,
     #[serde(default)]
@@ -392,7 +394,9 @@ pub struct AppSuspensionSettings {
 pub struct CpuAllocationSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
+    pub protect_foreground_app: bool,
+    #[serde(default)]
+    pub protect_visible_window_apps: bool,
     #[serde(default)]
     pub rules: Vec<CpuAllocationRule>,
 }
@@ -611,7 +615,9 @@ pub struct CpuAllocationRule {
 pub struct CoreLimiterSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
+    pub protect_foreground_app: bool,
+    #[serde(default)]
+    pub protect_visible_window_apps: bool,
     #[serde(default)]
     pub rules: Vec<CoreLimiterRule>,
 }
@@ -1481,7 +1487,8 @@ impl Default for BackgroundEfficiencySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_true(),
+            protect_foreground_app: default_true(),
+            protect_visible_window_apps: false,
             aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: Vec::new(),
         }
@@ -1766,7 +1773,8 @@ impl Default for CpuAllocationSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_true(),
+            protect_foreground_app: default_true(),
+            protect_visible_window_apps: false,
             rules: Vec::new(),
         }
     }
@@ -1776,7 +1784,8 @@ impl Default for CoreLimiterSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_true(),
+            protect_foreground_app: default_true(),
+            protect_visible_window_apps: false,
             rules: Vec::new(),
         }
     }

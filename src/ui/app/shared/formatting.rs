@@ -151,6 +151,7 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
     let key = match message {
         "Automation disabled." => "runtime_status.automation_disabled",
         "Paused: foreground app is unknown." => "runtime_status.foreground_unknown",
+        "Paused: visible windows are unavailable." => "runtime_status.visible_windows_unavailable",
         "Paused: current Windows session is unknown." => "runtime_status.session_unknown",
         "CPU Sets (Soft) disabled." => "runtime_status.cpu_sets_soft_disabled",
         "Processor Affinity (Hard) disabled." => {

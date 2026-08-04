@@ -1,3 +1,4 @@
+use crate::config::CpuAllocationSettings;
 use crate::ui::app::*;
 
 #[derive(Clone, Copy)]
@@ -66,11 +67,25 @@ impl WinderustApp {
         let mut body = feature_body(enabled)
             .child(feature_toggle_switch_with_help(
                 SharedString::from(format!("{key}-foreground")),
-                t!("cpu_allocation.focus_detection").to_string(),
-                t!("cpu_allocation.focus_detection_help").to_string(),
-                cpu_allocation_excludes_foreground(&self.settings, kind),
+                t!("common.protect_foreground_app").to_string(),
+                t!("common.protect_foreground_app_help").to_string(),
+                cpu_allocation_protects_foreground(&self.settings, kind),
                 cx.listener(move |app, checked, _, cx| {
-                    set_cpu_allocation_excludes_foreground(&mut app.settings, kind, *checked);
+                    set_cpu_allocation_protects_foreground(&mut app.settings, kind, *checked);
+                    cx.notify();
+                }),
+            ))
+            .child(feature_toggle_switch_with_help(
+                SharedString::from(format!("{key}-visible-windows")),
+                t!("common.protect_visible_window_apps").to_string(),
+                t!("common.protect_visible_window_apps_help").to_string(),
+                cpu_allocation_protects_visible_window_apps(&self.settings, kind),
+                cx.listener(move |app, checked, _, cx| {
+                    set_cpu_allocation_protects_visible_window_apps(
+                        &mut app.settings,
+                        kind,
+                        *checked,
+                    );
                     cx.notify();
                 }),
             ))
@@ -494,56 +509,64 @@ impl WinderustApp {
 }
 
 fn cpu_allocation_enabled(settings: &Settings, kind: CpuAllocationPage) -> bool {
-    match kind {
-        CpuAllocationPage::CpuSetsSoft => settings.cpu_sets_soft.enabled,
-        CpuAllocationPage::ProcessorAffinityHard => settings.processor_affinity_hard.enabled,
-    }
+    cpu_allocation_settings(settings, kind).enabled
 }
 
 fn set_cpu_allocation_enabled(settings: &mut Settings, kind: CpuAllocationPage, enabled: bool) {
-    match kind {
-        CpuAllocationPage::CpuSetsSoft => settings.cpu_sets_soft.enabled = enabled,
-        CpuAllocationPage::ProcessorAffinityHard => {
-            settings.processor_affinity_hard.enabled = enabled
-        }
-    }
+    cpu_allocation_settings_mut(settings, kind).enabled = enabled;
 }
 
-fn cpu_allocation_excludes_foreground(settings: &Settings, kind: CpuAllocationPage) -> bool {
-    match kind {
-        CpuAllocationPage::CpuSetsSoft => settings.cpu_sets_soft.exclude_foreground_app,
-        CpuAllocationPage::ProcessorAffinityHard => {
-            settings.processor_affinity_hard.exclude_foreground_app
-        }
-    }
+fn cpu_allocation_protects_foreground(settings: &Settings, kind: CpuAllocationPage) -> bool {
+    cpu_allocation_settings(settings, kind).protect_foreground_app
 }
 
-fn set_cpu_allocation_excludes_foreground(
+fn set_cpu_allocation_protects_foreground(
     settings: &mut Settings,
     kind: CpuAllocationPage,
-    exclude: bool,
+    protect: bool,
 ) {
+    cpu_allocation_settings_mut(settings, kind).protect_foreground_app = protect;
+}
+
+fn cpu_allocation_protects_visible_window_apps(
+    settings: &Settings,
+    kind: CpuAllocationPage,
+) -> bool {
+    cpu_allocation_settings(settings, kind).protect_visible_window_apps
+}
+
+fn set_cpu_allocation_protects_visible_window_apps(
+    settings: &mut Settings,
+    kind: CpuAllocationPage,
+    protect: bool,
+) {
+    cpu_allocation_settings_mut(settings, kind).protect_visible_window_apps = protect;
+}
+
+fn cpu_allocation_settings(settings: &Settings, kind: CpuAllocationPage) -> &CpuAllocationSettings {
     match kind {
-        CpuAllocationPage::CpuSetsSoft => settings.cpu_sets_soft.exclude_foreground_app = exclude,
-        CpuAllocationPage::ProcessorAffinityHard => {
-            settings.processor_affinity_hard.exclude_foreground_app = exclude
-        }
+        CpuAllocationPage::CpuSetsSoft => &settings.cpu_sets_soft,
+        CpuAllocationPage::ProcessorAffinityHard => &settings.processor_affinity_hard,
+    }
+}
+
+fn cpu_allocation_settings_mut(
+    settings: &mut Settings,
+    kind: CpuAllocationPage,
+) -> &mut CpuAllocationSettings {
+    match kind {
+        CpuAllocationPage::CpuSetsSoft => &mut settings.cpu_sets_soft,
+        CpuAllocationPage::ProcessorAffinityHard => &mut settings.processor_affinity_hard,
     }
 }
 
 fn cpu_allocation_rules(settings: &Settings, kind: CpuAllocationPage) -> &[CpuAllocationRule] {
-    match kind {
-        CpuAllocationPage::CpuSetsSoft => &settings.cpu_sets_soft.rules,
-        CpuAllocationPage::ProcessorAffinityHard => &settings.processor_affinity_hard.rules,
-    }
+    &cpu_allocation_settings(settings, kind).rules
 }
 
 fn cpu_allocation_rules_mut(
     settings: &mut Settings,
     kind: CpuAllocationPage,
 ) -> &mut Vec<CpuAllocationRule> {
-    match kind {
-        CpuAllocationPage::CpuSetsSoft => &mut settings.cpu_sets_soft.rules,
-        CpuAllocationPage::ProcessorAffinityHard => &mut settings.processor_affinity_hard.rules,
-    }
+    &mut cpu_allocation_settings_mut(settings, kind).rules
 }

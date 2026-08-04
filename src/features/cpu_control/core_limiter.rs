@@ -21,7 +21,8 @@ use crate::{
     foreground::{
         contains_process_name, list_processes, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_executable_path,
-        same_process_name, should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        same_process_name, visible_window_process_ids, ProtectedProcesses,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
     win_util::{filetime_to_u64, last_error, WinHandle},
@@ -122,7 +123,7 @@ impl CoreLimiterManager {
             };
         }
 
-        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+        if settings.protect_foreground_app && foreground_process_id.is_none() {
             let failed = self.clear_all(action_log, "foreground app is unknown");
             return CoreLimiterSnapshot {
                 enabled: true,
@@ -132,6 +133,22 @@ impl CoreLimiterManager {
                 ..Default::default()
             };
         }
+
+        let visible_window_process_ids = if settings.protect_visible_window_apps {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failed = self.clear_all(action_log, "visible windows are unavailable");
+                return CoreLimiterSnapshot {
+                    enabled: true,
+                    failed_processes: failed.count,
+                    message: "Paused: visible windows are unavailable.".to_owned(),
+                    last_error: failed.last_error,
+                    ..Default::default()
+                };
+            };
+            process_ids
+        } else {
+            BTreeSet::new()
+        };
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
@@ -161,16 +178,12 @@ impl CoreLimiterManager {
         };
 
         let scanned_processes = processes.len();
-        let foreground_executable_path = if settings.exclude_foreground_app {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        } else {
-            None
-        };
+        let protected_processes = ProtectedProcesses::capture(
+            &processes,
+            settings.protect_foreground_app,
+            foreground_process_id,
+            visible_window_process_ids,
+        );
 
         let mut target_processes = BTreeMap::new();
         for process in processes {
@@ -189,13 +202,7 @@ impl CoreLimiterManager {
             let Some(executable_path) = process_executable_path(&process) else {
                 continue;
             };
-            if should_ignore_foreground_process(
-                settings.exclude_foreground_app,
-                process.id,
-                &executable_path,
-                foreground_process_id,
-                foreground_executable_path.as_deref(),
-            ) {
+            if protected_processes.contains(process.id, &executable_path) {
                 continue;
             }
 
@@ -872,7 +879,8 @@ mod tests {
     fn matching_rule_requires_the_exact_executable_path() {
         let settings = CoreLimiterSettings {
             enabled: true,
-            exclude_foreground_app: true,
+            protect_foreground_app: true,
+            protect_visible_window_apps: false,
             rules: vec![CoreLimiterRule {
                 enabled: true,
                 executable_path: r"C:\Apps\Worker.EXE".to_owned(),
@@ -892,37 +900,6 @@ mod tests {
         assert!(is_builtin_excluded("csrss.exe"));
         assert!(is_builtin_excluded("winlogon.exe"));
         assert!(!is_builtin_excluded("worker.exe"));
-    }
-
-    #[test]
-    fn foreground_skip_matches_pid_or_executable_path() {
-        let settings = CoreLimiterSettings {
-            enabled: true,
-            exclude_foreground_app: true,
-            rules: Vec::new(),
-        };
-
-        assert!(should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            42,
-            Path::new(r"C:\Apps\helper.exe"),
-            Some(42),
-            Some(Path::new(r"C:\Apps\app.exe")),
-        ));
-        assert!(should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            99,
-            Path::new(r"c:/apps/APP.exe"),
-            Some(42),
-            Some(Path::new(r"C:\Apps\app.exe")),
-        ));
-        assert!(!should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            99,
-            Path::new(r"C:\Other\app.exe"),
-            Some(42),
-            Some(Path::new(r"C:\Apps\app.exe")),
-        ));
     }
 
     #[test]

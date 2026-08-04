@@ -27,8 +27,8 @@ use crate::{
     foreground::{
         contains_process_name, ensure_process_action_target_access, list_processes,
         process_executable_path, process_failure_key, process_handle_matches_executable_path,
-        process_session_id, should_ignore_foreground_process, ProcessActionAccess,
-        ProcessActionTarget,
+        process_session_id, visible_window_process_ids, ProcessActionAccess, ProcessActionTarget,
+        ProtectedProcesses,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -165,7 +165,7 @@ impl BackgroundEfficiencyManager {
             };
         }
 
-        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+        if settings.protect_foreground_app && foreground_process_id.is_none() {
             let failed = self.clear_all(action_log, "foreground app is unknown");
             return BackgroundEfficiencySnapshot {
                 enabled: true,
@@ -175,6 +175,22 @@ impl BackgroundEfficiencyManager {
                 ..Default::default()
             };
         }
+
+        let visible_window_process_ids = if settings.protect_visible_window_apps {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failed = self.clear_all(action_log, "visible windows are unavailable");
+                return BackgroundEfficiencySnapshot {
+                    enabled: true,
+                    failed_processes: failed.count,
+                    message: "Paused: visible windows are unavailable.".to_owned(),
+                    last_error: failed.last_error,
+                    ..Default::default()
+                };
+            };
+            process_ids
+        } else {
+            BTreeSet::new()
+        };
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
@@ -206,16 +222,12 @@ impl BackgroundEfficiencyManager {
         let scanned_processes = processes.len();
         let mut skipped_processes = 0;
         let mut access_denied_processes = 0;
-        let foreground_executable_path = if settings.exclude_foreground_app {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        } else {
-            None
-        };
+        let protected_processes = ProtectedProcesses::capture(
+            &processes,
+            settings.protect_foreground_app,
+            foreground_process_id,
+            visible_window_process_ids,
+        );
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
@@ -232,13 +244,8 @@ impl BackgroundEfficiencyManager {
             let Some(executable_path) = process_executable_path(&process) else {
                 continue;
             };
-            if should_ignore_foreground_process(
-                settings.exclude_foreground_app,
-                process.id,
-                &executable_path,
-                foreground_process_id,
-                foreground_executable_path.as_deref(),
-            ) || settings.custom_rule_enabled_for(executable_path.to_string_lossy().as_ref())
+            if protected_processes.contains(process.id, &executable_path)
+                || settings.custom_rule_enabled_for(executable_path.to_string_lossy().as_ref())
             {
                 continue;
             }
@@ -1102,7 +1109,8 @@ mod tests {
     fn exclusions_include_builtin_and_user_entries() {
         let settings = BackgroundEfficiencySettings {
             enabled: true,
-            exclude_foreground_app: true,
+            protect_foreground_app: true,
+            protect_visible_window_apps: false,
             aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: vec![crate::config::BackgroundEfficiencyRule {
                 enabled: true,
@@ -1143,7 +1151,8 @@ mod tests {
     fn disabled_user_exclusions_do_not_exclude_processes() {
         let settings = BackgroundEfficiencySettings {
             enabled: true,
-            exclude_foreground_app: true,
+            protect_foreground_app: true,
+            protect_visible_window_apps: false,
             aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: vec![crate::config::BackgroundEfficiencyRule {
                 enabled: false,
@@ -1270,46 +1279,6 @@ mod tests {
         assert!(!ignore_timer_resolution_allowed(42, Some(&audio_processes)));
         assert!(ignore_timer_resolution_allowed(7, Some(&audio_processes)));
         assert!(!ignore_timer_resolution_allowed(7, None));
-    }
-
-    #[test]
-    fn foreground_ignore_matches_pid_or_exact_path() {
-        let mut settings = BackgroundEfficiencySettings {
-            exclude_foreground_app: true,
-            ..Default::default()
-        };
-        let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
-
-        assert!(should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            42,
-            Path::new(r"C:\Apps\helper.exe"),
-            Some(42),
-            Some(foreground),
-        ));
-        assert!(should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            99,
-            Path::new(r"c:\apps\foreground\APP.EXE"),
-            Some(42),
-            Some(foreground),
-        ));
-        assert!(!should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            99,
-            Path::new(r"D:\Other\app.exe"),
-            Some(42),
-            Some(foreground),
-        ));
-
-        settings.exclude_foreground_app = false;
-        assert!(!should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            42,
-            foreground,
-            Some(42),
-            Some(foreground),
-        ));
     }
 
     #[test]

@@ -5,10 +5,11 @@ use super::process_list::process_image_path;
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, POINT},
+    Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED},
     UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON},
     UI::WindowsAndMessaging::{
         EnumWindows, GetAncestor, GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindow,
-        GetWindowThreadProcessId, WindowFromPoint, GA_ROOT, GW_OWNER,
+        GetWindowThreadProcessId, IsIconic, IsWindowVisible, WindowFromPoint, GA_ROOT, GW_OWNER,
     },
 };
 
@@ -34,6 +35,19 @@ pub fn top_level_window_process_ids() -> BTreeSet<u32> {
         );
     }
     process_ids
+}
+
+pub fn visible_window_process_ids() -> Option<BTreeSet<u32>> {
+    let mut process_ids = BTreeSet::new();
+    // SAFETY: collect_visible_window_process has the required callback ABI and lparam points to
+    // process_ids, which remains live and exclusively borrowed for the synchronous enumeration.
+    let succeeded = unsafe {
+        EnumWindows(
+            Some(collect_visible_window_process),
+            &mut process_ids as *mut BTreeSet<u32> as LPARAM,
+        )
+    };
+    (succeeded != 0).then_some(process_ids)
 }
 
 pub fn foreground_process() -> Option<ForegroundProcess> {
@@ -155,6 +169,42 @@ unsafe extern "system" fn collect_top_level_window_process(hwnd: HWND, lparam: L
     }
 
     1
+}
+
+unsafe extern "system" fn collect_visible_window_process(hwnd: HWND, lparam: LPARAM) -> i32 {
+    // SAFETY: hwnd is supplied by EnumWindows and this call only inspects the borrowed window.
+    let visible = unsafe { IsWindowVisible(hwnd) } != 0;
+    // SAFETY: hwnd is supplied by EnumWindows and this call only inspects the borrowed window.
+    let minimized = unsafe { IsIconic(hwnd) } != 0;
+    if !visible || minimized || window_is_cloaked(hwnd) {
+        return 1;
+    }
+
+    let mut process_id = 0;
+    // SAFETY: hwnd is supplied by EnumWindows and process_id is writable.
+    unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+    if process_id != 0 {
+        // SAFETY: lparam points to the exclusively borrowed BTreeSet passed by
+        // visible_window_process_ids for this synchronous callback.
+        let process_ids = unsafe { &mut *(lparam as *mut BTreeSet<u32>) };
+        process_ids.insert(process_id);
+    }
+
+    1
+}
+
+fn window_is_cloaked(hwnd: HWND) -> bool {
+    let mut cloaked = 0u32;
+    // SAFETY: hwnd is borrowed from EnumWindows and cloaked points to writable u32 storage.
+    let result = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED as u32,
+            (&mut cloaked as *mut u32).cast(),
+            size_of::<u32>() as u32,
+        )
+    };
+    result >= 0 && cloaked != 0
 }
 
 fn mouse_button_pressed() -> bool {

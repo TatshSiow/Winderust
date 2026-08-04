@@ -236,7 +236,8 @@ mod tests {
             },
             background_efficiency: BackgroundEfficiencySettings {
                 enabled: true,
-                exclude_foreground_app: false,
+                protect_foreground_app: false,
+                protect_visible_window_apps: true,
                 aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
                 custom_rules: vec![
                     BackgroundEfficiencyRule {
@@ -284,7 +285,8 @@ mod tests {
             },
             cpu_sets_soft: CpuAllocationSettings {
                 enabled: true,
-                exclude_foreground_app: true,
+                protect_foreground_app: true,
+                protect_visible_window_apps: false,
                 rules: vec![
                     CpuAllocationRule {
                         enabled: true,
@@ -300,7 +302,8 @@ mod tests {
             },
             processor_affinity_hard: CpuAllocationSettings {
                 enabled: true,
-                exclude_foreground_app: true,
+                protect_foreground_app: true,
+                protect_visible_window_apps: false,
                 rules: vec![CpuAllocationRule {
                     enabled: true,
                     executable_path: "game.exe".to_owned(),
@@ -309,7 +312,8 @@ mod tests {
             },
             core_limiter: CoreLimiterSettings {
                 enabled: true,
-                exclude_foreground_app: true,
+                protect_foreground_app: true,
+                protect_visible_window_apps: false,
                 rules: vec![CoreLimiterRule {
                     enabled: true,
                     executable_path: "encoder.exe".to_owned(),

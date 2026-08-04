@@ -39,6 +39,7 @@
   unavailable targets visible, labeled, and disabled; grouped Process List actions cover every
   captured process in the group. Other process controls are unaffected.
 - Explicit CPU Sets (Soft) and Processor Affinity (Hard) rules take precedence over Workload Engine CPU allocation for the same process.
+- Background Efficiency, Core Limiter, CPU Sets (Soft), and Processor Affinity (Hard) expose independent process protections: Protect Foreground App defaults on; Protect Apps with Visible Windows defaults off and covers visible, non-minimized, non-cloaked top-level windows plus sibling processes with the same executable path.
 - Exclusion-list features append `ProcessExclusionRule`.
 - Timer Resolution does not use process failure suppression.
 - Runtime restoration is a product safety barrier: every reversible runtime

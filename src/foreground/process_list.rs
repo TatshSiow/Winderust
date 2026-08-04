@@ -651,6 +651,42 @@ pub fn should_ignore_foreground_process(
         )
 }
 
+#[derive(Debug, Default)]
+pub struct ProtectedProcesses {
+    process_ids: BTreeSet<u32>,
+    executable_paths: Vec<PathBuf>,
+}
+
+impl ProtectedProcesses {
+    pub fn capture(
+        processes: &[ProcessInfo],
+        protect_foreground_app: bool,
+        foreground_process_id: Option<u32>,
+        mut visible_window_process_ids: BTreeSet<u32>,
+    ) -> Self {
+        if let Some(process_id) = foreground_process_id.filter(|_| protect_foreground_app) {
+            visible_window_process_ids.insert(process_id);
+        }
+        let executable_paths = processes
+            .iter()
+            .filter(|process| visible_window_process_ids.contains(&process.id))
+            .filter_map(process_executable_path)
+            .collect();
+        Self {
+            process_ids: visible_window_process_ids,
+            executable_paths,
+        }
+    }
+
+    pub fn contains(&self, process_id: u32, executable_path: &Path) -> bool {
+        self.process_ids.contains(&process_id)
+            || self
+                .executable_paths
+                .iter()
+                .any(|protected_path| same_executable_path(protected_path, executable_path))
+    }
+}
+
 pub fn same_process_name(left: &str, right: &str) -> bool {
     left.trim().eq_ignore_ascii_case(right.trim())
 }
@@ -1038,6 +1074,35 @@ mod tests {
             process_tree_ids_postorder(&[10, 11, 20], &processes),
             vec![11, 10, 21, 20]
         );
+    }
+
+    #[test]
+    fn protected_processes_match_foreground_and_visible_apps_by_pid_or_path() {
+        let process = |id, path: &str| ProcessInfo {
+            id,
+            parent_id: None,
+            session_id: None,
+            user_name: None,
+            is_service_account: None,
+            is_critical: Some(false),
+            can_set_information: true,
+            name: "app.exe".to_owned(),
+            image_path: Some(PathBuf::from(path)),
+        };
+        let processes = [
+            process(42, r"C:\Apps\Foreground\app.exe"),
+            process(77, r"C:\Apps\Visible\app.exe"),
+        ];
+        let protected =
+            ProtectedProcesses::capture(&processes, true, Some(42), BTreeSet::from([77]));
+
+        assert!(protected.contains(42, Path::new(r"C:\Apps\helper.exe")));
+        assert!(protected.contains(77, Path::new(r"C:\Apps\helper.exe")));
+        assert!(protected.contains(99, Path::new(r"c:\apps\visible\APP.EXE")));
+        assert!(!protected.contains(99, Path::new(r"D:\Other\app.exe")));
+
+        let unprotected = ProtectedProcesses::capture(&processes, false, Some(42), BTreeSet::new());
+        assert!(!unprotected.contains(42, Path::new(r"C:\Apps\Foreground\app.exe")));
     }
 
     #[test]

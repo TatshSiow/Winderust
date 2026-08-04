@@ -40,7 +40,7 @@ pub(in crate::ui::app) fn apply_power_mode_preset(
             settings.adaptive_engine.processor_policy_values =
                 power_mode_powersave_processor_values();
             settings.background_efficiency.enabled = true;
-            settings.background_efficiency.exclude_foreground_app = true;
+            settings.background_efficiency.protect_foreground_app = true;
             settings.workload_engine.enabled = true;
             settings.workload_engine.workload_engine_enabled = true;
             apply_workload_engine_preset(

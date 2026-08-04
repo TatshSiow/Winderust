@@ -34,7 +34,8 @@ use crate::{
     foreground::{
         contains_process_name, list_processes, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_executable_path,
-        same_process_name, should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        same_process_name, visible_window_process_ids, ProtectedProcesses,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -197,7 +198,7 @@ impl CpuAllocationManager {
             };
         }
 
-        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+        if settings.protect_foreground_app && foreground_process_id.is_none() {
             let failed = self.clear_all(action_log, "foreground app is unknown");
             return CpuAllocationSnapshot {
                 enabled: true,
@@ -206,6 +207,21 @@ impl CpuAllocationManager {
                 ..Default::default()
             };
         }
+
+        let visible_window_process_ids = if settings.protect_visible_window_apps {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failed = self.clear_all(action_log, "visible windows are unavailable");
+                return CpuAllocationSnapshot {
+                    enabled: true,
+                    failed_processes: failed,
+                    message: "Paused: visible windows are unavailable.".to_owned(),
+                    ..Default::default()
+                };
+            };
+            process_ids
+        } else {
+            BTreeSet::new()
+        };
 
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
@@ -233,16 +249,12 @@ impl CpuAllocationManager {
         };
 
         let scanned_processes = processes.len();
-        let foreground_executable_path = if settings.exclude_foreground_app {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        } else {
-            None
-        };
+        let protected_processes = ProtectedProcesses::capture(
+            &processes,
+            settings.protect_foreground_app,
+            foreground_process_id,
+            visible_window_process_ids,
+        );
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
@@ -264,13 +276,7 @@ impl CpuAllocationManager {
             let Some(executable_path) = process_executable_path(&process) else {
                 continue;
             };
-            if should_ignore_foreground_process(
-                settings.exclude_foreground_app,
-                process.id,
-                &executable_path,
-                foreground_process_id,
-                foreground_executable_path.as_deref(),
-            ) {
+            if protected_processes.contains(process.id, &executable_path) {
                 continue;
             }
 
@@ -1461,43 +1467,6 @@ mod tests {
     #[test]
     fn target_cpu_set_ids_empty_when_mask_selects_no_known_cpus() {
         assert!(cpu_set_ids_for_mask_from_bytes(&[], 0b11).is_empty());
-    }
-
-    #[test]
-    fn foreground_skip_matches_pid_or_exact_path() {
-        let mut exclude_foreground_app = true;
-        let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
-
-        assert!(should_ignore_foreground_process(
-            exclude_foreground_app,
-            42,
-            Path::new(r"C:\Apps\helper.exe"),
-            Some(42),
-            Some(foreground),
-        ));
-        assert!(should_ignore_foreground_process(
-            exclude_foreground_app,
-            99,
-            Path::new(r"c:\apps\foreground\APP.EXE"),
-            Some(42),
-            Some(foreground),
-        ));
-        assert!(!should_ignore_foreground_process(
-            exclude_foreground_app,
-            99,
-            Path::new(r"D:\Other\app.exe"),
-            Some(42),
-            Some(foreground),
-        ));
-
-        exclude_foreground_app = false;
-        assert!(!should_ignore_foreground_process(
-            exclude_foreground_app,
-            42,
-            foreground,
-            Some(42),
-            Some(foreground),
-        ));
     }
 
     #[test]
