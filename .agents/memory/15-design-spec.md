@@ -78,6 +78,7 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Column visibility belongs in the existing dropdown/checkbox pattern.
 - Language and Appearance owns the enabled-feature counts toggle. When enabled, expanded navigation shows numeric pills beside Winderust Features, Power Plan Control, Priority Control, and CPU Control based on each section's enabled modules; collapsed navigation keeps the pills hidden to preserve icon alignment.
+- Language and Appearance separately owns the feature-card status toggle. When enabled, shared landing and search-result cards show Enabled or Disabled pills only for pages backed by a top-level feature switch; pages without a single enabled state remain unbadged.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.
 - Preserve fixed column layout calculations and tests when adding columns.
 

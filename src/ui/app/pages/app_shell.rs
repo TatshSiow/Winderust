@@ -161,36 +161,10 @@ impl WinderustApp {
             let selected = self.page.section_landing_page() == page;
             let target = page;
             let settings = &self.settings;
-            let enabled_feature_count = match (
-                settings.general.show_enabled_feature_counts_in_sidebar,
-                page,
-            ) {
-                (true, Page::WinderustFeatures) => Some(
-                    settings.adaptive_engine.enabled as usize
-                        + settings.background_efficiency.enabled as usize
-                        + settings.memory_trim.enabled as usize,
-                ),
-                (true, Page::PowerPlanControl) => Some(
-                    settings.by_foreground.enabled as usize
-                        + settings.by_running_app.enabled as usize
-                        + settings.by_cpu_load.enabled as usize
-                        + settings.by_activity.enabled as usize
-                        + settings.by_time.enabled as usize,
-                ),
-                (true, Page::PriorityControl) => Some(
-                    settings.process_priority.enabled as usize
-                        + settings.thread_priority.enabled as usize
-                        + settings.dynamic_priority_boost.enabled as usize
-                        + settings.io_priority.enabled as usize
-                        + settings.gpu_priority.enabled as usize
-                        + settings.memory_priority.enabled as usize,
-                ),
-                (true, Page::CpuControl) => Some(
-                    settings.core_limiter.enabled as usize
-                        + settings.cpu_sets_soft.enabled as usize
-                        + settings.processor_affinity_hard.enabled as usize,
-                ),
-                _ => None,
+            let enabled_feature_count = if settings.general.show_enabled_feature_counts_in_sidebar {
+                section_enabled_feature_count(settings, page)
+            } else {
+                None
             };
             let row = nav_row(page, selected, collapsed, enabled_feature_count, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {

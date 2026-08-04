@@ -375,6 +375,8 @@ settings:
   show_advanced_controls_help: "在側邊欄與儀表板顯示僅供專家使用的進階控制頁面。"
   show_enabled_feature_counts_in_sidebar: "在側邊欄顯示已啟用功能數量"
   show_enabled_feature_counts_in_sidebar_help: "顯示 Winderust 功能、電源計畫控制、優先權控制與 CPU 控制中已啟用的功能數量。"
+  show_feature_status_on_cards: "在卡片上顯示功能狀態"
+  show_feature_status_on_cards_help: "在功能卡片上顯示已啟用或已停用標籤。"
   pause_dashboard_metrics: "暫停儀表板指標"
   pause_dashboard_metrics_help: "停止更新儀表板的 CPU、記憶體、磁碟與網路指標。背景自動化仍會繼續執行。"
   pause_process_population: "暫停程序填入"

@@ -34,7 +34,7 @@ impl WinderustApp {
                 Page::ByTime,
             ] {
                 cards = cards.child(
-                    section_landing_card(target, cx)
+                    section_landing_card(target, &self.settings, cx)
                         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.navigate_to(target, cx);
                         }))
@@ -45,7 +45,7 @@ impl WinderustApp {
             cards = cards.child(section_title_text(t!("nav.advanced_group").to_string()));
             let target = Page::AdvancedPowerPlanTuning;
             cards = cards.child(
-                section_landing_card(target, cx)
+                section_landing_card(target, &self.settings, cx)
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                         app.navigate_to(target, cx);
                     }))
@@ -55,7 +55,7 @@ impl WinderustApp {
             for page in pages {
                 let target = *page;
                 cards = cards.child(
-                    section_landing_card(target, cx)
+                    section_landing_card(target, &self.settings, cx)
                         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.navigate_to(target, cx);
                         }))
@@ -75,7 +75,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         dashboard_card_slot(
-            section_landing_card(target, cx)
+            section_landing_card(target, &self.settings, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                     app.navigate_to(target, cx);
                 }))
@@ -89,7 +89,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         dashboard_card_slot(
-            section_landing_card(target, cx)
+            section_landing_card(target, &self.settings, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
                     clear_input(&app.inputs.dashboard_search, window, cx);
                     window.blur();

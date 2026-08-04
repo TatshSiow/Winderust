@@ -373,6 +373,8 @@ settings:
   show_advanced_controls_help: "Shows expert-only Advanced Controls pages in the sidebar and dashboard."
   show_enabled_feature_counts_in_sidebar: "Show enabled feature counts in sidebar"
   show_enabled_feature_counts_in_sidebar_help: "Shows how many features are enabled in Winderust Features, Power Plan Control, Priority Control, and CPU Control."
+  show_feature_status_on_cards: "Show feature status on cards"
+  show_feature_status_on_cards_help: "Shows Enabled or Disabled pills on feature cards."
   pause_dashboard_metrics: "Pause Dashboard metrics"
   pause_dashboard_metrics_help: "Stops updating CPU, memory, disk, and network metrics on the Dashboard. Background automation continues running."
   pause_process_population: "Pause process population"

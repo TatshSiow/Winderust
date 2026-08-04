@@ -77,13 +77,36 @@ pub(in crate::ui::app) fn title_bar_control_button(
 
 pub(in crate::ui::app) fn section_landing_card(
     page: Page,
+    settings: &Settings,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
+    let enabled = if settings.general.show_feature_status_on_cards {
+        feature_page_enabled(settings, page)
+    } else {
+        None
+    };
     let trailing = h_flex()
         .items_center()
         .justify_end()
         .gap_2()
         .flex_shrink_0()
+        .when_some(enabled, |trailing, enabled| {
+            let (background, foreground) = if enabled {
+                (success_bg_color(), success_text_color())
+            } else {
+                (app_input_color(false), muted_text_color())
+            };
+            trailing.child(status_pill_div(
+                t!(if enabled {
+                    "common.enabled"
+                } else {
+                    "common.disabled"
+                })
+                .to_string(),
+                background,
+                foreground,
+            ))
+        })
         .child(
             Icon::new(NavIcon::ChevronRight)
                 .with_size(px(16.0))
@@ -127,6 +150,49 @@ pub(in crate::ui::app) fn section_landing_card(
                 .child(page.label()),
         )
         .child(trailing)
+}
+
+pub(in crate::ui::app) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bool> {
+    Some(match page {
+        Page::AdaptiveEngine => settings.adaptive_engine.enabled,
+        Page::BackgroundEfficiency => settings.background_efficiency.enabled,
+        Page::MemoryTrim => settings.memory_trim.enabled,
+        Page::ByForeground => settings.by_foreground.enabled,
+        Page::ByRunningApp => settings.by_running_app.enabled,
+        Page::ByCpuLoad => settings.by_cpu_load.enabled,
+        Page::ByActivity => settings.by_activity.enabled,
+        Page::ByTime => settings.by_time.enabled,
+        Page::ProcessPriority => settings.process_priority.enabled,
+        Page::ThreadPriority => settings.thread_priority.enabled,
+        Page::DynamicPriorityBoost => settings.dynamic_priority_boost.enabled,
+        Page::IoPriority => settings.io_priority.enabled,
+        Page::GpuPriority => settings.gpu_priority.enabled,
+        Page::MemoryPriority => settings.memory_priority.enabled,
+        Page::CoreLimiter => settings.core_limiter.enabled,
+        Page::CpuSetsSoft => settings.cpu_sets_soft.enabled,
+        Page::ProcessorAffinityHard => settings.processor_affinity_hard.enabled,
+        Page::AppSuspension => settings.app_suspension.enabled,
+        Page::TimerResolution => settings.timer_resolution.enabled,
+        _ => return None,
+    })
+}
+
+pub(in crate::ui::app) fn section_enabled_feature_count(
+    settings: &Settings,
+    page: Page,
+) -> Option<usize> {
+    if !matches!(
+        page,
+        Page::WinderustFeatures | Page::PowerPlanControl | Page::PriorityControl | Page::CpuControl
+    ) {
+        return None;
+    }
+    page.child_pages().map(|pages| {
+        pages
+            .iter()
+            .filter(|page| feature_page_enabled(settings, **page) == Some(true))
+            .count()
+    })
 }
 
 pub(in crate::ui::app) fn nav_row(
@@ -480,5 +546,31 @@ impl IconNamed for NavIcon {
             Self::Zap => "icons/zap.svg",
         }
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_page_status_uses_top_level_switches_only() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            feature_page_enabled(&settings, Page::BackgroundEfficiency),
+            Some(false)
+        );
+
+        settings.background_efficiency.enabled = true;
+        assert_eq!(
+            feature_page_enabled(&settings, Page::BackgroundEfficiency),
+            Some(true)
+        );
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::WinderustFeatures),
+            Some(1)
+        );
+        assert_eq!(feature_page_enabled(&settings, Page::Home), None);
+        assert_eq!(section_enabled_feature_count(&settings, Page::Home), None);
     }
 }
