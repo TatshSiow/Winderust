@@ -597,22 +597,64 @@ impl WinderustApp {
             ),
             efficiency_action,
             self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineEfficiency),
-            vec![setting_group_action_row_with_help(
-                "workload-engine-auto-efficiency-level",
-                t!("workload_engine.auto_efficiency_level").to_string(),
-                t!("workload_engine.auto_efficiency_level_help").to_string(),
-                self.render_background_efficiency_aggressiveness_picker(
-                    self.settings.background_efficiency.aggressiveness,
-                    auto_efficiency_controls_enabled,
-                    window,
-                    cx,
-                ),
-                true,
-            )
-            .when(!auto_efficiency_controls_enabled, |row| {
-                row.opacity(0.42).cursor_default()
-            })
-            .into_any_element()],
+            vec![
+                setting_group_action_row_with_help(
+                    "workload-engine-auto-efficiency-level",
+                    t!("workload_engine.auto_efficiency_level").to_string(),
+                    t!("workload_engine.auto_efficiency_level_help").to_string(),
+                    self.render_background_efficiency_aggressiveness_picker(
+                        self.settings.background_efficiency.aggressiveness,
+                        auto_efficiency_controls_enabled,
+                        window,
+                        cx,
+                    ),
+                    true,
+                )
+                .when(!auto_efficiency_controls_enabled, |row| {
+                    row.opacity(0.42).cursor_default()
+                })
+                .into_any_element(),
+                setting_group_action_row_with_help(
+                    "workload-engine-auto-efficiency-protect-foreground",
+                    t!("common.protect_foreground_app").to_string(),
+                    t!("common.protect_foreground_app_help").to_string(),
+                    setting_group_switch_action(
+                        "workload-engine-auto-efficiency-protect-foreground-switch",
+                        self.settings.background_efficiency.protect_foreground_app,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings.background_efficiency.protect_foreground_app = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    true,
+                )
+                .when(!auto_efficiency_controls_enabled, |row| {
+                    row.opacity(0.42).cursor_default()
+                })
+                .into_any_element(),
+                setting_group_action_row_with_help(
+                    "workload-engine-auto-efficiency-protect-visible-windows",
+                    t!("common.protect_visible_window_apps").to_string(),
+                    t!("common.protect_visible_window_apps_help").to_string(),
+                    setting_group_switch_action(
+                        "workload-engine-auto-efficiency-protect-visible-windows-switch",
+                        self.settings
+                            .background_efficiency
+                            .protect_visible_window_apps,
+                        cx.listener(|app, checked, _, cx| {
+                            app.settings
+                                .background_efficiency
+                                .protect_visible_window_apps = *checked;
+                            cx.notify();
+                        }),
+                    ),
+                    true,
+                )
+                .when(!auto_efficiency_controls_enabled, |row| {
+                    row.opacity(0.42).cursor_default()
+                })
+                .into_any_element(),
+            ],
             window,
             cx,
         )
@@ -940,14 +982,27 @@ impl WinderustApp {
                 process_priority_action,
                 self.is_setting_group_collapsed(SettingGroupTarget::WorkloadEngineProcessPriority),
                 vec![
+                    self.render_foreground_boost_selector(window, cx),
+                    setting_group_action_row(
+                        "workload-engine-auto-visible-window-process-priority",
+                        priority_level_label(
+                            PriorityLevelTarget::VisibleWindow,
+                            t!("nav.process_priority").to_string(),
+                        ),
+                        self.render_workload_engine_visible_window_priority_selector(window, cx),
+                        true,
+                    )
+                    .into_any_element(),
                     setting_group_action_row(
                         "workload-engine-auto-background-process-priority",
-                        t!("workload_engine.background_priority").to_string(),
+                        priority_level_label(
+                            PriorityLevelTarget::Background,
+                            t!("nav.process_priority").to_string(),
+                        ),
                         self.render_workload_engine_background_priority_selector(window, cx),
                         true,
                     )
                     .into_any_element(),
-                    self.render_foreground_boost_selector(window, cx),
                 ],
                 window,
                 cx,
@@ -974,15 +1029,32 @@ impl WinderustApp {
                 vec![
                     setting_group_action_row(
                         "workload-engine-auto-foreground-memory-priority-level",
-                        t!("workload_engine.workload_engine_foreground_memory_priority_level")
-                            .to_string(),
+                        priority_level_label(
+                            PriorityLevelTarget::FocusProcess,
+                            t!("nav.memory_priority").to_string(),
+                        ),
                         self.render_workload_engine_foreground_memory_priority_selector(window, cx),
                         true,
                     )
                     .into_any_element(),
                     setting_group_action_row(
+                        "workload-engine-auto-visible-window-memory-priority-level",
+                        priority_level_label(
+                            PriorityLevelTarget::VisibleWindow,
+                            t!("nav.memory_priority").to_string(),
+                        ),
+                        self.render_workload_engine_visible_window_memory_priority_selector(
+                            window, cx,
+                        ),
+                        true,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
                         "workload-engine-auto-memory-priority-level",
-                        t!("workload_engine.workload_engine_memory_priority_level").to_string(),
+                        priority_level_label(
+                            PriorityLevelTarget::Background,
+                            t!("nav.memory_priority").to_string(),
+                        ),
                         self.render_workload_engine_memory_priority_selector(window, cx),
                         true,
                     )
@@ -1035,7 +1107,10 @@ impl WinderustApp {
                     vec![
                         setting_group_action_row(
                             "workload-engine-auto-thread-foreground-priority",
-                            t!("workload_engine.priority_foreground_value").to_string(),
+                            priority_level_label(
+                                PriorityLevelTarget::FocusProcess,
+                                t!("nav.thread_priority").to_string(),
+                            ),
                             self.render_workload_engine_thread_priority_selector(
                                 ThreadPriorityDefaultTarget::Foreground,
                                 settings.workload_engine_thread_priority.foreground_priority,
@@ -1047,8 +1122,29 @@ impl WinderustApp {
                         )
                         .into_any_element(),
                         setting_group_action_row(
+                            "workload-engine-auto-thread-visible-window-priority",
+                            priority_level_label(
+                                PriorityLevelTarget::VisibleWindow,
+                                t!("nav.thread_priority").to_string(),
+                            ),
+                            self.render_workload_engine_thread_priority_selector(
+                                ThreadPriorityDefaultTarget::VisibleWindow,
+                                settings
+                                    .workload_engine_thread_priority
+                                    .visible_window_priority,
+                                thread_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                        setting_group_action_row(
                             "workload-engine-auto-thread-background-priority",
-                            t!("workload_engine.priority_background_value").to_string(),
+                            priority_level_label(
+                                PriorityLevelTarget::Background,
+                                t!("nav.thread_priority").to_string(),
+                            ),
                             self.render_workload_engine_thread_priority_selector(
                                 ThreadPriorityDefaultTarget::Background,
                                 settings.workload_engine_thread_priority.background_priority,
@@ -1089,7 +1185,10 @@ impl WinderustApp {
                     vec![
                         setting_group_action_row(
                             "workload-engine-auto-boost-foreground",
-                            t!("workload_engine.priority_foreground_value").to_string(),
+                            priority_level_label(
+                                PriorityLevelTarget::FocusProcess,
+                                t!("nav.dynamic_priority_boost").to_string(),
+                            ),
                             self.render_workload_engine_dynamic_priority_boost_selector(
                                 DynamicPriorityBoostDefaultTarget::Foreground,
                                 settings
@@ -1103,8 +1202,29 @@ impl WinderustApp {
                         )
                         .into_any_element(),
                         setting_group_action_row(
+                            "workload-engine-auto-boost-visible-window",
+                            priority_level_label(
+                                PriorityLevelTarget::VisibleWindow,
+                                t!("nav.dynamic_priority_boost").to_string(),
+                            ),
+                            self.render_workload_engine_dynamic_priority_boost_selector(
+                                DynamicPriorityBoostDefaultTarget::VisibleWindow,
+                                settings
+                                    .workload_engine_dynamic_priority_boost
+                                    .visible_window_boost,
+                                boost_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                        setting_group_action_row(
                             "workload-engine-auto-boost-background",
-                            t!("workload_engine.priority_background_value").to_string(),
+                            priority_level_label(
+                                PriorityLevelTarget::Background,
+                                t!("nav.dynamic_priority_boost").to_string(),
+                            ),
                             self.render_workload_engine_dynamic_priority_boost_selector(
                                 DynamicPriorityBoostDefaultTarget::Background,
                                 settings
@@ -1150,7 +1270,10 @@ impl WinderustApp {
                     vec![
                         setting_group_action_row(
                             "workload-engine-auto-io-foreground-priority",
-                            t!("workload_engine.priority_foreground_value").to_string(),
+                            priority_level_label(
+                                PriorityLevelTarget::FocusProcess,
+                                t!("nav.io_priority").to_string(),
+                            ),
                             self.render_workload_engine_io_priority_selector(
                                 IoPriorityDefaultTarget::Foreground,
                                 settings.workload_engine_io_priority.foreground_priority,
@@ -1162,8 +1285,27 @@ impl WinderustApp {
                         )
                         .into_any_element(),
                         setting_group_action_row(
+                            "workload-engine-auto-io-visible-window-priority",
+                            priority_level_label(
+                                PriorityLevelTarget::VisibleWindow,
+                                t!("nav.io_priority").to_string(),
+                            ),
+                            self.render_workload_engine_io_priority_selector(
+                                IoPriorityDefaultTarget::VisibleWindow,
+                                settings.workload_engine_io_priority.visible_window_priority,
+                                io_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                        setting_group_action_row(
                             "workload-engine-auto-io-background-priority",
-                            t!("workload_engine.priority_background_value").to_string(),
+                            priority_level_label(
+                                PriorityLevelTarget::Background,
+                                t!("nav.io_priority").to_string(),
+                            ),
                             self.render_workload_engine_io_priority_selector(
                                 IoPriorityDefaultTarget::Background,
                                 settings.workload_engine_io_priority.background_priority,
@@ -1202,7 +1344,10 @@ impl WinderustApp {
                     vec![
                         setting_group_action_row(
                             "workload-engine-auto-gpu-foreground-priority",
-                            t!("workload_engine.priority_foreground_value").to_string(),
+                            priority_level_label(
+                                PriorityLevelTarget::FocusProcess,
+                                t!("nav.gpu_priority").to_string(),
+                            ),
                             self.render_workload_engine_gpu_priority_selector(
                                 GpuPriorityDefaultTarget::Foreground,
                                 settings.workload_engine_gpu_priority.foreground_priority,
@@ -1214,8 +1359,29 @@ impl WinderustApp {
                         )
                         .into_any_element(),
                         setting_group_action_row(
+                            "workload-engine-auto-gpu-visible-window-priority",
+                            priority_level_label(
+                                PriorityLevelTarget::VisibleWindow,
+                                t!("nav.gpu_priority").to_string(),
+                            ),
+                            self.render_workload_engine_gpu_priority_selector(
+                                GpuPriorityDefaultTarget::VisibleWindow,
+                                settings
+                                    .workload_engine_gpu_priority
+                                    .visible_window_priority,
+                                gpu_enabled,
+                                window,
+                                cx,
+                            ),
+                            false,
+                        )
+                        .into_any_element(),
+                        setting_group_action_row(
                             "workload-engine-auto-gpu-background-priority",
-                            t!("workload_engine.priority_background_value").to_string(),
+                            priority_level_label(
+                                PriorityLevelTarget::Background,
+                                t!("nav.gpu_priority").to_string(),
+                            ),
                             self.render_workload_engine_gpu_priority_selector(
                                 GpuPriorityDefaultTarget::Background,
                                 settings.workload_engine_gpu_priority.background_priority,
@@ -1245,6 +1411,7 @@ impl WinderustApp {
     ) -> AnyElement {
         let id = match target {
             IoPriorityDefaultTarget::Background => "workload-engine-io-background-priority",
+            IoPriorityDefaultTarget::VisibleWindow => "workload-engine-io-visible-window-priority",
             IoPriorityDefaultTarget::Foreground => "workload-engine-io-foreground-priority",
         };
         let priorities: &[ProcessIoPrioritySetting] =
@@ -1279,6 +1446,12 @@ impl WinderustApp {
                                         .workload_engine_io_priority
                                         .background_priority = priority;
                                 }
+                                IoPriorityDefaultTarget::VisibleWindow => {
+                                    app.settings
+                                        .workload_engine
+                                        .workload_engine_io_priority
+                                        .visible_window_priority = priority;
+                                }
                                 IoPriorityDefaultTarget::Foreground => {
                                     app.settings
                                         .workload_engine
@@ -1306,6 +1479,9 @@ impl WinderustApp {
     ) -> AnyElement {
         let id = match target {
             ThreadPriorityDefaultTarget::Background => "workload-engine-thread-background-priority",
+            ThreadPriorityDefaultTarget::VisibleWindow => {
+                "workload-engine-thread-visible-window-priority"
+            }
             ThreadPriorityDefaultTarget::Foreground => "workload-engine-thread-foreground-priority",
         };
         let priorities: &[ProcessThreadPrioritySetting] =
@@ -1340,6 +1516,12 @@ impl WinderustApp {
                                         .workload_engine_thread_priority
                                         .background_priority = priority;
                                 }
+                                ThreadPriorityDefaultTarget::VisibleWindow => {
+                                    app.settings
+                                        .workload_engine
+                                        .workload_engine_thread_priority
+                                        .visible_window_priority = priority;
+                                }
                                 ThreadPriorityDefaultTarget::Foreground => {
                                     app.settings
                                         .workload_engine
@@ -1367,6 +1549,9 @@ impl WinderustApp {
     ) -> AnyElement {
         let id = match target {
             DynamicPriorityBoostDefaultTarget::Background => "workload-engine-boost-background",
+            DynamicPriorityBoostDefaultTarget::VisibleWindow => {
+                "workload-engine-boost-visible-window"
+            }
             DynamicPriorityBoostDefaultTarget::Foreground => "workload-engine-boost-foreground",
         };
         self.render_dropdown_select(
@@ -1395,6 +1580,12 @@ impl WinderustApp {
                                         .workload_engine_dynamic_priority_boost
                                         .background_boost = boost;
                                 }
+                                DynamicPriorityBoostDefaultTarget::VisibleWindow => {
+                                    app.settings
+                                        .workload_engine
+                                        .workload_engine_dynamic_priority_boost
+                                        .visible_window_boost = boost;
+                                }
                                 DynamicPriorityBoostDefaultTarget::Foreground => {
                                     app.settings
                                         .workload_engine
@@ -1422,6 +1613,9 @@ impl WinderustApp {
     ) -> AnyElement {
         let id = match target {
             GpuPriorityDefaultTarget::Background => "workload-engine-gpu-background-priority",
+            GpuPriorityDefaultTarget::VisibleWindow => {
+                "workload-engine-gpu-visible-window-priority"
+            }
             GpuPriorityDefaultTarget::Foreground => "workload-engine-gpu-foreground-priority",
         };
         let priorities: &[ProcessGpuPrioritySetting] =
@@ -1455,6 +1649,12 @@ impl WinderustApp {
                                         .workload_engine
                                         .workload_engine_gpu_priority
                                         .background_priority = priority;
+                                }
+                                GpuPriorityDefaultTarget::VisibleWindow => {
+                                    app.settings
+                                        .workload_engine
+                                        .workload_engine_gpu_priority
+                                        .visible_window_priority = priority;
                                 }
                                 GpuPriorityDefaultTarget::Foreground => {
                                     app.settings
@@ -1599,7 +1799,10 @@ impl WinderustApp {
         );
         setting_action_card_with_help(
             "foreground-boost-priority",
-            t!("workload_engine.foreground_boost").to_string(),
+            priority_level_label(
+                PriorityLevelTarget::FocusProcess,
+                t!("nav.process_priority").to_string(),
+            ),
             t!("workload_engine.foreground_boost_help").to_string(),
             dropdown,
         )
@@ -1644,6 +1847,53 @@ impl WinderustApp {
                             app.settings
                                 .workload_engine
                                 .workload_engine_background_priority = priority;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    pub(in crate::ui::app) fn render_workload_engine_visible_window_priority_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self
+            .settings
+            .workload_engine
+            .workload_engine_visible_window_priority;
+        self.render_dropdown_select(
+            "workload-engine-visible-window-process-priority-select",
+            process_priority_label(selected),
+            self.settings.workload_engine.enabled,
+            DropdownSelectWidth::Standard,
+            3,
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in [
+                    ProcessPriority::Normal,
+                    ProcessPriority::BelowNormal,
+                    ProcessPriority::Idle,
+                ] {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "workload-engine-visible-window-process-priority-option-{priority:?}"
+                            )),
+                            process_priority_label(priority),
+                            selected == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings
+                                .workload_engine
+                                .workload_engine_visible_window_priority = priority;
                             app.active_power_plan_picker = None;
                             cx.notify();
                         })),
@@ -1809,6 +2059,49 @@ impl WinderustApp {
                             app.settings
                                 .workload_engine
                                 .workload_engine_foreground_memory_priority = priority;
+                            app.active_power_plan_picker = None;
+                            cx.notify();
+                        })),
+                    );
+                }
+                options
+            },
+        )
+    }
+
+    pub(in crate::ui::app) fn render_workload_engine_visible_window_memory_priority_selector(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let selected = self
+            .settings
+            .workload_engine
+            .workload_engine_visible_window_memory_priority;
+        self.render_dropdown_select(
+            "workload-engine-auto-visible-window-memory-priority-level",
+            process_memory_priority_setting_label(selected),
+            true,
+            DropdownSelectWidth::Standard,
+            ProcessMemoryPrioritySetting::ALL.len(),
+            window,
+            cx,
+            |max_height, cx| {
+                let mut options = dropdown_surface(cx, max_height);
+                for priority in ProcessMemoryPrioritySetting::ALL {
+                    options = options.child(
+                        dropdown_option_row(
+                            SharedString::from(format!(
+                                "workload-engine-auto-visible-window-memory-priority-option-{priority:?}"
+                            )),
+                            process_memory_priority_setting_label(priority),
+                            selected == priority,
+                            cx,
+                        )
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.settings
+                                .workload_engine
+                                .workload_engine_visible_window_memory_priority = priority;
                             app.active_power_plan_picker = None;
                             cx.notify();
                         })),

@@ -39,7 +39,8 @@ use crate::{
     foreground::{
         contains_process_name, list_processes, list_processes_with_paths, process_count_label,
         process_executable_path, process_failure_key, process_handle_matches_executable_path,
-        process_session_id, same_executable_path, same_process_name, unique_app_names, ProcessInfo,
+        process_session_id, same_executable_path, same_process_name, unique_app_names,
+        visible_window_process_ids, ProcessInfo, ProtectedProcesses,
         EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     memory_priority::{MemoryPriorityManager, MemoryPriorityTarget},
@@ -220,13 +221,34 @@ struct WorkloadEngineCoreSelection {
 enum PriorityTargetSource {
     WorkloadEngine,
     BackgroundPolicy,
+    VisibleWindow,
     Rule,
+}
+
+fn unprotected_efficiency_process_ids(
+    foreground_process_group_ids: &BTreeSet<u32>,
+    visible_window_process_group_ids: &BTreeSet<u32>,
+    protect_foreground_app: bool,
+    protect_visible_window_apps: bool,
+) -> BTreeSet<u32> {
+    foreground_process_group_ids
+        .iter()
+        .filter(|_| !protect_foreground_app)
+        .chain(
+            visible_window_process_group_ids
+                .iter()
+                .filter(|_| !protect_visible_window_apps),
+        )
+        .copied()
+        .collect()
 }
 
 pub struct WorkloadEngineUpdate<'a> {
     pub settings: &'a WorkloadEngineSettings,
     pub automation_enabled: bool,
     pub allow_cross_session_process_control: bool,
+    pub protect_foreground_app_from_efficiency: bool,
+    pub protect_visible_window_apps_from_efficiency: bool,
     pub foreground_process_id: Option<u32>,
     pub total_cpu_usage_percent: Option<f32>,
     pub background_efficiency_managed: bool,
@@ -275,6 +297,8 @@ impl WorkloadEngineManager {
             settings,
             automation_enabled,
             allow_cross_session_process_control,
+            protect_foreground_app_from_efficiency,
+            protect_visible_window_apps_from_efficiency,
             foreground_process_id,
             total_cpu_usage_percent,
             background_efficiency_managed,
@@ -346,6 +370,24 @@ impl WorkloadEngineManager {
         };
 
         let scanned_processes = processes.len();
+        let visible_window_tier_required = settings.lower_background_apps
+            || settings.workload_engine_background_efficiency_enabled
+            || settings.workload_engine_memory_priority_enabled;
+        let visible_processes = if visible_window_tier_required {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failed = self.clear_all(action_log, "visible windows are unavailable");
+                return WorkloadEngineSnapshot {
+                    enabled: true,
+                    failed_processes: failed.count,
+                    message: "Paused: visible windows are unavailable.".to_owned(),
+                    last_error: failed.last_error,
+                    ..Default::default()
+                };
+            };
+            ProtectedProcesses::capture(&processes, false, None, process_ids)
+        } else {
+            ProtectedProcesses::default()
+        };
         let processes_by_id = processes
             .iter()
             .map(|process| (process.id, process))
@@ -363,6 +405,17 @@ impl WorkloadEngineManager {
             .and_then(|id| processes_by_id.get(&id).map(|process| process.name.clone()));
         let foreground_process_group_ids =
             foreground_process_group_ids(&processes, foreground_process_id);
+        let visible_window_process_group_ids = processes
+            .iter()
+            .filter(|process| !foreground_process_group_ids.contains(&process.id))
+            .filter_map(|process| {
+                process_executable_path(process).and_then(|path| {
+                    visible_processes
+                        .contains(process.id, &path)
+                        .then_some(process.id)
+                })
+            })
+            .collect::<BTreeSet<_>>();
         let foreground_cpu_usage_percent =
             self.update_foreground_cpu_usage(&foreground_process_group_ids);
         let foreground_cpu_usage_tenths = foreground_cpu_usage_percent.map(percent_tenths);
@@ -382,6 +435,7 @@ impl WorkloadEngineManager {
                     &foreground_process_group_ids,
                     excluded_process_ids,
                 )
+                || visible_window_process_group_ids.contains(&process.id)
             {
                 continue;
             }
@@ -396,6 +450,40 @@ impl WorkloadEngineManager {
         }
 
         let mut target_processes = BTreeMap::new();
+        if settings.lower_background_apps {
+            let priority = settings.workload_engine_visible_window_priority;
+            for process_id in &visible_window_process_group_ids {
+                let Some(process) = processes_by_id.get(process_id) else {
+                    continue;
+                };
+                if process.is_critical != Some(false)
+                    || !process.can_set_information
+                    || excluded_process_ids.contains(process_id)
+                    || (!allow_cross_session_process_control
+                        && process_session_id(*process_id) != Some(current_session_id))
+                {
+                    continue;
+                }
+                let Some(executable_path) = cached_executable_path(process, &mut executable_paths)
+                else {
+                    continue;
+                };
+                if settings.workload_engine_exclusion_enabled_for(&executable_path) {
+                    continue;
+                }
+                target_processes.insert(
+                    *process_id,
+                    (
+                        process.name.clone(),
+                        executable_path,
+                        priority,
+                        PriorityTargetSource::VisibleWindow,
+                        true,
+                        false,
+                    ),
+                );
+            }
+        }
         let foreground_launch_boost_target = foreground_process_id
             .zip(foreground_process_name.as_deref())
             .is_some_and(|(process_id, process_name)| {
@@ -421,6 +509,47 @@ impl WorkloadEngineManager {
             settings.lower_background_apps && background_policy_can_run;
         let auto_efficiency_policy_enabled =
             settings.workload_engine_background_efficiency_enabled && background_policy_can_run;
+        if auto_efficiency_policy_enabled {
+            for process_id in unprotected_efficiency_process_ids(
+                &foreground_process_group_ids,
+                &visible_window_process_group_ids,
+                protect_foreground_app_from_efficiency,
+                protect_visible_window_apps_from_efficiency,
+            ) {
+                let Some(process) = processes_by_id.get(&process_id) else {
+                    continue;
+                };
+                if process.id == 0
+                    || process.id == current_process_id
+                    || process.is_critical != Some(false)
+                    || !process.can_set_information
+                    || is_builtin_excluded(&process.name)
+                    || excluded_process_ids.contains(&process.id)
+                    || (!allow_cross_session_process_control
+                        && process_session_id(process.id) != Some(current_session_id))
+                {
+                    continue;
+                }
+                let Some(executable_path) = cached_executable_path(process, &mut executable_paths)
+                else {
+                    continue;
+                };
+                if settings.workload_engine_exclusion_enabled_for(&executable_path) {
+                    continue;
+                }
+                target_processes
+                    .entry(process_id)
+                    .and_modify(|target| target.5 = true)
+                    .or_insert((
+                        process.name.clone(),
+                        executable_path,
+                        settings.workload_engine_background_priority,
+                        PriorityTargetSource::BackgroundPolicy,
+                        false,
+                        true,
+                    ));
+            }
+        }
         if (settings.lower_background_apps
             || settings.workload_engine_background_efficiency_enabled)
             && !background_efficiency_managed
@@ -460,6 +589,7 @@ impl WorkloadEngineManager {
                         priority,
                         source,
                         apply_priority_class,
+                        settings.workload_engine_background_efficiency_enabled,
                     ),
                 );
             }
@@ -520,7 +650,44 @@ impl WorkloadEngineManager {
                         executable_path,
                         priority,
                         foreground: true,
+                        visible_window: false,
                         preserve_foreground_priority: true,
+                        preserve_visible_window_priority: true,
+                        preserve_background_priority: true,
+                    });
+                }
+            }
+            if let Some(priority) = settings
+                .workload_engine_visible_window_memory_priority
+                .priority()
+            {
+                for process_id in &visible_window_process_group_ids {
+                    let Some(process) = processes_by_id.get(process_id) else {
+                        continue;
+                    };
+                    if process.is_critical != Some(false)
+                        || !process.can_set_information
+                        || excluded_process_ids.contains(process_id)
+                    {
+                        continue;
+                    }
+                    let Some(executable_path) =
+                        cached_executable_path(process, &mut executable_paths)
+                    else {
+                        continue;
+                    };
+                    if settings.workload_engine_exclusion_enabled_for(&executable_path) {
+                        continue;
+                    }
+                    workload_engine_memory_targets.push(MemoryPriorityTarget {
+                        process_id: *process_id,
+                        process_name: process.name.clone(),
+                        executable_path,
+                        priority,
+                        foreground: false,
+                        visible_window: true,
+                        preserve_foreground_priority: true,
+                        preserve_visible_window_priority: true,
                         preserve_background_priority: true,
                     });
                 }
@@ -597,6 +764,7 @@ impl WorkloadEngineManager {
                             settings.workload_engine_background_priority,
                             PriorityTargetSource::WorkloadEngine,
                             true,
+                            false,
                         )
                     });
                 if settings.workload_engine_memory_priority_enabled {
@@ -606,7 +774,9 @@ impl WorkloadEngineManager {
                         executable_path: executable_path.clone(),
                         priority: settings.workload_engine_memory_priority,
                         foreground: false,
+                        visible_window: false,
                         preserve_foreground_priority: true,
+                        preserve_visible_window_priority: true,
                         preserve_background_priority: true,
                     });
                 }
@@ -696,9 +866,11 @@ impl WorkloadEngineManager {
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let mut active_target_names = target_processes
             .values()
-            .map(|(_name, path, _priority, _source, _apply_priority_class)| {
-                process_failure_key(path)
-            })
+            .map(
+                |(_name, path, _priority, _source, _apply_priority_class, _apply_efficiency)| {
+                    process_failure_key(path)
+                },
+            )
             .collect::<BTreeSet<_>>();
         if let Some(process) = foreground_process_id.and_then(|id| processes_by_id.get(&id)) {
             if let Some(path) = cached_executable_path(process, &mut executable_paths) {
@@ -715,8 +887,17 @@ impl WorkloadEngineManager {
         skipped_processes += workload_engine_memory_snapshot.skipped_processes;
         let mut summarized_background_applies = 0;
 
-        for (process_id, (process_name, executable_path, priority, source, apply_priority_class)) in
-            target_processes
+        for (
+            process_id,
+            (
+                process_name,
+                executable_path,
+                priority,
+                source,
+                apply_priority_class,
+                apply_background_efficiency,
+            ),
+        ) in target_processes
         {
             let failure_process_name = process_name.clone();
             if self.is_executable_path_suppressed(
@@ -738,9 +919,7 @@ impl WorkloadEngineManager {
                     existing: self.adjusted.get(&process_id),
                     source,
                     apply_priority_class,
-                    apply_background_efficiency: settings
-                        .workload_engine_background_efficiency_enabled
-                        && source != PriorityTargetSource::WorkloadEngine,
+                    apply_background_efficiency,
                     ignore_timer_resolution: ignore_timer_resolution_allowed(
                         process_id,
                         active_audio_process_ids.as_ref(),
@@ -751,7 +930,13 @@ impl WorkloadEngineManager {
                 action_log,
             ) {
                 Ok(outcome) => {
-                    if outcome.changed && source != PriorityTargetSource::Rule {
+                    if outcome.changed
+                        && matches!(
+                            source,
+                            PriorityTargetSource::WorkloadEngine
+                                | PriorityTargetSource::BackgroundPolicy
+                        )
+                    {
                         summarized_background_applies += 1;
                     }
                     if let Some(adjusted) = outcome.adjusted {

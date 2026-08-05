@@ -449,6 +449,7 @@ pub(super) fn priority_source_label(source: PriorityTargetSource) -> &'static st
     match source {
         PriorityTargetSource::WorkloadEngine => "Workload Engine",
         PriorityTargetSource::BackgroundPolicy => "Background policy",
+        PriorityTargetSource::VisibleWindow => "Visible window",
         PriorityTargetSource::Rule => "Rule",
     }
 }

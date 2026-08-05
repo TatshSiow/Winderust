@@ -30,7 +30,10 @@ impl WinderustApp {
             self.is_setting_group_collapsed(SettingGroupTarget::DynamicPriorityBoostMaster),
             vec![setting_group_action_row(
                 "dynamic-priority-boost-background-default-row",
-                t!("dynamic_priority_boost.background_default").to_string(),
+                priority_level_label(
+                    PriorityLevelTarget::Background,
+                    t!("nav.dynamic_priority_boost").to_string(),
+                ),
                 self.render_dynamic_priority_boost_default_selector(
                     DynamicPriorityBoostDefaultTarget::Background,
                     self.settings.dynamic_priority_boost.background_boost,
@@ -68,13 +71,58 @@ impl WinderustApp {
                 ),
                 vec![setting_group_action_row(
                     "dynamic-priority-boost-foreground-default-row",
-                    t!("dynamic_priority_boost.foreground_default").to_string(),
+                    priority_level_label(
+                        PriorityLevelTarget::FocusProcess,
+                        t!("nav.dynamic_priority_boost").to_string(),
+                    ),
                     self.render_dynamic_priority_boost_default_selector(
                         DynamicPriorityBoostDefaultTarget::Foreground,
                         self.settings.dynamic_priority_boost.foreground_boost,
                         self.settings
                             .dynamic_priority_boost
                             .foreground_detection_enabled,
+                        window,
+                        cx,
+                    ),
+                    false,
+                )
+                .into_any_element()],
+                window,
+                cx,
+            ))
+            .child(setting_group_with_help(
+                SettingGroupTarget::DynamicPriorityBoostVisibleWindowDetection,
+                (
+                    t!("common.visible_window_detection").to_string(),
+                    t!("common.visible_window_detection_help").to_string(),
+                ),
+                setting_group_switch_action(
+                    "dynamic-priority-boost-visible-window-detection-toggle",
+                    self.settings
+                        .dynamic_priority_boost
+                        .visible_window_detection_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings
+                            .dynamic_priority_boost
+                            .visible_window_detection_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(
+                    SettingGroupTarget::DynamicPriorityBoostVisibleWindowDetection,
+                ),
+                vec![setting_group_action_row(
+                    "dynamic-priority-boost-visible-window-default-row",
+                    priority_level_label(
+                        PriorityLevelTarget::VisibleWindow,
+                        t!("nav.dynamic_priority_boost").to_string(),
+                    ),
+                    self.render_dynamic_priority_boost_default_selector(
+                        DynamicPriorityBoostDefaultTarget::VisibleWindow,
+                        self.settings.dynamic_priority_boost.visible_window_boost,
+                        self.settings
+                            .dynamic_priority_boost
+                            .visible_window_detection_enabled,
                         window,
                         cx,
                     ),
@@ -206,6 +254,9 @@ impl WinderustApp {
             DynamicPriorityBoostDefaultTarget::Background => {
                 "dynamic-priority-boost-background-default"
             }
+            DynamicPriorityBoostDefaultTarget::VisibleWindow => {
+                "dynamic-priority-boost-visible-window-default"
+            }
             DynamicPriorityBoostDefaultTarget::Foreground => {
                 "dynamic-priority-boost-foreground-default"
             }
@@ -232,6 +283,10 @@ impl WinderustApp {
                             match target {
                                 DynamicPriorityBoostDefaultTarget::Background => {
                                     app.settings.dynamic_priority_boost.background_boost = boost;
+                                }
+                                DynamicPriorityBoostDefaultTarget::VisibleWindow => {
+                                    app.settings.dynamic_priority_boost.visible_window_boost =
+                                        boost;
                                 }
                                 DynamicPriorityBoostDefaultTarget::Foreground => {
                                     app.settings.dynamic_priority_boost.foreground_boost = boost;

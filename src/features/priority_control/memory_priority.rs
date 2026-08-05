@@ -23,11 +23,13 @@ use crate::{
         contains_process_name, ensure_process_action_target_access, is_foreground_process,
         list_processes, process_count_label, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_process_name,
-        unique_app_names, ProcessActionAccess, ProcessActionTarget,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        unique_app_names, visible_window_process_ids, ProcessActionAccess, ProcessActionTarget,
+        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
+
+use super::PriorityProcessTier;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MemoryPrioritySnapshot {
@@ -53,7 +55,9 @@ pub struct MemoryPriorityTarget {
     pub executable_path: String,
     pub priority: ProcessMemoryPriority,
     pub foreground: bool,
+    pub visible_window: bool,
     pub preserve_foreground_priority: bool,
+    pub preserve_visible_window_priority: bool,
     pub preserve_background_priority: bool,
 }
 
@@ -161,6 +165,25 @@ impl MemoryPriorityManager {
             }
         };
 
+        let visible_processes = if settings.visible_window_detection_enabled {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failures = self.clear_all(
+                    ActionLogFeature::MemoryPriority,
+                    action_log,
+                    "visible windows are unavailable",
+                );
+                return MemoryPrioritySnapshot {
+                    enabled: true,
+                    failed_processes: failures.count,
+                    last_error: Some("Paused: visible windows are unavailable.".to_owned()),
+                    ..Default::default()
+                };
+            };
+            ProtectedProcesses::capture(&processes, false, None, process_ids)
+        } else {
+            ProtectedProcesses::default()
+        };
+
         let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
                 processes
@@ -196,17 +219,22 @@ impl MemoryPriorityManager {
                         foreground_process_id,
                         foreground_executable_path.as_deref(),
                     );
+                let visible_window = !foreground
+                    && settings.visible_window_detection_enabled
+                    && visible_processes.contains(process.id, &executable_path);
+                let tier = PriorityProcessTier::from_flags(foreground, visible_window);
+                let default_priority = tier.select(
+                    settings.foreground_priority,
+                    settings.visible_window_priority,
+                    settings.background_priority,
+                );
                 let configured_override =
                     settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
                 let priority = match configured_override {
-                    Some(Some(ProcessMemoryPrioritySetting::Auto)) if foreground => {
-                        settings.foreground_priority
-                    }
-                    Some(Some(ProcessMemoryPrioritySetting::Auto)) => settings.background_priority,
+                    Some(Some(ProcessMemoryPrioritySetting::Auto)) => default_priority,
                     Some(Some(priority)) => priority,
                     Some(None) => return None,
-                    None if foreground => settings.foreground_priority,
-                    None => settings.background_priority,
+                    None => default_priority,
                 };
 
                 priority.priority().map(|priority| MemoryPriorityTarget {
@@ -215,7 +243,9 @@ impl MemoryPriorityManager {
                     executable_path: executable_path.to_string_lossy().into_owned(),
                     priority,
                     foreground,
+                    visible_window,
                     preserve_foreground_priority: settings.preserve_foreground_priority,
+                    preserve_visible_window_priority: settings.preserve_visible_window_priority,
                     preserve_background_priority: settings.preserve_background_priority,
                 })
             })
@@ -284,8 +314,9 @@ impl MemoryPriorityManager {
                     target.executable_path.clone(),
                 ),
                 target.priority,
-                target.foreground,
+                PriorityProcessTier::from_flags(target.foreground, target.visible_window),
                 target.preserve_foreground_priority,
+                target.preserve_visible_window_priority,
                 target.preserve_background_priority,
             ) {
                 Ok(ApplyOutcome::Applied { loggable }) => {
@@ -359,8 +390,9 @@ impl MemoryPriorityManager {
         &mut self,
         (process_id, process_name, executable_path): (u32, String, String),
         priority: ProcessMemoryPriority,
-        foreground: bool,
+        tier: PriorityProcessTier,
         preserve_foreground: bool,
+        preserve_visible_window: bool,
         preserve_background: bool,
     ) -> Result<ApplyOutcome, MemoryPriorityError> {
         let process = ProcessHandle::open(process_id)?;
@@ -381,8 +413,9 @@ impl MemoryPriorityManager {
             .map(|adjusted| adjusted.previous_priority)
             .unwrap_or(current_priority);
         if should_preserve_priority(
-            foreground,
+            tier,
             preserve_foreground,
+            preserve_visible_window,
             preserve_background,
             memory_priority_raw(baseline_priority),
             memory_priority_raw(priority),
@@ -799,16 +832,19 @@ fn memory_priority_from_raw(priority: u32) -> ProcessMemoryPriority {
 }
 
 fn should_preserve_priority(
-    foreground: bool,
+    tier: PriorityProcessTier,
     preserve_foreground: bool,
+    preserve_visible_window: bool,
     preserve_background: bool,
     current_rank: u32,
     desired_rank: u32,
 ) -> bool {
-    if foreground {
-        preserve_foreground && current_rank >= desired_rank
-    } else {
-        preserve_background && current_rank <= desired_rank
+    match tier {
+        PriorityProcessTier::Foreground => preserve_foreground && current_rank >= desired_rank,
+        PriorityProcessTier::VisibleWindow => {
+            preserve_visible_window && current_rank >= desired_rank
+        }
+        PriorityProcessTier::Background => preserve_background && current_rank <= desired_rank,
     }
 }
 

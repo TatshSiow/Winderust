@@ -191,8 +191,9 @@ impl HiddenAutomationRunner {
         settings: &Settings,
     ) -> BackgroundEfficiencySnapshot {
         let foreground_process_id = foreground_process_id();
+        let background_efficiency = settings.background_efficiency.clone();
         self.background_efficiency_manager.update(
-            &settings.background_efficiency,
+            &background_efficiency,
             settings.general.enabled,
             settings.general.allow_cross_session_process_control,
             foreground_process_id,
@@ -377,6 +378,12 @@ impl HiddenAutomationRunner {
                 allow_cross_session_process_control: settings
                     .general
                     .allow_cross_session_process_control,
+                protect_foreground_app_from_efficiency: settings
+                    .background_efficiency
+                    .protect_foreground_app,
+                protect_visible_window_apps_from_efficiency: settings
+                    .background_efficiency
+                    .protect_visible_window_apps,
                 foreground_process_id,
                 total_cpu_usage_percent: self.cpu_usage.percent,
                 background_efficiency_managed: settings.background_efficiency.enabled,

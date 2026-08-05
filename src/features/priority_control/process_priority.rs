@@ -21,11 +21,14 @@ use crate::{
     foreground::{
         ensure_process_action_target_access, is_foreground_process, list_processes,
         process_executable_path, process_failure_key, process_handle_matches_executable_path,
-        process_session_id, same_process_name, unique_app_names, ProcessActionAccess,
-        ProcessActionTarget, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        process_session_id, same_process_name, unique_app_names, visible_window_process_ids,
+        ProcessActionAccess, ProcessActionTarget, ProtectedProcesses,
+        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
+
+use super::PriorityProcessTier;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProcessPrioritySnapshot {
@@ -136,6 +139,22 @@ impl ProcessPriorityManager {
             }
         };
 
+        let visible_processes = if settings.visible_window_detection_enabled {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failures = self.clear_all(action_log, "visible windows are unavailable");
+                return ProcessPrioritySnapshot {
+                    enabled: true,
+                    failed_processes: failures.count,
+                    message: "Paused: visible windows are unavailable.".to_owned(),
+                    last_error: failures.last_error,
+                    ..Default::default()
+                };
+            };
+            ProtectedProcesses::capture(&processes, false, None, process_ids)
+        } else {
+            ProtectedProcesses::default()
+        };
+
         let scanned_processes = processes.len();
         let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
@@ -172,17 +191,22 @@ impl ProcessPriorityManager {
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
                 );
+            let visible_window = !foreground
+                && settings.visible_window_detection_enabled
+                && visible_processes.contains(process.id, &executable_path);
+            let tier = PriorityProcessTier::from_flags(foreground, visible_window);
             let configured_override =
                 settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+            let default_priority = tier.select(
+                settings.foreground_priority,
+                settings.visible_window_priority,
+                settings.background_priority,
+            );
             let priority = match configured_override {
-                Some(Some(ProcessPrioritySetting::Auto)) if foreground => {
-                    settings.foreground_priority
-                }
-                Some(Some(ProcessPrioritySetting::Auto)) => settings.background_priority,
+                Some(Some(ProcessPrioritySetting::Auto)) => default_priority,
                 Some(Some(priority)) => priority,
                 Some(None) => continue,
-                None if foreground => settings.foreground_priority,
-                None => settings.background_priority,
+                None => default_priority,
             };
             if let Some(priority_class) = priority_class(priority) {
                 target_processes.insert(
@@ -191,7 +215,7 @@ impl ProcessPriorityManager {
                         process.name,
                         executable_path.to_string_lossy().into_owned(),
                         priority_class,
-                        foreground,
+                        tier,
                     ),
                 );
             }
@@ -206,7 +230,7 @@ impl ProcessPriorityManager {
         );
         let active_target_names = target_processes
             .values()
-            .map(|(_name, path, _priority, _foreground)| process_failure_key(path))
+            .map(|(_name, path, _priority, _tier)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
@@ -219,8 +243,7 @@ impl ProcessPriorityManager {
         let mut applied_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        for (process_id, (process_name, executable_path, priority_class, foreground)) in
-            target_processes
+        for (process_id, (process_name, executable_path, priority_class, tier)) in target_processes
         {
             if self.is_process_suppressed(
                 process_id,
@@ -236,8 +259,9 @@ impl ProcessPriorityManager {
             match self.apply_process(
                 (process_id, process_name.clone(), executable_path.clone()),
                 priority_class,
-                foreground,
+                tier,
                 settings.preserve_foreground_priority,
+                settings.preserve_visible_window_priority,
                 settings.preserve_background_priority,
             ) {
                 Ok(ApplyOutcome::Applied { loggable }) => {
@@ -310,8 +334,9 @@ impl ProcessPriorityManager {
         &mut self,
         (process_id, process_name, executable_path): (u32, String, String),
         priority_class: u32,
-        foreground: bool,
+        tier: PriorityProcessTier,
         preserve_foreground: bool,
+        preserve_visible_window: bool,
         preserve_background: bool,
     ) -> Result<ApplyOutcome, ProcessPriorityError> {
         let process = ProcessHandle::open(process_id)?;
@@ -336,8 +361,9 @@ impl ProcessPriorityManager {
             .map(|adjusted| adjusted.previous_priority_class)
             .unwrap_or(current_priority_class);
         if should_preserve_priority(
-            foreground,
+            tier,
             preserve_foreground,
+            preserve_visible_window,
             preserve_background,
             process_priority_rank(baseline_priority_class),
             process_priority_rank(priority_class),
@@ -722,16 +748,19 @@ fn process_priority_rank(priority_class: u32) -> i32 {
 }
 
 fn should_preserve_priority(
-    foreground: bool,
+    tier: PriorityProcessTier,
     preserve_foreground: bool,
+    preserve_visible_window: bool,
     preserve_background: bool,
     current_rank: i32,
     desired_rank: i32,
 ) -> bool {
-    if foreground {
-        preserve_foreground && current_rank >= desired_rank
-    } else {
-        preserve_background && current_rank <= desired_rank
+    match tier {
+        PriorityProcessTier::Foreground => preserve_foreground && current_rank >= desired_rank,
+        PriorityProcessTier::VisibleWindow => {
+            preserve_visible_window && current_rank >= desired_rank
+        }
+        PriorityProcessTier::Background => preserve_background && current_rank <= desired_rank,
     }
 }
 

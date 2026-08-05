@@ -402,8 +402,11 @@ pub(in crate::ui::app) fn workload_engine_io_priority_preset_values(
         enabled: values.lower_background_io_priority_enabled,
         foreground_detection_enabled: true,
         foreground_priority: values.foreground_io_priority,
+        visible_window_detection_enabled: true,
+        visible_window_priority: values.lower_background_io_priority.into(),
         background_priority: values.lower_background_io_priority.into(),
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -420,12 +423,19 @@ pub(in crate::ui::app) fn workload_engine_thread_priority_preset_values(
         } else {
             ProcessThreadPrioritySetting::Default
         },
+        visible_window_detection_enabled: true,
+        visible_window_priority: if preset == WorkloadEnginePreset::MaxForeground {
+            ProcessThreadPrioritySetting::Idle
+        } else {
+            ProcessThreadPrioritySetting::BelowNormal
+        },
         background_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessThreadPrioritySetting::Idle
         } else {
             ProcessThreadPrioritySetting::BelowNormal
         },
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -438,6 +448,8 @@ pub(in crate::ui::app) fn workload_engine_dynamic_priority_boost_preset_values(
         enabled: true,
         foreground_detection_enabled: true,
         foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
+        visible_window_detection_enabled: true,
+        visible_window_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         exclusions: Vec::new(),
     }
@@ -454,12 +466,19 @@ pub(in crate::ui::app) fn workload_engine_gpu_priority_preset_values(
         } else {
             ProcessGpuPrioritySetting::Default
         },
+        visible_window_detection_enabled: true,
+        visible_window_priority: if preset == WorkloadEnginePreset::MaxForeground {
+            ProcessGpuPrioritySetting::Idle
+        } else {
+            ProcessGpuPrioritySetting::BelowNormal
+        },
         background_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessGpuPrioritySetting::Idle
         } else {
             ProcessGpuPrioritySetting::BelowNormal
         },
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }

@@ -2,6 +2,22 @@ use super::*;
 use crate::config::{ProcessMemoryPrioritySetting, WorkloadEngineSettings};
 
 #[test]
+fn adaptive_efficiency_respects_foreground_and_visible_window_protection() {
+    let foreground = BTreeSet::from([1, 2]);
+    let visible = BTreeSet::from([3, 4]);
+
+    assert_eq!(
+        unprotected_efficiency_process_ids(&foreground, &visible, true, false),
+        visible
+    );
+    assert_eq!(
+        unprotected_efficiency_process_ids(&foreground, &visible, false, true),
+        foreground
+    );
+    assert!(unprotected_efficiency_process_ids(&foreground, &visible, true, true).is_empty());
+}
+
+#[test]
 fn repeated_failures_suppress_future_workload_engine_attempts_once() {
     let mut manager = WorkloadEngineManager::default();
     let mut log = ActionLog::new(8);
@@ -149,6 +165,7 @@ fn matching_rule_is_case_insensitive() {
         lower_background_apps: true,
         workload_engine_background_efficiency_enabled: true,
         workload_engine_background_priority: ProcessPriority::BelowNormal,
+        workload_engine_visible_window_priority: ProcessPriority::Normal,
         lower_background_io_priority_enabled: false,
         lower_background_io_priority: crate::config::ProcessIoPriority::VeryLow,
         workload_engine_io_priority: crate::config::IoPrioritySettings::default(),
@@ -158,6 +175,7 @@ fn matching_rule_is_case_insensitive() {
         workload_engine_gpu_priority: crate::config::GpuPrioritySettings::default(),
         workload_engine_memory_priority_enabled: false,
         workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
+        workload_engine_visible_window_memory_priority: ProcessMemoryPrioritySetting::Default,
         workload_engine_memory_priority: crate::config::ProcessMemoryPriority::Low,
         lower_background_auto_cpu_percent: false,
         workload_engine_enabled: false,

@@ -375,6 +375,7 @@ impl WinderustApp {
     ) -> AnyElement {
         let id = match target {
             IoPriorityDefaultTarget::Background => "io-priority-background-default",
+            IoPriorityDefaultTarget::VisibleWindow => "io-priority-visible-window-default",
             IoPriorityDefaultTarget::Foreground => "io-priority-foreground-default",
         };
         let priorities: &[ProcessIoPrioritySetting] =
@@ -405,6 +406,9 @@ impl WinderustApp {
                             match target {
                                 IoPriorityDefaultTarget::Background => {
                                     app.settings.io_priority.background_priority = priority;
+                                }
+                                IoPriorityDefaultTarget::VisibleWindow => {
+                                    app.settings.io_priority.visible_window_priority = priority;
                                 }
                                 IoPriorityDefaultTarget::Foreground => {
                                     app.settings.io_priority.foreground_priority = priority;

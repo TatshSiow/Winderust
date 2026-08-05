@@ -664,6 +664,8 @@ pub struct WorkloadEngineSettings {
     pub workload_engine_background_efficiency_enabled: bool,
     #[serde(default = "default_workload_engine_background_priority")]
     pub workload_engine_background_priority: ProcessPriority,
+    #[serde(default = "default_workload_engine_visible_window_priority")]
+    pub workload_engine_visible_window_priority: ProcessPriority,
     #[serde(default)]
     pub lower_background_io_priority_enabled: bool,
     #[serde(default)]
@@ -680,6 +682,8 @@ pub struct WorkloadEngineSettings {
     pub workload_engine_memory_priority_enabled: bool,
     #[serde(default = "default_workload_engine_foreground_memory_priority")]
     pub workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting,
+    #[serde(default = "default_workload_engine_foreground_memory_priority")]
+    pub workload_engine_visible_window_memory_priority: ProcessMemoryPrioritySetting,
     #[serde(default)]
     pub workload_engine_memory_priority: ProcessMemoryPriority,
     #[serde(default = "default_true")]
@@ -729,10 +733,16 @@ pub struct IoPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_io_priority_foreground")]
     pub foreground_priority: ProcessIoPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_io_priority_background")]
+    pub visible_window_priority: ProcessIoPrioritySetting,
     #[serde(default = "default_io_priority_background")]
     pub background_priority: ProcessIoPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -746,10 +756,16 @@ pub struct ProcessPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_process_priority_foreground")]
     pub foreground_priority: ProcessPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_process_priority_background")]
+    pub visible_window_priority: ProcessPrioritySetting,
     #[serde(default = "default_process_priority_background")]
     pub background_priority: ProcessPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -763,10 +779,16 @@ pub struct ThreadPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_thread_priority_foreground")]
     pub foreground_priority: ProcessThreadPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_thread_priority_background")]
+    pub visible_window_priority: ProcessThreadPrioritySetting,
     #[serde(default = "default_thread_priority_background")]
     pub background_priority: ProcessThreadPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -780,6 +802,10 @@ pub struct DynamicPriorityBoostSettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_dynamic_priority_boost_foreground")]
     pub foreground_boost: ProcessDynamicPriorityBoostSetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_dynamic_priority_boost_background")]
+    pub visible_window_boost: ProcessDynamicPriorityBoostSetting,
     #[serde(default = "default_dynamic_priority_boost_background")]
     pub background_boost: ProcessDynamicPriorityBoostSetting,
     #[serde(default)]
@@ -793,10 +819,16 @@ pub struct GpuPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_gpu_priority_foreground")]
     pub foreground_priority: ProcessGpuPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_gpu_priority_background")]
+    pub visible_window_priority: ProcessGpuPrioritySetting,
     #[serde(default = "default_gpu_priority_background")]
     pub background_priority: ProcessGpuPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -810,10 +842,16 @@ pub struct MemoryPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_memory_priority_foreground")]
     pub foreground_priority: ProcessMemoryPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_memory_priority_background")]
+    pub visible_window_priority: ProcessMemoryPrioritySetting,
     #[serde(default = "default_memory_priority_background")]
     pub background_priority: ProcessMemoryPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -1579,6 +1617,10 @@ const fn default_workload_engine_background_priority() -> ProcessPriority {
     ProcessPriority::BelowNormal
 }
 
+const fn default_workload_engine_visible_window_priority() -> ProcessPriority {
+    ProcessPriority::Normal
+}
+
 const fn default_workload_engine_foreground_memory_priority() -> ProcessMemoryPrioritySetting {
     ProcessMemoryPrioritySetting::Default
 }
@@ -1588,8 +1630,11 @@ fn default_workload_engine_io_priority_settings() -> IoPrioritySettings {
         enabled: false,
         foreground_detection_enabled: true,
         foreground_priority: ProcessIoPrioritySetting::Normal,
+        visible_window_detection_enabled: true,
+        visible_window_priority: ProcessIoPrioritySetting::VeryLow,
         background_priority: ProcessIoPrioritySetting::VeryLow,
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -1600,8 +1645,11 @@ fn default_workload_engine_thread_priority_settings() -> ThreadPrioritySettings 
         enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: ProcessThreadPrioritySetting::Default,
+        visible_window_detection_enabled: true,
+        visible_window_priority: ProcessThreadPrioritySetting::BelowNormal,
         background_priority: ProcessThreadPrioritySetting::BelowNormal,
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -1612,6 +1660,8 @@ fn default_workload_engine_dynamic_priority_boost_settings() -> DynamicPriorityB
         enabled: true,
         foreground_detection_enabled: true,
         foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
+        visible_window_detection_enabled: true,
+        visible_window_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         exclusions: Vec::new(),
     }
@@ -1622,8 +1672,11 @@ fn default_workload_engine_gpu_priority_settings() -> GpuPrioritySettings {
         enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: ProcessGpuPrioritySetting::Default,
+        visible_window_detection_enabled: true,
+        visible_window_priority: ProcessGpuPrioritySetting::BelowNormal,
         background_priority: ProcessGpuPrioritySetting::BelowNormal,
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -1798,6 +1851,8 @@ impl Default for WorkloadEngineSettings {
             lower_background_apps: default_true(),
             workload_engine_background_efficiency_enabled: default_true(),
             workload_engine_background_priority: default_workload_engine_background_priority(),
+            workload_engine_visible_window_priority:
+                default_workload_engine_visible_window_priority(),
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             workload_engine_io_priority: default_workload_engine_io_priority_settings(),
@@ -1807,6 +1862,8 @@ impl Default for WorkloadEngineSettings {
             workload_engine_gpu_priority: default_workload_engine_gpu_priority_settings(),
             workload_engine_memory_priority_enabled: false,
             workload_engine_foreground_memory_priority:
+                default_workload_engine_foreground_memory_priority(),
+            workload_engine_visible_window_memory_priority:
                 default_workload_engine_foreground_memory_priority(),
             workload_engine_memory_priority: ProcessMemoryPriority::Low,
             lower_background_auto_cpu_percent: default_true(),
@@ -1843,8 +1900,11 @@ impl Default for IoPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_io_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_io_priority_background(),
             background_priority: default_io_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -1857,8 +1917,11 @@ impl Default for ProcessPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_process_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_process_priority_background(),
             background_priority: default_process_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -1871,8 +1934,11 @@ impl Default for ThreadPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_thread_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_thread_priority_background(),
             background_priority: default_thread_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -1885,6 +1951,8 @@ impl Default for DynamicPriorityBoostSettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_boost: default_dynamic_priority_boost_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_boost: default_dynamic_priority_boost_background(),
             background_boost: default_dynamic_priority_boost_background(),
             exclusions: Vec::new(),
         }
@@ -1897,8 +1965,11 @@ impl Default for GpuPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_gpu_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_gpu_priority_background(),
             background_priority: default_gpu_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -1911,8 +1982,11 @@ impl Default for MemoryPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_memory_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_memory_priority_background(),
             background_priority: default_memory_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }

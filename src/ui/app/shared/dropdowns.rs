@@ -9,36 +9,42 @@ pub(in crate::ui::app) enum PowerPlanKind {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::ui::app) enum IoPriorityDefaultTarget {
     Background,
+    VisibleWindow,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::ui::app) enum ProcessPriorityDefaultTarget {
     Background,
+    VisibleWindow,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::ui::app) enum ThreadPriorityDefaultTarget {
     Background,
+    VisibleWindow,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::ui::app) enum DynamicPriorityBoostDefaultTarget {
     Background,
+    VisibleWindow,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::ui::app) enum GpuPriorityDefaultTarget {
     Background,
+    VisibleWindow,
     Foreground,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::ui::app) enum MemoryPriorityDefaultTarget {
     Background,
+    VisibleWindow,
     Foreground,
 }
 

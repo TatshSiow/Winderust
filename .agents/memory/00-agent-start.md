@@ -40,6 +40,8 @@
   captured process in the group. Other process controls are unaffected.
 - Explicit CPU Sets (Soft) and Processor Affinity (Hard) rules take precedence over Workload Engine CPU allocation for the same process.
 - Background Efficiency, Core Limiter, CPU Sets (Soft), and Processor Affinity (Hard) expose independent process protections: Protect Foreground App defaults on; Protect Apps with Visible Windows defaults off and covers visible, non-minimized, non-cloaked top-level windows plus sibling processes with the same executable path.
+- Every Priority Control page uses three ordered default tiers: Focus App, then apps with visible windows, then background. Visible Window Detection defaults off and has its own selectable value; custom process rules still override the selected tier.
+- Adaptive Engine uses the same Focus App, Visible Window, then Background ordering across Process, Thread, I/O, GPU, and Memory Priority plus Dynamic Priority Boost. Its Background Efficiency paths always protect focused and visible-window apps from throttling.
 - Exclusion-list features append `ProcessExclusionRule`.
 - Timer Resolution does not use process failure suppression.
 - Runtime restoration is a product safety barrier: every reversible runtime

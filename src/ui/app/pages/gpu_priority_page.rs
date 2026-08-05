@@ -32,7 +32,10 @@ impl WinderustApp {
             vec![
                 setting_group_action_row(
                     "gpu-priority-background-default-row",
-                    t!("gpu_priority.background_default").to_string(),
+                    priority_level_label(
+                        PriorityLevelTarget::Background,
+                        t!("nav.gpu_priority").to_string(),
+                    ),
                     self.render_gpu_priority_default_selector(
                         GpuPriorityDefaultTarget::Background,
                         self.settings.gpu_priority.background_priority,
@@ -80,7 +83,10 @@ impl WinderustApp {
                 vec![
                     setting_group_action_row(
                         "gpu-priority-foreground-default-row",
-                        t!("gpu_priority.foreground_default").to_string(),
+                        priority_level_label(
+                            PriorityLevelTarget::FocusProcess,
+                            t!("nav.gpu_priority").to_string(),
+                        ),
                         self.render_gpu_priority_default_selector(
                             GpuPriorityDefaultTarget::Foreground,
                             self.settings.gpu_priority.foreground_priority,
@@ -99,6 +105,59 @@ impl WinderustApp {
                             self.settings.gpu_priority.preserve_foreground_priority,
                             cx.listener(|app, checked, _, cx| {
                                 app.settings.gpu_priority.preserve_foreground_priority = *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                ],
+                window,
+                cx,
+            ))
+            .child(setting_group_with_help(
+                SettingGroupTarget::GpuPriorityVisibleWindowDetection,
+                (
+                    t!("common.visible_window_detection").to_string(),
+                    t!("common.visible_window_detection_help").to_string(),
+                ),
+                setting_group_switch_action(
+                    "gpu-priority-visible-window-detection-toggle",
+                    self.settings.gpu_priority.visible_window_detection_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.gpu_priority.visible_window_detection_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(
+                    SettingGroupTarget::GpuPriorityVisibleWindowDetection,
+                ),
+                vec![
+                    setting_group_action_row(
+                        "gpu-priority-visible-window-default-row",
+                        priority_level_label(
+                            PriorityLevelTarget::VisibleWindow,
+                            t!("nav.gpu_priority").to_string(),
+                        ),
+                        self.render_gpu_priority_default_selector(
+                            GpuPriorityDefaultTarget::VisibleWindow,
+                            self.settings.gpu_priority.visible_window_priority,
+                            self.settings.gpu_priority.visible_window_detection_enabled,
+                            window,
+                            cx,
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "gpu-priority-preserve-visible-window-row",
+                        t!("common.preserve_visible_window_priority").to_string(),
+                        setting_group_switch_action(
+                            "gpu-priority-preserve-visible-window-toggle",
+                            self.settings.gpu_priority.preserve_visible_window_priority,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings.gpu_priority.preserve_visible_window_priority =
+                                    *checked;
                                 cx.notify();
                             }),
                         ),
@@ -238,6 +297,7 @@ impl WinderustApp {
     ) -> AnyElement {
         let id = match target {
             GpuPriorityDefaultTarget::Background => "gpu-priority-background-default",
+            GpuPriorityDefaultTarget::VisibleWindow => "gpu-priority-visible-window-default",
             GpuPriorityDefaultTarget::Foreground => "gpu-priority-foreground-default",
         };
         let priorities: &[ProcessGpuPrioritySetting] =
@@ -268,6 +328,9 @@ impl WinderustApp {
                             match target {
                                 GpuPriorityDefaultTarget::Background => {
                                     app.settings.gpu_priority.background_priority = priority;
+                                }
+                                GpuPriorityDefaultTarget::VisibleWindow => {
+                                    app.settings.gpu_priority.visible_window_priority = priority;
                                 }
                                 GpuPriorityDefaultTarget::Foreground => {
                                     app.settings.gpu_priority.foreground_priority = priority;

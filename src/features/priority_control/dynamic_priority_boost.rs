@@ -20,11 +20,13 @@ use crate::{
         ensure_process_action_target_access, is_foreground_process, list_processes,
         process_count_label, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_process_name,
-        unique_app_names, ProcessActionAccess, ProcessActionTarget,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        unique_app_names, visible_window_process_ids, ProcessActionAccess, ProcessActionTarget,
+        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
+
+use super::PriorityProcessTier;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DynamicPriorityBoostSnapshot {
@@ -134,6 +136,22 @@ impl DynamicPriorityBoostManager {
             }
         };
 
+        let visible_processes = if settings.visible_window_detection_enabled {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failures = self.clear_all(action_log, "visible windows are unavailable");
+                return DynamicPriorityBoostSnapshot {
+                    enabled: true,
+                    failed_processes: failures.count,
+                    message: "Paused: visible windows are unavailable.".to_owned(),
+                    last_error: failures.last_error,
+                    ..Default::default()
+                };
+            };
+            ProtectedProcesses::capture(&processes, false, None, process_ids)
+        } else {
+            ProtectedProcesses::default()
+        };
+
         let scanned_processes = processes.len();
         let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
@@ -169,17 +187,21 @@ impl DynamicPriorityBoostManager {
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
                 );
+            let visible_window = !foreground
+                && settings.visible_window_detection_enabled
+                && visible_processes.contains(process.id, &executable_path);
+            let default_boost = PriorityProcessTier::from_flags(foreground, visible_window).select(
+                settings.foreground_boost,
+                settings.visible_window_boost,
+                settings.background_boost,
+            );
             let configured_override =
                 settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
             let boost = match configured_override {
-                Some(Some(ProcessDynamicPriorityBoostSetting::Auto)) if foreground => {
-                    settings.foreground_boost
-                }
-                Some(Some(ProcessDynamicPriorityBoostSetting::Auto)) => settings.background_boost,
+                Some(Some(ProcessDynamicPriorityBoostSetting::Auto)) => default_boost,
                 Some(Some(boost)) => boost,
                 Some(None) => continue,
-                None if foreground => settings.foreground_boost,
-                None => settings.background_boost,
+                None => default_boost,
             };
             if let Some(disabled) = boost.disabled_flag() {
                 target_processes.insert(

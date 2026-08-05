@@ -186,7 +186,9 @@ pub(super) fn workload_engine_io_priority_settings(
             settings.workload_engine.lower_background_io_priority.into();
     }
     io_priority.foreground_detection_enabled = true;
+    io_priority.visible_window_detection_enabled = true;
     io_priority.preserve_foreground_priority = true;
+    io_priority.preserve_visible_window_priority = true;
     io_priority.preserve_background_priority = true;
     io_priority
 }
@@ -208,7 +210,9 @@ pub(super) fn effective_thread_priority_settings(
             .workload_engine_thread_priority
             .clone();
         thread_priority.foreground_detection_enabled = true;
+        thread_priority.visible_window_detection_enabled = true;
         thread_priority.preserve_foreground_priority = true;
+        thread_priority.preserve_visible_window_priority = true;
         thread_priority.preserve_background_priority = true;
         thread_priority
             .exclusions
@@ -234,6 +238,7 @@ pub(super) fn effective_dynamic_priority_boost_settings(
             .workload_engine_dynamic_priority_boost
             .clone();
         dynamic_priority_boost.foreground_detection_enabled = true;
+        dynamic_priority_boost.visible_window_detection_enabled = true;
         dynamic_priority_boost
             .exclusions
             .extend(settings.workload_engine.workload_engine_exclusions.clone());
@@ -258,7 +263,9 @@ pub(super) fn effective_gpu_priority_settings(
             .workload_engine_gpu_priority
             .clone();
         gpu_priority.foreground_detection_enabled = true;
+        gpu_priority.visible_window_detection_enabled = true;
         gpu_priority.preserve_foreground_priority = true;
+        gpu_priority.preserve_visible_window_priority = true;
         gpu_priority.preserve_background_priority = true;
         gpu_priority
             .exclusions
