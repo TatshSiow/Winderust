@@ -231,7 +231,6 @@ pub(crate) fn run_watchdog_if_requested() -> bool {
     if std::env::args().nth(1).as_deref() != Some(WATCHDOG_ARGUMENT) {
         return false;
     }
-    let _ = super::privilege::enable_debug_privilege();
     let mut entries = Vec::new();
     let mut pending = Vec::new();
     let mut jobs = HashMap::new();
@@ -344,7 +343,6 @@ pub(crate) fn initialize() {
 }
 
 fn initialize_inner() -> Result<(), String> {
-    let _ = super::privilege::enable_debug_privilege();
     let (child, stdin, stdout) = spawn_watchdog()?;
     let runtime = RecoveryRuntime {
         child,

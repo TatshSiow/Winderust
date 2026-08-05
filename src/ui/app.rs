@@ -813,7 +813,6 @@ impl WinderustApp {
                 }
             });
         let adaptive_plan_recovery_error = restore_stale_adaptive_plans().err();
-        let debug_privilege_error = privilege::enable_debug_privilege().err();
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
@@ -828,9 +827,6 @@ impl WinderustApp {
                 t!("status.adaptive_power_plan_recovery_failed", error = error).to_string();
         }
         if let Some(error) = settings_load_error {
-            initial_processor_power.status_message = error;
-        }
-        if let Some(error) = debug_privilege_error {
             initial_processor_power.status_message = error;
         }
         if let Some(error) = crash_recovery::startup_error() {
