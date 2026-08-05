@@ -1,20 +1,13 @@
 use crate::ui::app::*;
 
-#[derive(Clone, Copy)]
-pub(in crate::ui::app) enum PriorityLevelTarget {
-    FocusProcess,
-    VisibleWindow,
-    Background,
-}
-
 pub(in crate::ui::app) fn priority_level_label(
-    target: PriorityLevelTarget,
+    target: PriorityDefaultTarget,
     priority_type: String,
 ) -> String {
     let target = match target {
-        PriorityLevelTarget::FocusProcess => t!("common.focus_process"),
-        PriorityLevelTarget::VisibleWindow => t!("common.visible_window"),
-        PriorityLevelTarget::Background => t!("common.background_process"),
+        PriorityDefaultTarget::Foreground => t!("common.focus_process"),
+        PriorityDefaultTarget::VisibleWindow => t!("common.visible_window"),
+        PriorityDefaultTarget::Background => t!("common.background_process"),
     };
     format!("{target} {priority_type} {}", t!("common.level"))
 }

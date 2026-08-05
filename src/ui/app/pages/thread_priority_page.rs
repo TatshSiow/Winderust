@@ -32,11 +32,11 @@ impl WinderustApp {
                 setting_group_action_row(
                     "thread-priority-background-default-row",
                     priority_level_label(
-                        PriorityLevelTarget::Background,
+                        PriorityDefaultTarget::Background,
                         t!("nav.thread_priority").to_string(),
                     ),
                     self.render_thread_priority_default_selector(
-                        ThreadPriorityDefaultTarget::Background,
+                        PriorityDefaultTarget::Background,
                         self.settings.thread_priority.background_priority,
                         enabled,
                         window,
@@ -85,11 +85,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "thread-priority-foreground-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::FocusProcess,
+                            PriorityDefaultTarget::Foreground,
                             t!("nav.thread_priority").to_string(),
                         ),
                         self.render_thread_priority_default_selector(
-                            ThreadPriorityDefaultTarget::Foreground,
+                            PriorityDefaultTarget::Foreground,
                             self.settings.thread_priority.foreground_priority,
                             self.settings.thread_priority.foreground_detection_enabled,
                             window,
@@ -142,11 +142,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "thread-priority-visible-window-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             t!("nav.thread_priority").to_string(),
                         ),
                         self.render_thread_priority_default_selector(
-                            ThreadPriorityDefaultTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             self.settings.thread_priority.visible_window_priority,
                             self.settings
                                 .thread_priority
@@ -292,16 +292,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_thread_priority_default_selector(
         &self,
-        target: ThreadPriorityDefaultTarget,
+        target: PriorityDefaultTarget,
         selected_priority: ProcessThreadPrioritySetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            ThreadPriorityDefaultTarget::Background => "thread-priority-background-default",
-            ThreadPriorityDefaultTarget::VisibleWindow => "thread-priority-visible-window-default",
-            ThreadPriorityDefaultTarget::Foreground => "thread-priority-foreground-default",
+            PriorityDefaultTarget::Background => "thread-priority-background-default",
+            PriorityDefaultTarget::VisibleWindow => "thread-priority-visible-window-default",
+            PriorityDefaultTarget::Foreground => "thread-priority-foreground-default",
         };
         let priorities: &[ProcessThreadPrioritySetting] =
             if self.settings.advanced.expose_all_priority_values {
@@ -329,13 +329,13 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                ThreadPriorityDefaultTarget::Background => {
+                                PriorityDefaultTarget::Background => {
                                     app.settings.thread_priority.background_priority = priority;
                                 }
-                                ThreadPriorityDefaultTarget::VisibleWindow => {
+                                PriorityDefaultTarget::VisibleWindow => {
                                     app.settings.thread_priority.visible_window_priority = priority;
                                 }
-                                ThreadPriorityDefaultTarget::Foreground => {
+                                PriorityDefaultTarget::Foreground => {
                                     app.settings.thread_priority.foreground_priority = priority;
                                 }
                             }

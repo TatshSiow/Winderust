@@ -32,11 +32,11 @@ impl WinderustApp {
                 setting_group_action_row(
                     "memory-priority-background-default-row",
                     priority_level_label(
-                        PriorityLevelTarget::Background,
+                        PriorityDefaultTarget::Background,
                         t!("nav.memory_priority").to_string(),
                     ),
                     self.render_memory_priority_default_selector(
-                        MemoryPriorityDefaultTarget::Background,
+                        PriorityDefaultTarget::Background,
                         self.settings.memory_priority.background_priority,
                         enabled,
                         window,
@@ -85,11 +85,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "memory-priority-foreground-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::FocusProcess,
+                            PriorityDefaultTarget::Foreground,
                             t!("nav.memory_priority").to_string(),
                         ),
                         self.render_memory_priority_default_selector(
-                            MemoryPriorityDefaultTarget::Foreground,
+                            PriorityDefaultTarget::Foreground,
                             self.settings.memory_priority.foreground_priority,
                             self.settings.memory_priority.foreground_detection_enabled,
                             window,
@@ -142,11 +142,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "memory-priority-visible-window-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             t!("nav.memory_priority").to_string(),
                         ),
                         self.render_memory_priority_default_selector(
-                            MemoryPriorityDefaultTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             self.settings.memory_priority.visible_window_priority,
                             self.settings
                                 .memory_priority
@@ -255,16 +255,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_memory_priority_default_selector(
         &self,
-        target: MemoryPriorityDefaultTarget,
+        target: PriorityDefaultTarget,
         selected_priority: ProcessMemoryPrioritySetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            MemoryPriorityDefaultTarget::Background => "memory-priority-background-default",
-            MemoryPriorityDefaultTarget::VisibleWindow => "memory-priority-visible-window-default",
-            MemoryPriorityDefaultTarget::Foreground => "memory-priority-foreground-default",
+            PriorityDefaultTarget::Background => "memory-priority-background-default",
+            PriorityDefaultTarget::VisibleWindow => "memory-priority-visible-window-default",
+            PriorityDefaultTarget::Foreground => "memory-priority-foreground-default",
         };
         let dropdown = self.render_dropdown_select(
             id,
@@ -286,13 +286,13 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                MemoryPriorityDefaultTarget::Background => {
+                                PriorityDefaultTarget::Background => {
                                     app.settings.memory_priority.background_priority = priority;
                                 }
-                                MemoryPriorityDefaultTarget::VisibleWindow => {
+                                PriorityDefaultTarget::VisibleWindow => {
                                     app.settings.memory_priority.visible_window_priority = priority;
                                 }
-                                MemoryPriorityDefaultTarget::Foreground => {
+                                PriorityDefaultTarget::Foreground => {
                                     app.settings.memory_priority.foreground_priority = priority;
                                 }
                             }

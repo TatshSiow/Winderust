@@ -33,11 +33,11 @@ impl WinderustApp {
                 setting_group_action_row(
                     "gpu-priority-background-default-row",
                     priority_level_label(
-                        PriorityLevelTarget::Background,
+                        PriorityDefaultTarget::Background,
                         t!("nav.gpu_priority").to_string(),
                     ),
                     self.render_gpu_priority_default_selector(
-                        GpuPriorityDefaultTarget::Background,
+                        PriorityDefaultTarget::Background,
                         self.settings.gpu_priority.background_priority,
                         enabled,
                         window,
@@ -84,11 +84,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "gpu-priority-foreground-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::FocusProcess,
+                            PriorityDefaultTarget::Foreground,
                             t!("nav.gpu_priority").to_string(),
                         ),
                         self.render_gpu_priority_default_selector(
-                            GpuPriorityDefaultTarget::Foreground,
+                            PriorityDefaultTarget::Foreground,
                             self.settings.gpu_priority.foreground_priority,
                             self.settings.gpu_priority.foreground_detection_enabled,
                             window,
@@ -136,11 +136,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "gpu-priority-visible-window-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             t!("nav.gpu_priority").to_string(),
                         ),
                         self.render_gpu_priority_default_selector(
-                            GpuPriorityDefaultTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             self.settings.gpu_priority.visible_window_priority,
                             self.settings.gpu_priority.visible_window_detection_enabled,
                             window,
@@ -289,16 +289,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_gpu_priority_default_selector(
         &self,
-        target: GpuPriorityDefaultTarget,
+        target: PriorityDefaultTarget,
         selected_priority: ProcessGpuPrioritySetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            GpuPriorityDefaultTarget::Background => "gpu-priority-background-default",
-            GpuPriorityDefaultTarget::VisibleWindow => "gpu-priority-visible-window-default",
-            GpuPriorityDefaultTarget::Foreground => "gpu-priority-foreground-default",
+            PriorityDefaultTarget::Background => "gpu-priority-background-default",
+            PriorityDefaultTarget::VisibleWindow => "gpu-priority-visible-window-default",
+            PriorityDefaultTarget::Foreground => "gpu-priority-foreground-default",
         };
         let priorities: &[ProcessGpuPrioritySetting] =
             if self.settings.advanced.expose_all_priority_values {
@@ -326,13 +326,13 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                GpuPriorityDefaultTarget::Background => {
+                                PriorityDefaultTarget::Background => {
                                     app.settings.gpu_priority.background_priority = priority;
                                 }
-                                GpuPriorityDefaultTarget::VisibleWindow => {
+                                PriorityDefaultTarget::VisibleWindow => {
                                     app.settings.gpu_priority.visible_window_priority = priority;
                                 }
-                                GpuPriorityDefaultTarget::Foreground => {
+                                PriorityDefaultTarget::Foreground => {
                                     app.settings.gpu_priority.foreground_priority = priority;
                                 }
                             }

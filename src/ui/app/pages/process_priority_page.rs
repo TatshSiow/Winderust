@@ -32,11 +32,11 @@ impl WinderustApp {
                 setting_group_action_row(
                     "process-priority-background-default-row",
                     priority_level_label(
-                        PriorityLevelTarget::Background,
+                        PriorityDefaultTarget::Background,
                         t!("nav.process_priority").to_string(),
                     ),
                     self.render_process_priority_default_selector(
-                        ProcessPriorityDefaultTarget::Background,
+                        PriorityDefaultTarget::Background,
                         self.settings.process_priority.background_priority,
                         enabled,
                         window,
@@ -85,11 +85,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "process-priority-foreground-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::FocusProcess,
+                            PriorityDefaultTarget::Foreground,
                             t!("nav.process_priority").to_string(),
                         ),
                         self.render_process_priority_default_selector(
-                            ProcessPriorityDefaultTarget::Foreground,
+                            PriorityDefaultTarget::Foreground,
                             self.settings.process_priority.foreground_priority,
                             self.settings.process_priority.foreground_detection_enabled,
                             window,
@@ -142,11 +142,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "process-priority-visible-window-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             t!("nav.process_priority").to_string(),
                         ),
                         self.render_process_priority_default_selector(
-                            ProcessPriorityDefaultTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             self.settings.process_priority.visible_window_priority,
                             self.settings
                                 .process_priority
@@ -288,18 +288,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_process_priority_default_selector(
         &self,
-        target: ProcessPriorityDefaultTarget,
+        target: PriorityDefaultTarget,
         selected_priority: ProcessPrioritySetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            ProcessPriorityDefaultTarget::Background => "process-priority-background-default",
-            ProcessPriorityDefaultTarget::VisibleWindow => {
-                "process-priority-visible-window-default"
-            }
-            ProcessPriorityDefaultTarget::Foreground => "process-priority-foreground-default",
+            PriorityDefaultTarget::Background => "process-priority-background-default",
+            PriorityDefaultTarget::VisibleWindow => "process-priority-visible-window-default",
+            PriorityDefaultTarget::Foreground => "process-priority-foreground-default",
         };
         let priorities: &[ProcessPrioritySetting] =
             if self.settings.advanced.expose_all_priority_values {
@@ -327,14 +325,14 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                ProcessPriorityDefaultTarget::Background => {
+                                PriorityDefaultTarget::Background => {
                                     app.settings.process_priority.background_priority = priority;
                                 }
-                                ProcessPriorityDefaultTarget::VisibleWindow => {
+                                PriorityDefaultTarget::VisibleWindow => {
                                     app.settings.process_priority.visible_window_priority =
                                         priority;
                                 }
-                                ProcessPriorityDefaultTarget::Foreground => {
+                                PriorityDefaultTarget::Foreground => {
                                     app.settings.process_priority.foreground_priority = priority;
                                 }
                             }

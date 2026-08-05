@@ -31,11 +31,11 @@ impl WinderustApp {
             vec![setting_group_action_row(
                 "dynamic-priority-boost-background-default-row",
                 priority_level_label(
-                    PriorityLevelTarget::Background,
+                    PriorityDefaultTarget::Background,
                     t!("nav.dynamic_priority_boost").to_string(),
                 ),
                 self.render_dynamic_priority_boost_default_selector(
-                    DynamicPriorityBoostDefaultTarget::Background,
+                    PriorityDefaultTarget::Background,
                     self.settings.dynamic_priority_boost.background_boost,
                     enabled,
                     window,
@@ -72,11 +72,11 @@ impl WinderustApp {
                 vec![setting_group_action_row(
                     "dynamic-priority-boost-foreground-default-row",
                     priority_level_label(
-                        PriorityLevelTarget::FocusProcess,
+                        PriorityDefaultTarget::Foreground,
                         t!("nav.dynamic_priority_boost").to_string(),
                     ),
                     self.render_dynamic_priority_boost_default_selector(
-                        DynamicPriorityBoostDefaultTarget::Foreground,
+                        PriorityDefaultTarget::Foreground,
                         self.settings.dynamic_priority_boost.foreground_boost,
                         self.settings
                             .dynamic_priority_boost
@@ -114,11 +114,11 @@ impl WinderustApp {
                 vec![setting_group_action_row(
                     "dynamic-priority-boost-visible-window-default-row",
                     priority_level_label(
-                        PriorityLevelTarget::VisibleWindow,
+                        PriorityDefaultTarget::VisibleWindow,
                         t!("nav.dynamic_priority_boost").to_string(),
                     ),
                     self.render_dynamic_priority_boost_default_selector(
-                        DynamicPriorityBoostDefaultTarget::VisibleWindow,
+                        PriorityDefaultTarget::VisibleWindow,
                         self.settings.dynamic_priority_boost.visible_window_boost,
                         self.settings
                             .dynamic_priority_boost
@@ -244,22 +244,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_dynamic_priority_boost_default_selector(
         &self,
-        target: DynamicPriorityBoostDefaultTarget,
+        target: PriorityDefaultTarget,
         selected_boost: ProcessDynamicPriorityBoostSetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            DynamicPriorityBoostDefaultTarget::Background => {
-                "dynamic-priority-boost-background-default"
-            }
-            DynamicPriorityBoostDefaultTarget::VisibleWindow => {
-                "dynamic-priority-boost-visible-window-default"
-            }
-            DynamicPriorityBoostDefaultTarget::Foreground => {
-                "dynamic-priority-boost-foreground-default"
-            }
+            PriorityDefaultTarget::Background => "dynamic-priority-boost-background-default",
+            PriorityDefaultTarget::VisibleWindow => "dynamic-priority-boost-visible-window-default",
+            PriorityDefaultTarget::Foreground => "dynamic-priority-boost-foreground-default",
         };
         self.render_dropdown_select(
             id,
@@ -281,14 +275,14 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                DynamicPriorityBoostDefaultTarget::Background => {
+                                PriorityDefaultTarget::Background => {
                                     app.settings.dynamic_priority_boost.background_boost = boost;
                                 }
-                                DynamicPriorityBoostDefaultTarget::VisibleWindow => {
+                                PriorityDefaultTarget::VisibleWindow => {
                                     app.settings.dynamic_priority_boost.visible_window_boost =
                                         boost;
                                 }
-                                DynamicPriorityBoostDefaultTarget::Foreground => {
+                                PriorityDefaultTarget::Foreground => {
                                     app.settings.dynamic_priority_boost.foreground_boost = boost;
                                 }
                             }

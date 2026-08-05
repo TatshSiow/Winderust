@@ -32,11 +32,11 @@ impl WinderustApp {
                 setting_group_action_row(
                     "io-priority-background-default-row",
                     priority_level_label(
-                        PriorityLevelTarget::Background,
+                        PriorityDefaultTarget::Background,
                         t!("nav.io_priority").to_string(),
                     ),
                     self.render_io_priority_default_selector(
-                        IoPriorityDefaultTarget::Background,
+                        PriorityDefaultTarget::Background,
                         self.settings.io_priority.background_priority,
                         enabled,
                         window,
@@ -83,11 +83,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "io-priority-foreground-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::FocusProcess,
+                            PriorityDefaultTarget::Foreground,
                             t!("nav.io_priority").to_string(),
                         ),
                         self.render_io_priority_default_selector(
-                            IoPriorityDefaultTarget::Foreground,
+                            PriorityDefaultTarget::Foreground,
                             self.settings.io_priority.foreground_priority,
                             self.settings.io_priority.foreground_detection_enabled,
                             window,
@@ -135,11 +135,11 @@ impl WinderustApp {
                     setting_group_action_row(
                         "io-priority-visible-window-default-row",
                         priority_level_label(
-                            PriorityLevelTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             t!("nav.io_priority").to_string(),
                         ),
                         self.render_io_priority_default_selector(
-                            IoPriorityDefaultTarget::VisibleWindow,
+                            PriorityDefaultTarget::VisibleWindow,
                             self.settings.io_priority.visible_window_priority,
                             self.settings.io_priority.visible_window_detection_enabled,
                             window,
