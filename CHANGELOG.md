@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 
 ### Changed
 
-- Replace the mixed Background CPU Restriction and Core Steering with separate CPU Sets (Soft) and Processor Affinity (Hard).
+- Replace the previous mixed CPU control designs with separate CPU Sets (Soft) and Processor Affinity (Hard).
 - Allow each CPU allocation rule to select presets or individual logical processors.
 - Improve Process List context menus, grouped-process actions, suspend controls, and process-tree handling.
 - Prevent the same application from using CPU Sets (Soft) and Processor Affinity (Hard) simultaneously.
