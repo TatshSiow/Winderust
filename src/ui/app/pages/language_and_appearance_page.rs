@@ -11,6 +11,7 @@ impl WinderustApp {
             .child(self.render_accent_selector(window, cx))
             .child(self.render_theme_selector(window, cx))
             .child(self.render_animation_selector(window, cx))
+            .child(self.render_navigation_indicator_settings(cx))
             .into_any_element()
     }
 }

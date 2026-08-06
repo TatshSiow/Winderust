@@ -88,133 +88,109 @@ impl WinderustApp {
 
         match target.kind {
             ListItemRemovalKind::ByForegroundRule => {
-                if index < self.settings.by_foreground.rules.len() {
-                    self.settings.by_foreground.rules.remove(index);
-                }
+                remove_at(&mut self.settings.by_foreground.rules, index);
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
             ListItemRemovalKind::ByTimeRule => {
-                if index < self.settings.by_time.rules.len() {
-                    self.settings.by_time.rules.remove(index);
-                }
+                remove_at(&mut self.settings.by_time.rules, index);
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
             ListItemRemovalKind::ByCpuLoadRule => {
-                if index < self.settings.by_cpu_load.rules.len() {
-                    self.settings.by_cpu_load.rules.remove(index);
-                }
+                remove_at(&mut self.settings.by_cpu_load.rules, index);
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
             ListItemRemovalKind::BackgroundEfficiencyExclusion => {
-                if index < self.settings.background_efficiency.custom_rules.len() {
-                    self.settings
-                        .background_efficiency
-                        .custom_rules
-                        .remove(index);
-                }
+                remove_at(&mut self.settings.background_efficiency.custom_rules, index);
             }
             ListItemRemovalKind::AppSuspensionRule => {
                 if let Some(rule) = self.settings.app_suspension.suspendable_apps.get(index) {
                     self.expanded_rule_cards
                         .remove(&RuleCardTarget::AppSuspension(rule.executable_path.clone()));
                 }
-                if index < self.settings.app_suspension.suspendable_apps.len() {
-                    self.settings.app_suspension.suspendable_apps.remove(index);
-                }
+                remove_at(&mut self.settings.app_suspension.suspendable_apps, index);
             }
-            ListItemRemovalKind::BackgroundCpuExclusion => {
-                if index < self.settings.background_cpu_restriction.exclusions.len() {
-                    self.settings
-                        .background_cpu_restriction
-                        .exclusions
-                        .remove(index);
+            ListItemRemovalKind::CpuSetsSoftRule => {
+                if let Some(rule) = self.settings.cpu_sets_soft.rules.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::CpuSetsSoft(rule.executable_path.clone()));
                 }
+                remove_at(&mut self.settings.cpu_sets_soft.rules, index);
+            }
+            ListItemRemovalKind::ProcessorAffinityHardRule => {
+                if let Some(rule) = self.settings.processor_affinity_hard.rules.get(index) {
+                    self.expanded_rule_cards
+                        .remove(&RuleCardTarget::ProcessorAffinityHard(
+                            rule.executable_path.clone(),
+                        ));
+                }
+                remove_at(&mut self.settings.processor_affinity_hard.rules, index);
             }
             ListItemRemovalKind::CoreLimiterRule => {
                 if let Some(rule) = self.settings.core_limiter.rules.get(index) {
                     self.expanded_rule_cards
                         .remove(&RuleCardTarget::CoreLimiter(rule.executable_path.clone()));
                 }
-                if index < self.settings.core_limiter.rules.len() {
-                    self.settings.core_limiter.rules.remove(index);
-                }
+                remove_at(&mut self.settings.core_limiter.rules, index);
             }
             ListItemRemovalKind::ByRunningAppRule => {
-                if index < self.settings.by_running_app.rules.len() {
-                    self.settings.by_running_app.rules.remove(index);
-                }
+                remove_at(&mut self.settings.by_running_app.rules, index);
                 self.editing_rule_title = None;
                 self.expanded_rule_cards.clear();
             }
             ListItemRemovalKind::WorkloadEngineExclusion => {
-                if index
-                    < self
-                        .settings
-                        .workload_engine
-                        .workload_engine_exclusions
-                        .len()
-                {
-                    self.settings
-                        .workload_engine
-                        .workload_engine_exclusions
-                        .remove(index);
-                }
+                remove_at(
+                    &mut self.settings.workload_engine.workload_engine_exclusions,
+                    index,
+                );
             }
             ListItemRemovalKind::ProcessPriorityExclusion => {
-                if index < self.settings.process_priority.exclusions.len() {
-                    self.settings.process_priority.exclusions.remove(index);
-                }
+                remove_at(&mut self.settings.process_priority.exclusions, index);
             }
             ListItemRemovalKind::ThreadPriorityExclusion => {
-                if index < self.settings.thread_priority.exclusions.len() {
-                    self.settings.thread_priority.exclusions.remove(index);
-                }
+                remove_at(&mut self.settings.thread_priority.exclusions, index);
             }
             ListItemRemovalKind::DynamicPriorityBoostExclusion => {
-                if index < self.settings.dynamic_priority_boost.exclusions.len() {
-                    self.settings
-                        .dynamic_priority_boost
-                        .exclusions
-                        .remove(index);
-                }
+                remove_at(&mut self.settings.dynamic_priority_boost.exclusions, index);
             }
             ListItemRemovalKind::IoPriorityExclusion => {
-                if index < self.settings.io_priority.exclusions.len() {
-                    self.settings.io_priority.exclusions.remove(index);
-                }
+                remove_at(&mut self.settings.io_priority.exclusions, index);
             }
             ListItemRemovalKind::GpuPriorityExclusion => {
-                if index < self.settings.gpu_priority.exclusions.len() {
-                    self.settings.gpu_priority.exclusions.remove(index);
-                }
+                remove_at(&mut self.settings.gpu_priority.exclusions, index);
             }
             ListItemRemovalKind::MemoryPriorityExclusion => {
-                if index < self.settings.memory_priority.exclusions.len() {
-                    self.settings.memory_priority.exclusions.remove(index);
-                }
+                remove_at(&mut self.settings.memory_priority.exclusions, index);
             }
             ListItemRemovalKind::TimerResolutionRule => {
-                if index < self.settings.timer_resolution.rules.len() {
-                    self.settings.timer_resolution.rules.remove(index);
-                }
+                remove_at(&mut self.settings.timer_resolution.rules, index);
             }
             ListItemRemovalKind::MemoryTrimExclusion => {
-                if index < self.settings.memory_trim.exclusions.len() {
-                    self.settings.memory_trim.exclusions.remove(index);
-                }
-            }
-            ListItemRemovalKind::CoreSteeringRule => {
-                if let Some(rule) = self.settings.core_steering.rules.get(index) {
-                    self.expanded_rule_cards
-                        .remove(&RuleCardTarget::CoreSteering(rule.executable_path.clone()));
-                }
-                if index < self.settings.core_steering.rules.len() {
-                    self.settings.core_steering.rules.remove(index);
-                }
+                remove_at(&mut self.settings.memory_trim.exclusions, index);
             }
         }
+    }
+}
+
+fn remove_at<T>(items: &mut Vec<T>, index: usize) {
+    if index < items.len() {
+        items.remove(index);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_at;
+
+    #[test]
+    fn remove_at_removes_only_the_requested_item_and_ignores_stale_indices() {
+        let mut items = vec!["first", "second"];
+
+        remove_at(&mut items, 1);
+        remove_at(&mut items, 4);
+
+        assert_eq!(items, ["first"]);
     }
 }

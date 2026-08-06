@@ -12,7 +12,11 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 
 - Keep the app shell as custom title bar, left navigation, and right work area.
 - The title bar is compact: app icon/name, short description, native-feeling window controls.
-- The sidebar is fixed-width, searchable, and grouped by product area through `Page::sections()`.
+- The sidebar is grouped by product area through `Page::sections()`. It is
+  searchable when expanded and keeps a search action in its remembered compact
+  icon rail; the quiet navigation-styled toggle stays below a divider in normal
+  sidebar flow rather than floating over content. Keep icon and row geometry
+  stable across the animated expanded/compact transition.
 - The main page area scrolls vertically and keeps content constrained with stable width behavior.
 - Navigation labels and page sections live in `src/ui.rs`; page rendering
   dispatch stays in `WinderustApp::render_page` in `src/ui/app/pages/app_shell.rs`.
@@ -68,9 +72,13 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - Keep the User column at the right edge. Show the exact process token account when available. When Windows denies token access, show `Unavailable · S#` with an explanatory tooltip; identify kernel pseudo-processes as `Windows kernel`.
 - Keep Windows-critical processes visible as read-only `Protected system process` rows in Process List, omit them from every Add process picker, and fail closed when criticality cannot be verified.
 - For other inaccessible rows, show `Administrator required` before elevation and `Access denied` when Winderust is already elevated.
-- When elevated, enable Task Manager-level service access before process discovery and automation while retaining every critical, built-in, identity, and protected-process barrier.
+- When elevated, use normal Windows process permissions for discovery and automation while retaining every critical, built-in, identity, and protected-process barrier.
+- With Advanced Controls enabled, keep Suspend/Resume present in the context menu and use the existing disabled style when the selected process cannot be safely suspended. Grouped rows apply the action to every captured process in the group. Keep unavailable App Suspension picker candidates visible, disabled, and explicitly labeled `Unavailable`. App Suspension safety must not disable unrelated process controls.
+- Stacked Process List parent rows expose only `Stop process tree`, covering every process in the stack and the union of their descendants; their expanded sub-items expose both stop actions. Non-stacked rows always expose `Stop process` and expose `Stop process tree` only while the selected process has a child in the current process snapshot.
 - Report `Efficiency mode` only when the process has both EcoQoS and `IDLE_PRIORITY_CLASS`, matching Task Manager rather than treating EcoQoS alone as full Efficiency mode.
 - Column visibility belongs in the existing dropdown/checkbox pattern.
+- Language and Appearance owns the enabled-feature counts toggle. When enabled, expanded navigation shows numeric pills beside Winderust Features, Power Plan Control, Priority Control, and CPU Control based on each section's enabled modules; collapsed navigation keeps the pills hidden to preserve icon alignment.
+- Language and Appearance separately owns the feature-card status toggle. When enabled, shared landing and search-result cards show Enabled or Disabled pills only for pages backed by a top-level feature switch; pages without a single enabled state remain unbadged.
 - Editable policy cells should use inline dropdown controls. Avoid modal flows for simple policy edits.
 - Preserve fixed column layout calculations and tests when adding columns.
 
@@ -103,4 +111,3 @@ Prefer visible state, compact controls, and predictable rows over large illustra
 - No new icon system while Lucide assets are active.
 - No custom table abstraction unless the current process-list helpers become impossible to maintain.
 - No UI-only refactor that moves many unrelated pages at once.
-

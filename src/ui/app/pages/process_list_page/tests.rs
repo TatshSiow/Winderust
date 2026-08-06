@@ -43,6 +43,7 @@ fn inaccessible_process_filter_matches_process_action_safety() {
         parent_id: None,
         session_id: Some(1),
         user_name: Some("User".to_owned()),
+        is_service_account: None,
         is_critical: Some(false),
         can_set_information: true,
         name: "app.exe".to_owned(),
@@ -76,6 +77,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
             parent_id: None,
             session_id: Some(0),
             user_name: Some("SYSTEM".to_owned()),
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "service.exe".to_owned(),
@@ -86,6 +88,7 @@ fn process_list_user_column_is_last_and_groups_mixed_users() {
             parent_id: None,
             session_id: Some(1),
             user_name: Some("User".to_owned()),
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "service.exe".to_owned(),
@@ -173,6 +176,7 @@ fn process_list_column_layout_fits_headers_and_values() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -183,6 +187,7 @@ fn process_list_column_layout_fits_headers_and_values() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "worker.exe".to_owned(),
@@ -211,6 +216,7 @@ fn process_icon_cache_drops_stale_paths() {
     let candidates = vec![ProcessCandidate {
         name: "kept.exe".to_owned(),
         image_path: kept_path.clone(),
+        has_suspendable_instance: true,
         icon: None,
     }];
 
@@ -228,6 +234,7 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
         parent_id: None,
         session_id: None,
         user_name: None,
+        is_service_account: None,
         is_critical: Some(false),
         can_set_information: true,
         name: "Editor.EXE".to_owned(),
@@ -250,6 +257,7 @@ fn process_list_icon_lookup_handles_mixed_case_windows_path() {
     let candidates = vec![ProcessCandidate {
         name: "Editor.EXE".to_owned(),
         image_path: executable_path,
+        has_suspendable_instance: true,
         icon: Some(Arc::clone(&icon)),
     }];
     let icons_by_path = process_list_icons_by_path(&candidates);
@@ -275,6 +283,7 @@ fn process_list_group_actions_target_the_root_process() {
             parent_id: Some(20),
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -285,6 +294,7 @@ fn process_list_group_actions_target_the_root_process() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -317,6 +327,8 @@ fn stacked_process_actions_attempt_every_available_target() {
         name: "editor.exe".to_owned(),
         executable_path: PathBuf::from(r"C:\Apps\Editor\editor.exe"),
         creation_time: u64::from(id),
+        session_id: Some(1),
+        is_service_account: Some(false),
     };
     let targets = vec![
         Ok(target(10)),
@@ -336,12 +348,29 @@ fn stacked_process_actions_attempt_every_available_target() {
 }
 
 #[test]
+fn stop_action_visibility_matches_process_row_shape() {
+    assert_eq!(
+        process_list_stop_action_visibility(true, false),
+        (true, true)
+    );
+    assert_eq!(
+        process_list_stop_action_visibility(false, true),
+        (true, true)
+    );
+    assert_eq!(
+        process_list_stop_action_visibility(false, false),
+        (true, false)
+    );
+}
+
+#[test]
 fn process_list_search_matches_name_pid_and_path() {
     let process = ProcessInfo {
         id: 4242,
         parent_id: None,
         session_id: None,
         user_name: None,
+        is_service_account: None,
         is_critical: Some(false),
         can_set_information: true,
         name: "Editor.EXE".to_owned(),
@@ -362,6 +391,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -372,6 +402,7 @@ fn process_list_sort_orders_groups_by_name_direction() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "worker.exe".to_owned(),
@@ -404,6 +435,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "game.exe".to_owned(),
@@ -414,6 +446,7 @@ fn process_list_keeps_same_named_executables_in_separate_groups() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "game.exe".to_owned(),
@@ -451,6 +484,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -461,6 +495,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "worker.exe".to_owned(),
@@ -471,6 +506,7 @@ fn process_list_sort_orders_groups_and_children_by_pid() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -524,6 +560,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "editor.exe".to_owned(),
@@ -534,6 +571,7 @@ fn process_list_sort_orders_groups_by_policy_column_value() {
             parent_id: None,
             session_id: None,
             user_name: None,
+            is_service_account: None,
             is_critical: Some(false),
             can_set_information: true,
             name: "worker.exe".to_owned(),
@@ -575,12 +613,51 @@ fn process_policy_summary_carries_typed_active_state() {
     set_process_priority_rule(
         &mut settings.process_priority,
         path,
+        None,
         ProcessPrioritySetting::Idle,
     );
 
     let summary = process_policy_summary(&settings, &[], path);
     assert!(!summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
     assert!(summary.value_is_active(ProcessListColumn::ProcessPriority));
+}
+
+#[test]
+fn process_list_priority_rule_can_update_each_side_independently() {
+    let mut settings = Settings::default();
+    let path = r"C:\Apps\editor.exe";
+
+    set_process_priority_rule(
+        &mut settings.process_priority,
+        path,
+        Some(true),
+        ProcessPrioritySetting::High,
+    );
+    let rule = &settings.process_priority.exclusions[0];
+    assert_eq!(
+        rule.process_priority_override(true),
+        ProcessPrioritySetting::High
+    );
+    assert_eq!(
+        rule.process_priority_override(false),
+        ProcessPrioritySetting::Default
+    );
+
+    set_process_priority_rule(
+        &mut settings.process_priority,
+        path,
+        Some(false),
+        ProcessPrioritySetting::Idle,
+    );
+    let rule = &settings.process_priority.exclusions[0];
+    assert_eq!(
+        rule.process_priority_override(true),
+        ProcessPrioritySetting::High
+    );
+    assert_eq!(
+        rule.process_priority_override(false),
+        ProcessPrioritySetting::Idle
+    );
 }
 
 #[test]
@@ -761,26 +838,24 @@ fn no_smt_mask_selects_one_logical_cpu_per_physical_core() {
         },
     ];
 
-    assert_eq!(core_steering_processors_no_smt_mask(&processors), 0b0101);
+    assert_eq!(cpu_allocation_processors_no_smt_mask(&processors), 0b0101);
 }
 
 #[test]
-fn topology_aware_core_toggle_keeps_one_available_cpu_selected() {
-    let mut mask = (1_u64 << 63) | 0b0001;
-    toggle_affinity_core_with_available_mask(&mut mask, 0, 0b0011);
+fn new_cpu_allocation_rules_select_available_cpus() {
+    let rule = new_cpu_allocation_rule(r"C:\Games\game.exe");
 
-    assert_eq!(mask, 0b0001);
-
-    toggle_affinity_core_with_available_mask(&mut mask, 1, 0b0011);
-    assert_eq!(mask, 0b0011);
-
-    toggle_affinity_core_with_available_mask(&mut mask, 0, 0b0011);
-    assert_eq!(mask, 0b0010);
+    assert_ne!(rule.core_mask, 0);
 }
 
 #[test]
-fn new_core_steering_rules_default_to_soft_cpu_sets() {
-    let rule = new_core_steering_rule("game.exe");
+fn cpu_allocation_rule_cannot_be_added_to_both_pages() {
+    let mut settings = Settings::default();
+    let process = r"C:\Games\game.exe";
+    settings
+        .cpu_sets_soft
+        .rules
+        .push(new_cpu_allocation_rule(process));
 
-    assert_eq!(rule.mode, CoreSteeringMode::Soft);
+    assert!(!can_add_cpu_allocation_process(&settings, process));
 }

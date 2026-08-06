@@ -94,19 +94,18 @@ mod tests {
     use crate::config::{
         AccentSettings, ActionLogMode, AdaptiveEngineSettings, AdvancedSettings, AnimationMode,
         AppLanguage, AppSuspensionRule, AppSuspensionSettings, AppThemeMode,
-        BackgroundCpuRestrictionSettings, BackgroundEfficiencyAggressiveness,
-        BackgroundEfficiencyRule, BackgroundEfficiencySettings, ByActivitySettings, ByCpuLoadRule,
-        ByCpuLoadSettings, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
-        ByRunningAppSettings, ByTimeRule, ByTimeSettings, CoreLimiterRule, CoreLimiterSettings,
-        CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings, CpuRestrictionMode,
-        CpuUsageComparison, DynamicPriorityBoostSettings, ForegroundBoostPriority, GeneralSettings,
-        GpuPrioritySettings, InputDetectionSettings, IoPrioritySettings, MemoryPrioritySettings,
-        MemoryTrimSettings, NetworkThresholdUnit, PowerPlanSettings, PriorityRule,
-        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPrioritySetting,
-        ProcessIoPriority, ProcessIoPrioritySetting, ProcessMemoryPriority,
-        ProcessMemoryPrioritySetting, ProcessPriority, ProcessPrioritySetting,
-        ProcessPrioritySettings, TimerResolutionRule, TimerResolutionSettings, WeekdaySetting,
-        WorkloadEngineSettings,
+        BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
+        ByActivitySettings, ByCpuLoadRule, ByCpuLoadSettings, ByForegroundRule,
+        ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, ByTimeSettings,
+        CoreLimiterRule, CoreLimiterSettings, CpuAllocationRule, CpuAllocationSettings,
+        CpuRestrictionMode, CpuUsageComparison, DynamicPriorityBoostSettings,
+        ForegroundBoostPriority, GeneralSettings, GpuPrioritySettings, InputDetectionSettings,
+        IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+        PowerPlanSettings, PriorityRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
+        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
+        ProcessPrioritySetting, ProcessPrioritySettings, TimerResolutionRule,
+        TimerResolutionSettings, WeekdaySetting, WorkloadEngineSettings,
     };
 
     #[test]
@@ -153,6 +152,9 @@ mod tests {
                 accent: AccentSettings::default(),
                 language: AppLanguage::ZhTw,
                 animation_mode: AnimationMode::Off,
+                navigation_collapsed: true,
+                show_enabled_feature_counts_in_sidebar: false,
+                show_feature_status_on_cards: false,
                 pause_power_plan_switching_while_plugged_in: true,
                 check_interval_ms: 2_500,
             },
@@ -234,7 +236,8 @@ mod tests {
             },
             background_efficiency: BackgroundEfficiencySettings {
                 enabled: true,
-                exclude_foreground_app: false,
+                protect_foreground_app: false,
+                protect_visible_window_apps: true,
                 aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
                 custom_rules: vec![
                     BackgroundEfficiencyRule {
@@ -280,34 +283,37 @@ mod tests {
                     },
                 ],
             },
-            core_steering: CoreSteeringSettings {
+            cpu_sets_soft: CpuAllocationSettings {
                 enabled: true,
-                exclude_foreground_app: true,
+                protect_foreground_app: true,
+                protect_visible_window_apps: false,
                 rules: vec![
-                    CoreSteeringRule {
+                    CpuAllocationRule {
                         enabled: true,
-                        mode: CoreSteeringMode::Hard,
                         executable_path: "backup.exe".to_owned(),
                         core_mask: 0b0011,
                     },
-                    CoreSteeringRule {
+                    CpuAllocationRule {
                         enabled: false,
-                        mode: CoreSteeringMode::Soft,
                         executable_path: "indexer.exe".to_owned(),
                         core_mask: 0b1100,
                     },
-                    CoreSteeringRule {
-                        enabled: true,
-                        mode: CoreSteeringMode::EfficiencyOff,
-                        executable_path: "game.exe".to_owned(),
-                        core_mask: 0,
-                    },
                 ],
             },
-            background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
+            processor_affinity_hard: CpuAllocationSettings {
+                enabled: true,
+                protect_foreground_app: true,
+                protect_visible_window_apps: false,
+                rules: vec![CpuAllocationRule {
+                    enabled: true,
+                    executable_path: "game.exe".to_owned(),
+                    core_mask: 0b0101,
+                }],
+            },
             core_limiter: CoreLimiterSettings {
                 enabled: true,
-                exclude_foreground_app: true,
+                protect_foreground_app: true,
+                protect_visible_window_apps: false,
                 rules: vec![CoreLimiterRule {
                     enabled: true,
                     executable_path: "encoder.exe".to_owned(),
@@ -331,6 +337,7 @@ mod tests {
                 lower_background_apps: true,
                 workload_engine_background_efficiency_enabled: true,
                 workload_engine_background_priority: ProcessPriority::BelowNormal,
+                workload_engine_visible_window_priority: ProcessPriority::Normal,
                 lower_background_io_priority_enabled: true,
                 lower_background_io_priority: ProcessIoPriority::VeryLow,
                 workload_engine_io_priority: IoPrioritySettings::default(),
@@ -339,6 +346,8 @@ mod tests {
                 workload_engine_gpu_priority: GpuPrioritySettings::default(),
                 workload_engine_memory_priority_enabled: true,
                 workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
+                workload_engine_visible_window_memory_priority:
+                    ProcessMemoryPrioritySetting::Medium,
                 workload_engine_memory_priority: ProcessMemoryPriority::Low,
                 lower_background_auto_cpu_percent: true,
                 workload_engine_enabled: true,
@@ -372,8 +381,11 @@ mod tests {
                 enabled: true,
                 foreground_detection_enabled: true,
                 foreground_priority: ProcessPrioritySetting::Default,
+                visible_window_detection_enabled: true,
+                visible_window_priority: ProcessPrioritySetting::Normal,
                 background_priority: ProcessPrioritySetting::BelowNormal,
                 preserve_foreground_priority: true,
+                preserve_visible_window_priority: true,
                 preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
@@ -386,6 +398,8 @@ mod tests {
                 enabled: true,
                 foreground_detection_enabled: true,
                 foreground_boost: ProcessDynamicPriorityBoostSetting::Default,
+                visible_window_detection_enabled: true,
+                visible_window_boost: ProcessDynamicPriorityBoostSetting::Enabled,
                 background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
@@ -397,8 +411,11 @@ mod tests {
                 enabled: true,
                 foreground_detection_enabled: true,
                 foreground_priority: ProcessIoPrioritySetting::Normal,
+                visible_window_detection_enabled: true,
+                visible_window_priority: ProcessIoPrioritySetting::Low,
                 background_priority: ProcessIoPrioritySetting::VeryLow,
                 preserve_foreground_priority: true,
+                preserve_visible_window_priority: true,
                 preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
@@ -410,8 +427,11 @@ mod tests {
                 enabled: true,
                 foreground_detection_enabled: true,
                 foreground_priority: ProcessGpuPrioritySetting::AboveNormal,
+                visible_window_detection_enabled: true,
+                visible_window_priority: ProcessGpuPrioritySetting::Normal,
                 background_priority: ProcessGpuPrioritySetting::BelowNormal,
                 preserve_foreground_priority: true,
+                preserve_visible_window_priority: true,
                 preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,
@@ -423,8 +443,11 @@ mod tests {
                 enabled: true,
                 foreground_detection_enabled: true,
                 foreground_priority: ProcessMemoryPrioritySetting::Default,
+                visible_window_detection_enabled: true,
+                visible_window_priority: ProcessMemoryPrioritySetting::Medium,
                 background_priority: ProcessMemoryPrioritySetting::Low,
                 preserve_foreground_priority: true,
+                preserve_visible_window_priority: true,
                 preserve_background_priority: true,
                 exclusions: vec![ProcessExclusionRule {
                     enabled: true,

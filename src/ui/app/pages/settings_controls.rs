@@ -171,6 +171,41 @@ impl WinderustApp {
         .into_any_element()
     }
 
+    pub(in crate::ui::app) fn render_navigation_indicator_settings(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        v_flex()
+            .gap_2()
+            .child(setting_action_card_with_help(
+                "sidebar-feature-counts-card",
+                t!("settings.show_enabled_feature_counts_in_sidebar").to_string(),
+                t!("settings.show_enabled_feature_counts_in_sidebar_help").to_string(),
+                switch_toggle_action(
+                    "sidebar-feature-counts-toggle",
+                    self.settings.general.show_enabled_feature_counts_in_sidebar,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.general.show_enabled_feature_counts_in_sidebar = *checked;
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .child(setting_action_card_with_help(
+                "feature-card-status-card",
+                t!("settings.show_feature_status_on_cards").to_string(),
+                t!("settings.show_feature_status_on_cards_help").to_string(),
+                switch_toggle_action(
+                    "feature-card-status-toggle",
+                    self.settings.general.show_feature_status_on_cards,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings.general.show_feature_status_on_cards = *checked;
+                        cx.notify();
+                    }),
+                ),
+            ))
+            .into_any_element()
+    }
+
     pub(in crate::ui::app) fn sync_accent_color_picker(
         &self,
         window: &mut Window,

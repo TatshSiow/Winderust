@@ -49,24 +49,23 @@ use crate::{
     background_efficiency::{self, BackgroundEfficiencySnapshot},
     config::{
         self, AccentColorSource, AccentSettings, ActionLogMode, AnimationMode, AppLanguage,
-        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundCpuRestrictionSettings,
-        BackgroundEfficiencyAggressiveness, BackgroundEfficiencyRule, BackgroundEfficiencySettings,
-        ByCpuLoadRule, ByForegroundRule, ByForegroundSettings, ByRunningAppRule,
-        ByRunningAppSettings, ByTimeRule, CoreLimiterRule, CoreLimiterSettings, CoreSteeringMode,
-        CoreSteeringRule, CoreSteeringSettings, CpuRestrictionControlStyle, CpuRestrictionMode,
-        CpuRestrictionStrategy, CpuUsageComparison, DynamicPriorityBoostSettings,
-        ForegroundBoostPriority, GpuPrioritySettings, IoPrioritySettings, MemoryPrioritySettings,
-        MemoryTrimSettings, NetworkThresholdUnit, ProcessDynamicPriorityBoostSetting,
-        ProcessExclusionRule, ProcessGpuPriority, ProcessGpuPrioritySetting, ProcessIoPriority,
-        ProcessIoPrioritySetting, ProcessMemoryPriority, ProcessMemoryPrioritySetting,
-        ProcessPriority, ProcessPrioritySetting, ProcessPrioritySettings,
-        ProcessThreadPrioritySetting, Settings, ThreadPrioritySettings, TimerResolutionRule,
-        TimerResolutionSettings, UpdateChannel, WeekdaySetting, WorkloadEngineSettings,
-        CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
+        AppSuspensionRule, AppSuspensionSettings, AppThemeMode, BackgroundEfficiencyAggressiveness,
+        BackgroundEfficiencyRule, BackgroundEfficiencySettings, ByCpuLoadRule, ByForegroundRule,
+        ByForegroundSettings, ByRunningAppRule, ByRunningAppSettings, ByTimeRule, CoreLimiterRule,
+        CoreLimiterSettings, CpuAllocationRule, CpuRestrictionMode, CpuUsageComparison,
+        DynamicPriorityBoostSettings, ForegroundBoostPriority, GpuPrioritySettings,
+        IoPrioritySettings, MemoryPrioritySettings, MemoryTrimSettings, NetworkThresholdUnit,
+        ProcessDynamicPriorityBoostSetting, ProcessExclusionRule, ProcessGpuPriority,
+        ProcessGpuPrioritySetting, ProcessIoPriority, ProcessIoPrioritySetting,
+        ProcessMemoryPriority, ProcessMemoryPrioritySetting, ProcessPriority,
+        ProcessPrioritySetting, ProcessPrioritySettings, ProcessThreadPrioritySetting, Settings,
+        ThreadPrioritySettings, TimerResolutionRule, TimerResolutionSettings, UpdateChannel,
+        WeekdaySetting, WorkloadEngineSettings, CHECK_INTERVAL_MAX_MS, CHECK_INTERVAL_MIN_MS,
     },
     core_limiter::{self, CoreLimiterSnapshot},
-    core_steering::{self, CoreSteeringSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
     cpu::{process_cpu_usage_percent, CpuUsageMonitor, CpuUsageSnapshot},
+    cpu_allocation::{self, CpuAllocationSnapshot, LogicalProcessorInfo, LogicalProcessorKind},
+    crash_recovery,
     dashboard_metrics::{
         sample_memory_usage, IoUsageMonitor, IoUsageSnapshot, MemoryUsageSnapshot,
         NetworkUsageMonitor, NetworkUsageSnapshot,
@@ -81,7 +80,7 @@ use crate::{
         capture_process_action_target, contains_process_name, ensure_process_action_target_access,
         executable_path_key, foreground_process, list_process_candidates,
         list_processes_with_paths, open_process_location, process_candidates_from_processes,
-        same_executable_path, sample_process_resources, terminate_process, terminate_process_tree,
+        same_executable_path, sample_process_resources, terminate_process, terminate_process_trees,
         ProcessActionAccess, ProcessActionTarget, ProcessActionTargetError, ProcessCandidateInfo,
         ProcessInfo, ProcessResourceSample, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
@@ -170,6 +169,19 @@ const PAGE_HEADER_HEIGHT: f32 = 48.0;
 const PAGE_CONTENT_VERTICAL_PADDING: f32 = 24.0;
 const CONTENT_MAX_WIDTH: f32 = 1040.0;
 const NAV_PANE_WIDTH: f32 = 276.0;
+const NAV_PANE_COMPACT_WIDTH: f32 = 64.0;
+
+const fn navigation_pane_width(collapsed: bool) -> f32 {
+    if collapsed {
+        NAV_PANE_COMPACT_WIDTH
+    } else {
+        NAV_PANE_WIDTH
+    }
+}
+
+fn navigation_pane_width_at_progress(progress: f32) -> f32 {
+    NAV_PANE_COMPACT_WIDTH + (NAV_PANE_WIDTH - NAV_PANE_COMPACT_WIDTH) * progress
+}
 const BRAND_RADIUS_CONTROL: f32 = 5.0;
 const BRAND_RADIUS_SURFACE: f32 = 7.0;
 const BRAND_RADIUS_OVERLAY: f32 = 8.0;
@@ -285,6 +297,7 @@ const NAV_HISTORY_LIMIT: usize = 64;
 struct ProcessCandidate {
     name: String,
     image_path: PathBuf,
+    has_suspendable_instance: bool,
     icon: Option<Arc<Image>>,
 }
 
@@ -410,8 +423,8 @@ pub struct WinderustApp {
     background_efficiency_status: BackgroundEfficiencySnapshot,
     app_suspension_status: AppSuspensionSnapshot,
     core_limiter_status: CoreLimiterSnapshot,
-    core_steering_status: CoreSteeringSnapshot,
-    background_cpu_restriction_status: CoreSteeringSnapshot,
+    cpu_sets_soft_status: CpuAllocationSnapshot,
+    processor_affinity_hard_status: CpuAllocationSnapshot,
     by_running_app_status: ByRunningAppSnapshot,
     workload_engine_status: WorkloadEngineSnapshot,
     process_priority_status: ProcessPrioritySnapshot,
@@ -459,7 +472,9 @@ pub struct WinderustApp {
     running_processes: Vec<ProcessInfo>,
     process_resource_samples: BTreeMap<u32, ProcessResourceSample>,
     process_resource_usage: HashMap<u32, ProcessResourceUsage>,
-    process_efficiency_mode_overrides: HashMap<u32, (u64, bool, Option<u32>)>,
+    process_efficiency_mode_overrides: HashMap<u32, ProcessEfficiencyModeOverride>,
+    process_quick_action_restore_keys: HashSet<(u32, u64, &'static str)>,
+    process_quick_action_restores: Vec<Box<dyn Fn()>>,
     hide_inaccessible_processes: bool,
     running_process_load_state: ProcessLoadState,
     process_refresh_in_progress: bool,
@@ -628,7 +643,8 @@ enum ListItemRemovalKind {
     ByCpuLoadRule,
     BackgroundEfficiencyExclusion,
     AppSuspensionRule,
-    BackgroundCpuExclusion,
+    CpuSetsSoftRule,
+    ProcessorAffinityHardRule,
     CoreLimiterRule,
     ByRunningAppRule,
     WorkloadEngineExclusion,
@@ -640,7 +656,6 @@ enum ListItemRemovalKind {
     MemoryPriorityExclusion,
     TimerResolutionRule,
     MemoryTrimExclusion,
-    CoreSteeringRule,
 }
 
 impl ListItemRemovalTarget {
@@ -672,12 +687,12 @@ struct UiInputs {
     schedule_end_times: Vec<Entity<InputState>>,
     foreground_process: Entity<InputState>,
     background_efficiency_process: Entity<InputState>,
-    background_cpu_exclusion: Entity<InputState>,
     memory_trim_exclusion: Entity<InputState>,
     app_suspension_process: Entity<InputState>,
     core_limiter_process: Entity<InputState>,
     performance_process: Entity<InputState>,
-    core_steering_process: Entity<InputState>,
+    cpu_sets_soft_process: Entity<InputState>,
+    processor_affinity_hard_process: Entity<InputState>,
     workload_engine_process: Entity<InputState>,
     process_priority_process: Entity<InputState>,
     thread_priority_process: Entity<InputState>,
@@ -798,7 +813,6 @@ impl WinderustApp {
                 }
             });
         let adaptive_plan_recovery_error = restore_stale_adaptive_plans().err();
-        let debug_privilege_error = privilege::enable_debug_privilege().err();
         let background_automation = BackgroundAutomation::start(&settings);
         apply_language(settings.general.language);
         apply_appearance_settings(&settings.general, window, cx);
@@ -815,7 +829,7 @@ impl WinderustApp {
         if let Some(error) = settings_load_error {
             initial_processor_power.status_message = error;
         }
-        if let Some(error) = debug_privilege_error {
+        if let Some(error) = crash_recovery::startup_error() {
             initial_processor_power.status_message = error;
         }
         let inputs = UiInputs::new(window, cx, &settings, initial_processor_power.values);
@@ -886,8 +900,8 @@ impl WinderustApp {
             background_efficiency_status: BackgroundEfficiencySnapshot::default(),
             app_suspension_status: AppSuspensionSnapshot::default(),
             core_limiter_status: CoreLimiterSnapshot::default(),
-            core_steering_status: CoreSteeringSnapshot::default(),
-            background_cpu_restriction_status: CoreSteeringSnapshot::default(),
+            cpu_sets_soft_status: CpuAllocationSnapshot::default(),
+            processor_affinity_hard_status: CpuAllocationSnapshot::default(),
             by_running_app_status: ByRunningAppSnapshot::default(),
             workload_engine_status: WorkloadEngineSnapshot::default(),
             process_priority_status: ProcessPrioritySnapshot::default(),
@@ -940,6 +954,8 @@ impl WinderustApp {
             process_resource_samples: BTreeMap::new(),
             process_resource_usage: HashMap::new(),
             process_efficiency_mode_overrides: HashMap::new(),
+            process_quick_action_restore_keys: HashSet::new(),
+            process_quick_action_restores: Vec::new(),
             hide_inaccessible_processes: true,
             running_process_load_state: initial_process_load_state,
             process_refresh_in_progress: false,
@@ -1037,8 +1053,38 @@ impl WinderustApp {
 }
 impl Drop for WinderustApp {
     fn drop(&mut self) {
+        restore_process_quick_actions(&mut self.process_quick_action_restores);
         let _ = self_power::disable_adaptive_engine();
     }
+}
+
+fn restore_process_quick_actions(restores: &mut Vec<Box<dyn Fn()>>) {
+    while let Some(restore) = restores.pop() {
+        restore();
+    }
+}
+
+impl WinderustApp {
+    fn track_process_quick_action_restore(
+        &mut self,
+        feature: &'static str,
+        target: &ProcessActionTarget,
+        restore: impl Fn() + 'static,
+    ) {
+        if self
+            .process_quick_action_restore_keys
+            .insert((target.id, target.creation_time, feature))
+        {
+            self.process_quick_action_restores.push(Box::new(restore));
+        }
+    }
+}
+
+struct ProcessEfficiencyModeOverride {
+    target: ProcessActionTarget,
+    original_enabled: bool,
+    enabled: bool,
+    original_priority: Option<u32>,
 }
 
 fn runtime_settings_from(current: &Settings, saved: &Settings) -> Settings {
@@ -1071,8 +1117,8 @@ fn runtime_settings_matches(settings: &Settings, current: &Settings, saved: &Set
         && settings.by_cpu_load == saved.by_cpu_load
         && settings.background_efficiency == saved.background_efficiency
         && settings.app_suspension == saved.app_suspension
-        && settings.core_steering == saved.core_steering
-        && settings.background_cpu_restriction == saved.background_cpu_restriction
+        && settings.cpu_sets_soft == saved.cpu_sets_soft
+        && settings.processor_affinity_hard == saved.processor_affinity_hard
         && settings.core_limiter == saved.core_limiter
         && settings.by_running_app == saved.by_running_app
         && settings.workload_engine == saved.workload_engine
@@ -1231,6 +1277,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn navigation_width_tracks_collapsed_state() {
+        assert_eq!(navigation_pane_width(false), NAV_PANE_WIDTH);
+        assert_eq!(navigation_pane_width(true), NAV_PANE_COMPACT_WIDTH);
+        assert_eq!(
+            navigation_pane_width_at_progress(0.0),
+            NAV_PANE_COMPACT_WIDTH
+        );
+        assert_eq!(navigation_pane_width_at_progress(1.0), NAV_PANE_WIDTH);
+    }
+
+    #[test]
+    fn process_quick_actions_restore_in_reverse_application_order() {
+        let restored = Rc::new(RefCell::new(Vec::new()));
+        let mut restores: Vec<Box<dyn Fn()>> = Vec::new();
+        for value in [1, 2] {
+            let restored = Rc::clone(&restored);
+            restores.push(Box::new(move || restored.borrow_mut().push(value)));
+        }
+
+        restore_process_quick_actions(&mut restores);
+
+        assert_eq!(*restored.borrow(), vec![2, 1]);
+    }
+
+    #[test]
     fn runtime_status_localizes_known_messages_and_preserves_errors() {
         assert_eq!(
             localized_runtime_status("Automation disabled."),
@@ -1266,7 +1337,7 @@ mod tests {
             ..Default::default()
         };
 
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
 
         assert_eq!(
             indicator.label,
@@ -1279,6 +1350,26 @@ mod tests {
     }
 
     #[test]
+    fn app_suspension_indicator_reports_unavailable_before_runtime_state() {
+        let status = AppSuspensionSnapshot {
+            enabled: true,
+            running_apps: vec!["service.exe".to_owned()],
+            ..Default::default()
+        };
+
+        let indicator = app_suspension_indicator(&status, "service.exe", true);
+
+        assert_eq!(
+            indicator.label,
+            t!("app_suspension.indicator.unavailable").to_string()
+        );
+        assert_eq!(
+            indicator.hover,
+            t!("app_suspension.indicator.unavailable_help").to_string()
+        );
+    }
+
+    #[test]
     fn app_suspension_indicator_reports_running_before_not_running() {
         let status = AppSuspensionSnapshot {
             enabled: true,
@@ -1286,7 +1377,7 @@ mod tests {
             ..Default::default()
         };
 
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
 
         assert_eq!(
             indicator.label,
@@ -1307,7 +1398,7 @@ mod tests {
             ..Default::default()
         };
 
-        let indicator = app_suspension_indicator(&status, "vivaldi.exe");
+        let indicator = app_suspension_indicator(&status, "vivaldi.exe", false);
 
         assert_eq!(
             indicator.label,
@@ -1681,8 +1772,8 @@ mod tests {
         saved.advanced.action_log_mode = ActionLogMode::Full;
         current.by_activity.power_plans.performance_guid = Some("current".to_owned());
         saved.by_activity.power_plans.performance_guid = Some("saved".to_owned());
-        current.background_cpu_restriction.enabled = true;
-        saved.background_cpu_restriction.enabled = false;
+        current.processor_affinity_hard.enabled = true;
+        saved.processor_affinity_hard.enabled = false;
         current.io_priority.enabled = true;
         saved.io_priority.enabled = false;
         current.timer_resolution.enabled = true;
@@ -1699,7 +1790,7 @@ mod tests {
             settings.by_activity.power_plans.performance_guid.as_deref(),
             Some("saved")
         );
-        assert!(!settings.background_cpu_restriction.enabled);
+        assert!(!settings.processor_affinity_hard.enabled);
         assert!(!settings.io_priority.enabled);
         assert!(!settings.timer_resolution.enabled);
         assert!(settings.memory_trim.enabled);

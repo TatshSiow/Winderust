@@ -19,7 +19,7 @@ pub enum Page {
     ThreadPriority,
     DynamicPriorityBoost,
     CoreLimiter,
-    BackgroundCpuRestriction,
+    CpuSetsSoft,
     ProcessList,
     AdaptiveEngine,
     BackgroundEfficiency,
@@ -29,7 +29,7 @@ pub enum Page {
     GpuPriority,
     MemoryPriority,
     MemoryTrim,
-    CoreSteering,
+    ProcessorAffinityHard,
     ByForeground,
     ByTime,
     ActionLog,
@@ -58,8 +58,8 @@ const POWER_PLAN_CONTROL_PAGES: [Page; 6] = [
 ];
 const CPU_CONTROL_PAGES: [Page; 3] = [
     Page::CoreLimiter,
-    Page::BackgroundCpuRestriction,
-    Page::CoreSteering,
+    Page::CpuSetsSoft,
+    Page::ProcessorAffinityHard,
 ];
 const PRIORITY_CONTROL_PAGES: [Page; 6] = [
     Page::ProcessPriority,
@@ -146,7 +146,7 @@ impl Page {
             Self::ThreadPriority => t!("nav.thread_priority"),
             Self::DynamicPriorityBoost => t!("nav.dynamic_priority_boost"),
             Self::CoreLimiter => t!("nav.core_limiter"),
-            Self::BackgroundCpuRestriction => t!("nav.background_cpu_restriction"),
+            Self::CpuSetsSoft => t!("nav.cpu_sets_soft"),
             Self::ProcessList => t!("nav.process_list"),
             Self::AdaptiveEngine => t!("nav.adaptive_engine"),
             Self::BackgroundEfficiency => t!("nav.background_efficiency"),
@@ -156,7 +156,7 @@ impl Page {
             Self::GpuPriority => t!("nav.gpu_priority"),
             Self::MemoryPriority => t!("nav.memory_priority"),
             Self::MemoryTrim => t!("nav.memory_trim"),
-            Self::CoreSteering => t!("nav.core_steering"),
+            Self::ProcessorAffinityHard => t!("nav.processor_affinity_hard"),
             Self::ByForeground => t!("nav.by_foreground"),
             Self::ByTime => t!("nav.by_time"),
             Self::ActionLog => t!("nav.action_log"),
@@ -191,8 +191,8 @@ impl Page {
             | Self::AdvancedPowerPlanTuning => Self::PowerPlanControl,
             Self::CpuControl
             | Self::CoreLimiter
-            | Self::BackgroundCpuRestriction
-            | Self::CoreSteering => Self::CpuControl,
+            | Self::CpuSetsSoft
+            | Self::ProcessorAffinityHard => Self::CpuControl,
             Self::PriorityControl
             | Self::ProcessPriority
             | Self::ThreadPriority

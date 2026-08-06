@@ -29,9 +29,9 @@ pub struct Settings {
     #[serde(default)]
     pub app_suspension: AppSuspensionSettings,
     #[serde(default)]
-    pub core_steering: CoreSteeringSettings,
+    pub cpu_sets_soft: CpuAllocationSettings,
     #[serde(default)]
-    pub background_cpu_restriction: BackgroundCpuRestrictionSettings,
+    pub processor_affinity_hard: CpuAllocationSettings,
     #[serde(default)]
     pub core_limiter: CoreLimiterSettings,
     #[serde(default)]
@@ -116,6 +116,12 @@ pub struct GeneralSettings {
     pub language: AppLanguage,
     #[serde(default)]
     pub animation_mode: AnimationMode,
+    #[serde(default)]
+    pub navigation_collapsed: bool,
+    #[serde(default = "default_true")]
+    pub show_enabled_feature_counts_in_sidebar: bool,
+    #[serde(default = "default_true")]
+    pub show_feature_status_on_cards: bool,
     #[serde(default)]
     pub pause_power_plan_switching_while_plugged_in: bool,
     pub check_interval_ms: u64,
@@ -296,7 +302,9 @@ pub struct ByCpuLoadSettings {
 pub struct BackgroundEfficiencySettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
+    pub protect_foreground_app: bool,
+    #[serde(default)]
+    pub protect_visible_window_apps: bool,
     #[serde(default)]
     pub aggressiveness: BackgroundEfficiencyAggressiveness,
     #[serde(default)]
@@ -360,28 +368,6 @@ impl CpuRestrictionMode {
     pub const ALL: [Self; 2] = [Self::SoftCpuSets, Self::HardAffinity];
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CpuRestrictionStrategy {
-    Off,
-    #[default]
-    Auto,
-    PreferEfficiencyCores,
-    LimitLogicalCpus,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CpuRestrictionControlStyle {
-    #[default]
-    Percentage,
-    CoreToggle,
-}
-
-impl CpuRestrictionControlStyle {
-    pub const ALL: [Self; 2] = [Self::Percentage, Self::CoreToggle];
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSuspensionSettings {
     pub enabled: bool,
@@ -405,33 +391,14 @@ pub struct AppSuspensionSettings {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoreSteeringSettings {
+pub struct CpuAllocationSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
+    pub protect_foreground_app: bool,
     #[serde(default)]
-    pub rules: Vec<CoreSteeringRule>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BackgroundCpuRestrictionSettings {
-    pub enabled: bool,
-    #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
+    pub protect_visible_window_apps: bool,
     #[serde(default)]
-    pub mode: CpuRestrictionMode,
-    #[serde(default)]
-    pub strategy: CpuRestrictionStrategy,
-    #[serde(default)]
-    pub control_style: CpuRestrictionControlStyle,
-    #[serde(default = "default_cpu_restriction_percent")]
-    pub percent: u8,
-    #[serde(default = "default_cpu_restriction_max_logical_processors")]
-    pub max_logical_processors: u8,
-    #[serde(default)]
-    pub core_mask: u64,
-    #[serde(default)]
-    pub exclusions: Vec<ProcessExclusionRule>,
+    pub rules: Vec<CpuAllocationRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -637,11 +604,9 @@ where
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoreSteeringRule {
+pub struct CpuAllocationRule {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default)]
-    pub mode: CoreSteeringMode,
     pub executable_path: String,
     pub core_mask: u64,
 }
@@ -650,7 +615,9 @@ pub struct CoreSteeringRule {
 pub struct CoreLimiterSettings {
     pub enabled: bool,
     #[serde(default = "default_true")]
-    pub exclude_foreground_app: bool,
+    pub protect_foreground_app: bool,
+    #[serde(default)]
+    pub protect_visible_window_apps: bool,
     #[serde(default)]
     pub rules: Vec<CoreLimiterRule>,
 }
@@ -697,6 +664,8 @@ pub struct WorkloadEngineSettings {
     pub workload_engine_background_efficiency_enabled: bool,
     #[serde(default = "default_workload_engine_background_priority")]
     pub workload_engine_background_priority: ProcessPriority,
+    #[serde(default = "default_workload_engine_visible_window_priority")]
+    pub workload_engine_visible_window_priority: ProcessPriority,
     #[serde(default)]
     pub lower_background_io_priority_enabled: bool,
     #[serde(default)]
@@ -713,6 +682,8 @@ pub struct WorkloadEngineSettings {
     pub workload_engine_memory_priority_enabled: bool,
     #[serde(default = "default_workload_engine_foreground_memory_priority")]
     pub workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting,
+    #[serde(default = "default_workload_engine_foreground_memory_priority")]
+    pub workload_engine_visible_window_memory_priority: ProcessMemoryPrioritySetting,
     #[serde(default)]
     pub workload_engine_memory_priority: ProcessMemoryPriority,
     #[serde(default = "default_true")]
@@ -762,10 +733,16 @@ pub struct IoPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_io_priority_foreground")]
     pub foreground_priority: ProcessIoPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_io_priority_background")]
+    pub visible_window_priority: ProcessIoPrioritySetting,
     #[serde(default = "default_io_priority_background")]
     pub background_priority: ProcessIoPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -779,10 +756,16 @@ pub struct ProcessPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_process_priority_foreground")]
     pub foreground_priority: ProcessPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_process_priority_background")]
+    pub visible_window_priority: ProcessPrioritySetting,
     #[serde(default = "default_process_priority_background")]
     pub background_priority: ProcessPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -796,10 +779,16 @@ pub struct ThreadPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_thread_priority_foreground")]
     pub foreground_priority: ProcessThreadPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_thread_priority_background")]
+    pub visible_window_priority: ProcessThreadPrioritySetting,
     #[serde(default = "default_thread_priority_background")]
     pub background_priority: ProcessThreadPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -813,6 +802,10 @@ pub struct DynamicPriorityBoostSettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_dynamic_priority_boost_foreground")]
     pub foreground_boost: ProcessDynamicPriorityBoostSetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_dynamic_priority_boost_background")]
+    pub visible_window_boost: ProcessDynamicPriorityBoostSetting,
     #[serde(default = "default_dynamic_priority_boost_background")]
     pub background_boost: ProcessDynamicPriorityBoostSetting,
     #[serde(default)]
@@ -826,10 +819,16 @@ pub struct GpuPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_gpu_priority_foreground")]
     pub foreground_priority: ProcessGpuPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_gpu_priority_background")]
+    pub visible_window_priority: ProcessGpuPrioritySetting,
     #[serde(default = "default_gpu_priority_background")]
     pub background_priority: ProcessGpuPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -843,10 +842,16 @@ pub struct MemoryPrioritySettings {
     pub foreground_detection_enabled: bool,
     #[serde(default = "default_memory_priority_foreground")]
     pub foreground_priority: ProcessMemoryPrioritySetting,
+    #[serde(default)]
+    pub visible_window_detection_enabled: bool,
+    #[serde(default = "default_memory_priority_background")]
+    pub visible_window_priority: ProcessMemoryPrioritySetting,
     #[serde(default = "default_memory_priority_background")]
     pub background_priority: ProcessMemoryPrioritySetting,
     #[serde(default = "default_true")]
     pub preserve_foreground_priority: bool,
+    #[serde(default = "default_true")]
+    pub preserve_visible_window_priority: bool,
     #[serde(default = "default_true")]
     pub preserve_background_priority: bool,
     #[serde(default)]
@@ -1318,19 +1323,6 @@ impl ForegroundBoostPriority {
     pub const ALL: [Self; 3] = [Self::Auto, Self::Normal, Self::AboveNormal];
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CoreSteeringMode {
-    #[default]
-    Hard,
-    Soft,
-    EfficiencyOff,
-}
-
-impl CoreSteeringMode {
-    pub const ALL: [Self; 3] = [Self::Hard, Self::Soft, Self::EfficiencyOff];
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSuspensionRule {
     #[serde(default = "default_true")]
@@ -1418,6 +1410,9 @@ impl Default for Settings {
                 accent: AccentSettings::default(),
                 language: AppLanguage::English,
                 animation_mode: AnimationMode::System,
+                navigation_collapsed: false,
+                show_enabled_feature_counts_in_sidebar: true,
+                show_feature_status_on_cards: true,
                 pause_power_plan_switching_while_plugged_in: false,
                 check_interval_ms: 1000,
             },
@@ -1445,8 +1440,8 @@ impl Default for Settings {
             by_cpu_load: ByCpuLoadSettings::default(),
             background_efficiency: BackgroundEfficiencySettings::default(),
             app_suspension: AppSuspensionSettings::default(),
-            core_steering: CoreSteeringSettings::default(),
-            background_cpu_restriction: BackgroundCpuRestrictionSettings::default(),
+            cpu_sets_soft: CpuAllocationSettings::default(),
+            processor_affinity_hard: CpuAllocationSettings::default(),
             core_limiter: CoreLimiterSettings::default(),
             by_running_app: ByRunningAppSettings::default(),
             workload_engine: WorkloadEngineSettings::default(),
@@ -1530,7 +1525,8 @@ impl Default for BackgroundEfficiencySettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_true(),
+            protect_foreground_app: default_true(),
+            protect_visible_window_apps: false,
             aggressiveness: BackgroundEfficiencyAggressiveness::Safe,
             custom_rules: Vec::new(),
         }
@@ -1621,6 +1617,10 @@ const fn default_workload_engine_background_priority() -> ProcessPriority {
     ProcessPriority::BelowNormal
 }
 
+const fn default_workload_engine_visible_window_priority() -> ProcessPriority {
+    ProcessPriority::Normal
+}
+
 const fn default_workload_engine_foreground_memory_priority() -> ProcessMemoryPrioritySetting {
     ProcessMemoryPrioritySetting::Default
 }
@@ -1630,8 +1630,11 @@ fn default_workload_engine_io_priority_settings() -> IoPrioritySettings {
         enabled: false,
         foreground_detection_enabled: true,
         foreground_priority: ProcessIoPrioritySetting::Normal,
+        visible_window_detection_enabled: true,
+        visible_window_priority: ProcessIoPrioritySetting::VeryLow,
         background_priority: ProcessIoPrioritySetting::VeryLow,
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -1642,8 +1645,11 @@ fn default_workload_engine_thread_priority_settings() -> ThreadPrioritySettings 
         enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: ProcessThreadPrioritySetting::Default,
+        visible_window_detection_enabled: true,
+        visible_window_priority: ProcessThreadPrioritySetting::BelowNormal,
         background_priority: ProcessThreadPrioritySetting::BelowNormal,
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -1654,6 +1660,8 @@ fn default_workload_engine_dynamic_priority_boost_settings() -> DynamicPriorityB
         enabled: true,
         foreground_detection_enabled: true,
         foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
+        visible_window_detection_enabled: true,
+        visible_window_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         exclusions: Vec::new(),
     }
@@ -1664,8 +1672,11 @@ fn default_workload_engine_gpu_priority_settings() -> GpuPrioritySettings {
         enabled: true,
         foreground_detection_enabled: true,
         foreground_priority: ProcessGpuPrioritySetting::Default,
+        visible_window_detection_enabled: true,
+        visible_window_priority: ProcessGpuPrioritySetting::BelowNormal,
         background_priority: ProcessGpuPrioritySetting::BelowNormal,
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -1705,10 +1716,6 @@ const fn default_memory_trim_process_idle_seconds() -> u64 {
 
 const fn default_timer_resolution_100ns() -> u32 {
     10_000
-}
-
-const fn default_cpu_restriction_percent() -> u8 {
-    50
 }
 
 const fn default_cpu_restriction_max_logical_processors() -> u8 {
@@ -1815,28 +1822,13 @@ impl Default for AppSuspensionSettings {
     }
 }
 
-impl Default for CoreSteeringSettings {
+impl Default for CpuAllocationSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_true(),
+            protect_foreground_app: default_true(),
+            protect_visible_window_apps: false,
             rules: Vec::new(),
-        }
-    }
-}
-
-impl Default for BackgroundCpuRestrictionSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            exclude_foreground_app: default_true(),
-            mode: CpuRestrictionMode::HardAffinity,
-            strategy: CpuRestrictionStrategy::Auto,
-            control_style: CpuRestrictionControlStyle::Percentage,
-            percent: default_cpu_restriction_percent(),
-            max_logical_processors: default_cpu_restriction_max_logical_processors(),
-            core_mask: 0,
-            exclusions: Vec::new(),
         }
     }
 }
@@ -1845,7 +1837,8 @@ impl Default for CoreLimiterSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            exclude_foreground_app: default_true(),
+            protect_foreground_app: default_true(),
+            protect_visible_window_apps: false,
             rules: Vec::new(),
         }
     }
@@ -1858,6 +1851,8 @@ impl Default for WorkloadEngineSettings {
             lower_background_apps: default_true(),
             workload_engine_background_efficiency_enabled: default_true(),
             workload_engine_background_priority: default_workload_engine_background_priority(),
+            workload_engine_visible_window_priority:
+                default_workload_engine_visible_window_priority(),
             lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             workload_engine_io_priority: default_workload_engine_io_priority_settings(),
@@ -1867,6 +1862,8 @@ impl Default for WorkloadEngineSettings {
             workload_engine_gpu_priority: default_workload_engine_gpu_priority_settings(),
             workload_engine_memory_priority_enabled: false,
             workload_engine_foreground_memory_priority:
+                default_workload_engine_foreground_memory_priority(),
+            workload_engine_visible_window_memory_priority:
                 default_workload_engine_foreground_memory_priority(),
             workload_engine_memory_priority: ProcessMemoryPriority::Low,
             lower_background_auto_cpu_percent: default_true(),
@@ -1903,8 +1900,11 @@ impl Default for IoPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_io_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_io_priority_background(),
             background_priority: default_io_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -1917,8 +1917,11 @@ impl Default for ProcessPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_process_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_process_priority_background(),
             background_priority: default_process_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -1931,8 +1934,11 @@ impl Default for ThreadPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_thread_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_thread_priority_background(),
             background_priority: default_thread_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -1945,6 +1951,8 @@ impl Default for DynamicPriorityBoostSettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_boost: default_dynamic_priority_boost_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_boost: default_dynamic_priority_boost_background(),
             background_boost: default_dynamic_priority_boost_background(),
             exclusions: Vec::new(),
         }
@@ -1957,8 +1965,11 @@ impl Default for GpuPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_gpu_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_gpu_priority_background(),
             background_priority: default_gpu_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -1971,8 +1982,11 @@ impl Default for MemoryPrioritySettings {
             enabled: false,
             foreground_detection_enabled: default_true(),
             foreground_priority: default_memory_priority_foreground(),
+            visible_window_detection_enabled: false,
+            visible_window_priority: default_memory_priority_background(),
             background_priority: default_memory_priority_background(),
             preserve_foreground_priority: true,
+            preserve_visible_window_priority: true,
             preserve_background_priority: true,
             exclusions: Vec::new(),
         }
@@ -2267,21 +2281,7 @@ impl BackgroundEfficiencySettings {
     }
 }
 
-impl BackgroundCpuRestrictionSettings {
-    pub fn contains_exclusion(&self, process_name: &str) -> bool {
-        self.exclusions
-            .iter()
-            .any(|rule| same_rule_executable_path(&rule.executable_path, process_name))
-    }
-
-    pub fn exclusion_enabled_for(&self, process_name: &str) -> bool {
-        self.exclusions.iter().any(|rule| {
-            rule.enabled && same_rule_executable_path(&rule.executable_path, process_name)
-        })
-    }
-}
-
-impl CoreSteeringSettings {
+impl CpuAllocationSettings {
     pub fn contains_rule_for(&self, process_name: &str) -> bool {
         self.rules
             .iter()
@@ -2414,8 +2414,8 @@ mod tests {
             settings.by_cpu_load.enabled,
             settings.background_efficiency.enabled,
             settings.app_suspension.enabled,
-            settings.core_steering.enabled,
-            settings.background_cpu_restriction.enabled,
+            settings.cpu_sets_soft.enabled,
+            settings.processor_affinity_hard.enabled,
             settings.core_limiter.enabled,
             settings.by_running_app.enabled,
             settings.workload_engine.enabled,
@@ -2439,6 +2439,14 @@ mod tests {
                 .general
                 .allow_cross_session_process_control
         );
+    }
+
+    #[test]
+    fn appearance_indicators_are_enabled_by_default() {
+        let general = Settings::default().general;
+
+        assert!(general.show_enabled_feature_counts_in_sidebar);
+        assert!(general.show_feature_status_on_cards);
     }
 
     #[test]

@@ -4,6 +4,7 @@ pub(in crate::ui::app) fn process_target_can_accept(
     target: SuggestionTarget,
     settings: &Settings,
     process: &str,
+    has_suspendable_instance: bool,
 ) -> bool {
     match target {
         SuggestionTarget::Foreground => {
@@ -12,14 +13,15 @@ pub(in crate::ui::app) fn process_target_can_accept(
         SuggestionTarget::BackgroundEfficiency => {
             can_add_background_efficiency_process(&settings.background_efficiency, process)
         }
-        SuggestionTarget::BackgroundCpu => {
-            can_add_background_cpu_exclusion(&settings.background_cpu_restriction, process)
+        SuggestionTarget::CpuSetsSoft | SuggestionTarget::ProcessorAffinityHard => {
+            can_add_cpu_allocation_process(settings, process)
         }
         SuggestionTarget::MemoryTrim => {
             can_add_memory_trim_exclusion(&settings.memory_trim, process)
         }
         SuggestionTarget::AppSuspension => {
-            can_add_app_suspension_process(&settings.app_suspension, process)
+            has_suspendable_instance
+                && can_add_app_suspension_process(&settings.app_suspension, process)
         }
         SuggestionTarget::CoreLimiter => {
             can_add_core_limiter_process(&settings.core_limiter, process)
@@ -50,9 +52,6 @@ pub(in crate::ui::app) fn process_target_can_accept(
         }
         SuggestionTarget::TimerResolution => {
             can_add_timer_resolution_process(&settings.timer_resolution, process)
-        }
-        SuggestionTarget::CoreSteering => {
-            can_add_core_steering_process(&settings.core_steering, process)
         }
     }
 }
@@ -151,17 +150,6 @@ pub(in crate::ui::app) fn can_add_background_efficiency_process(
     )
 }
 
-pub(in crate::ui::app) fn can_add_background_cpu_exclusion(
-    settings: &BackgroundCpuRestrictionSettings,
-    process: &str,
-) -> bool {
-    can_add_process_candidate(
-        process,
-        |process| settings.contains_exclusion(process),
-        core_steering::is_builtin_excluded,
-    )
-}
-
 pub(in crate::ui::app) fn can_add_memory_trim_exclusion(
     settings: &MemoryTrimSettings,
     process: &str,
@@ -241,67 +229,88 @@ pub(in crate::ui::app) fn set_process_exclusion(
 pub(in crate::ui::app) fn set_process_priority_rule(
     settings: &mut ProcessPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_process_priority_override(true, priority);
-        rule.set_process_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_process_priority_override(foreground, priority);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_thread_priority_rule(
     settings: &mut ThreadPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessThreadPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_thread_priority_override(true, priority);
-        rule.set_thread_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_thread_priority_override(foreground, priority);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_dynamic_priority_boost_rule(
     settings: &mut DynamicPriorityBoostSettings,
     process_name: &str,
+    foreground: Option<bool>,
     boost: ProcessDynamicPriorityBoostSetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_dynamic_priority_boost_override(true, boost);
-        rule.set_dynamic_priority_boost_override(false, boost);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_dynamic_priority_boost_override(foreground, boost);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_io_priority_rule(
     settings: &mut IoPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessIoPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_io_priority_override(true, priority);
-        rule.set_io_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_io_priority_override(foreground, priority);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_gpu_priority_rule(
     settings: &mut GpuPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessGpuPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_gpu_priority_override(true, priority);
-        rule.set_gpu_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_gpu_priority_override(foreground, priority);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_memory_priority_rule(
     settings: &mut MemoryPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessMemoryPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_memory_priority_override(true, priority);
-        rule.set_memory_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_memory_priority_override(foreground, priority);
+        });
     });
+}
+
+fn set_priority_rule_sides(foreground: Option<bool>, mut update: impl FnMut(bool)) {
+    if let Some(foreground) = foreground {
+        update(foreground);
+    } else {
+        update(true);
+        update(false);
+    }
 }
 
 fn set_priority_rule(
@@ -332,14 +341,17 @@ pub(in crate::ui::app) fn can_add_app_suspension_process(
     )
 }
 
-pub(in crate::ui::app) fn can_add_core_steering_process(
-    settings: &CoreSteeringSettings,
+pub(in crate::ui::app) fn can_add_cpu_allocation_process(
+    settings: &Settings,
     process: &str,
 ) -> bool {
     can_add_process_candidate(
         process,
-        |process| settings.contains_rule_for(process),
-        core_steering::is_builtin_excluded,
+        |process| {
+            settings.cpu_sets_soft.contains_rule_for(process)
+                || settings.processor_affinity_hard.contains_rule_for(process)
+        },
+        cpu_allocation::is_builtin_excluded,
     )
 }
 
@@ -487,10 +499,9 @@ pub(in crate::ui::app) fn new_app_suspension_rule(process: &str) -> AppSuspensio
     }
 }
 
-pub(in crate::ui::app) fn new_core_steering_rule(process: &str) -> CoreSteeringRule {
-    CoreSteeringRule {
+pub(in crate::ui::app) fn new_cpu_allocation_rule(process: &str) -> CpuAllocationRule {
+    CpuAllocationRule {
         enabled: true,
-        mode: CoreSteeringMode::Soft,
         executable_path: executable_path_key(Path::new(process)),
         core_mask: default_affinity_mask(),
     }
@@ -557,7 +568,7 @@ pub(in crate::ui::app) fn core_limiter_indicator(
 ) -> (String, u32, u32) {
     if core_limiter::is_builtin_excluded(process) {
         (
-            t!("core_steering.indicator.protected").to_string(),
+            t!("cpu_allocation.indicator.protected").to_string(),
             settings_card_hover_color(),
             accent_color(),
         )
@@ -569,13 +580,13 @@ pub(in crate::ui::app) fn core_limiter_indicator(
         )
     } else if status.enabled {
         (
-            t!("core_steering.indicator.ready").to_string(),
+            t!("cpu_allocation.indicator.ready").to_string(),
             panel_active_color(),
             muted_text_color(),
         )
     } else {
         (
-            t!("core_steering.indicator.off").to_string(),
+            t!("cpu_allocation.indicator.off").to_string(),
             panel_active_color(),
             dim_text_color(),
         )
@@ -930,11 +941,11 @@ pub(in crate::ui::app) fn process_list_include_exclude_label(included: bool) -> 
     }
 }
 pub(in crate::ui::app) fn process_list_include_label() -> String {
-    "Include".to_owned()
+    t!("process_list.include").to_string()
 }
 
 pub(in crate::ui::app) fn process_list_exclude_label() -> String {
-    "Exclude".to_owned()
+    t!("process_list.exclude").to_string()
 }
 
 pub(in crate::ui::app) fn process_list_default_label() -> String {
@@ -1087,12 +1098,25 @@ pub(in crate::ui::app) fn process_io_priority_setting_label(
     match priority {
         ProcessIoPrioritySetting::Default => t!("io_priority.priority_default").to_string(),
         ProcessIoPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
-        ProcessIoPrioritySetting::Critical => t!("io_priority.priority_critical").to_string(),
-        ProcessIoPrioritySetting::High => t!("io_priority.priority_high").to_string(),
-        ProcessIoPrioritySetting::Normal => t!("io_priority.priority_normal").to_string(),
-        ProcessIoPrioritySetting::Low => t!("io_priority.priority_low").to_string(),
-        ProcessIoPrioritySetting::VeryLow => t!("io_priority.priority_very_low").to_string(),
+        ProcessIoPrioritySetting::Critical => {
+            process_io_priority_label(ProcessIoPriority::Critical)
+        }
+        ProcessIoPrioritySetting::High => process_io_priority_label(ProcessIoPriority::High),
+        ProcessIoPrioritySetting::Normal => process_io_priority_label(ProcessIoPriority::Normal),
+        ProcessIoPrioritySetting::Low => process_io_priority_label(ProcessIoPriority::Low),
+        ProcessIoPrioritySetting::VeryLow => process_io_priority_label(ProcessIoPriority::VeryLow),
     }
+}
+
+pub(in crate::ui::app) fn process_io_priority_label(priority: ProcessIoPriority) -> String {
+    match priority {
+        ProcessIoPriority::Critical => t!("io_priority.priority_critical"),
+        ProcessIoPriority::High => t!("io_priority.priority_high"),
+        ProcessIoPriority::Normal => t!("io_priority.priority_normal"),
+        ProcessIoPriority::Low => t!("io_priority.priority_low"),
+        ProcessIoPriority::VeryLow => t!("io_priority.priority_very_low"),
+    }
+    .to_string()
 }
 
 pub(in crate::ui::app) fn process_gpu_priority_setting_label(
@@ -1101,17 +1125,31 @@ pub(in crate::ui::app) fn process_gpu_priority_setting_label(
     match priority {
         ProcessGpuPrioritySetting::Default => t!("gpu_priority.priority_default").to_string(),
         ProcessGpuPrioritySetting::Auto => t!("workload_engine.priority_auto").to_string(),
-        ProcessGpuPrioritySetting::Realtime => t!("gpu_priority.priority_realtime").to_string(),
-        ProcessGpuPrioritySetting::High => t!("gpu_priority.priority_high").to_string(),
+        ProcessGpuPrioritySetting::Realtime => {
+            process_gpu_priority_label(ProcessGpuPriority::Realtime)
+        }
+        ProcessGpuPrioritySetting::High => process_gpu_priority_label(ProcessGpuPriority::High),
         ProcessGpuPrioritySetting::AboveNormal => {
-            t!("gpu_priority.priority_above_normal").to_string()
+            process_gpu_priority_label(ProcessGpuPriority::AboveNormal)
         }
-        ProcessGpuPrioritySetting::Normal => t!("gpu_priority.priority_normal").to_string(),
+        ProcessGpuPrioritySetting::Normal => process_gpu_priority_label(ProcessGpuPriority::Normal),
         ProcessGpuPrioritySetting::BelowNormal => {
-            t!("gpu_priority.priority_below_normal").to_string()
+            process_gpu_priority_label(ProcessGpuPriority::BelowNormal)
         }
-        ProcessGpuPrioritySetting::Idle => t!("gpu_priority.priority_idle").to_string(),
+        ProcessGpuPrioritySetting::Idle => process_gpu_priority_label(ProcessGpuPriority::Idle),
     }
+}
+
+pub(in crate::ui::app) fn process_gpu_priority_label(priority: ProcessGpuPriority) -> String {
+    match priority {
+        ProcessGpuPriority::Realtime => t!("gpu_priority.priority_realtime"),
+        ProcessGpuPriority::High => t!("gpu_priority.priority_high"),
+        ProcessGpuPriority::AboveNormal => t!("gpu_priority.priority_above_normal"),
+        ProcessGpuPriority::Normal => t!("gpu_priority.priority_normal"),
+        ProcessGpuPriority::BelowNormal => t!("gpu_priority.priority_below_normal"),
+        ProcessGpuPriority::Idle => t!("gpu_priority.priority_idle"),
+    }
+    .to_string()
 }
 
 pub(in crate::ui::app) fn timer_resolution_edit_value(value_100ns: u32) -> String {
@@ -1142,7 +1180,7 @@ pub(in crate::ui::app) fn process_memory_priority_label(priority: ProcessMemoryP
 
 #[cfg(test)]
 mod tests {
-    use super::process_path_matches_display_name;
+    use super::*;
 
     #[test]
     fn selected_process_path_requires_its_display_name() {
@@ -1153,6 +1191,31 @@ mod tests {
         assert!(!process_path_matches_display_name(
             r"C:\Apps\Example.exe",
             "Other.exe"
+        ));
+    }
+
+    #[test]
+    fn app_suspension_requires_a_suspendable_process_instance() {
+        let settings = Settings::default();
+        let process = "C:/Apps/Example.exe";
+
+        assert!(process_target_can_accept(
+            SuggestionTarget::AppSuspension,
+            &settings,
+            process,
+            true,
+        ));
+        assert!(!process_target_can_accept(
+            SuggestionTarget::AppSuspension,
+            &settings,
+            process,
+            false,
+        ));
+        assert!(process_target_can_accept(
+            SuggestionTarget::Foreground,
+            &settings,
+            process,
+            false,
         ));
     }
 }

@@ -20,11 +20,13 @@ use crate::{
         contains_process_name, ensure_process_action_target_access, is_foreground_process,
         list_processes, process_count_label, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_process_name,
-        unique_app_names, ProcessActionAccess, ProcessActionTarget,
-        CORE_BUILT_IN_PROCESS_EXCLUSIONS,
+        unique_app_names, visible_window_process_ids, ProcessActionAccess, ProcessActionTarget,
+        ProtectedProcesses, CORE_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{execution_failure_suppression_threshold, ExecutionFailureTracker},
 };
+
+use super::PriorityProcessTier;
 
 const PROCESS_IO_PRIORITY: u32 = 33;
 const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000010A;
@@ -137,6 +139,22 @@ impl IoPriorityManager {
             }
         };
 
+        let visible_processes = if settings.visible_window_detection_enabled {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failures = self.clear_all(action_log, "visible windows are unavailable");
+                return IoPrioritySnapshot {
+                    enabled: true,
+                    failed_processes: failures.count,
+                    message: "Paused: visible windows are unavailable.".to_owned(),
+                    last_error: failures.last_error,
+                    ..Default::default()
+                };
+            };
+            ProtectedProcesses::capture(&processes, false, None, process_ids)
+        } else {
+            ProtectedProcesses::default()
+        };
+
         let scanned_processes = processes.len();
         let foreground_executable_path = if settings.foreground_detection_enabled {
             foreground_process_id.and_then(|id| {
@@ -172,17 +190,22 @@ impl IoPriorityManager {
                     foreground_process_id,
                     foreground_executable_path.as_deref(),
                 );
+            let visible_window = !foreground
+                && settings.visible_window_detection_enabled
+                && visible_processes.contains(process.id, &executable_path);
+            let tier = PriorityProcessTier::from_flags(foreground, visible_window);
             let configured_override =
                 settings.override_for(executable_path.to_string_lossy().as_ref(), foreground);
+            let default_priority = tier.select(
+                settings.foreground_priority,
+                settings.visible_window_priority,
+                settings.background_priority,
+            );
             let priority = match configured_override {
-                Some(Some(ProcessIoPrioritySetting::Auto)) if foreground => {
-                    settings.foreground_priority
-                }
-                Some(Some(ProcessIoPrioritySetting::Auto)) => settings.background_priority,
+                Some(Some(ProcessIoPrioritySetting::Auto)) => default_priority,
                 Some(Some(priority)) => priority,
                 Some(None) => continue,
-                None if foreground => settings.foreground_priority,
-                None => settings.background_priority,
+                None => default_priority,
             };
             if let Some(priority) = priority.priority() {
                 target_processes.insert(
@@ -191,7 +214,7 @@ impl IoPriorityManager {
                         process.name,
                         executable_path.to_string_lossy().into_owned(),
                         priority,
-                        foreground,
+                        tier,
                     ),
                 );
             }
@@ -200,7 +223,7 @@ impl IoPriorityManager {
         let target_ids = target_processes.keys().copied().collect::<BTreeSet<_>>();
         let active_target_names = target_processes
             .values()
-            .map(|(_name, path, _priority, _foreground)| process_failure_key(path))
+            .map(|(_name, path, _priority, _tier)| process_failure_key(path))
             .collect::<BTreeSet<_>>();
         self.failure_suppression.retain_keys(&active_target_names);
 
@@ -213,8 +236,7 @@ impl IoPriorityManager {
         let mut applied_processes = 0;
         let mut auto_excluded_processes = BTreeSet::new();
 
-        for (process_id, (process_name, executable_path, priority, foreground)) in target_processes
-        {
+        for (process_id, (process_name, executable_path, priority, tier)) in target_processes {
             if self.is_executable_path_suppressed(
                 process_id,
                 &process_name,
@@ -229,8 +251,9 @@ impl IoPriorityManager {
             match self.apply_process(
                 (process_id, process_name.clone(), executable_path.clone()),
                 priority,
-                foreground,
+                tier,
                 settings.preserve_foreground_priority,
+                settings.preserve_visible_window_priority,
                 settings.preserve_background_priority,
             ) {
                 Ok(ApplyOutcome::Applied { loggable }) => {
@@ -299,8 +322,9 @@ impl IoPriorityManager {
         &mut self,
         (process_id, process_name, executable_path): (u32, String, String),
         priority: ProcessIoPriority,
-        foreground: bool,
+        tier: PriorityProcessTier,
         preserve_foreground: bool,
+        preserve_visible_window: bool,
         preserve_background: bool,
     ) -> Result<ApplyOutcome, IoPriorityError> {
         let process = ProcessHandle::open(process_id)?;
@@ -321,8 +345,9 @@ impl IoPriorityManager {
             .map(|adjusted| adjusted.previous_priority)
             .unwrap_or(current_priority);
         if should_preserve_priority(
-            foreground,
+            tier,
             preserve_foreground,
+            preserve_visible_window,
             preserve_background,
             io_priority_raw(baseline_priority),
             io_priority_raw(priority),
@@ -567,6 +592,12 @@ impl ProcessHandle {
 
     fn set_io_priority(&self, priority: ProcessIoPriority) -> Result<(), IoPriorityError> {
         let mut raw = io_priority_raw(priority);
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::IoPriority(io_priority_raw(self.io_priority()?)),
+            crate::crash_recovery::ProcessValue::IoPriority(raw),
+        )
+        .map_err(IoPriorityError::Failed)?;
         // SAFETY: self owns a live process handle and raw points to exactly the supplied u32 size.
         let status = unsafe {
             NtSetInformationProcess(
@@ -576,7 +607,8 @@ impl ProcessHandle {
                 std::mem::size_of::<u32>() as u32,
             )
         };
-        ntstatus_result(status)
+        ntstatus_result(status)?;
+        recovery.commit().map_err(IoPriorityError::Failed)
     }
 }
 
@@ -645,16 +677,19 @@ fn io_priority_from_raw(priority: u32) -> ProcessIoPriority {
 }
 
 fn should_preserve_priority(
-    foreground: bool,
+    tier: PriorityProcessTier,
     preserve_foreground: bool,
+    preserve_visible_window: bool,
     preserve_background: bool,
     current_rank: u32,
     desired_rank: u32,
 ) -> bool {
-    if foreground {
-        preserve_foreground && current_rank >= desired_rank
-    } else {
-        preserve_background && current_rank <= desired_rank
+    match tier {
+        PriorityProcessTier::Foreground => preserve_foreground && current_rank >= desired_rank,
+        PriorityProcessTier::VisibleWindow => {
+            preserve_visible_window && current_rank >= desired_rank
+        }
+        PriorityProcessTier::Background => preserve_background && current_rank <= desired_rank,
     }
 }
 

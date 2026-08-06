@@ -379,8 +379,9 @@ pub(in crate::ui::app) fn process_list_render_data(
     }
     let mut column_layout =
         process_list_column_layout(&app.settings, &process_groups, &process_summaries);
+    let navigation_width = navigation_pane_width(app.settings.general.navigation_collapsed);
     let available_width = (window.viewport_size().width
-        - px(NAV_PANE_WIDTH + 48.0 + PROCESS_LIST_SCROLLBAR_GUTTER))
+        - px(navigation_width + 48.0 + PROCESS_LIST_SCROLLBAR_GUTTER))
     .min(px(CONTENT_MAX_WIDTH - PROCESS_LIST_SCROLLBAR_GUTTER))
     .max(Pixels::ZERO);
     stretch_process_list_layout(&mut column_layout, available_width);

@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::c_void,
     mem::size_of,
     path::Path,
     ptr::{null_mut, read_unaligned},
@@ -17,24 +16,26 @@ use windows_sys::Win32::{
         },
         Threading::{
             GetActiveProcessorGroupCount, GetCurrentProcessId, GetProcessAffinityMask,
-            GetProcessDefaultCpuSets, GetProcessInformation, OpenProcess, ProcessPowerThrottling,
-            SetProcessAffinityMask, SetProcessDefaultCpuSets, SetProcessInformation,
-            PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            PROCESS_POWER_THROTTLING_STATE, PROCESS_QUERY_INFORMATION,
-            PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_INFORMATION,
+            GetProcessDefaultCpuSets, OpenProcess, SetProcessAffinityMask,
+            SetProcessDefaultCpuSets, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SET_INFORMATION,
         },
     },
 };
 
-use crate::win_util::{last_error, WinHandle};
+use crate::{
+    crash_recovery::{self, ProcessValue},
+    win_util::{last_error, WinHandle},
+};
 
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
-    config::{CoreSteeringMode, CoreSteeringRule, CoreSteeringSettings},
+    config::{CpuAllocationRule, CpuAllocationSettings},
     foreground::{
         contains_process_name, list_processes, process_executable_path, process_failure_key,
         process_handle_matches_executable_path, process_session_id, same_executable_path,
-        same_process_name, should_ignore_foreground_process, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+        same_process_name, visible_window_process_ids, ProtectedProcesses,
+        EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
     },
     rules::{
         execution_failure_suppression_threshold, ExecutionFailureTracker, ExecutionSuppression,
@@ -45,7 +46,7 @@ const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
 const EXTRA_BUILT_IN_EXCLUSIONS: &[&str] = &["rtkauduservice64.exe"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CoreSteeringSnapshot {
+pub struct CpuAllocationSnapshot {
     pub enabled: bool,
     pub scanned_processes: usize,
     pub adjusted_processes: usize,
@@ -57,11 +58,11 @@ pub struct CoreSteeringSnapshot {
     pub last_error: Option<String>,
 }
 
-pub(crate) struct CoreSteeringTarget {
+pub(crate) struct CpuAllocationTarget {
     pub(crate) process_id: u32,
     pub(crate) process_name: String,
     pub(crate) executable_path: String,
-    pub(crate) mode: CoreSteeringMode,
+    pub(crate) mode: CpuAllocationMode,
     pub(crate) core_mask: u64,
     pub(crate) expected_creation_time: Option<u64>,
 }
@@ -95,7 +96,7 @@ struct CpuSetInformationHeader {
     cpu_set_type: u32,
 }
 
-pub struct CoreSteeringManager {
+pub struct CpuAllocationManager {
     adjusted: BTreeMap<u32, AdjustedProcess>,
     failure_suppression: ExecutionFailureTracker,
     action_log_feature: ActionLogFeature,
@@ -111,20 +112,23 @@ struct AdjustedProcess {
 
 #[derive(Clone)]
 enum AffinityAdjustment {
-    Hard {
+    HardAffinity {
         previous_affinity: usize,
         applied_affinity: usize,
     },
-    Soft {
+    SoftCpuSets {
         previous_cpu_set_ids: Vec<u32>,
         applied_cpu_set_ids: Vec<u32>,
     },
-    EfficiencyOff {
-        previous_state: PROCESS_POWER_THROTTLING_STATE,
-    },
 }
 
-impl CoreSteeringManager {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CpuAllocationMode {
+    SoftCpuSets,
+    HardAffinity,
+}
+
+impl CpuAllocationManager {
     pub fn with_action_log_feature(action_log_feature: ActionLogFeature) -> Self {
         Self {
             adjusted: BTreeMap::new(),
@@ -139,16 +143,19 @@ impl CoreSteeringManager {
 
     pub fn update(
         &mut self,
-        settings: &CoreSteeringSettings,
+        settings: &CpuAllocationSettings,
+        allocation: (CpuAllocationMode, ActionLogFeature),
         automation_enabled: bool,
         allow_cross_session_process_control: bool,
         foreground_process_id: Option<u32>,
         action_log: &mut ActionLog,
-    ) -> CoreSteeringSnapshot {
+    ) -> CpuAllocationSnapshot {
+        let (mode, action_log_feature) = allocation;
+        self.action_log_feature = action_log_feature;
         if !automation_enabled {
             let failed = self.clear_all(action_log, "automation disabled");
             self.failure_suppression.clear();
-            return CoreSteeringSnapshot {
+            return CpuAllocationSnapshot {
                 enabled: false,
                 failed_processes: failed,
                 message: "Automation disabled.".to_owned(),
@@ -159,7 +166,7 @@ impl CoreSteeringManager {
         if !settings.enabled {
             let failed = self.clear_all(action_log, &format!("{} disabled", self.feature_label()));
             self.failure_suppression.clear();
-            return CoreSteeringSnapshot {
+            return CpuAllocationSnapshot {
                 enabled: false,
                 failed_processes: failed,
                 message: format!("{} disabled.", self.feature_label()),
@@ -180,19 +187,20 @@ impl CoreSteeringManager {
             .map(str::to_ascii_lowercase)
             .collect::<BTreeSet<_>>();
         if enabled_process_names.is_empty() {
-            let failed = self.clear_all(action_log, "no Core Steering rules configured");
+            let reason = format!("no {} rules configured", self.feature_label());
+            let failed = self.clear_all(action_log, &reason);
             self.failure_suppression.clear();
-            return CoreSteeringSnapshot {
+            return CpuAllocationSnapshot {
                 enabled: true,
                 failed_processes: failed,
-                message: "No Core Steering rules configured.".to_owned(),
+                message: format!("No {} rules configured.", self.feature_label()),
                 ..Default::default()
             };
         }
 
-        if settings.exclude_foreground_app && foreground_process_id.is_none() {
+        if settings.protect_foreground_app && foreground_process_id.is_none() {
             let failed = self.clear_all(action_log, "foreground app is unknown");
-            return CoreSteeringSnapshot {
+            return CpuAllocationSnapshot {
                 enabled: true,
                 failed_processes: failed,
                 message: "Paused: foreground app is unknown.".to_owned(),
@@ -200,11 +208,26 @@ impl CoreSteeringManager {
             };
         }
 
+        let visible_window_process_ids = if settings.protect_visible_window_apps {
+            let Some(process_ids) = visible_window_process_ids() else {
+                let failed = self.clear_all(action_log, "visible windows are unavailable");
+                return CpuAllocationSnapshot {
+                    enabled: true,
+                    failed_processes: failed,
+                    message: "Paused: visible windows are unavailable.".to_owned(),
+                    ..Default::default()
+                };
+            };
+            process_ids
+        } else {
+            BTreeSet::new()
+        };
+
         // SAFETY: GetCurrentProcessId takes no arguments and has no caller requirements.
         let current_process_id = unsafe { GetCurrentProcessId() };
         let Some(current_session_id) = process_session_id(current_process_id) else {
             let failed = self.clear_all(action_log, "current Windows session is unknown");
-            return CoreSteeringSnapshot {
+            return CpuAllocationSnapshot {
                 enabled: true,
                 failed_processes: failed,
                 message: "Paused: current Windows session is unknown.".to_owned(),
@@ -216,7 +239,7 @@ impl CoreSteeringManager {
             Ok(processes) => processes,
             Err(err) => {
                 let failed = self.clear_all(action_log, "process list unavailable");
-                return CoreSteeringSnapshot {
+                return CpuAllocationSnapshot {
                     enabled: true,
                     failed_processes: failed,
                     message: err,
@@ -226,16 +249,12 @@ impl CoreSteeringManager {
         };
 
         let scanned_processes = processes.len();
-        let foreground_executable_path = if settings.exclude_foreground_app {
-            foreground_process_id.and_then(|id| {
-                processes
-                    .iter()
-                    .find(|process| process.id == id)
-                    .and_then(process_executable_path)
-            })
-        } else {
-            None
-        };
+        let protected_processes = ProtectedProcesses::capture(
+            &processes,
+            settings.protect_foreground_app,
+            foreground_process_id,
+            visible_window_process_ids,
+        );
         let mut target_processes = BTreeMap::new();
         for process in processes {
             if process.id == 0
@@ -257,23 +276,17 @@ impl CoreSteeringManager {
             let Some(executable_path) = process_executable_path(&process) else {
                 continue;
             };
-            if should_ignore_foreground_process(
-                settings.exclude_foreground_app,
-                process.id,
-                &executable_path,
-                foreground_process_id,
-                foreground_executable_path.as_deref(),
-            ) {
+            if protected_processes.contains(process.id, &executable_path) {
                 continue;
             }
 
-            if let Some(rule) = matching_rule(settings, &executable_path) {
+            if let Some(rule) = matching_rule(&settings.rules, &executable_path) {
                 target_processes.insert(
                     process.id,
                     (
                         process.name,
                         executable_path.to_string_lossy().into_owned(),
-                        rule.mode,
+                        mode,
                         rule.core_mask,
                         None,
                     ),
@@ -284,18 +297,18 @@ impl CoreSteeringManager {
         self.apply_targets(
             target_processes,
             scanned_processes,
-            core_steering_message(settings),
+            cpu_allocation_message(mode),
             action_log,
         )
     }
 
     pub(crate) fn update_discovered_targets(
         &mut self,
-        targets: Vec<CoreSteeringTarget>,
+        targets: Vec<CpuAllocationTarget>,
         scanned_processes: usize,
         message: &str,
         action_log: &mut ActionLog,
-    ) -> CoreSteeringSnapshot {
+    ) -> CpuAllocationSnapshot {
         let targets = targets
             .into_iter()
             .map(|target| {
@@ -316,11 +329,11 @@ impl CoreSteeringManager {
 
     fn apply_targets(
         &mut self,
-        target_processes: BTreeMap<u32, (String, String, CoreSteeringMode, u64, Option<u64>)>,
+        target_processes: BTreeMap<u32, (String, String, CpuAllocationMode, u64, Option<u64>)>,
         scanned_processes: usize,
         message: String,
         action_log: &mut ActionLog,
-    ) -> CoreSteeringSnapshot {
+    ) -> CpuAllocationSnapshot {
         let active_target_names = target_processes
             .values()
             .map(|(_name, path, _, _, _)| process_failure_key(path))
@@ -411,7 +424,7 @@ impl CoreSteeringManager {
             }
         }
 
-        CoreSteeringSnapshot {
+        CpuAllocationSnapshot {
             enabled: true,
             scanned_processes,
             adjusted_processes: self.adjusted.len(),
@@ -539,13 +552,14 @@ impl CoreSteeringManager {
 
     fn feature_label(&self) -> &'static str {
         match self.action_log_feature {
-            ActionLogFeature::BackgroundCpuRestriction => "Background CPU Restriction",
-            _ => "Core Steering",
+            ActionLogFeature::CpuSetsSoft => "CPU Sets (Soft)",
+            ActionLogFeature::ProcessorAffinityHard => "Processor Affinity (Hard)",
+            _ => "CPU allocation",
         }
     }
 }
 
-impl Drop for CoreSteeringManager {
+impl Drop for CpuAllocationManager {
     fn drop(&mut self) {
         let mut action_log = ActionLog::new(1);
         self.clear_all(
@@ -555,17 +569,17 @@ impl Drop for CoreSteeringManager {
     }
 }
 
-impl Default for CoreSteeringManager {
+impl Default for CpuAllocationManager {
     fn default() -> Self {
         Self {
             adjusted: BTreeMap::new(),
             failure_suppression: ExecutionFailureTracker::default(),
-            action_log_feature: ActionLogFeature::CoreSteering,
+            action_log_feature: ActionLogFeature::CpuSetsSoft,
         }
     }
 }
 
-impl Default for CoreSteeringSnapshot {
+impl Default for CpuAllocationSnapshot {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -575,7 +589,7 @@ impl Default for CoreSteeringSnapshot {
             failed_processes: 0,
             auto_excluded_processes: Vec::new(),
             adjusted_apps: Vec::new(),
-            message: "Core Steering disabled.".to_owned(),
+            message: "CPU allocation disabled.".to_owned(),
             last_error: None,
         }
     }
@@ -603,22 +617,25 @@ pub fn logical_processors() -> Vec<LogicalProcessorInfo> {
     logical_processors_from_topology().unwrap_or_else(fallback_logical_processors)
 }
 
-fn core_steering_message(settings: &CoreSteeringSettings) -> String {
-    core_steering_message_for_group_count(
-        active_processor_group_count(),
-        settings
-            .rules
-            .iter()
-            .any(|rule| rule.enabled && rule.mode == CoreSteeringMode::Hard),
-    )
+pub fn has_multiple_processor_groups() -> bool {
+    active_processor_group_count() > 1
 }
 
-fn core_steering_message_for_group_count(group_count: u16, has_hard_rules: bool) -> String {
-    if group_count > 1 && has_hard_rules {
-        "Core Steering active. Multi-group CPU detected: hard steering can only control CPUs in the process primary processor group. Apps that are not processor-group-aware may not use the full CPU."
+fn cpu_allocation_message(mode: CpuAllocationMode) -> String {
+    match mode {
+        CpuAllocationMode::SoftCpuSets => "CPU Sets (Soft) active.".to_owned(),
+        CpuAllocationMode::HardAffinity => {
+            processor_affinity_hard_message_for_group_count(active_processor_group_count())
+        }
+    }
+}
+
+fn processor_affinity_hard_message_for_group_count(group_count: u16) -> String {
+    if group_count > 1 {
+        "Processor Affinity (Hard) active. Multi-group CPU detected: affinity can only control CPUs in the process primary processor group. Apps that are not processor-group-aware may not use the full CPU."
             .to_owned()
     } else {
-        "Core Steering active.".to_owned()
+        "Processor Affinity (Hard) active.".to_owned()
     }
 }
 
@@ -791,18 +808,18 @@ fn processor_kind(
 }
 
 fn matching_rule<'a>(
-    settings: &'a CoreSteeringSettings,
+    rules: &'a [CpuAllocationRule],
     executable_path: &Path,
-) -> Option<&'a CoreSteeringRule> {
-    settings.rules.iter().find(|rule| {
+) -> Option<&'a CpuAllocationRule> {
+    rules.iter().find(|rule| {
         rule.enabled
             && rule_has_target(rule)
             && same_executable_path(Path::new(&rule.executable_path), executable_path)
     })
 }
 
-fn rule_has_target(rule: &CoreSteeringRule) -> bool {
-    rule.mode == CoreSteeringMode::EfficiencyOff || rule.core_mask != 0
+fn rule_has_target(rule: &CpuAllocationRule) -> bool {
+    rule.core_mask != 0
 }
 
 enum AffinityError {
@@ -820,7 +837,7 @@ struct AffinityTarget {
 
 fn apply_affinity(
     (process_id, process_name, executable_path): (u32, String, String),
-    mode: CoreSteeringMode,
+    mode: CpuAllocationMode,
     rule_mask: u64,
     expected_creation_time: Option<u64>,
     existing: Option<&AdjustedProcess>,
@@ -864,7 +881,7 @@ fn apply_affinity(
 
     let restored_process_name = process_name.clone();
     let adjusted = match mode {
-        CoreSteeringMode::Hard => apply_hard_affinity(
+        CpuAllocationMode::HardAffinity => apply_hard_affinity(
             AffinityTarget {
                 process_id,
                 process_name,
@@ -877,7 +894,7 @@ fn apply_affinity(
             action_log_feature,
             action_log,
         ),
-        CoreSteeringMode::Soft => apply_soft_affinity(
+        CpuAllocationMode::SoftCpuSets => apply_soft_affinity(
             AffinityTarget {
                 process_id,
                 process_name,
@@ -886,18 +903,6 @@ fn apply_affinity(
             },
             &process,
             rule_mask,
-            reusable_existing,
-            action_log_feature,
-            action_log,
-        ),
-        CoreSteeringMode::EfficiencyOff => apply_background_efficiency_off(
-            AffinityTarget {
-                process_id,
-                process_name,
-                executable_path,
-                creation_time,
-            },
-            &process,
             reusable_existing,
             action_log_feature,
             action_log,
@@ -958,7 +963,7 @@ fn apply_hard_affinity(
     if existing.is_some_and(|adjusted| {
         matches!(
             adjusted.adjustment,
-            AffinityAdjustment::Hard {
+            AffinityAdjustment::HardAffinity {
                 applied_affinity,
                 ..
             } if applied_affinity == target_affinity
@@ -971,10 +976,10 @@ fn apply_hard_affinity(
 
     let previous_affinity = existing
         .and_then(|adjusted| match adjusted.adjustment {
-            AffinityAdjustment::Hard {
+            AffinityAdjustment::HardAffinity {
                 previous_affinity, ..
             } => Some(previous_affinity),
-            AffinityAdjustment::Soft { .. } | AffinityAdjustment::EfficiencyOff { .. } => None,
+            AffinityAdjustment::SoftCpuSets { .. } => None,
         })
         .unwrap_or(current_affinity);
     action_log.record(
@@ -989,7 +994,7 @@ fn apply_hard_affinity(
         process_name,
         executable_path,
         creation_time,
-        adjustment: AffinityAdjustment::Hard {
+        adjustment: AffinityAdjustment::HardAffinity {
             previous_affinity,
             applied_affinity: target_affinity,
         },
@@ -1018,7 +1023,7 @@ fn apply_soft_affinity(
     if existing.is_some_and(|adjusted| {
         matches!(
             &adjusted.adjustment,
-            AffinityAdjustment::Soft {
+            AffinityAdjustment::SoftCpuSets {
                 applied_cpu_set_ids,
                 ..
             } if *applied_cpu_set_ids == target_cpu_set_ids
@@ -1031,11 +1036,11 @@ fn apply_soft_affinity(
 
     let previous_cpu_set_ids = existing
         .and_then(|adjusted| match &adjusted.adjustment {
-            AffinityAdjustment::Soft {
+            AffinityAdjustment::SoftCpuSets {
                 previous_cpu_set_ids,
                 ..
             } => Some(previous_cpu_set_ids.clone()),
-            AffinityAdjustment::Hard { .. } | AffinityAdjustment::EfficiencyOff { .. } => None,
+            AffinityAdjustment::HardAffinity { .. } => None,
         })
         .unwrap_or(current_cpu_set_ids);
     action_log.record(
@@ -1050,62 +1055,10 @@ fn apply_soft_affinity(
         process_name,
         executable_path,
         creation_time,
-        adjustment: AffinityAdjustment::Soft {
+        adjustment: AffinityAdjustment::SoftCpuSets {
             previous_cpu_set_ids,
             applied_cpu_set_ids: target_cpu_set_ids,
         },
-    }))
-}
-
-fn apply_background_efficiency_off(
-    target: AffinityTarget,
-    process: &ProcessHandle,
-    existing: Option<&AdjustedProcess>,
-    action_log_feature: ActionLogFeature,
-    action_log: &mut ActionLog,
-) -> Result<Option<AdjustedProcess>, AffinityError> {
-    let AffinityTarget {
-        process_id,
-        process_name,
-        executable_path,
-        creation_time,
-    } = target;
-    let current_state = process.power_throttling_state()?;
-
-    if existing.is_some_and(|adjusted| {
-        matches!(
-            adjusted.adjustment,
-            AffinityAdjustment::EfficiencyOff { .. }
-        ) && !power_throttling_execution_enabled(current_state)
-    }) {
-        return Ok(existing.cloned());
-    }
-
-    let mut next_state = current_state;
-    next_state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    next_state.ControlMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    next_state.StateMask &= !PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    process.set_power_throttling_state(next_state)?;
-    action_log.record(
-        action_log_feature,
-        Some(process_id),
-        process_name.clone(),
-        ActionLogResult::Applied,
-        "Disabled Efficiency Mode execution-speed throttling.",
-    );
-
-    let previous_state = existing
-        .and_then(|adjusted| match adjusted.adjustment {
-            AffinityAdjustment::EfficiencyOff { previous_state } => Some(previous_state),
-            AffinityAdjustment::Hard { .. } | AffinityAdjustment::Soft { .. } => None,
-        })
-        .unwrap_or(current_state);
-
-    Ok(Some(AdjustedProcess {
-        process_name,
-        executable_path,
-        creation_time,
-        adjustment: AffinityAdjustment::EfficiencyOff { previous_state },
     }))
 }
 
@@ -1114,34 +1067,29 @@ fn restore_adjustment(
     adjustment: &AffinityAdjustment,
 ) -> Result<(), AffinityError> {
     match adjustment {
-        AffinityAdjustment::Hard {
+        AffinityAdjustment::HardAffinity {
             previous_affinity, ..
         } => process.set_affinity_mask(*previous_affinity),
-        AffinityAdjustment::Soft {
+        AffinityAdjustment::SoftCpuSets {
             previous_cpu_set_ids,
             ..
         } => process.set_default_cpu_set_ids(previous_cpu_set_ids),
-        AffinityAdjustment::EfficiencyOff { previous_state } => {
-            process.set_power_throttling_state(*previous_state)
-        }
     }
 }
 
 impl AffinityAdjustment {
-    fn mode(&self) -> CoreSteeringMode {
+    fn mode(&self) -> CpuAllocationMode {
         match self {
-            Self::Hard { .. } => CoreSteeringMode::Hard,
-            Self::Soft { .. } => CoreSteeringMode::Soft,
-            Self::EfficiencyOff { .. } => CoreSteeringMode::EfficiencyOff,
+            Self::HardAffinity { .. } => CpuAllocationMode::HardAffinity,
+            Self::SoftCpuSets { .. } => CpuAllocationMode::SoftCpuSets,
         }
     }
 }
 
 fn adjustment_label(adjustment: &AffinityAdjustment) -> &'static str {
     match adjustment {
-        AffinityAdjustment::Hard { .. } => "hard affinity",
-        AffinityAdjustment::Soft { .. } => "CPU Sets",
-        AffinityAdjustment::EfficiencyOff { .. } => "Efficiency Mode Off",
+        AffinityAdjustment::HardAffinity { .. } => "Processor Affinity (Hard)",
+        AffinityAdjustment::SoftCpuSets { .. } => "CPU Sets (Soft)",
     }
 }
 
@@ -1151,10 +1099,6 @@ fn affinity_error_message(error: AffinityError) -> String {
         AffinityError::ProcessExited => "Process exited.".to_owned(),
         AffinityError::Failed(message) => message,
     }
-}
-
-fn power_throttling_execution_enabled(state: PROCESS_POWER_THROTTLING_STATE) -> bool {
-    (state.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED) != 0
 }
 
 fn target_affinity_mask(rule_mask: u64, system_affinity: usize) -> Option<usize> {
@@ -1289,6 +1233,13 @@ impl ProcessHandle {
     }
 
     fn set_affinity_mask(&self, affinity_mask: usize) -> Result<(), AffinityError> {
+        let original = self.affinity_mask()?.0;
+        let recovery = crash_recovery::record_process_change(
+            self.0.raw(),
+            ProcessValue::Affinity(original as u64),
+            ProcessValue::Affinity(affinity_mask as u64),
+        )
+        .map_err(AffinityError::Failed)?;
         // SAFETY: self owns a live process handle and affinity_mask was normalized against the
         // system mask read from this process.
         let ok = unsafe { SetProcessAffinityMask(self.0.raw(), affinity_mask) };
@@ -1298,6 +1249,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery.commit().map_err(AffinityError::Failed)?;
             Ok(())
         }
     }
@@ -1335,6 +1287,12 @@ impl ProcessHandle {
     }
 
     fn set_default_cpu_set_ids(&self, ids: &[u32]) -> Result<(), AffinityError> {
+        let recovery = crash_recovery::record_process_change(
+            self.0.raw(),
+            ProcessValue::CpuSets(self.default_cpu_set_ids()?),
+            ProcessValue::CpuSets(ids.to_vec()),
+        )
+        .map_err(AffinityError::Failed)?;
         let (ptr, count) = if ids.is_empty() {
             (null_mut(), 0)
         } else {
@@ -1349,52 +1307,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
-            Ok(())
-        }
-    }
-
-    fn power_throttling_state(&self) -> Result<PROCESS_POWER_THROTTLING_STATE, AffinityError> {
-        let mut state = PROCESS_POWER_THROTTLING_STATE::default();
-        // SAFETY: self owns a live process handle and state is writable for exactly the supplied
-        // structure size.
-        let ok = unsafe {
-            GetProcessInformation(
-                self.0.raw(),
-                ProcessPowerThrottling,
-                &mut state as *mut _ as *mut c_void,
-                size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-            )
-        };
-        if ok == 0 {
-            Err(AffinityError::Failed(format!(
-                "GetProcessInformation ProcessPowerThrottling failed with error {}.",
-                last_error()
-            )))
-        } else {
-            Ok(state)
-        }
-    }
-
-    fn set_power_throttling_state(
-        &self,
-        state: PROCESS_POWER_THROTTLING_STATE,
-    ) -> Result<(), AffinityError> {
-        // SAFETY: self owns a live process handle and state is fully initialized for exactly the
-        // supplied structure size.
-        let ok = unsafe {
-            SetProcessInformation(
-                self.0.raw(),
-                ProcessPowerThrottling,
-                &state as *const _ as *const c_void,
-                size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
-            )
-        };
-        if ok == 0 {
-            Err(AffinityError::Failed(format!(
-                "SetProcessInformation ProcessPowerThrottling failed with error {}.",
-                last_error()
-            )))
-        } else {
+            recovery.commit().map_err(AffinityError::Failed)?;
             Ok(())
         }
     }
@@ -1416,42 +1329,28 @@ mod tests {
 
     #[test]
     fn rule_match_is_case_insensitive_and_ignores_disabled_or_empty_masks() {
-        let settings = CoreSteeringSettings {
-            enabled: true,
-            exclude_foreground_app: true,
-            rules: vec![
-                CoreSteeringRule {
-                    enabled: false,
-                    mode: CoreSteeringMode::Hard,
-                    executable_path: r"C:\Apps\Browser\browser.exe".to_owned(),
-                    core_mask: 1,
-                },
-                CoreSteeringRule {
-                    enabled: true,
-                    mode: CoreSteeringMode::Hard,
-                    executable_path: r"C:\Apps\Backup\backup.exe".to_owned(),
-                    core_mask: 0,
-                },
-                CoreSteeringRule {
-                    enabled: true,
-                    mode: CoreSteeringMode::Soft,
-                    executable_path: r" C:\Apps\Worker\Worker.EXE ".to_owned(),
-                    core_mask: 0b11,
-                },
-                CoreSteeringRule {
-                    enabled: true,
-                    mode: CoreSteeringMode::EfficiencyOff,
-                    executable_path: r"C:\Apps\Game\Game.EXE".to_owned(),
-                    core_mask: 0,
-                },
-            ],
-        };
+        let rules = vec![
+            CpuAllocationRule {
+                enabled: false,
+                executable_path: r"C:\Apps\Browser\browser.exe".to_owned(),
+                core_mask: 1,
+            },
+            CpuAllocationRule {
+                enabled: true,
+                executable_path: r"C:\Apps\Backup\backup.exe".to_owned(),
+                core_mask: 0,
+            },
+            CpuAllocationRule {
+                enabled: true,
+                executable_path: r" C:\Apps\Worker\Worker.EXE ".to_owned(),
+                core_mask: 0b11,
+            },
+        ];
 
-        assert!(matching_rule(&settings, Path::new(r"c:\apps\worker\worker.exe")).is_some());
-        assert!(matching_rule(&settings, Path::new(r"C:\Apps\Game\game.exe")).is_some());
-        assert!(matching_rule(&settings, Path::new(r"C:\Apps\Browser\browser.exe")).is_none());
-        assert!(matching_rule(&settings, Path::new(r"C:\Apps\Backup\backup.exe")).is_none());
-        assert!(matching_rule(&settings, Path::new(r"D:\Other\worker.exe")).is_none());
+        assert!(matching_rule(&rules, Path::new(r"c:\apps\worker\worker.exe")).is_some());
+        assert!(matching_rule(&rules, Path::new(r"C:\Apps\Browser\browser.exe")).is_none());
+        assert!(matching_rule(&rules, Path::new(r"C:\Apps\Backup\backup.exe")).is_none());
+        assert!(matching_rule(&rules, Path::new(r"D:\Other\worker.exe")).is_none());
     }
 
     #[test]
@@ -1479,8 +1378,8 @@ mod tests {
     }
 
     #[test]
-    fn repeated_failures_suppress_future_core_steering_attempts_once() {
-        let mut manager = CoreSteeringManager::default();
+    fn repeated_failures_suppress_future_cpu_allocation_attempts_once() {
+        let mut manager = CpuAllocationManager::default();
         let mut log = ActionLog::new(8);
         let executable_path = r"C:\Apps\app.exe";
 
@@ -1513,9 +1412,8 @@ mod tests {
 
     #[test]
     fn configured_action_log_feature_is_used_for_suppression_entries() {
-        let mut manager = CoreSteeringManager::with_action_log_feature(
-            ActionLogFeature::BackgroundCpuRestriction,
-        );
+        let mut manager =
+            CpuAllocationManager::with_action_log_feature(ActionLogFeature::ProcessorAffinityHard);
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("app.exe");
@@ -1525,18 +1423,14 @@ mod tests {
 
         let entries = log.entries();
         assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].feature,
-            ActionLogFeature::BackgroundCpuRestriction
-        );
-        assert!(entries[0].reason.contains("Background CPU Restriction"));
+        assert_eq!(entries[0].feature, ActionLogFeature::ProcessorAffinityHard);
+        assert!(entries[0].reason.contains("Processor Affinity (Hard)"));
     }
 
     #[test]
-    fn first_background_cpu_suppression_reports_auto_exclusion_once() {
-        let mut manager = CoreSteeringManager::with_action_log_feature(
-            ActionLogFeature::BackgroundCpuRestriction,
-        );
+    fn first_cpu_allocation_suppression_reports_auto_exclusion_once() {
+        let mut manager =
+            CpuAllocationManager::with_action_log_feature(ActionLogFeature::CpuSetsSoft);
         let mut log = ActionLog::new(8);
 
         manager.record_process_failure("app.exe");
@@ -1553,16 +1447,12 @@ mod tests {
     }
 
     #[test]
-    fn core_steering_message_warns_on_multiple_processor_groups() {
+    fn processor_affinity_hard_message_warns_on_multiple_processor_groups() {
         assert_eq!(
-            core_steering_message_for_group_count(1, true),
-            "Core Steering active."
+            processor_affinity_hard_message_for_group_count(1),
+            "Processor Affinity (Hard) active."
         );
-        assert_eq!(
-            core_steering_message_for_group_count(2, false),
-            "Core Steering active."
-        );
-        let message = core_steering_message_for_group_count(2, true);
+        let message = processor_affinity_hard_message_for_group_count(2);
         assert!(message.contains("Multi-group CPU detected"));
         assert!(message.contains("processor-group-aware"));
     }
@@ -1580,59 +1470,6 @@ mod tests {
     }
 
     #[test]
-    fn power_throttling_execution_flag_detection() {
-        let mut state = PROCESS_POWER_THROTTLING_STATE {
-            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
-            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
-            StateMask: 0,
-        };
-        assert!(!power_throttling_execution_enabled(state));
-
-        state.StateMask |= PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-        assert!(power_throttling_execution_enabled(state));
-    }
-
-    #[test]
-    fn foreground_skip_matches_pid_or_exact_path() {
-        let mut settings = CoreSteeringSettings {
-            exclude_foreground_app: true,
-            ..Default::default()
-        };
-        let foreground = Path::new(r"C:\Apps\Foreground\app.exe");
-
-        assert!(should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            42,
-            Path::new(r"C:\Apps\helper.exe"),
-            Some(42),
-            Some(foreground),
-        ));
-        assert!(should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            99,
-            Path::new(r"c:\apps\foreground\APP.EXE"),
-            Some(42),
-            Some(foreground),
-        ));
-        assert!(!should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            99,
-            Path::new(r"D:\Other\app.exe"),
-            Some(42),
-            Some(foreground),
-        ));
-
-        settings.exclude_foreground_app = false;
-        assert!(!should_ignore_foreground_process(
-            settings.exclude_foreground_app,
-            42,
-            foreground,
-            Some(42),
-            Some(foreground),
-        ));
-    }
-
-    #[test]
     fn built_in_exclusions_include_system_processes() {
         assert!(is_builtin_excluded("csrss.exe"));
         assert!(is_builtin_excluded("winlogon.exe"));
@@ -1641,14 +1478,14 @@ mod tests {
 
     #[test]
     fn release_processes_skips_restore_when_process_identity_is_unknown() {
-        let mut manager = CoreSteeringManager::default();
+        let mut manager = CpuAllocationManager::default();
         manager.adjusted.insert(
             0,
             AdjustedProcess {
                 process_name: "exited.exe".to_owned(),
                 executable_path: r"C:\Apps\exited.exe".to_owned(),
                 creation_time: 0,
-                adjustment: AffinityAdjustment::Hard {
+                adjustment: AffinityAdjustment::HardAffinity {
                     previous_affinity: 0b1111,
                     applied_affinity: 0b0001,
                 },

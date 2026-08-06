@@ -93,29 +93,29 @@ pub(super) fn update_app_suspension_status(
     );
 }
 
-pub(super) fn update_core_steering_status(
+pub(super) fn update_cpu_sets_soft_status(
     shared: &SharedAutomationState,
-    status: CoreSteeringSnapshot,
+    status: CpuAllocationSnapshot,
 ) {
     update_status_with_auto_exclusions(
         shared,
         status.clone(),
         &status.auto_excluded_processes,
-        |pending| &mut pending.core_steering,
-        |state| &mut state.status.core_steering,
+        |pending| &mut pending.cpu_sets_soft,
+        |state| &mut state.status.cpu_sets_soft,
     );
 }
 
-pub(super) fn update_background_cpu_restriction_status(
+pub(super) fn update_processor_affinity_hard_status(
     shared: &SharedAutomationState,
-    status: CoreSteeringSnapshot,
+    status: CpuAllocationSnapshot,
 ) {
     update_status_with_auto_exclusions(
         shared,
         status.clone(),
         &status.auto_excluded_processes,
-        |pending| &mut pending.background_cpu_restriction,
-        |state| &mut state.status.background_cpu_restriction,
+        |pending| &mut pending.processor_affinity_hard,
+        |state| &mut state.status.processor_affinity_hard,
     );
 }
 

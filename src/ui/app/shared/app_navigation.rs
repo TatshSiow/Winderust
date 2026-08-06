@@ -77,13 +77,36 @@ pub(in crate::ui::app) fn title_bar_control_button(
 
 pub(in crate::ui::app) fn section_landing_card(
     page: Page,
+    settings: &Settings,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
+    let enabled = if settings.general.show_feature_status_on_cards {
+        feature_page_enabled(settings, page)
+    } else {
+        None
+    };
     let trailing = h_flex()
         .items_center()
         .justify_end()
         .gap_2()
         .flex_shrink_0()
+        .when_some(enabled, |trailing, enabled| {
+            let (background, foreground) = if enabled {
+                (success_bg_color(), success_text_color())
+            } else {
+                (app_input_color(false), muted_text_color())
+            };
+            trailing.child(status_pill_div(
+                t!(if enabled {
+                    "common.enabled"
+                } else {
+                    "common.disabled"
+                })
+                .to_string(),
+                background,
+                foreground,
+            ))
+        })
         .child(
             Icon::new(NavIcon::ChevronRight)
                 .with_size(px(16.0))
@@ -129,9 +152,54 @@ pub(in crate::ui::app) fn section_landing_card(
         .child(trailing)
 }
 
+pub(in crate::ui::app) fn feature_page_enabled(settings: &Settings, page: Page) -> Option<bool> {
+    Some(match page {
+        Page::AdaptiveEngine => settings.adaptive_engine.enabled,
+        Page::BackgroundEfficiency => settings.background_efficiency.enabled,
+        Page::MemoryTrim => settings.memory_trim.enabled,
+        Page::ByForeground => settings.by_foreground.enabled,
+        Page::ByRunningApp => settings.by_running_app.enabled,
+        Page::ByCpuLoad => settings.by_cpu_load.enabled,
+        Page::ByActivity => settings.by_activity.enabled,
+        Page::ByTime => settings.by_time.enabled,
+        Page::ProcessPriority => settings.process_priority.enabled,
+        Page::ThreadPriority => settings.thread_priority.enabled,
+        Page::DynamicPriorityBoost => settings.dynamic_priority_boost.enabled,
+        Page::IoPriority => settings.io_priority.enabled,
+        Page::GpuPriority => settings.gpu_priority.enabled,
+        Page::MemoryPriority => settings.memory_priority.enabled,
+        Page::CoreLimiter => settings.core_limiter.enabled,
+        Page::CpuSetsSoft => settings.cpu_sets_soft.enabled,
+        Page::ProcessorAffinityHard => settings.processor_affinity_hard.enabled,
+        Page::AppSuspension => settings.app_suspension.enabled,
+        Page::TimerResolution => settings.timer_resolution.enabled,
+        _ => return None,
+    })
+}
+
+pub(in crate::ui::app) fn section_enabled_feature_count(
+    settings: &Settings,
+    page: Page,
+) -> Option<usize> {
+    if !matches!(
+        page,
+        Page::WinderustFeatures | Page::PowerPlanControl | Page::PriorityControl | Page::CpuControl
+    ) {
+        return None;
+    }
+    page.child_pages().map(|pages| {
+        pages
+            .iter()
+            .filter(|page| feature_page_enabled(settings, **page) == Some(true))
+            .count()
+    })
+}
+
 pub(in crate::ui::app) fn nav_row(
     page: Page,
     selected: bool,
+    collapsed: bool,
+    enabled_feature_count: Option<usize>,
     cx: &mut Context<WinderustApp>,
 ) -> gpui::Stateful<gpui::Div> {
     let row_id = SharedString::from(format!("nav-row-{page:?}"));
@@ -146,9 +214,8 @@ pub(in crate::ui::app) fn nav_row(
         .h(px(40.0))
         .w_full()
         .items_center()
-        .gap_3()
         .pl(px(0.0))
-        .pr(px(12.0))
+        .when(!collapsed, |row| row.pr(px(12.0)))
         .relative()
         .overflow_hidden()
         .rounded(px(BRAND_RADIUS_CONTROL))
@@ -164,16 +231,91 @@ pub(in crate::ui::app) fn nav_row(
         .child(bg_layer)
         .child(nav_selection_indicator(page, selected))
         .child(nav_icon(page, selected, cx))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .opacity(content_opacity)
-                .text_size(px(TEXT_CONTROL_SIZE))
-                .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
-                .truncate()
-                .child(page.label()),
-        )
+        .when(!collapsed, |row| {
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .opacity(content_opacity)
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .truncate()
+                    .child(page.label()),
+            )
+            .when_some(enabled_feature_count, |row, count| {
+                let (background, foreground) = if count == 0 {
+                    (sidebar_hover_color(), muted_text_color())
+                } else {
+                    (success_bg_color(), success_text_color())
+                };
+                row.child(status_pill_div(count.to_string(), background, foreground))
+            })
+        })
+        .when(collapsed, |row| {
+            let label = page.label();
+            row.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+        })
+}
+
+pub(in crate::ui::app) fn nav_action_row(
+    id: &'static str,
+    icon: NavIcon,
+    label: String,
+    collapsed: bool,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Stateful<gpui::Div> {
+    let (hovered, _) = card_hover_snapshot(id);
+    let hover_id = id.to_owned();
+    let content_opacity = if hovered { 0.9 } else { 0.68 };
+
+    h_flex()
+        .id(id)
+        .h(px(40.0))
+        .w_full()
+        .items_center()
+        .when(!collapsed, |row| row.pr(px(12.0)))
+        .relative()
+        .overflow_hidden()
+        .rounded(px(BRAND_RADIUS_CONTROL))
+        .text_color(cx.theme().muted_foreground)
+        .on_hover(move |hovered, _, cx| {
+            set_card_hovered(hover_id.clone(), *hovered, cx);
+        })
+        .cursor_pointer()
+        .child(animated_nav_row_bg(id, false))
+        .child(nav_action_icon(icon, content_opacity, cx))
+        .when(!collapsed, |row| {
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .opacity(content_opacity)
+                    .text_size(px(TEXT_CONTROL_SIZE))
+                    .line_height(px(TEXT_CONTROL_LINE_HEIGHT))
+                    .truncate()
+                    .child(label.clone()),
+            )
+        })
+        .when(collapsed, |row| {
+            row.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+        })
+}
+
+pub(in crate::ui::app) fn nav_action_icon(
+    icon: NavIcon,
+    opacity: f32,
+    cx: &mut Context<WinderustApp>,
+) -> gpui::Div {
+    div()
+        .w(px(40.0))
+        .h(px(22.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .opacity(opacity)
+        .text_color(cx.theme().muted_foreground)
+        .child(Icon::new(icon).with_size(px(18.0)))
 }
 
 pub(in crate::ui::app) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyElement {
@@ -195,16 +337,18 @@ pub(in crate::ui::app) fn animated_nav_row_bg(id: &str, selected: bool) -> AnyEl
     div()
         .absolute()
         .inset_0()
-        .child(with_optional_motion(
+        .child(with_state_change_motion(
             selected_layer,
-            SharedString::from(format!("nav-row-selected-{id}-{selected}")),
+            SharedString::from(format!("nav-row-selected-{id}")),
+            selected.to_string(),
             MotionSpeed::Fast,
             |layer| layer,
             move |layer, delta| layer.opacity(if selected { delta } else { 1.0 - delta }),
         ))
-        .child(with_optional_motion(
+        .child(with_state_change_motion(
             hover_layer,
-            SharedString::from(format!("nav-row-hover-{id}-{hover_active}")),
+            SharedString::from(format!("nav-row-hover-{id}")),
+            hover_active.to_string(),
             MotionSpeed::Fast,
             |layer| layer,
             move |layer, delta| {
@@ -221,11 +365,14 @@ pub(in crate::ui::app) fn nav_selection_indicator(page: Page, selected: bool) ->
         .h(px(20.0))
         .rounded(px(BRAND_RADIUS_CONTROL))
         .bg(rgb(accent_color()))
-        .opacity(if selected { 1.0 } else { 0.0 });
+        .opacity(if selected { 1.0 } else { 0.0 })
+        .absolute()
+        .left(px(0.0));
 
-    with_optional_motion(
+    with_state_change_motion(
         indicator,
-        SharedString::from(format!("nav-selection-indicator-{page:?}-{selected}")),
+        SharedString::from(format!("nav-selection-indicator-{page:?}")),
+        selected.to_string(),
         MotionSpeed::Fast,
         |indicator| indicator,
         move |indicator, delta| {
@@ -248,7 +395,7 @@ pub(in crate::ui::app) fn nav_icon(
     };
 
     let icon = div()
-        .w(px(22.0))
+        .w(px(40.0))
         .h(px(22.0))
         .flex()
         .items_center()
@@ -267,7 +414,7 @@ pub(in crate::ui::app) fn nav_icon_name(page: Page) -> NavIcon {
     match page {
         Page::Home => NavIcon::House,
         Page::PowerPlanControl => NavIcon::Zap,
-        Page::WinderustFeatures => NavIcon::Feather,
+        Page::WinderustFeatures => NavIcon::Computer,
         Page::CpuControl => NavIcon::Cpu,
         Page::PriorityControl => NavIcon::CircleFadingArrowUp,
         Page::SettingsHome => NavIcon::Settings,
@@ -279,9 +426,9 @@ pub(in crate::ui::app) fn nav_icon_name(page: Page) -> NavIcon {
         Page::ThreadPriority => NavIcon::Spline,
         Page::DynamicPriorityBoost => NavIcon::TrendingUpDown,
         Page::CoreLimiter => NavIcon::OctagonMinus,
-        Page::BackgroundCpuRestriction => NavIcon::MonitorX,
+        Page::CpuSetsSoft => NavIcon::LifeBuoy,
         Page::ProcessList => NavIcon::List,
-        Page::AdaptiveEngine => NavIcon::Leaf,
+        Page::AdaptiveEngine => NavIcon::BrainCircuit,
         Page::BackgroundEfficiency => NavIcon::Leaf,
         Page::AppSuspension => NavIcon::MonitorPause,
         Page::ByRunningApp => NavIcon::Footprints,
@@ -289,7 +436,7 @@ pub(in crate::ui::app) fn nav_icon_name(page: Page) -> NavIcon {
         Page::GpuPriority => NavIcon::Gpu,
         Page::MemoryPriority => NavIcon::MemoryStick,
         Page::MemoryTrim => NavIcon::Scissors,
-        Page::CoreSteering => NavIcon::LifeBuoy,
+        Page::ProcessorAffinityHard => NavIcon::MonitorX,
         Page::ByForeground => NavIcon::BringToFront,
         Page::ByTime => NavIcon::CalendarDays,
         Page::ActionLog => NavIcon::Info,
@@ -305,6 +452,7 @@ pub(in crate::ui::app) fn nav_icon_name(page: Page) -> NavIcon {
 #[derive(Clone, Copy)]
 pub(in crate::ui::app) enum NavIcon {
     AppWindow,
+    BrainCircuit,
     BringToFront,
     CalendarDays,
     ChartColumn,
@@ -313,9 +461,9 @@ pub(in crate::ui::app) enum NavIcon {
     ChevronRight,
     CircleFadingArrowUp,
     Cog,
+    Computer,
     Cpu,
     Drill,
-    Feather,
     FlaskConical,
     Footprints,
     Gpu,
@@ -330,10 +478,13 @@ pub(in crate::ui::app) enum NavIcon {
     MonitorX,
     OctagonMinus,
     Palette,
+    PanelLeftClose,
+    PanelLeftOpen,
     PanelsTopLeft,
     Play,
     Rotate3d,
     Scissors,
+    Search,
     Settings,
     Snowflake,
     Spline,
@@ -350,6 +501,7 @@ impl IconNamed for NavIcon {
     fn path(self) -> SharedString {
         match self {
             Self::AppWindow => "icons/app-window.svg",
+            Self::BrainCircuit => "icons/brain-circuit.svg",
             Self::BringToFront => "icons/bring-to-front.svg",
             Self::CalendarDays => "icons/calendar-days.svg",
             Self::ChartColumn => "icons/chart-column.svg",
@@ -358,9 +510,9 @@ impl IconNamed for NavIcon {
             Self::ChevronRight => "icons/chevron-right.svg",
             Self::CircleFadingArrowUp => "icons/circle-fading-arrow-up.svg",
             Self::Cog => "icons/cog.svg",
+            Self::Computer => "icons/computer.svg",
             Self::Cpu => "icons/cpu.svg",
             Self::Drill => "icons/drill.svg",
-            Self::Feather => "icons/feather.svg",
             Self::FlaskConical => "icons/flask-conical.svg",
             Self::Footprints => "icons/footprints.svg",
             Self::Gpu => "icons/gpu.svg",
@@ -375,10 +527,13 @@ impl IconNamed for NavIcon {
             Self::MonitorX => "icons/monitor-x.svg",
             Self::OctagonMinus => "icons/octagon-minus.svg",
             Self::Palette => "icons/palette.svg",
+            Self::PanelLeftClose => "icons/panel-left-close.svg",
+            Self::PanelLeftOpen => "icons/panel-left-open.svg",
             Self::PanelsTopLeft => "icons/panels-top-left.svg",
             Self::Play => "icons/play.svg",
             Self::Rotate3d => "icons/rotate-3d.svg",
             Self::Scissors => "icons/scissors.svg",
+            Self::Search => "icons/search.svg",
             Self::Settings => "icons/settings.svg",
             Self::Snowflake => "icons/snowflake.svg",
             Self::Spline => "icons/spline.svg",
@@ -391,5 +546,31 @@ impl IconNamed for NavIcon {
             Self::Zap => "icons/zap.svg",
         }
         .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feature_page_status_uses_top_level_switches_only() {
+        let mut settings = Settings::default();
+        assert_eq!(
+            feature_page_enabled(&settings, Page::BackgroundEfficiency),
+            Some(false)
+        );
+
+        settings.background_efficiency.enabled = true;
+        assert_eq!(
+            feature_page_enabled(&settings, Page::BackgroundEfficiency),
+            Some(true)
+        );
+        assert_eq!(
+            section_enabled_feature_count(&settings, Page::WinderustFeatures),
+            Some(1)
+        );
+        assert_eq!(feature_page_enabled(&settings, Page::Home), None);
+        assert_eq!(section_enabled_feature_count(&settings, Page::Home), None);
     }
 }

@@ -449,6 +449,7 @@ pub(super) fn priority_source_label(source: PriorityTargetSource) -> &'static st
     match source {
         PriorityTargetSource::WorkloadEngine => "Workload Engine",
         PriorityTargetSource::BackgroundPolicy => "Background policy",
+        PriorityTargetSource::VisibleWindow => "Visible window",
         PriorityTargetSource::Rule => "Rule",
     }
 }
@@ -544,6 +545,12 @@ impl ProcessHandle {
     }
 
     pub(super) fn set_priority_class(&self, priority_class: u32) -> Result<(), PriorityError> {
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::PriorityClass(self.priority_class()?),
+            crate::crash_recovery::ProcessValue::PriorityClass(priority_class),
+        )
+        .map_err(PriorityError::Failed)?;
         // SAFETY: self owns a live process handle and priority_class is a documented class or a
         // previously read value.
         let ok = unsafe { SetPriorityClass(self.0.raw(), priority_class) };
@@ -553,6 +560,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery.commit().map_err(PriorityError::Failed)?;
             Ok(())
         }
     }
@@ -575,6 +583,14 @@ impl ProcessHandle {
         &self,
         disabled: bool,
     ) -> Result<(), PriorityError> {
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::DynamicPriorityBoostDisabled(
+                self.dynamic_priority_boost_disabled()?,
+            ),
+            crate::crash_recovery::ProcessValue::DynamicPriorityBoostDisabled(disabled),
+        )
+        .map_err(PriorityError::Failed)?;
         // SAFETY: self owns a live process handle and disabled is converted to the documented BOOL
         // representation.
         let ok = unsafe { SetProcessPriorityBoost(self.0.raw(), i32::from(disabled)) };
@@ -584,6 +600,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery.commit().map_err(PriorityError::Failed)?;
             Ok(())
         }
     }
@@ -616,6 +633,12 @@ impl ProcessHandle {
         &self,
         state: PROCESS_POWER_THROTTLING_STATE,
     ) -> Result<(), PriorityError> {
+        let recovery = crate::crash_recovery::record_process_change(
+            self.0.raw(),
+            crate::crash_recovery::ProcessValue::power_throttling(self.power_throttling_state()?),
+            crate::crash_recovery::ProcessValue::power_throttling(state),
+        )
+        .map_err(PriorityError::Failed)?;
         // SAFETY: self owns a live process handle and state is fully initialized for exactly the
         // supplied structure size.
         let ok = unsafe {
@@ -632,6 +655,7 @@ impl ProcessHandle {
                 last_error()
             )))
         } else {
+            recovery.commit().map_err(PriorityError::Failed)?;
             Ok(())
         }
     }

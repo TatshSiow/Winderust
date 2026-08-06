@@ -31,9 +31,12 @@ impl WinderustApp {
             vec![
                 setting_group_action_row(
                     "thread-priority-background-default-row",
-                    t!("thread_priority.background_default").to_string(),
+                    priority_level_label(
+                        PriorityDefaultTarget::Background,
+                        t!("nav.thread_priority").to_string(),
+                    ),
                     self.render_thread_priority_default_selector(
-                        ThreadPriorityDefaultTarget::Background,
+                        PriorityDefaultTarget::Background,
                         self.settings.thread_priority.background_priority,
                         enabled,
                         window,
@@ -81,9 +84,12 @@ impl WinderustApp {
                 vec![
                     setting_group_action_row(
                         "thread-priority-foreground-default-row",
-                        t!("thread_priority.foreground_default").to_string(),
+                        priority_level_label(
+                            PriorityDefaultTarget::Foreground,
+                            t!("nav.thread_priority").to_string(),
+                        ),
                         self.render_thread_priority_default_selector(
-                            ThreadPriorityDefaultTarget::Foreground,
+                            PriorityDefaultTarget::Foreground,
                             self.settings.thread_priority.foreground_priority,
                             self.settings.thread_priority.foreground_detection_enabled,
                             window,
@@ -101,6 +107,68 @@ impl WinderustApp {
                             cx.listener(|app, checked, _, cx| {
                                 app.settings.thread_priority.preserve_foreground_priority =
                                     *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                ],
+                window,
+                cx,
+            ))
+            .child(setting_group_with_help(
+                SettingGroupTarget::ThreadPriorityVisibleWindowDetection,
+                (
+                    t!("common.visible_window_detection").to_string(),
+                    t!("common.visible_window_detection_help").to_string(),
+                ),
+                setting_group_switch_action(
+                    "thread-priority-visible-window-detection-toggle",
+                    self.settings
+                        .thread_priority
+                        .visible_window_detection_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings
+                            .thread_priority
+                            .visible_window_detection_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(
+                    SettingGroupTarget::ThreadPriorityVisibleWindowDetection,
+                ),
+                vec![
+                    setting_group_action_row(
+                        "thread-priority-visible-window-default-row",
+                        priority_level_label(
+                            PriorityDefaultTarget::VisibleWindow,
+                            t!("nav.thread_priority").to_string(),
+                        ),
+                        self.render_thread_priority_default_selector(
+                            PriorityDefaultTarget::VisibleWindow,
+                            self.settings.thread_priority.visible_window_priority,
+                            self.settings
+                                .thread_priority
+                                .visible_window_detection_enabled,
+                            window,
+                            cx,
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "thread-priority-preserve-visible-window-row",
+                        t!("common.preserve_visible_window_priority").to_string(),
+                        setting_group_switch_action(
+                            "thread-priority-preserve-visible-window-toggle",
+                            self.settings
+                                .thread_priority
+                                .preserve_visible_window_priority,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings
+                                    .thread_priority
+                                    .preserve_visible_window_priority = *checked;
                                 cx.notify();
                             }),
                         ),
@@ -224,15 +292,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_thread_priority_default_selector(
         &self,
-        target: ThreadPriorityDefaultTarget,
+        target: PriorityDefaultTarget,
         selected_priority: ProcessThreadPrioritySetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            ThreadPriorityDefaultTarget::Background => "thread-priority-background-default",
-            ThreadPriorityDefaultTarget::Foreground => "thread-priority-foreground-default",
+            PriorityDefaultTarget::Background => "thread-priority-background-default",
+            PriorityDefaultTarget::VisibleWindow => "thread-priority-visible-window-default",
+            PriorityDefaultTarget::Foreground => "thread-priority-foreground-default",
         };
         let priorities: &[ProcessThreadPrioritySetting] =
             if self.settings.advanced.expose_all_priority_values {
@@ -260,10 +329,13 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                ThreadPriorityDefaultTarget::Background => {
+                                PriorityDefaultTarget::Background => {
                                     app.settings.thread_priority.background_priority = priority;
                                 }
-                                ThreadPriorityDefaultTarget::Foreground => {
+                                PriorityDefaultTarget::VisibleWindow => {
+                                    app.settings.thread_priority.visible_window_priority = priority;
+                                }
+                                PriorityDefaultTarget::Foreground => {
                                     app.settings.thread_priority.foreground_priority = priority;
                                 }
                             }

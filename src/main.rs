@@ -17,13 +17,13 @@ mod rules;
 mod ui;
 
 use backend::{
-    audio_activity, automation, dashboard_metrics, file_dialog, power_source, privilege,
-    process_icon, self_power, startup, tray, update_checker, win_registry, win_util,
+    audio_activity, automation, crash_recovery, dashboard_metrics, file_dialog, power_source,
+    privilege, process_icon, self_power, startup, tray, update_checker, win_registry, win_util,
     windows_events,
 };
 use features::{
     advanced_controls::{app_suspension, timer_resolution},
-    cpu_control::{background_cpu_restriction as background_cpu, core_limiter, core_steering},
+    cpu_control::{core_limiter, cpu_allocation},
     priority_control::{
         dynamic_priority_boost, gpu_priority, io_priority, memory_priority, process_priority,
         thread_priority,
@@ -40,9 +40,15 @@ fn main() {
         WindowOptions,
     };
 
+    if crash_recovery::run_watchdog_if_requested() {
+        return;
+    }
+
     let Some(_single_instance_guard) = SingleInstanceGuard::acquire() else {
         return;
     };
+
+    crash_recovery::initialize();
 
     Application::new()
         .with_assets(assets::Assets)
@@ -67,6 +73,7 @@ fn main() {
             )
             .expect("failed to open Winderust window");
         });
+    crash_recovery::finish_clean_shutdown();
 }
 
 struct SingleInstanceGuard {

@@ -34,7 +34,7 @@ impl WinderustApp {
                 Page::ByTime,
             ] {
                 cards = cards.child(
-                    section_landing_card(target, cx)
+                    section_landing_card(target, &self.settings, cx)
                         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.navigate_to(target, cx);
                         }))
@@ -45,7 +45,7 @@ impl WinderustApp {
             cards = cards.child(section_title_text(t!("nav.advanced_group").to_string()));
             let target = Page::AdvancedPowerPlanTuning;
             cards = cards.child(
-                section_landing_card(target, cx)
+                section_landing_card(target, &self.settings, cx)
                     .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                         app.navigate_to(target, cx);
                     }))
@@ -55,7 +55,7 @@ impl WinderustApp {
             for page in pages {
                 let target = *page;
                 cards = cards.child(
-                    section_landing_card(target, cx)
+                    section_landing_card(target, &self.settings, cx)
                         .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                             app.navigate_to(target, cx);
                         }))
@@ -75,7 +75,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         dashboard_card_slot(
-            section_landing_card(target, cx)
+            section_landing_card(target, &self.settings, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, _, cx| {
                     app.navigate_to(target, cx);
                 }))
@@ -89,7 +89,7 @@ impl WinderustApp {
         cx: &mut Context<Self>,
     ) -> gpui::Div {
         dashboard_card_slot(
-            section_landing_card(target, cx)
+            section_landing_card(target, &self.settings, cx)
                 .on_click(cx.listener(move |app, _: &gpui::ClickEvent, window, cx| {
                     clear_input(&app.inputs.dashboard_search, window, cx);
                     window.blur();
@@ -271,13 +271,13 @@ impl WinderustApp {
                 .to_string(),
             ));
         }
-        if settings.background_cpu_restriction.enabled {
+        if settings.cpu_sets_soft.enabled {
             items.push((
-                Some(Page::BackgroundCpuRestriction),
-                t!("nav.background_cpu_restriction").to_string(),
+                Some(Page::CpuSetsSoft),
+                t!("nav.cpu_sets_soft").to_string(),
                 t!(
                     "home.adjusted_count",
-                    count = self.background_cpu_restriction_status.adjusted_processes
+                    count = self.cpu_sets_soft_status.adjusted_processes
                 )
                 .to_string(),
             ));
@@ -355,13 +355,13 @@ impl WinderustApp {
                 .to_string(),
             ));
         }
-        if settings.core_steering.enabled {
+        if settings.processor_affinity_hard.enabled {
             items.push((
-                Some(Page::CoreSteering),
-                t!("nav.core_steering").to_string(),
+                Some(Page::ProcessorAffinityHard),
+                t!("nav.processor_affinity_hard").to_string(),
                 t!(
                     "home.adjusted_count",
-                    count = self.core_steering_status.adjusted_processes
+                    count = self.processor_affinity_hard_status.adjusted_processes
                 )
                 .to_string(),
             ));

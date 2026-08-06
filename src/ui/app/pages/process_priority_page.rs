@@ -31,9 +31,12 @@ impl WinderustApp {
             vec![
                 setting_group_action_row(
                     "process-priority-background-default-row",
-                    t!("process_priority.background_default").to_string(),
+                    priority_level_label(
+                        PriorityDefaultTarget::Background,
+                        t!("nav.process_priority").to_string(),
+                    ),
                     self.render_process_priority_default_selector(
-                        ProcessPriorityDefaultTarget::Background,
+                        PriorityDefaultTarget::Background,
                         self.settings.process_priority.background_priority,
                         enabled,
                         window,
@@ -81,9 +84,12 @@ impl WinderustApp {
                 vec![
                     setting_group_action_row(
                         "process-priority-foreground-default-row",
-                        t!("process_priority.foreground_default").to_string(),
+                        priority_level_label(
+                            PriorityDefaultTarget::Foreground,
+                            t!("nav.process_priority").to_string(),
+                        ),
                         self.render_process_priority_default_selector(
-                            ProcessPriorityDefaultTarget::Foreground,
+                            PriorityDefaultTarget::Foreground,
                             self.settings.process_priority.foreground_priority,
                             self.settings.process_priority.foreground_detection_enabled,
                             window,
@@ -101,6 +107,68 @@ impl WinderustApp {
                             cx.listener(|app, checked, _, cx| {
                                 app.settings.process_priority.preserve_foreground_priority =
                                     *checked;
+                                cx.notify();
+                            }),
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                ],
+                window,
+                cx,
+            ))
+            .child(setting_group_with_help(
+                SettingGroupTarget::ProcessPriorityVisibleWindowDetection,
+                (
+                    t!("common.visible_window_detection").to_string(),
+                    t!("common.visible_window_detection_help").to_string(),
+                ),
+                setting_group_switch_action(
+                    "process-priority-visible-window-detection-toggle",
+                    self.settings
+                        .process_priority
+                        .visible_window_detection_enabled,
+                    cx.listener(|app, checked, _, cx| {
+                        app.settings
+                            .process_priority
+                            .visible_window_detection_enabled = *checked;
+                        cx.notify();
+                    }),
+                ),
+                self.is_setting_group_collapsed(
+                    SettingGroupTarget::ProcessPriorityVisibleWindowDetection,
+                ),
+                vec![
+                    setting_group_action_row(
+                        "process-priority-visible-window-default-row",
+                        priority_level_label(
+                            PriorityDefaultTarget::VisibleWindow,
+                            t!("nav.process_priority").to_string(),
+                        ),
+                        self.render_process_priority_default_selector(
+                            PriorityDefaultTarget::VisibleWindow,
+                            self.settings.process_priority.visible_window_priority,
+                            self.settings
+                                .process_priority
+                                .visible_window_detection_enabled,
+                            window,
+                            cx,
+                        ),
+                        false,
+                    )
+                    .into_any_element(),
+                    setting_group_action_row(
+                        "process-priority-preserve-visible-window-row",
+                        t!("common.preserve_visible_window_priority").to_string(),
+                        setting_group_switch_action(
+                            "process-priority-preserve-visible-window-toggle",
+                            self.settings
+                                .process_priority
+                                .preserve_visible_window_priority,
+                            cx.listener(|app, checked, _, cx| {
+                                app.settings
+                                    .process_priority
+                                    .preserve_visible_window_priority = *checked;
                                 cx.notify();
                             }),
                         ),
@@ -220,15 +288,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_process_priority_default_selector(
         &self,
-        target: ProcessPriorityDefaultTarget,
+        target: PriorityDefaultTarget,
         selected_priority: ProcessPrioritySetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            ProcessPriorityDefaultTarget::Background => "process-priority-background-default",
-            ProcessPriorityDefaultTarget::Foreground => "process-priority-foreground-default",
+            PriorityDefaultTarget::Background => "process-priority-background-default",
+            PriorityDefaultTarget::VisibleWindow => "process-priority-visible-window-default",
+            PriorityDefaultTarget::Foreground => "process-priority-foreground-default",
         };
         let priorities: &[ProcessPrioritySetting] =
             if self.settings.advanced.expose_all_priority_values {
@@ -256,10 +325,14 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                ProcessPriorityDefaultTarget::Background => {
+                                PriorityDefaultTarget::Background => {
                                     app.settings.process_priority.background_priority = priority;
                                 }
-                                ProcessPriorityDefaultTarget::Foreground => {
+                                PriorityDefaultTarget::VisibleWindow => {
+                                    app.settings.process_priority.visible_window_priority =
+                                        priority;
+                                }
+                                PriorityDefaultTarget::Foreground => {
                                     app.settings.process_priority.foreground_priority = priority;
                                 }
                             }

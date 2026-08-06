@@ -222,11 +222,7 @@ impl WinderustApp {
                         primary_control_button(Button::new("add-suspension-process"), cx)
                             .label(t!("common.add").to_string())
                             .disabled(
-                                !enabled
-                                    || !can_add_app_suspension_process(
-                                        &self.settings.app_suspension,
-                                        &input_value,
-                                    ),
+                                !enabled || !self.can_add_app_suspension_candidate(&input_value),
                             )
                             .on_click(cx.listener(|app, _, window, cx| {
                                 let process = app.process_picker_path(
@@ -234,10 +230,7 @@ impl WinderustApp {
                                     &app.inputs.app_suspension_process,
                                     cx,
                                 );
-                                if can_add_app_suspension_process(
-                                    &app.settings.app_suspension,
-                                    &process,
-                                ) {
+                                if app.can_add_app_suspension_candidate(&process) {
                                     app.settings
                                         .app_suspension
                                         .suspendable_apps
@@ -276,6 +269,20 @@ impl WinderustApp {
             .into_any_element()
     }
 
+    fn can_add_app_suspension_candidate(&self, process: &str) -> bool {
+        can_add_app_suspension_process(&self.settings.app_suspension, process)
+            && self.app_suspension_candidate_suspendable(process) != Some(false)
+    }
+
+    fn app_suspension_candidate_suspendable(&self, process: &str) -> Option<bool> {
+        self.process_candidates
+            .iter()
+            .find(|candidate| {
+                same_executable_path(&candidate.image_path, Path::new(process.trim()))
+            })
+            .map(|candidate| candidate.has_suspendable_instance)
+    }
+
     pub(in crate::ui::app) fn render_suspendable_apps(
         &self,
         window: &mut Window,
@@ -297,8 +304,8 @@ impl WinderustApp {
                 t!("app_suspension.network").to_string(),
                 SUSPENSION_DETECT_COLUMN_WIDTH,
             ),
-            rule_table_centered_header("Download".to_string(), 172.0),
-            rule_table_centered_header("Upload".to_string(), 172.0),
+            rule_table_centered_header(t!("app_suspension.download").to_string(), 172.0),
+            rule_table_centered_header(t!("app_suspension.upload").to_string(), 172.0),
             rule_table_centered_header(
                 t!("action_log.action").to_string(),
                 SUSPENSION_ACTION_COLUMN_WIDTH,
@@ -312,7 +319,11 @@ impl WinderustApp {
             .enumerate()
         {
             let process = rule.executable_path.clone();
-            let indicator = app_suspension_indicator(&self.app_suspension_status, &process);
+            let indicator = app_suspension_indicator(
+                &self.app_suspension_status,
+                &process,
+                self.app_suspension_candidate_suspendable(&process) == Some(false),
+            );
             let rule_enabled = rule.enabled;
             let network_thresholds_enabled = rule_enabled
                 && self.settings.app_suspension.network_wake_enabled

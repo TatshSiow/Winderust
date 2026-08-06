@@ -367,15 +367,16 @@ impl WinderustApp {
 
     pub(in crate::ui::app) fn render_io_priority_default_selector(
         &self,
-        target: IoPriorityDefaultTarget,
+        target: PriorityDefaultTarget,
         selected_priority: ProcessIoPrioritySetting,
         enabled: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = match target {
-            IoPriorityDefaultTarget::Background => "io-priority-background-default",
-            IoPriorityDefaultTarget::Foreground => "io-priority-foreground-default",
+            PriorityDefaultTarget::Background => "io-priority-background-default",
+            PriorityDefaultTarget::VisibleWindow => "io-priority-visible-window-default",
+            PriorityDefaultTarget::Foreground => "io-priority-foreground-default",
         };
         let priorities: &[ProcessIoPrioritySetting] =
             if self.settings.advanced.expose_all_priority_values {
@@ -403,10 +404,13 @@ impl WinderustApp {
                         )
                         .on_click(cx.listener(move |app, _, _, cx| {
                             match target {
-                                IoPriorityDefaultTarget::Background => {
+                                PriorityDefaultTarget::Background => {
                                     app.settings.io_priority.background_priority = priority;
                                 }
-                                IoPriorityDefaultTarget::Foreground => {
+                                PriorityDefaultTarget::VisibleWindow => {
+                                    app.settings.io_priority.visible_window_priority = priority;
+                                }
+                                PriorityDefaultTarget::Foreground => {
                                     app.settings.io_priority.foreground_priority = priority;
                                 }
                             }

@@ -357,7 +357,13 @@ impl WinderustApp {
 
         self.last_switch_attempt = Some((target_guid.to_owned(), Instant::now()));
 
-        match set_active(target_guid) {
+        let switch_result = active_plan().and_then(|current| {
+            let recovery =
+                crate::crash_recovery::record_power_plan_change(&current.guid, target_guid)?;
+            set_active(target_guid)?;
+            recovery.commit()
+        });
+        match switch_result {
             Ok(()) => {
                 self.status_message =
                     t!("status.switched_power_plan", reason = self.decision.reason).to_string();
@@ -415,16 +421,13 @@ impl WinderustApp {
                 changed = true;
             }
 
-            if self.core_steering_status != background_status.core_steering {
-                self.core_steering_status = background_status.core_steering;
+            if self.cpu_sets_soft_status != background_status.cpu_sets_soft {
+                self.cpu_sets_soft_status = background_status.cpu_sets_soft;
                 changed = true;
             }
 
-            if self.background_cpu_restriction_status
-                != background_status.background_cpu_restriction
-            {
-                self.background_cpu_restriction_status =
-                    background_status.background_cpu_restriction;
+            if self.processor_affinity_hard_status != background_status.processor_affinity_hard {
+                self.processor_affinity_hard_status = background_status.processor_affinity_hard;
                 changed = true;
             }
 
@@ -573,29 +576,33 @@ impl WinderustApp {
             );
         }
 
-        for process in pending.core_steering {
+        for process in pending.cpu_sets_soft {
             changed |= upsert_rule_enabled(
-                &mut self.settings.core_steering.rules,
+                &mut self.settings.cpu_sets_soft.rules,
                 &process,
                 false,
                 |rule| &rule.executable_path,
                 |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
                 || {
-                    let mut rule = new_core_steering_rule(&process);
+                    let mut rule = new_cpu_allocation_rule(&process);
                     rule.enabled = false;
                     rule
                 },
             );
         }
 
-        for process in pending.background_cpu_restriction {
+        for process in pending.processor_affinity_hard {
             changed |= upsert_rule_enabled(
-                &mut self.settings.background_cpu_restriction.exclusions,
+                &mut self.settings.processor_affinity_hard.rules,
                 &process,
-                true,
+                false,
                 |rule| &rule.executable_path,
                 |rule, enabled| set_enabled_value(&mut rule.enabled, enabled),
-                || new_process_exclusion_rule(&process),
+                || {
+                    let mut rule = new_cpu_allocation_rule(&process);
+                    rule.enabled = false;
+                    rule
+                },
             );
         }
 
@@ -725,7 +732,7 @@ mod auto_exclusion_tests {
 
     #[test]
     fn target_auto_exclusion_disables_matching_rule() {
-        let mut rules = vec![new_core_steering_rule(r"C:\Apps\worker.exe")];
+        let mut rules = vec![new_cpu_allocation_rule(r"C:\Apps\worker.exe")];
 
         assert!(upsert_rule_enabled(
             &mut rules,

@@ -229,10 +229,12 @@ pub(super) fn workload_engine_effective_restriction_mode(
     }
 }
 
-pub(super) fn workload_engine_affinity_mode(settings: &WorkloadEngineSettings) -> CoreSteeringMode {
+pub(super) fn workload_engine_affinity_mode(
+    settings: &WorkloadEngineSettings,
+) -> CpuAllocationMode {
     match workload_engine_effective_restriction_mode(settings) {
-        CpuRestrictionMode::SoftCpuSets => CoreSteeringMode::Soft,
-        CpuRestrictionMode::HardAffinity => CoreSteeringMode::Hard,
+        CpuRestrictionMode::SoftCpuSets => CpuAllocationMode::SoftCpuSets,
+        CpuRestrictionMode::HardAffinity => CpuAllocationMode::HardAffinity,
     }
 }
 
@@ -387,7 +389,7 @@ pub(super) fn workload_engine_minimum_cpu_percent_for_topology(
 }
 
 pub(super) fn workload_engine_has_efficiency_cores() -> bool {
-    core_steering::logical_processors()
+    cpu_allocation::logical_processors()
         .iter()
         .any(|processor| processor.kind == LogicalProcessorKind::Efficiency)
 }
@@ -396,7 +398,7 @@ pub(super) fn limited_efficiency_preferred_core_mask(
     percent: u8,
     max_logical_processors: u8,
 ) -> Option<u64> {
-    let processors = core_steering::logical_processors();
+    let processors = cpu_allocation::logical_processors();
     if processors.is_empty() {
         return None;
     }

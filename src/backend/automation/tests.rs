@@ -3,7 +3,7 @@ use chrono::{Datelike, Duration as ChronoDuration, Local};
 
 use crate::config::{
     AppSuspensionRule, ByForegroundRule, ByRunningAppRule, ByTimeRule, CoreLimiterRule,
-    CoreSteeringRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
+    CpuAllocationRule, ProcessDynamicPriorityBoostSetting, ProcessExclusionRule,
     ProcessGpuPrioritySetting, ProcessThreadPrioritySetting, TimerResolutionRule, WeekdaySetting,
 };
 
@@ -163,7 +163,7 @@ fn automation_worker_sleeps_when_no_automation_work_exists() {
 fn enabled_empty_rule_features_do_not_poll() {
     let mut settings = Settings::default();
     settings.app_suspension.enabled = true;
-    settings.core_steering.enabled = true;
+    settings.cpu_sets_soft.enabled = true;
     settings.core_limiter.enabled = true;
     settings.by_running_app.enabled = true;
     settings.timer_resolution.enabled = true;
@@ -175,9 +175,8 @@ fn enabled_empty_rule_features_do_not_poll() {
         .app_suspension
         .suspendable_apps
         .push(app_suspension_rule(" "));
-    settings.core_steering.rules.push(CoreSteeringRule {
+    settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
-        mode: Default::default(),
         executable_path: " ".to_owned(),
         core_mask: 1,
     });
@@ -208,7 +207,7 @@ fn enabled_empty_rule_features_do_not_poll() {
     });
 
     assert!(!app_suspension_required(&settings));
-    assert!(!core_steering_required(&settings));
+    assert!(!cpu_sets_soft_required(&settings));
     assert!(!core_limiter_required(&settings));
     assert!(!by_running_app_required(&settings));
     assert!(!timer_resolution_required(&settings));
@@ -226,10 +225,9 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
         .app_suspension
         .suspendable_apps
         .push(app_suspension_rule(r"C:\Apps\chat.exe"));
-    settings.core_steering.enabled = true;
-    settings.core_steering.rules.push(CoreSteeringRule {
+    settings.cpu_sets_soft.enabled = true;
+    settings.cpu_sets_soft.rules.push(CpuAllocationRule {
         enabled: true,
-        mode: Default::default(),
         executable_path: r"C:\Apps\chat.exe".to_owned(),
         core_mask: 1,
     });
@@ -264,7 +262,7 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     });
 
     assert!(app_suspension_required(&settings));
-    assert!(core_steering_required(&settings));
+    assert!(cpu_sets_soft_required(&settings));
     assert!(core_limiter_required(&settings));
     assert!(by_running_app_required(&settings));
     assert!(timer_resolution_required(&settings));
@@ -272,6 +270,55 @@ fn enabled_nonempty_rule_features_require_runtime_work() {
     assert!(process_appearance_scan_required(&settings));
     assert!(event_driven_process_work_required(&settings));
     assert!(automation_worker_required(&settings));
+}
+
+#[test]
+fn cpu_sets_soft_owns_duplicate_cpu_allocation_rules() {
+    let mut settings = Settings::default();
+    let rule = CpuAllocationRule {
+        enabled: true,
+        executable_path: r"C:\Apps\chat.exe".to_owned(),
+        core_mask: 1,
+    };
+    settings.cpu_sets_soft.rules.push(rule.clone());
+    settings.processor_affinity_hard.rules.push(rule);
+
+    assert!(processor_affinity_hard_settings(&settings).rules.is_empty());
+    settings.processor_affinity_hard.enabled = true;
+    assert!(!processor_affinity_hard_required(&settings));
+}
+
+#[test]
+fn explicit_cpu_allocation_paths_exclude_only_active_usable_rules() {
+    let mut settings = Settings::default();
+    settings.cpu_sets_soft.enabled = true;
+    settings.cpu_sets_soft.rules.push(CpuAllocationRule {
+        enabled: true,
+        executable_path: r"C:\Apps\soft.exe".to_owned(),
+        core_mask: 1,
+    });
+    settings.processor_affinity_hard.enabled = true;
+    settings
+        .processor_affinity_hard
+        .rules
+        .push(CpuAllocationRule {
+            enabled: false,
+            executable_path: r"C:\Apps\disabled.exe".to_owned(),
+            core_mask: 1,
+        });
+    settings
+        .processor_affinity_hard
+        .rules
+        .push(CpuAllocationRule {
+            enabled: true,
+            executable_path: r"C:\Apps\empty.exe".to_owned(),
+            core_mask: 0,
+        });
+
+    let paths = explicit_cpu_allocation_paths(&settings);
+
+    assert_eq!(paths.len(), 1);
+    assert!(paths.contains(&crate::foreground::process_failure_key(r"C:\Apps\soft.exe")));
 }
 
 #[test]
@@ -326,18 +373,18 @@ fn pending_auto_exclusions_are_taken_only_after_generation_change() {
         .take_pending_auto_exclusions_since(&mut generation)
         .is_none());
 
-    update_core_steering_status(
+    update_cpu_sets_soft_status(
         &automation.shared,
-        CoreSteeringSnapshot {
+        CpuAllocationSnapshot {
             auto_excluded_processes: vec![r"D:\Games\Game.exe".to_owned()],
-            ..CoreSteeringSnapshot::default()
+            ..CpuAllocationSnapshot::default()
         },
     );
 
     let pending = automation
         .take_pending_auto_exclusions_since(&mut generation)
         .expect("new pending affinity exclusions should be visible");
-    assert_eq!(pending.core_steering, vec![r"D:\Games\Game.exe"]);
+    assert_eq!(pending.cpu_sets_soft, vec![r"D:\Games\Game.exe"]);
     assert!(automation
         .take_pending_auto_exclusions_since(&mut generation)
         .is_none());

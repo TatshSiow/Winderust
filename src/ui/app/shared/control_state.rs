@@ -4,7 +4,8 @@ use crate::ui::app::*;
 pub(in crate::ui::app) enum SuggestionTarget {
     Foreground,
     BackgroundEfficiency,
-    BackgroundCpu,
+    CpuSetsSoft,
+    ProcessorAffinityHard,
     MemoryTrim,
     AppSuspension,
     CoreLimiter,
@@ -17,14 +18,14 @@ pub(in crate::ui::app) enum SuggestionTarget {
     GpuPriority,
     MemoryPriority,
     TimerResolution,
-    CoreSteering,
 }
 
 impl SuggestionTarget {
     pub(in crate::ui::app) const ALL: [Self; 16] = [
         Self::Foreground,
         Self::BackgroundEfficiency,
-        Self::BackgroundCpu,
+        Self::CpuSetsSoft,
+        Self::ProcessorAffinityHard,
         Self::MemoryTrim,
         Self::AppSuspension,
         Self::CoreLimiter,
@@ -37,14 +38,14 @@ impl SuggestionTarget {
         Self::GpuPriority,
         Self::MemoryPriority,
         Self::TimerResolution,
-        Self::CoreSteering,
     ];
 
     pub(in crate::ui::app) fn input(self, inputs: &UiInputs) -> &Entity<InputState> {
         match self {
             Self::Foreground => &inputs.foreground_process,
             Self::BackgroundEfficiency => &inputs.background_efficiency_process,
-            Self::BackgroundCpu => &inputs.background_cpu_exclusion,
+            Self::CpuSetsSoft => &inputs.cpu_sets_soft_process,
+            Self::ProcessorAffinityHard => &inputs.processor_affinity_hard_process,
             Self::MemoryTrim => &inputs.memory_trim_exclusion,
             Self::AppSuspension => &inputs.app_suspension_process,
             Self::CoreLimiter => &inputs.core_limiter_process,
@@ -57,7 +58,6 @@ impl SuggestionTarget {
             Self::GpuPriority => &inputs.gpu_priority_process,
             Self::MemoryPriority => &inputs.memory_priority_process,
             Self::TimerResolution => &inputs.timer_resolution_process,
-            Self::CoreSteering => &inputs.core_steering_process,
         }
     }
 }
@@ -73,7 +73,8 @@ pub(in crate::ui::app) enum RuleCardTarget {
     ByCpuLoad(usize),
     AppSuspension(String),
     CoreLimiter(String),
-    CoreSteering(String),
+    CpuSetsSoft(String),
+    ProcessorAffinityHard(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,18 +93,23 @@ pub(in crate::ui::app) enum SettingGroupTarget {
     WorkloadEngineThreadPriority,
     ProcessPriorityMaster,
     ProcessPriorityForegroundDetection,
+    ProcessPriorityVisibleWindowDetection,
     ThreadPriorityMaster,
     ThreadPriorityForegroundDetection,
+    ThreadPriorityVisibleWindowDetection,
     DynamicPriorityBoostMaster,
     DynamicPriorityBoostForegroundDetection,
+    DynamicPriorityBoostVisibleWindowDetection,
     IoPriorityMaster,
     IoPriorityForegroundDetection,
+    IoPriorityVisibleWindowDetection,
     EfficiencyEnable,
-    BackgroundCpuRestriction,
     GpuPriorityMaster,
     GpuPriorityForegroundDetection,
+    GpuPriorityVisibleWindowDetection,
     MemoryPriorityMaster,
     MemoryPriorityForegroundDetection,
+    MemoryPriorityVisibleWindowDetection,
     MemoryTrimMonitoring,
     MemoryTrimSafety,
     MemoryTrimThresholds,
@@ -153,7 +159,6 @@ pub(in crate::ui::app) enum NumericField {
     ActivityIdleTimeout,
     GeneralCheckInterval,
     ExecutionFailureSuppressionThreshold,
-    BackgroundCpuRestrictionPercent,
     MemoryTrimMemoryLoadThreshold,
     MemoryTrimWorkingSetThreshold,
     MemoryTrimIdleSeconds,
@@ -492,12 +497,17 @@ impl UiInputs {
                 "",
                 &t!("common.search_running_apps"),
             ),
-            background_cpu_exclusion: make_input(window, cx, "", &t!("common.search_running_apps")),
             memory_trim_exclusion: make_input(window, cx, "", &t!("common.search_running_apps")),
             app_suspension_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             core_limiter_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             performance_process: make_input(window, cx, "", &t!("common.search_running_apps")),
-            core_steering_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            cpu_sets_soft_process: make_input(window, cx, "", &t!("common.search_running_apps")),
+            processor_affinity_hard_process: make_input(
+                window,
+                cx,
+                "",
+                &t!("common.search_running_apps"),
+            ),
             workload_engine_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             process_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
             thread_priority_process: make_input(window, cx, "", &t!("common.search_running_apps")),
@@ -1041,11 +1051,6 @@ impl WinderustApp {
                     self.settings
                         .advanced
                         .execution_failure_suppression_threshold = value as u8;
-                }
-            }
-            NumericField::BackgroundCpuRestrictionPercent => {
-                if let Some(value) = parse_u64_input(&value, 1, 100) {
-                    self.settings.background_cpu_restriction.percent = value as u8;
                 }
             }
             NumericField::MemoryTrimMemoryLoadThreshold => {

@@ -116,13 +116,13 @@ impl WinderustApp {
                 | Page::ProcessPriority
                 | Page::DynamicPriorityBoost
                 | Page::CoreLimiter
-                | Page::BackgroundCpuRestriction
+                | Page::CpuSetsSoft
                 | Page::IoPriority
                 | Page::GpuPriority
                 | Page::MemoryPriority
                 | Page::TimerResolution
                 | Page::ByRunningApp
-                | Page::CoreSteering
+                | Page::ProcessorAffinityHard
         )
     }
 

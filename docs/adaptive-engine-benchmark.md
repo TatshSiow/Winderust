@@ -59,10 +59,10 @@ exercise the real automation loop. It models the preset scheduler effects with:
 - background I/O priority,
 - background GPU priority attempts,
 - target count,
-- adaptive CPU share with Soft CPU Sets in the app,
+- adaptive CPU share with CPU Sets (Soft) in the app,
 - and hard processor affinity for manual benchmark approximations.
 
-PowerShell hard affinity is stricter than Winderust Soft CPU Sets. The benchmark
+PowerShell hard affinity is stricter than Winderust CPU Sets (Soft). The benchmark
 therefore omits adaptive affinity for likely hybrid CPUs, where Windows can
 already push Idle background workers toward E-cores, but applies a hard-affinity
 approximation for standard/all-P CPUs so shared-core machines are tested against

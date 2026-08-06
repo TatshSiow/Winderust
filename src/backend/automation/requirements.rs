@@ -1,5 +1,4 @@
 use super::*;
-use crate::config::CoreSteeringMode;
 
 pub(super) fn automation_refresh_interval(
     hidden_to_tray: bool,
@@ -76,11 +75,21 @@ pub(super) fn app_suspension_required(settings: &Settings) -> bool {
             .any(|rule| enabled_executable_path_rule(rule.enabled, &rule.executable_path))
 }
 
-pub(super) fn core_steering_required(settings: &Settings) -> bool {
-    settings.core_steering.enabled
-        && settings.core_steering.rules.iter().any(|rule| {
+pub(super) fn cpu_sets_soft_required(settings: &Settings) -> bool {
+    settings.cpu_sets_soft.enabled
+        && settings.cpu_sets_soft.rules.iter().any(|rule| {
+            enabled_executable_path_rule(rule.enabled, &rule.executable_path) && rule.core_mask != 0
+        })
+}
+
+pub(super) fn processor_affinity_hard_required(settings: &Settings) -> bool {
+    settings.processor_affinity_hard.enabled
+        && settings.processor_affinity_hard.rules.iter().any(|rule| {
             enabled_executable_path_rule(rule.enabled, &rule.executable_path)
-                && (rule.mode == CoreSteeringMode::EfficiencyOff || rule.core_mask != 0)
+                && rule.core_mask != 0
+                && !settings
+                    .cpu_sets_soft
+                    .contains_rule_for(&rule.executable_path)
         })
 }
 
@@ -177,7 +186,9 @@ pub(super) fn workload_engine_io_priority_settings(
             settings.workload_engine.lower_background_io_priority.into();
     }
     io_priority.foreground_detection_enabled = true;
+    io_priority.visible_window_detection_enabled = true;
     io_priority.preserve_foreground_priority = true;
+    io_priority.preserve_visible_window_priority = true;
     io_priority.preserve_background_priority = true;
     io_priority
 }
@@ -199,7 +210,9 @@ pub(super) fn effective_thread_priority_settings(
             .workload_engine_thread_priority
             .clone();
         thread_priority.foreground_detection_enabled = true;
+        thread_priority.visible_window_detection_enabled = true;
         thread_priority.preserve_foreground_priority = true;
+        thread_priority.preserve_visible_window_priority = true;
         thread_priority.preserve_background_priority = true;
         thread_priority
             .exclusions
@@ -225,6 +238,7 @@ pub(super) fn effective_dynamic_priority_boost_settings(
             .workload_engine_dynamic_priority_boost
             .clone();
         dynamic_priority_boost.foreground_detection_enabled = true;
+        dynamic_priority_boost.visible_window_detection_enabled = true;
         dynamic_priority_boost
             .exclusions
             .extend(settings.workload_engine.workload_engine_exclusions.clone());
@@ -249,7 +263,9 @@ pub(super) fn effective_gpu_priority_settings(
             .workload_engine_gpu_priority
             .clone();
         gpu_priority.foreground_detection_enabled = true;
+        gpu_priority.visible_window_detection_enabled = true;
         gpu_priority.preserve_foreground_priority = true;
+        gpu_priority.preserve_visible_window_priority = true;
         gpu_priority.preserve_background_priority = true;
         gpu_priority
             .exclusions
@@ -261,8 +277,8 @@ pub(super) fn effective_gpu_priority_settings(
 pub(super) fn process_appearance_scan_required(settings: &Settings) -> bool {
     settings.general.enabled
         && (settings.background_efficiency.enabled
-            || core_steering_required(settings)
-            || settings.background_cpu_restriction.enabled
+            || cpu_sets_soft_required(settings)
+            || processor_affinity_hard_required(settings)
             || core_limiter_required(settings)
             || by_running_app_required(settings)
             || workload_engine_required(settings)

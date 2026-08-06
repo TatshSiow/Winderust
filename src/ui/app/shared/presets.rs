@@ -40,7 +40,7 @@ pub(in crate::ui::app) fn apply_power_mode_preset(
             settings.adaptive_engine.processor_policy_values =
                 power_mode_powersave_processor_values();
             settings.background_efficiency.enabled = true;
-            settings.background_efficiency.exclude_foreground_app = true;
+            settings.background_efficiency.protect_foreground_app = true;
             settings.workload_engine.enabled = true;
             settings.workload_engine.workload_engine_enabled = true;
             apply_workload_engine_preset(
@@ -195,14 +195,6 @@ pub(in crate::ui::app) fn process_memory_priority_setting_label(
             t!("memory_priority.priority_below_normal").to_string()
         }
         ProcessMemoryPrioritySetting::Normal => t!("memory_priority.priority_normal").to_string(),
-    }
-}
-
-pub(in crate::ui::app) fn core_steering_mode_label(mode: CoreSteeringMode) -> String {
-    match mode {
-        CoreSteeringMode::Hard => t!("core_steering.mode_hard").to_string(),
-        CoreSteeringMode::Soft => t!("core_steering.mode_soft").to_string(),
-        CoreSteeringMode::EfficiencyOff => t!("core_steering.mode_efficiency_off").to_string(),
     }
 }
 
@@ -410,8 +402,11 @@ pub(in crate::ui::app) fn workload_engine_io_priority_preset_values(
         enabled: values.lower_background_io_priority_enabled,
         foreground_detection_enabled: true,
         foreground_priority: values.foreground_io_priority,
+        visible_window_detection_enabled: true,
+        visible_window_priority: values.lower_background_io_priority.into(),
         background_priority: values.lower_background_io_priority.into(),
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -428,12 +423,19 @@ pub(in crate::ui::app) fn workload_engine_thread_priority_preset_values(
         } else {
             ProcessThreadPrioritySetting::Default
         },
+        visible_window_detection_enabled: true,
+        visible_window_priority: if preset == WorkloadEnginePreset::MaxForeground {
+            ProcessThreadPrioritySetting::Idle
+        } else {
+            ProcessThreadPrioritySetting::BelowNormal
+        },
         background_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessThreadPrioritySetting::Idle
         } else {
             ProcessThreadPrioritySetting::BelowNormal
         },
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }
@@ -446,6 +448,8 @@ pub(in crate::ui::app) fn workload_engine_dynamic_priority_boost_preset_values(
         enabled: true,
         foreground_detection_enabled: true,
         foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
+        visible_window_detection_enabled: true,
+        visible_window_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         exclusions: Vec::new(),
     }
@@ -462,12 +466,19 @@ pub(in crate::ui::app) fn workload_engine_gpu_priority_preset_values(
         } else {
             ProcessGpuPrioritySetting::Default
         },
+        visible_window_detection_enabled: true,
+        visible_window_priority: if preset == WorkloadEnginePreset::MaxForeground {
+            ProcessGpuPrioritySetting::Idle
+        } else {
+            ProcessGpuPrioritySetting::BelowNormal
+        },
         background_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessGpuPrioritySetting::Idle
         } else {
             ProcessGpuPrioritySetting::BelowNormal
         },
         preserve_foreground_priority: true,
+        preserve_visible_window_priority: true,
         preserve_background_priority: true,
         exclusions: Vec::new(),
     }

@@ -1,5 +1,17 @@
 use crate::ui::app::*;
 
+pub(in crate::ui::app) fn priority_level_label(
+    target: PriorityDefaultTarget,
+    priority_type: String,
+) -> String {
+    let target = match target {
+        PriorityDefaultTarget::Foreground => t!("common.focus_process"),
+        PriorityDefaultTarget::VisibleWindow => t!("common.visible_window"),
+        PriorityDefaultTarget::Background => t!("common.background_process"),
+    };
+    format!("{target} {priority_type} {}", t!("common.level"))
+}
+
 pub(in crate::ui::app) fn theme_mode_label(mode: AppThemeMode) -> String {
     match mode {
         AppThemeMode::System => t!("theme.system").to_string(),
@@ -18,8 +30,8 @@ pub(in crate::ui::app) fn update_channel_label(channel: UpdateChannel) -> String
 pub(in crate::ui::app) fn animation_mode_label(mode: AnimationMode) -> String {
     match mode {
         AnimationMode::System => t!("animation.system").to_string(),
-        AnimationMode::On => t!("animation.on").to_string(),
-        AnimationMode::Off => t!("animation.off").to_string(),
+        AnimationMode::On => t!("common.on").to_string(),
+        AnimationMode::Off => t!("common.off").to_string(),
     }
 }
 
@@ -151,8 +163,12 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
     let key = match message {
         "Automation disabled." => "runtime_status.automation_disabled",
         "Paused: foreground app is unknown." => "runtime_status.foreground_unknown",
+        "Paused: visible windows are unavailable." => "runtime_status.visible_windows_unavailable",
         "Paused: current Windows session is unknown." => "runtime_status.session_unknown",
-        "Core Steering disabled." => "runtime_status.core_steering_disabled",
+        "CPU Sets (Soft) disabled." => "runtime_status.cpu_sets_soft_disabled",
+        "Processor Affinity (Hard) disabled." => {
+            "runtime_status.processor_affinity_hard_disabled"
+        }
         "Core Limiter disabled." => "runtime_status.core_limiter_disabled",
         "Core Limiter active." => "runtime_status.core_limiter_active",
         "Timer resolution query failed." => "runtime_status.timer_resolution_query_failed",
@@ -205,8 +221,10 @@ pub(in crate::ui::app) fn localized_runtime_status(message: &str) -> String {
         "Process priority defaults active." => "runtime_status.process_priority_active",
         "Workload Engine disabled." => "runtime_status.workload_engine_disabled",
         "Workload Engine active." => "runtime_status.workload_engine_active",
-        "No usable CPU restriction target." => "runtime_status.background_cpu_no_target",
-        "Background CPU Restriction active." => "runtime_status.background_cpu_active",
+        "CPU Sets (Soft) active." => "runtime_status.cpu_sets_soft_active",
+        "Processor Affinity (Hard) active." => {
+            "runtime_status.processor_affinity_hard_active"
+        }
         _ => return message.to_owned(),
     };
     t!(key).to_string()

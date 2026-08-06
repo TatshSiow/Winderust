@@ -26,7 +26,11 @@ fn process_candidates_with_icons(
     let candidates = processes
         .into_iter()
         .map(|process| {
-            let ProcessCandidateInfo { name, image_path } = process;
+            let ProcessCandidateInfo {
+                name,
+                image_path,
+                has_suspendable_instance,
+            } = process;
             let icon = if let Some(icon) = icon_cache.get(&image_path) {
                 icon.clone()
             } else {
@@ -37,6 +41,7 @@ fn process_candidates_with_icons(
             ProcessCandidate {
                 name,
                 image_path,
+                has_suspendable_instance,
                 icon,
             }
         })
@@ -184,13 +189,12 @@ impl WinderustApp {
         }
         match result {
             Ok((mut processes, candidates, icon_cache, resource_samples)) => {
-                self.process_efficiency_mode_overrides.retain(
-                    |process_id, (creation_time, _, _)| {
-                        resource_samples
-                            .get(process_id)
-                            .is_some_and(|sample| sample.creation_time == *creation_time)
-                    },
-                );
+                self.process_efficiency_mode_overrides
+                    .retain(|process_id, process| {
+                        resource_samples.get(process_id).is_some_and(|sample| {
+                            sample.creation_time == process.target.creation_time
+                        })
+                    });
                 self.process_resource_usage = resource_samples
                     .iter()
                     .map(|(process_id, current)| {

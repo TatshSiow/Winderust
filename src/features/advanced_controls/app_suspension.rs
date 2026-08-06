@@ -10,8 +10,8 @@ use std::{
 
 use windows_sys::Win32::{
     Foundation::{
-        ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER,
-        ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
+        ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_INSUFFICIENT_BUFFER,
+        ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, HANDLE, NO_ERROR, WAIT_TIMEOUT,
     },
     NetworkManagement::IpHelper::{
         GetExtendedTcpTable, GetExtendedUdpTable, GetPerTcp6ConnectionEStats,
@@ -43,8 +43,9 @@ use crate::config::AppSuspensionSettings;
 use crate::foreground::{
     capture_process_action_target, contains_process_name, ensure_process_action_target_access,
     executable_path_key, list_processes, process_executable_path,
-    process_handle_matches_executable_path, process_session_id, same_executable_path,
-    ProcessActionAccess, ProcessActionTarget, EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
+    process_handle_matches_executable_path, process_runs_as_service_account, process_session_id,
+    same_executable_path, ProcessActionAccess, ProcessActionTarget,
+    EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS,
 };
 use crate::{
     action_log::{ActionLog, ActionLogFeature, ActionLogResult},
@@ -52,6 +53,22 @@ use crate::{
 };
 
 const BUILT_IN_EXCLUSIONS: &[&str] = EXTENDED_BUILT_IN_PROCESS_EXCLUSIONS;
+const APP_SUSPENSION_ONLY_BUILT_IN_EXCLUSIONS: &[&str] = &[
+    "appactions.exe",
+    "applicationframehost.exe",
+    "backgroundtaskhost.exe",
+    "crossdeviceresume.exe",
+    "dllhost.exe",
+    "lockapp.exe",
+    "runtimebroker.exe",
+    "shellhost.exe",
+    "svchost.exe",
+    "systemsettingsbroker.exe",
+    "taskhostw.exe",
+    "unsecapp.exe",
+    "useroobebroker.exe",
+    "wmiprvse.exe",
+];
 const NETWORK_DETECTION_FAILURE_KEY: &str = "network-detection";
 const AUDIO_DETECTION_FAILURE_KEY: &str = "audio-detection";
 mod process_freezer;
@@ -233,14 +250,18 @@ impl AppSuspensionManager {
             ProcessActionAccess::SafetyOnly
         };
         if ensure_process_action_target_access(target, access).is_err()
-            || contains_process_name(BUILT_IN_EXCLUSIONS, &target.name)
+            || (suspend && !process_is_suspendable(target))
         {
             action_log.record(
                 ActionLogFeature::AppSuspension,
                 Some(target.id),
                 target.name.clone(),
                 ActionLogResult::Failed,
-                "Built-in Windows processes cannot be suspended.",
+                if suspend {
+                    "This process cannot be safely suspended."
+                } else {
+                    "This process cannot be safely resumed."
+                },
             );
             return;
         }
@@ -424,6 +445,8 @@ impl AppSuspensionManager {
                 || process.id == current_process_id
                 || is_builtin_excluded(&process.name)
                 || !contains_process_name(&enabled_process_names, &process.name)
+                || process.session_id.is_none_or(|session_id| session_id == 0)
+                || process_runs_as_service_account(process.id) != Some(false)
             {
                 continue;
             }
@@ -1785,6 +1808,13 @@ pub fn is_builtin_excluded(process_name: &str) -> bool {
         .and_then(|name| name.to_str())
         .unwrap_or(process_name);
     contains_process_name(BUILT_IN_EXCLUSIONS, process_name)
+        || contains_process_name(APP_SUSPENSION_ONLY_BUILT_IN_EXCLUSIONS, process_name)
+}
+
+pub fn process_is_suspendable(target: &ProcessActionTarget) -> bool {
+    !is_builtin_excluded(&target.name)
+        && target.session_id.is_some_and(|session_id| session_id != 0)
+        && target.is_service_account == Some(false)
 }
 
 pub fn contains_process(list: &[String], executable_path: &str) -> bool {
@@ -1826,6 +1856,7 @@ mod tests {
     fn inert_freezer() -> ProcessFreezer {
         ProcessFreezer {
             job_handle: None,
+            job_name: None,
             process_handle: None,
             process_creation_time: None,
             can_wait_for_process: false,
@@ -1947,6 +1978,7 @@ mod tests {
             process_id,
             ProcessFreezer {
                 job_handle: None,
+                job_name: None,
                 process_handle: None,
                 process_creation_time: Some(1),
                 can_wait_for_process: false,
@@ -1972,16 +2004,45 @@ mod tests {
     #[test]
     fn builtin_exclusions_cover_sensitive_windows_shell_processes() {
         for process_name in [
+            "AppActions.exe",
+            "ApplicationFrameHost.exe",
+            "backgroundTaskHost.exe",
+            "CrossDeviceResume.exe",
+            "dllhost.exe",
             "explorer.exe",
+            "LockApp.exe",
+            "RuntimeBroker.exe",
             "SearchApp.exe",
             "SearchHost.exe",
+            "ShellHost.exe",
+            "svchost.exe",
             "SystemSettings.exe",
+            "taskhostw.exe",
             "TextInputHost.exe",
+            "unsecapp.exe",
+            "WmiPrvSE.exe",
         ] {
             assert!(is_builtin_excluded(process_name), "{process_name}");
         }
 
         assert!(!is_builtin_excluded("chat.exe"));
+
+        let mut target = ProcessActionTarget {
+            id: 42,
+            name: "chat.exe".to_owned(),
+            executable_path: std::path::PathBuf::from("chat.exe"),
+            creation_time: 1,
+            session_id: Some(1),
+            is_service_account: Some(false),
+        };
+        assert!(process_is_suspendable(&target));
+        target.is_service_account = Some(true);
+        assert!(!process_is_suspendable(&target));
+        target.is_service_account = None;
+        assert!(!process_is_suspendable(&target));
+        target.is_service_account = Some(false);
+        target.session_id = Some(0);
+        assert!(!process_is_suspendable(&target));
     }
 
     #[test]
