@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com),
 and this project adheres to [Semantic Versioning](https://semver.org).
 
+## 0.5.0-alpha - 2026-08-06
+
+### Added
+
+- Add crash recovery protection.
+- Add collapsible sidebar.
+- Add enabled-feature counters in the sidebar.
+- Add status indicators to navigation cards.
+- Add visible-window detection.
+
+### Changed
+
+- Replace the mixed Background CPU Restriction and Core Steering with separate CPU Sets (Soft) and Processor Affinity (Hard).
+- Allow each CPU allocation rule to select presets or individual logical processors.
+- Improve Process List context menus, grouped-process actions, suspend controls, and process-tree handling.
+- Prevent the same application from using CPU Sets (Soft) and Processor Affinity (Hard) simultaneously.
+- Update navigation icons for Winderust Features and Adaptive Engine.
+
+### Fixed
+
+- Remove `SeDebugPrivilege` and rely on standard Windows process access checks, prevent false positive Windows Defender blocking.
+- Restore all Winderust-managed process states during normal shutdown. (Crash Recovery Protection)
+- Protect critical Windows, shell, security, and infrastructure processes from unsafe suspend and stop actions.
+- Apply grouped Process List actions to all eligible subprocesses.
+- Reduce unnecessary retries against inaccessible or unsupported processes.
+
+### Dependencies
+
+- Update `serde` from 1.0.228 to 1.0.229.
+- Update `serde_json` from 1.0.150 to 1.0.151.
+
 ## 0.4.0-alpha - 2026-07-31
 
 ### Added
