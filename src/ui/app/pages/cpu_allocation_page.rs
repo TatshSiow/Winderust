@@ -54,6 +54,135 @@ impl WinderustApp {
         self.render_cpu_allocation_page(CpuAllocationPage::ProcessorAffinityHard, window, cx)
     }
 
+    pub(in crate::ui::app) fn render_process_details_cpu_controls(
+        &self,
+        process: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut group =
+            page_body_shell().child(section_title_text(t!("nav.cpu_control").to_string()));
+        let processors = cpu_allocation::logical_processors();
+
+        for kind in [
+            CpuAllocationPage::CpuSetsSoft,
+            CpuAllocationPage::ProcessorAffinityHard,
+        ] {
+            let key = kind.key();
+            let title = t!(format!("nav.{key}")).to_string();
+            let mut help_lines = vec![
+                t!(format!("{key}.intro_2")).to_string(),
+                t!("cpu_allocation.rules_help").to_string(),
+            ];
+            if matches!(kind, CpuAllocationPage::ProcessorAffinityHard)
+                || cpu_allocation::has_multiple_processor_groups()
+            {
+                help_lines.push(t!(format!("{key}.warning")).to_string());
+            }
+            let help = tooltip_lines(help_lines);
+            let rules = cpu_allocation_rules(&self.settings, kind);
+            let rule_index = rules
+                .iter()
+                .position(|rule| process_setting_matches(&rule.executable_path, process));
+
+            if let Some(index) = rule_index {
+                let rule = &rules[index];
+                let remove_target = ListItemRemovalTarget::new(kind.removal_kind(), index);
+                let action = h_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(setting_group_switch_action(
+                        format!("process-details-{key}-enabled"),
+                        rule.enabled,
+                        cx.listener(move |app, checked, _, cx| {
+                            if let Some(rule) =
+                                cpu_allocation_rules_mut(&mut app.settings, kind).get_mut(index)
+                            {
+                                rule.enabled = *checked;
+                            }
+                            cx.notify();
+                        }),
+                    ))
+                    .child(
+                        remove_control_button(Button::new(SharedString::from(format!(
+                            "process-details-remove-{key}"
+                        ))))
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            app.request_list_item_removal(remove_target, cx);
+                        })),
+                    )
+                    .into_any_element();
+                group = group.child(
+                    v_flex()
+                        .w_full()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .rounded(px(BRAND_RADIUS_SURFACE))
+                        .bg(rgb(settings_card_color()))
+                        .child(
+                            setting_group_action_row_with_help(
+                                format!("process-details-{key}-header"),
+                                title,
+                                help,
+                                action,
+                                false,
+                            )
+                            .border_b_1()
+                            .border_color(rgb(border_color())),
+                        )
+                        .child(self.render_cpu_allocation_core_selector(
+                            kind,
+                            index,
+                            rule.core_mask,
+                            &processors,
+                            window,
+                            cx,
+                        )),
+                );
+            } else {
+                let process = process.to_owned();
+                let can_enable = can_add_cpu_allocation_process(&self.settings, &process);
+                let toggle_id = format!("process-details-{key}-enabled");
+                let toggle = if can_enable {
+                    setting_group_switch_action(
+                        toggle_id,
+                        false,
+                        cx.listener(move |app, checked, _, cx| {
+                            if *checked && can_add_cpu_allocation_process(&app.settings, &process) {
+                                cpu_allocation_rules_mut(&mut app.settings, kind)
+                                    .push(new_cpu_allocation_rule(&process));
+                            }
+                            cx.notify();
+                        }),
+                    )
+                } else {
+                    h_flex()
+                        .id(SharedString::from(format!(
+                            "process-details-{key}-disabled-toggle"
+                        )))
+                        .opacity(0.48)
+                        .tooltip(|window, cx| {
+                            Tooltip::new(t!("cpu_allocation.rules_help").to_string())
+                                .build(window, cx)
+                        })
+                        .child(switch_indicator(SharedString::from(toggle_id), false))
+                        .into_any_element()
+                };
+                group = group.child(
+                    setting_action_card_with_help(
+                        format!("process-details-{key}-add-card"),
+                        title,
+                        help,
+                        toggle,
+                    )
+                    .into_any_element(),
+                );
+            }
+        }
+
+        group.into_any_element()
+    }
+
     fn render_cpu_allocation_page(
         &self,
         kind: CpuAllocationPage,

@@ -613,12 +613,51 @@ fn process_policy_summary_carries_typed_active_state() {
     set_process_priority_rule(
         &mut settings.process_priority,
         path,
+        None,
         ProcessPrioritySetting::Idle,
     );
 
     let summary = process_policy_summary(&settings, &[], path);
     assert!(!summary.value_is_active(ProcessListColumn::BackgroundEfficiency));
     assert!(summary.value_is_active(ProcessListColumn::ProcessPriority));
+}
+
+#[test]
+fn process_list_priority_rule_can_update_each_side_independently() {
+    let mut settings = Settings::default();
+    let path = r"C:\Apps\editor.exe";
+
+    set_process_priority_rule(
+        &mut settings.process_priority,
+        path,
+        Some(true),
+        ProcessPrioritySetting::High,
+    );
+    let rule = &settings.process_priority.exclusions[0];
+    assert_eq!(
+        rule.process_priority_override(true),
+        ProcessPrioritySetting::High
+    );
+    assert_eq!(
+        rule.process_priority_override(false),
+        ProcessPrioritySetting::Default
+    );
+
+    set_process_priority_rule(
+        &mut settings.process_priority,
+        path,
+        Some(false),
+        ProcessPrioritySetting::Idle,
+    );
+    let rule = &settings.process_priority.exclusions[0];
+    assert_eq!(
+        rule.process_priority_override(true),
+        ProcessPrioritySetting::High
+    );
+    assert_eq!(
+        rule.process_priority_override(false),
+        ProcessPrioritySetting::Idle
+    );
 }
 
 #[test]

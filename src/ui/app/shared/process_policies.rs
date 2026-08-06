@@ -229,67 +229,88 @@ pub(in crate::ui::app) fn set_process_exclusion(
 pub(in crate::ui::app) fn set_process_priority_rule(
     settings: &mut ProcessPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_process_priority_override(true, priority);
-        rule.set_process_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_process_priority_override(foreground, priority);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_thread_priority_rule(
     settings: &mut ThreadPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessThreadPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_thread_priority_override(true, priority);
-        rule.set_thread_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_thread_priority_override(foreground, priority);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_dynamic_priority_boost_rule(
     settings: &mut DynamicPriorityBoostSettings,
     process_name: &str,
+    foreground: Option<bool>,
     boost: ProcessDynamicPriorityBoostSetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_dynamic_priority_boost_override(true, boost);
-        rule.set_dynamic_priority_boost_override(false, boost);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_dynamic_priority_boost_override(foreground, boost);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_io_priority_rule(
     settings: &mut IoPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessIoPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_io_priority_override(true, priority);
-        rule.set_io_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_io_priority_override(foreground, priority);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_gpu_priority_rule(
     settings: &mut GpuPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessGpuPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_gpu_priority_override(true, priority);
-        rule.set_gpu_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_gpu_priority_override(foreground, priority);
+        });
     });
 }
 
 pub(in crate::ui::app) fn set_memory_priority_rule(
     settings: &mut MemoryPrioritySettings,
     process_name: &str,
+    foreground: Option<bool>,
     priority: ProcessMemoryPrioritySetting,
 ) {
     set_priority_rule(&mut settings.exclusions, process_name, |rule| {
-        rule.set_memory_priority_override(true, priority);
-        rule.set_memory_priority_override(false, priority);
+        set_priority_rule_sides(foreground, |foreground| {
+            rule.set_memory_priority_override(foreground, priority);
+        });
     });
+}
+
+fn set_priority_rule_sides(foreground: Option<bool>, mut update: impl FnMut(bool)) {
+    if let Some(foreground) = foreground {
+        update(foreground);
+    } else {
+        update(true);
+        update(false);
+    }
 }
 
 fn set_priority_rule(
