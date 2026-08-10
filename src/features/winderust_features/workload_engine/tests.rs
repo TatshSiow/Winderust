@@ -1,5 +1,110 @@
 use super::*;
-use crate::config::{ProcessMemoryPrioritySetting, WorkloadEngineSettings};
+use crate::config::{ProcessExclusionRule, ProcessMemoryPrioritySetting, WorkloadEngineSettings};
+
+#[test]
+fn broad_background_targets_respect_workload_engine_exclusions() {
+    let settings = WorkloadEngineSettings {
+        workload_engine_exclusions: vec![ProcessExclusionRule {
+            enabled: true,
+            executable_path: r"C:\Apps\excluded.exe".to_owned(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut targets = BTreeMap::new();
+
+    insert_background_target(
+        &mut targets,
+        &settings,
+        42,
+        (
+            "excluded.exe".to_owned(),
+            r"C:\Apps\excluded.exe".to_owned(),
+            ProcessPriority::BelowNormal,
+            PriorityTargetSource::BackgroundPolicy,
+            true,
+            true,
+        ),
+    );
+    insert_background_target(
+        &mut targets,
+        &settings,
+        43,
+        (
+            "allowed.exe".to_owned(),
+            r"C:\Apps\allowed.exe".to_owned(),
+            ProcessPriority::BelowNormal,
+            PriorityTargetSource::BackgroundPolicy,
+            true,
+            true,
+        ),
+    );
+
+    assert!(!targets.contains_key(&42));
+    assert!(targets.contains_key(&43));
+}
+
+#[test]
+fn unavailable_efficiency_state_does_not_block_live_process_priority() {
+    let ping = PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot is set"))
+        .join("System32")
+        .join("ping.exe");
+    let mut child = std::process::Command::new(&ping)
+        .args(["-n", "30", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn priority test process");
+
+    let result = (|| -> Result<(), String> {
+        let process =
+            ProcessHandle::open(child.id()).map_err(|error| priority_error_message(&error))?;
+        let original = process
+            .priority_class()
+            .map_err(|error| priority_error_message(&error))?;
+        let mut log = ActionLog::new(8);
+        let outcome = apply_priority(
+            ApplyPriorityRequest {
+                process_id: child.id(),
+                process_name: "ping.exe".to_owned(),
+                executable_path: ping.to_string_lossy().as_ref(),
+                priority_class: BELOW_NORMAL_PRIORITY_CLASS,
+                existing: None,
+                source: PriorityTargetSource::WorkloadEngine,
+                apply_priority_class: true,
+                apply_background_efficiency: true,
+                ignore_timer_resolution: false,
+                disable_dynamic_priority_boost: false,
+                log_success: false,
+            },
+            &mut log,
+        )
+        .map_err(|error| priority_error_message(&error))?;
+        let adjusted = outcome
+            .adjusted
+            .ok_or_else(|| "live process was not tracked for restoration".to_owned())?;
+        let observed = process
+            .priority_class()
+            .map_err(|error| priority_error_message(&error))?;
+        restore_adjusted_priority(child.id(), &adjusted)
+            .map_err(|error| priority_error_message(&error))?;
+        let restored = process
+            .priority_class()
+            .map_err(|error| priority_error_message(&error))?;
+        if observed != BELOW_NORMAL_PRIORITY_CLASS {
+            return Err(format!(
+                "expected Below Normal priority, observed {observed:#x}"
+            ));
+        }
+        (restored == original).then_some(()).ok_or_else(|| {
+            format!("expected restored priority {original:#x}, observed {restored:#x}")
+        })
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(result.is_ok(), "{}", result.unwrap_err());
+}
 
 #[test]
 fn adaptive_efficiency_respects_foreground_and_visible_window_protection() {
@@ -313,7 +418,7 @@ fn foreground_group_includes_child_processes() {
 }
 
 #[test]
-fn workload_engine_pauses_when_foreground_saturates_cpu() {
+fn workload_engine_keeps_relative_restraints_when_foreground_saturates_cpu() {
     let settings = WorkloadEngineSettings {
         workload_engine_enabled: true,
         workload_engine_total_threshold_percent: 70,
@@ -322,9 +427,9 @@ fn workload_engine_pauses_when_foreground_saturates_cpu() {
 
     assert!(!workload_engine_should_run(&settings, Some(69.0), None));
     assert!(workload_engine_should_run(&settings, Some(70.0), None));
-    assert!(!workload_engine_should_run(&settings, Some(85.0), None));
-    assert!(!workload_engine_should_run(&settings, Some(100.0), None));
-    assert!(!workload_engine_should_run(
+    assert!(workload_engine_should_run(&settings, Some(85.0), None));
+    assert!(workload_engine_should_run(&settings, Some(100.0), None));
+    assert!(workload_engine_should_run(
         &settings,
         Some(85.0),
         Some(100.0)
@@ -364,8 +469,11 @@ fn workload_engine_pressure_uses_restore_band_before_stopping() {
 
     assert!(!manager.update_workload_engine_pressure(&settings, Some(10.0), Some(69.0)));
     assert!(manager.update_workload_engine_pressure(&settings, Some(10.0), Some(70.0)));
+    assert!(manager.update_workload_engine_pressure(&settings, None, None));
     assert!(manager.update_workload_engine_pressure(&settings, Some(10.0), Some(66.0)));
-    assert!(!manager.update_workload_engine_pressure(&settings, Some(10.0), Some(64.0)));
+    assert!(manager.update_workload_engine_pressure(&settings, Some(10.0), Some(65.0)));
+    assert!(manager.update_workload_engine_pressure(&settings, Some(85.0), Some(65.0)));
+    assert!(!manager.update_workload_engine_pressure(&settings, Some(10.0), Some(64.9)));
 }
 
 #[test]
@@ -429,6 +537,50 @@ fn workload_engine_selection_can_replace_cooler_selected_process() {
     );
 
     assert_eq!(selected[0].process_id, 2);
+}
+
+#[test]
+fn workload_engine_repeat_offender_score_is_bounded() {
+    let now = Instant::now();
+    let process = |restraint_count| WorkloadEngineProcess {
+        process_name: "worker.exe".to_owned(),
+        executable_path: r"C:\Apps\worker.exe".to_owned(),
+        creation_time: 1,
+        previous_cpu_time: None,
+        last_usage_tenths: Some(100),
+        high_since: Some(now),
+        below_since: None,
+        active_since: Some(now),
+        last_reaction_millis: Some(100),
+        restraint_count,
+        decision: Some(WorkloadEngineDecision::LowerPriority),
+        active: true,
+        selected: false,
+    };
+
+    let first =
+        workload_engine_candidate(1, &process(1), WorkloadEngineDecision::LowerPriority, now);
+    let repeated =
+        workload_engine_candidate(1, &process(100), WorkloadEngineDecision::LowerPriority, now);
+
+    assert_eq!(first.score, repeated.score);
+}
+
+#[test]
+fn workload_engine_hot_streak_uses_restore_threshold_hysteresis() {
+    let sustain = Duration::from_secs(3);
+    assert!(!workload_engine_hot_streak_should_reset(
+        7.0, 5.0, sustain, sustain
+    ));
+    assert!(!workload_engine_hot_streak_should_reset(
+        5.0,
+        5.0,
+        Duration::from_secs(2),
+        sustain
+    ));
+    assert!(workload_engine_hot_streak_should_reset(
+        5.0, 5.0, sustain, sustain
+    ));
 }
 
 #[test]
@@ -514,6 +666,10 @@ fn workload_engine_auto_cpu_percent_uses_topology_behavior_floor() {
         workload_engine_effective_cpu_percent_for_topology(&settings, Some(80.0), true),
         85
     );
+    assert_eq!(
+        workload_engine_effective_cpu_percent_for_topology(&settings, Some(85.0), true),
+        100
+    );
 
     assert_eq!(
         workload_engine_minimum_cpu_percent_for_topology(&settings, false),
@@ -552,6 +708,14 @@ fn workload_engine_auto_mode_escalates_from_priority_to_affinity() {
         workload_engine_affinity_escalation_enabled: true,
         ..settings.clone()
     };
+    assert_eq!(
+        workload_engine_process_decision(
+            &escalating_settings,
+            Some(now),
+            now + Duration::from_millis(2_999)
+        ),
+        WorkloadEngineDecision::LowerPriority
+    );
     assert_eq!(
         workload_engine_process_decision(
             &escalating_settings,
@@ -624,7 +788,7 @@ fn smart_efficiency_auto_mode_runs_under_cpu_pressure() {
         Some(10.0),
         Some(75.0)
     ));
-    assert!(!smart_efficiency_should_run(
+    assert!(smart_efficiency_should_run(
         &settings,
         Some(85.0),
         Some(100.0)
@@ -722,6 +886,7 @@ fn release_processes_skips_restore_when_process_identity_is_unknown() {
             applied_dynamic_priority_boost_disabled: false,
             previous_efficiency_state: None,
             applied_background_efficiency: false,
+            background_efficiency_unavailable: false,
             applied_ignore_timer_resolution: false,
         },
     );
@@ -735,7 +900,7 @@ fn release_processes_skips_restore_when_process_identity_is_unknown() {
 }
 
 #[test]
-fn process_cpu_usage_percent_scales_by_processor_count() {
+fn process_cpu_demand_percent_uses_one_logical_processor_capacity() {
     let now = Instant::now();
     let previous = ProcessCpuSample {
         cpu_time_100ns: 0,
@@ -746,10 +911,9 @@ fn process_cpu_usage_percent_scales_by_processor_count() {
         sampled_at: now + Duration::from_secs(1),
     };
 
-    let usage = process_cpu_usage_percent(previous, current).unwrap();
+    let usage = process_cpu_demand_percent(previous, current).unwrap();
 
-    assert!(usage > 0.0);
-    assert!(usage <= 100.0);
+    assert_eq!(usage, 100.0);
 }
 
 #[test]

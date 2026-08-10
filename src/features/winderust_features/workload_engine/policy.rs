@@ -180,16 +180,9 @@ pub(super) fn cpu_pressure_should_run(
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
-    let foreground_saturated =
-        foreground_cpu_usage_percent.is_some_and(foreground_cpu_saturates_workload);
-    let foreground_pressure = foreground_cpu_usage_percent.is_some_and(|usage| {
-        usage >= f32::from(settings.workload_engine_total_threshold_percent.min(100))
-            && !foreground_cpu_saturates_workload(usage)
-    });
-    let system_pressure = !foreground_saturated
-        && total_cpu_usage_percent.is_some_and(|usage| {
-            usage >= f32::from(settings.workload_engine_total_threshold_percent.min(100))
-        });
+    let threshold = f32::from(settings.workload_engine_total_threshold_percent.min(100));
+    let foreground_pressure = foreground_cpu_usage_percent.is_some_and(|usage| usage >= threshold);
+    let system_pressure = total_cpu_usage_percent.is_some_and(|usage| usage >= threshold);
 
     foreground_pressure || system_pressure
 }
@@ -199,12 +192,6 @@ pub(super) fn cpu_pressure_above_restore_threshold(
     foreground_cpu_usage_percent: Option<f32>,
     total_cpu_usage_percent: Option<f32>,
 ) -> bool {
-    let foreground_saturated =
-        foreground_cpu_usage_percent.is_some_and(foreground_cpu_saturates_workload);
-    if foreground_saturated {
-        return false;
-    }
-
     let restore_threshold = workload_engine_pressure_restore_threshold(settings);
     foreground_cpu_usage_percent.is_some_and(|usage| usage >= restore_threshold)
         || total_cpu_usage_percent.is_some_and(|usage| usage >= restore_threshold)
@@ -213,6 +200,15 @@ pub(super) fn cpu_pressure_above_restore_threshold(
 pub(super) fn workload_engine_pressure_restore_threshold(settings: &WorkloadEngineSettings) -> f32 {
     let trigger = settings.workload_engine_total_threshold_percent.min(100);
     f32::from(trigger.saturating_sub(WORKLOAD_ENGINE_PRESSURE_RESTORE_BAND_PERCENT))
+}
+
+pub(super) fn workload_engine_hot_streak_should_reset(
+    usage: f32,
+    restore_threshold: f32,
+    below_duration: Duration,
+    sustain: Duration,
+) -> bool {
+    usage <= restore_threshold && below_duration >= sustain
 }
 
 pub(super) fn foreground_cpu_saturates_workload(usage: f32) -> bool {
@@ -301,7 +297,7 @@ pub(super) fn workload_engine_candidate(
         score: selected_bonus
             + decision_bonus
             + u32::from(process.last_usage_tenths.unwrap_or_default()).saturating_mul(4)
-            + process.restraint_count.saturating_mul(100)
+            + u32::from(process.restraint_count > 0) * 100
             + active_seconds.saturating_mul(10),
     }
 }

@@ -89,36 +89,59 @@ pub(super) fn apply_priority(
         }
         reusable_existing.and_then(|adjusted| adjusted.previous_dynamic_priority_boost_disabled)
     };
-    let previous_efficiency_state = if apply_background_efficiency {
-        let current_state = process.power_throttling_state().ok();
-        let previous_state = reusable_existing
-            .and_then(|adjusted| adjusted.previous_efficiency_state)
-            .or(current_state);
-        let ignore_timer_resolution_changed = reusable_existing.is_none_or(|adjusted| {
-            adjusted.applied_ignore_timer_resolution != ignore_timer_resolution
-        });
-        let ignore_timer_resolution_missing = ignore_timer_resolution
-            && !current_state.is_some_and(power_throttling_ignore_timer_resolution_enabled);
-        if !current_state.is_some_and(power_throttling_execution_enabled)
-            || ignore_timer_resolution_changed
-            || ignore_timer_resolution_missing
-        {
-            process.set_power_throttling_state(power_throttling_enabled_state(
-                previous_state,
-                ignore_timer_resolution,
-            ))?;
-            changed = true;
-            if log_success {
+    let mut background_efficiency_unavailable = apply_background_efficiency
+        && reusable_existing.is_some_and(|adjusted| adjusted.background_efficiency_unavailable);
+    let mut applied_background_efficiency = false;
+    let previous_efficiency_state = if apply_background_efficiency
+        && !background_efficiency_unavailable
+    {
+        match process.power_throttling_state() {
+            Ok(current_state) => {
+                let previous_state = reusable_existing
+                    .and_then(|adjusted| adjusted.previous_efficiency_state)
+                    .or(Some(current_state));
+                let ignore_timer_resolution_changed = reusable_existing.is_none_or(|adjusted| {
+                    adjusted.applied_ignore_timer_resolution != ignore_timer_resolution
+                });
+                let ignore_timer_resolution_missing = ignore_timer_resolution
+                    && !power_throttling_ignore_timer_resolution_enabled(current_state);
+                if !power_throttling_execution_enabled(current_state)
+                    || ignore_timer_resolution_changed
+                    || ignore_timer_resolution_missing
+                {
+                    process.set_power_throttling_state(power_throttling_enabled_state(
+                        previous_state,
+                        ignore_timer_resolution,
+                    ))?;
+                    changed = true;
+                    if log_success {
+                        action_log.record(
+                            ActionLogFeature::WorkloadEngine,
+                            Some(process_id),
+                            process_name.clone(),
+                            ActionLogResult::Applied,
+                            "Applied Background Efficiency: enabled EcoQoS.",
+                        );
+                    }
+                }
+                applied_background_efficiency = true;
+                previous_state
+            }
+            Err(error) => {
+                background_efficiency_unavailable = true;
                 action_log.record(
                     ActionLogFeature::WorkloadEngine,
                     Some(process_id),
                     process_name.clone(),
-                    ActionLogResult::Applied,
-                    "Applied Background Efficiency: enabled EcoQoS.",
+                    ActionLogResult::Skipped,
+                    format!(
+                        "Skipped Background Efficiency because its original state is unavailable: {}",
+                        priority_error_message(&error)
+                    ),
                 );
+                reusable_existing.and_then(|adjusted| adjusted.previous_efficiency_state)
             }
         }
-        previous_state
     } else {
         if let Some(adjusted) =
             reusable_existing.filter(|adjusted| adjusted.applied_background_efficiency)
@@ -148,8 +171,10 @@ pub(super) fn apply_priority(
     if reusable_existing.is_some_and(|adjusted| {
         adjusted.applied_priority == applied_priority
             && priority_already_applied
-            && adjusted.applied_background_efficiency == apply_background_efficiency
-            && adjusted.applied_ignore_timer_resolution == ignore_timer_resolution
+            && adjusted.applied_background_efficiency == applied_background_efficiency
+            && adjusted.background_efficiency_unavailable == background_efficiency_unavailable
+            && adjusted.applied_ignore_timer_resolution
+                == (applied_background_efficiency && ignore_timer_resolution)
             && adjusted.applied_dynamic_priority_boost_disabled == disable_dynamic_priority_boost
     }) {
         return Ok(ApplyPriorityOutcome {
@@ -191,10 +216,12 @@ pub(super) fn apply_priority(
             previous_dynamic_priority_boost_disabled,
             applied_dynamic_priority_boost_disabled: disable_dynamic_priority_boost,
             previous_efficiency_state,
-            applied_background_efficiency: apply_background_efficiency,
-            applied_ignore_timer_resolution: apply_background_efficiency && ignore_timer_resolution,
+            applied_background_efficiency,
+            background_efficiency_unavailable,
+            applied_ignore_timer_resolution: applied_background_efficiency
+                && ignore_timer_resolution,
         }),
-        skipped: false,
+        skipped: background_efficiency_unavailable,
         changed,
     })
 }

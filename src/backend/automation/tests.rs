@@ -993,7 +993,7 @@ fn adaptive_processor_demand_separates_hybrid_core_classes() {
 }
 
 #[test]
-fn adaptive_plan_uses_fast_cpu_and_slow_aggregate_telemetry() {
+fn adaptive_plan_uses_half_second_workload_sampling() {
     let mut settings = Settings::default();
     settings.adaptive_engine.enabled = true;
     settings.adaptive_engine.processor_policy_enabled = true;
@@ -1001,6 +1001,10 @@ fn adaptive_plan_uses_fast_cpu_and_slow_aggregate_telemetry() {
     assert_eq!(
         workload_refresh_interval(&settings, true, true),
         WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL
+    );
+    assert_eq!(
+        WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL,
+        Duration::from_millis(500)
     );
     assert!(ADAPTIVE_IO_REFRESH_INTERVAL > WORKLOAD_ENGINE_FAST_REFRESH_INTERVAL);
     assert!(

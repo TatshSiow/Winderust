@@ -6,6 +6,10 @@ param(
     [int]$ScoreDataKb = 512,
     [int]$ScoreRounds = 2,
     [int]$WorkerSeconds = 45,
+    [ValidateRange(0, 64)]
+    [int]$BackgroundWorkers = 0,
+    [ValidateSet('Focus', 'VisibleWindow', 'Background')]
+    [string]$ProcessTier = 'Focus',
     [ValidateSet('CpuLoop', 'IoLoop', 'MessageLoop', 'WinderustLaunch')]
     [string]$ForegroundScenario = 'CpuLoop',
     [int]$IoOperations = 2000,
@@ -20,12 +24,20 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $powerShellPath = Join-Path $PSHOME 'powershell.exe'
+$cscriptPath = Join-Path $env:SystemRoot 'System32\cscript.exe'
+$workerScriptPath = Join-Path ([IO.Path]::GetTempPath()) "winderust-benchmark-worker-$PID.js"
 $logicalProcessors = [Environment]::ProcessorCount
-$workerCount = [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
-$lowImpactTargetCount = $workerCount
+$workerCount = if ($BackgroundWorkers -gt 0) {
+    $BackgroundWorkers
+} else {
+    [Math]::Min([Math]::Max($logicalProcessors, 4), 12)
+}
+$lowImpactTargetCount = [Math]::Min(6, $workerCount)
+$foregroundFirstTargetCount = [Math]::Min(8, $workerCount)
+$maxForegroundTargetCount = [Math]::Min(12, $workerCount)
 $lowImpactAllPCorePercent = 0.65
 $foregroundFirstAllPCorePercent = 0.50
-$maxForegroundCorePercent = 0.06
+$maxForegroundCorePercent = 0.10
 $lowImpactCoreCount = 0
 $foregroundFirstCoreCount = 0
 $maxForegroundCoreCount = [Math]::Max(1, [Math]::Ceiling($logicalProcessors * $maxForegroundCorePercent))
@@ -247,8 +259,28 @@ public static class WorkloadEngineBenchmarkNative
         public UInt32 MemoryPriority;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PROCESS_POWER_THROTTLING_STATE
+    {
+        public UInt32 Version;
+        public UInt32 ControlMask;
+        public UInt32 StateMask;
+    }
+
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool SetProcessInformation(IntPtr hProcess, Int32 processInformationClass, ref MEMORY_PRIORITY_INFORMATION processInformation, UInt32 processInformationSize);
+
+    [DllImport("kernel32.dll", EntryPoint = "SetProcessInformation", SetLastError = true)]
+    public static extern bool SetProcessPowerThrottling(IntPtr hProcess, Int32 processInformationClass, ref PROCESS_POWER_THROTTLING_STATE processInformation, UInt32 processInformationSize);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetCurrentThread();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern Int32 GetThreadPriority(IntPtr hThread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool SetThreadPriority(IntPtr hThread, Int32 nPriority);
 
     [DllImport("ntdll.dll")]
     public static extern Int32 NtSetInformationProcess(IntPtr processHandle, UInt32 processInformationClass, ref UInt32 processInformation, UInt32 processInformationLength);
@@ -500,6 +532,8 @@ public static class WorkloadEngineBenchmarkNative
 }
 
 $processMemoryPriorityClass = 0
+$processPowerThrottlingClass = 4
+$powerThrottlingExecutionSpeed = 1
 $processIoPriorityClass = 33
 $statusInvalidParameter = -1073741811
 $memoryPriorityRaw = @{
@@ -651,6 +685,7 @@ function New-AssistControls {
     param(
         [string]$ForegroundPriorityBoost = 'Default',
         [string]$ForegroundThreadPriority = 'Default',
+        [string]$ForegroundMemoryPriority = 'Default',
         [string]$ForegroundIoPriority = 'Default',
         [string]$ForegroundGpuPriority = 'Default',
         [string]$BackgroundPriorityBoost = 'Default',
@@ -663,6 +698,7 @@ function New-AssistControls {
     [pscustomobject][ordered]@{
         foreground_priority_boost = $ForegroundPriorityBoost
         foreground_thread_priority = $ForegroundThreadPriority
+        foreground_memory_priority = $ForegroundMemoryPriority
         foreground_io_priority = $ForegroundIoPriority
         foreground_gpu_priority = $ForegroundGpuPriority
         background_priority_boost = $BackgroundPriorityBoost
@@ -678,10 +714,12 @@ function New-AssistStatus {
         worker_processes = 0
         foreground_priority_boost_applied = 0
         foreground_thread_priority_applied = 0
+        foreground_memory_priority_applied = 0
         foreground_io_priority_applied = 0
         foreground_gpu_priority_applied = 0
         foreground_gpu_priority_unavailable = 0
         background_priority_boost_applied = 0
+        background_efficiency_processes_applied = 0
         thread_priority_threads_applied = 0
         memory_priority_processes_applied = 0
         io_priority_processes_applied = 0
@@ -702,11 +740,14 @@ function Set-ProcessPriorityBoostSetting {
 
 function Set-CurrentThreadPrioritySetting {
     param([string]$Setting)
-    if ([string]::IsNullOrWhiteSpace($Setting) -or $Setting -eq 'Default') {
+    if (-not $threadPriorityRaw.ContainsKey($Setting)) {
         return $false
     }
 
-    [Threading.Thread]::CurrentThread.Priority = $Setting
+    $thread = [WorkloadEngineBenchmarkNative]::GetCurrentThread()
+    if (-not [WorkloadEngineBenchmarkNative]::SetThreadPriority($thread, [int]$threadPriorityRaw[$Setting])) {
+        throw 'SetThreadPriority failed.'
+    }
     return $true
 }
 
@@ -722,6 +763,39 @@ function Set-ProcessIoPrioritySetting {
         throw "NtSetInformationProcess failed with status $status"
     }
     return $true
+}
+$threadPriorityRaw = @{
+    Idle = -15
+    Lowest = -2
+    BelowNormal = -1
+    Normal = 0
+    AboveNormal = 1
+    Highest = 2
+}
+
+function Set-ProcessMemoryPrioritySetting {
+    param([Diagnostics.Process]$Process, [string]$Setting)
+    if (-not $memoryPriorityRaw.ContainsKey($Setting)) {
+        return $false
+    }
+    $info = New-Object 'WorkloadEngineBenchmarkNative+MEMORY_PRIORITY_INFORMATION'
+    $info.MemoryPriority = [uint32]$memoryPriorityRaw[$Setting]
+    if (-not [WorkloadEngineBenchmarkNative]::SetProcessInformation($Process.Handle, $processMemoryPriorityClass, [ref]$info, [uint32]4)) {
+        throw 'SetProcessInformation memory priority failed.'
+    }
+    return $true
+}
+
+function Set-ProcessEfficiencyMode {
+    param([Diagnostics.Process]$Process)
+    $state = New-Object 'WorkloadEngineBenchmarkNative+PROCESS_POWER_THROTTLING_STATE'
+    $state.Version = 1
+    $state.ControlMask = $powerThrottlingExecutionSpeed
+    $state.StateMask = $powerThrottlingExecutionSpeed
+    $size = [Runtime.InteropServices.Marshal]::SizeOf($state)
+    if (-not [WorkloadEngineBenchmarkNative]::SetProcessPowerThrottling($Process.Handle, $processPowerThrottlingClass, [ref]$state, [uint32]$size)) {
+        throw 'SetProcessInformation EcoQoS failed.'
+    }
 }
 
 function Set-ProcessGpuPrioritySetting {
@@ -756,6 +830,13 @@ function Apply-ForegroundAssistControls {
         $AssistStatus.failed_actions += 1
     }
     try {
+        if (Set-ProcessMemoryPrioritySetting -Process $Process -Setting $AssistControls.foreground_memory_priority) {
+            $AssistStatus.foreground_memory_priority_applied += 1
+        }
+    } catch {
+        $AssistStatus.failed_actions += 1
+    }
+    try {
         if (Set-ProcessIoPrioritySetting -Process $Process -Setting $AssistControls.foreground_io_priority) {
             $AssistStatus.foreground_io_priority_applied += 1
         }
@@ -777,17 +858,24 @@ function Apply-ForegroundAssistControls {
 function Restore-ForegroundAssistControls {
     param(
         [Diagnostics.Process]$Process,
-        [Threading.ThreadPriority]$OriginalThreadPriority,
+        [int]$OriginalThreadPriority,
         [pscustomobject]$AssistControls
     )
 
     try {
-        [Threading.Thread]::CurrentThread.Priority = $OriginalThreadPriority
+        $thread = [WorkloadEngineBenchmarkNative]::GetCurrentThread()
+        [void][WorkloadEngineBenchmarkNative]::SetThreadPriority($thread, $OriginalThreadPriority)
     } catch {
     }
     if ($ioPriorityRaw.ContainsKey($AssistControls.foreground_io_priority)) {
         try {
             [void](Set-ProcessIoPrioritySetting -Process $Process -Setting 'Normal')
+        } catch {
+        }
+    }
+    if ($memoryPriorityRaw.ContainsKey($AssistControls.foreground_memory_priority)) {
+        try {
+            [void](Set-ProcessMemoryPrioritySetting -Process $Process -Setting 'Normal')
         } catch {
         }
     }
@@ -833,12 +921,8 @@ function Apply-WorkerAssistControls {
     }
     if ($memoryPriorityRaw.ContainsKey($AssistControls.memory_priority)) {
         try {
-            $info = New-Object 'WorkloadEngineBenchmarkNative+MEMORY_PRIORITY_INFORMATION'
-            $info.MemoryPriority = [uint32]$memoryPriorityRaw[$AssistControls.memory_priority]
-            if ([WorkloadEngineBenchmarkNative]::SetProcessInformation($Process.Handle, $processMemoryPriorityClass, [ref]$info, [uint32]4)) {
+            if (Set-ProcessMemoryPrioritySetting -Process $Process -Setting $AssistControls.memory_priority) {
                 $AssistStatus.memory_priority_processes_applied += 1
-            } else {
-                $AssistStatus.failed_actions += 1
             }
         } catch {
             $AssistStatus.failed_actions += 1
@@ -1074,6 +1158,7 @@ function Measure-ForegroundIoWork {
 function Start-CpuWorkers {
     param(
         [string[]]$Priorities,
+        [int]$EfficiencySelectedCount,
         [int]$AffinitySelectedCount,
         [Int64]$AffinityMask,
         [int]$Seconds,
@@ -1081,27 +1166,36 @@ function Start-CpuWorkers {
         [pscustomobject]$AssistStatus
     )
 
-    $code = @"
-`$deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
-`$acc = 0.0
-while ([DateTime]::UtcNow -lt `$deadline) {
-    for (`$i = 1; `$i -le 100000; `$i++) {
-        `$acc += [Math]::Sqrt(`$i)
+    $code = @'
+var deadline = Date.now() + parseInt(WScript.Arguments(0), 10) * 1000;
+var acc = 0;
+while (Date.now() < deadline) {
+    for (var i = 1; i <= 100000; i++) {
+        acc += Math.sqrt(i);
     }
 }
-"@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+'@
+    [IO.File]::WriteAllText($workerScriptPath, $code, [Text.UTF8Encoding]::new($false))
     $processes = @()
     for ($worker = 0; $worker -lt $Priorities.Length; $worker++) {
-        $process = Start-Process `
-            -FilePath $powerShellPath `
-            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded) `
-            -WindowStyle Hidden `
-            -PassThru
+        $process = Start-Process -FilePath $cscriptPath -ArgumentList @(
+            '//B',
+            '//NoLogo',
+            "`"$workerScriptPath`"",
+            $Seconds
+        ) -PassThru -WindowStyle Hidden
         Start-Sleep -Milliseconds 80
         try {
             $process.PriorityClass = $Priorities[$worker]
         } catch {
+        }
+        if ($worker -lt $EfficiencySelectedCount) {
+            try {
+                Set-ProcessEfficiencyMode -Process $process
+                $AssistStatus.background_efficiency_processes_applied += 1
+            } catch {
+                $AssistStatus.failed_actions += 1
+            }
         }
         if ($AffinitySelectedCount -gt 0 -and $worker -lt $AffinitySelectedCount -and $AffinityMask -gt 0) {
             try {
@@ -1132,6 +1226,7 @@ function Stop-CpuWorkers {
         } catch {
         }
     }
+    Remove-Item -LiteralPath $workerScriptPath -Force -ErrorAction SilentlyContinue
 }
 
 function Get-WorkerCpuMilliseconds {
@@ -1150,6 +1245,19 @@ function Get-WorkerCpuMilliseconds {
     return $total
 }
 
+function Get-WorkerPriorities {
+    param([object[]]$Processes)
+    @(
+        $Processes | ForEach-Object {
+            try {
+                $worker = [Diagnostics.Process]::GetProcessById($_.Id)
+                if (-not $worker.HasExited) { [string]$worker.PriorityClass }
+            } catch {
+            }
+        }
+    )
+}
+
 function New-Priorities {
     param([string]$DefaultPriority, [int]$RestrainedCount, [string]$RestrainedPriority)
     $priorities = New-Object string[] $workerCount
@@ -1163,8 +1271,68 @@ function New-Priorities {
     return $priorities
 }
 
-function Test-ForegroundLaunchScenario {
-    return $ForegroundScenario -eq 'WinderustLaunch'
+function Get-TierProcessPriority {
+    param([ValidateSet('LowImpact', 'ForegroundFirst', 'MaxForeground')] [string]$Preset)
+    if ($ProcessTier -eq 'Focus') {
+        return 'AboveNormal'
+    }
+    if ($ProcessTier -eq 'VisibleWindow') {
+        if ($Preset -eq 'MaxForeground') {
+            return 'BelowNormal'
+        }
+        return 'Normal'
+    }
+    if ($Preset -eq 'MaxForeground') {
+        return 'Idle'
+    }
+    return 'BelowNormal'
+}
+
+function New-PresetAssistControls {
+    param([ValidateSet('LowImpact', 'ForegroundFirst', 'MaxForeground')] [string]$Preset)
+    if ($Preset -eq 'LowImpact') {
+        return New-AssistControls
+    }
+
+    if ($Preset -eq 'ForegroundFirst') {
+        $tier = switch ($ProcessTier) {
+            'Focus' { @('Enabled', 'Default', 'Normal', 'Normal', 'Default') }
+            'VisibleWindow' { @('Default', 'Default', 'BelowNormal', 'Low', 'Default') }
+            default { @('Disabled', 'BelowNormal', 'VeryLow', 'VeryLow', 'BelowNormal') }
+        }
+        $arguments = @{
+            ForegroundPriorityBoost = $tier[0]
+            ForegroundThreadPriority = $tier[1]
+            ForegroundMemoryPriority = $tier[2]
+            ForegroundIoPriority = $tier[3]
+            ForegroundGpuPriority = $tier[4]
+            BackgroundPriorityBoost = 'Disabled'
+            ThreadPriority = 'BelowNormal'
+            MemoryPriority = 'VeryLow'
+            IoPriority = 'VeryLow'
+            GpuPriority = 'BelowNormal'
+        }
+        return New-AssistControls @arguments
+    }
+
+    $tier = switch ($ProcessTier) {
+        'Focus' { @('Enabled', 'Highest', 'Normal', 'High', 'High') }
+        'VisibleWindow' { @('Default', 'Normal', 'Medium', 'Normal', 'Normal') }
+        default { @('Disabled', 'Idle', 'VeryLow', 'VeryLow', 'Idle') }
+    }
+    $arguments = @{
+        ForegroundPriorityBoost = $tier[0]
+        ForegroundThreadPriority = $tier[1]
+        ForegroundMemoryPriority = $tier[2]
+        ForegroundIoPriority = $tier[3]
+        ForegroundGpuPriority = $tier[4]
+        BackgroundPriorityBoost = 'Disabled'
+        ThreadPriority = 'Idle'
+        MemoryPriority = 'VeryLow'
+        IoPriority = 'VeryLow'
+        GpuPriority = 'Idle'
+    }
+    return New-AssistControls @arguments
 }
 
 function Run-LaunchGraceCase {
@@ -1174,6 +1342,7 @@ function Run-LaunchGraceCase {
         -Model 'Launch grace: foreground launch boosted AboveNormal; background restraints deferred.' `
         -ForegroundPriority 'AboveNormal' `
         -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal') `
+        -EfficiencySelectedCount 0 `
         -AffinitySelectedCount 0 `
         -AffinityMask 0 `
         -AssistControls (New-AssistControls)
@@ -1288,9 +1457,11 @@ function Run-Case {
         [string]$Model,
         [string]$ForegroundPriority,
         [string[]]$Priorities,
+        [int]$EfficiencySelectedCount,
         [int]$AffinitySelectedCount,
         [Int64]$AffinityMask,
-        [pscustomobject]$AssistControls
+        [pscustomobject]$AssistControls,
+        [int]$WarmupSeconds = 2
     )
 
     if ($null -eq $AssistControls) {
@@ -1299,7 +1470,9 @@ function Run-Case {
     $assistStatus = New-AssistStatus
     $currentProcess = [Diagnostics.Process]::GetCurrentProcess()
     $originalPriority = $currentProcess.PriorityClass
-    $originalThreadPriority = [Threading.Thread]::CurrentThread.Priority
+    $originalThreadPriority = [WorkloadEngineBenchmarkNative]::GetThreadPriority(
+        [WorkloadEngineBenchmarkNative]::GetCurrentThread()
+    )
     $originalPriorityBoost = $null
     try {
         $originalPriorityBoost = $currentProcess.PriorityBoostEnabled
@@ -1322,15 +1495,21 @@ function Run-Case {
             -AssistStatus $assistStatus
         $processes = Start-CpuWorkers `
             -Priorities $Priorities `
+            -EfficiencySelectedCount $EfficiencySelectedCount `
             -AffinitySelectedCount $AffinitySelectedCount `
             -AffinityMask $AffinityMask `
             -Seconds $WorkerSeconds `
             -AssistControls $AssistControls `
             -AssistStatus $assistStatus
-        Start-Sleep -Seconds 2
+        $observedWorkerPriorities = @()
+        for ($sample = 0; $sample -lt ($WarmupSeconds * 2); $sample++) {
+            Start-Sleep -Milliseconds 500
+            $observedWorkerPriorities += @(Get-WorkerPriorities -Processes $processes)
+        }
         $workerCpuBeforeMs = Get-WorkerCpuMilliseconds $processes
         $measurementWindow = [Diagnostics.Stopwatch]::StartNew()
         $samples = Measure-ForegroundWork -Iterations $Iterations -Rounds $Rounds -LaunchPriority $ForegroundPriority -PowerSamples $powerSamples
+        $observedWorkerPriorities += @(Get-WorkerPriorities -Processes $processes)
         $scoreBenchmark = Measure-ScoreBenchmarks -PowerSamples $powerSamples
         $measurementWindow.Stop()
         $workerCpuAfterMs = Get-WorkerCpuMilliseconds $processes
@@ -1348,6 +1527,21 @@ function Run-Case {
         $summary | Add-Member -NotePropertyName score_benchmark -NotePropertyValue $scoreBenchmark
         $summary | Add-Member -NotePropertyName assist_controls -NotePropertyValue $AssistControls
         $summary | Add-Member -NotePropertyName assist_status -NotePropertyValue $assistStatus
+        $observedWorkerPriorities += @(Get-WorkerPriorities -Processes $processes)
+        $aliveWorkerCount = 0
+        foreach ($workerProcess in $processes) {
+            try {
+                $workerProcess.Refresh()
+                if (-not $workerProcess.HasExited) { $aliveWorkerCount += 1 }
+            } catch {
+            }
+        }
+        $currentProcess.Refresh()
+        $summary | Add-Member -NotePropertyName foreground_priority_after_measurement -NotePropertyValue ([string]$currentProcess.PriorityClass)
+        $summary | Add-Member -NotePropertyName workers_alive_after_measurement -NotePropertyValue $aliveWorkerCount
+        $summary | Add-Member -NotePropertyName observed_worker_priorities -NotePropertyValue @(
+            $observedWorkerPriorities | Sort-Object -Unique
+        )
         return $summary
     } finally {
         Stop-CpuWorkers -Processes $processes
@@ -1378,6 +1572,7 @@ function Run-NamedCase {
                 -Model 'Background Normal; foreground Normal.' `
                 -ForegroundPriority 'Normal' `
                 -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal') `
+                -EfficiencySelectedCount 0 `
                 -AffinitySelectedCount 0 `
                 -AffinityMask 0 `
                 -AssistControls (New-AssistControls)
@@ -1386,51 +1581,55 @@ function Run-NamedCase {
             return Invoke-WithProcessorPolicy -Preset Saver -ScriptBlock {
                 Run-Case `
                     -Name 'powersave' `
-                    -Model 'Powersave: strict processor Saver policy plus Low Impact scheduling for maximum battery life.' `
-                    -ForegroundPriority 'Normal' `
-                    -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'Idle') `
-                    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                    -AffinityMask $lowImpactMask `
-                    -AssistControls (New-AssistControls -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'Low' -IoPriority 'Low' -GpuPriority 'BelowNormal')
+                    -Model 'Powersave: strict processor Saver policy plus current Low Impact scheduling.' `
+                    -ForegroundPriority (Get-TierProcessPriority -Preset LowImpact) `
+                    -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'BelowNormal') `
+                    -EfficiencySelectedCount $lowImpactTargetCount `
+                    -AffinitySelectedCount 0 `
+                    -AffinityMask 0 `
+                    -AssistControls (New-PresetAssistControls -Preset LowImpact)
             }
         }
         'balanced' {
-            if (Test-ForegroundLaunchScenario) {
+            if ($ForegroundScenario -eq 'WinderustLaunch') {
                 return Invoke-WithProcessorPolicy -Preset Balanced -ScriptBlock { Run-LaunchGraceCase -Name 'balanced' }
             }
             return Invoke-WithProcessorPolicy -Preset Balanced -ScriptBlock {
                 Run-Case `
                     -Name 'balanced' `
-                    -Model 'Balanced: processor Balanced policy plus Low Impact scheduling; all background workers Idle; adaptive CPU share; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case; background threads BelowNormal; priority boost disabled.' `
-                    -ForegroundPriority 'AboveNormal' `
-                    -Priorities (New-Priorities -DefaultPriority 'Idle' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'Idle') `
-                    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
-                    -AffinityMask $lowImpactMask `
-                    -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'Low' -IoPriority 'Low' -GpuPriority 'BelowNormal')
+                    -Model 'Balanced processor policy plus current Low Impact scheduling.' `
+                    -ForegroundPriority (Get-TierProcessPriority -Preset LowImpact) `
+                    -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $lowImpactTargetCount -RestrainedPriority 'BelowNormal') `
+                    -EfficiencySelectedCount $lowImpactTargetCount `
+                    -AffinitySelectedCount 0 `
+                    -AffinityMask 0 `
+                    -AssistControls (New-PresetAssistControls -Preset LowImpact)
             }
         }
         'performance' {
             return Invoke-WithProcessorPolicy -Preset Performance -ScriptBlock {
                 Run-Case `
                     -Name 'performance' `
-                    -Model 'Performance: high processor policy (min 25, max 100, efficient aggressive boost) plus Foreground First CPU-pressure scheduling; foreground Auto boost modeled as AboveNormal for this low foreground CPU synthetic case.' `
-                    -ForegroundPriority 'AboveNormal' `
-                    -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
-                    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                    -Model 'Performance processor policy plus current Foreground First scheduling.' `
+                    -ForegroundPriority (Get-TierProcessPriority -Preset ForegroundFirst) `
+                    -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $foregroundFirstTargetCount -RestrainedPriority 'BelowNormal') `
+                    -EfficiencySelectedCount $foregroundFirstTargetCount `
+                    -AffinitySelectedCount $foregroundFirstTargetCount `
                     -AffinityMask $foregroundFirstMask `
-                    -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'BelowNormal' -MemoryPriority 'Low' -IoPriority 'VeryLow' -GpuPriority 'BelowNormal')
+                    -AssistControls (New-PresetAssistControls -Preset ForegroundFirst)
             }
         }
         'speed' {
             return Invoke-WithProcessorPolicy -Preset Speed -ScriptBlock {
                 Run-Case `
                     -Name 'speed' `
-                    -Model 'Speed: aggressive processor policy (parking 100, min 25, max 100, aggressive boost) plus Max Foreground CPU-pressure scheduling.' `
-                    -ForegroundPriority 'AboveNormal' `
-                    -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $workerCount -RestrainedPriority 'Idle') `
-                    -AffinitySelectedCount ([Math]::Min(12, $workerCount)) `
+                    -Model 'Speed processor policy plus current Maximum Foreground scheduling.' `
+                    -ForegroundPriority (Get-TierProcessPriority -Preset MaxForeground) `
+                    -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount $maxForegroundTargetCount -RestrainedPriority 'Idle') `
+                    -EfficiencySelectedCount $maxForegroundTargetCount `
+                    -AffinitySelectedCount $maxForegroundTargetCount `
                     -AffinityMask $maxForegroundMask `
-                    -AssistControls (New-AssistControls -ForegroundPriorityBoost 'Enabled' -ForegroundThreadPriority 'Highest' -ForegroundIoPriority 'High' -ForegroundGpuPriority 'High' -BackgroundPriorityBoost 'Disabled' -ThreadPriority 'Idle' -MemoryPriority 'VeryLow' -IoPriority 'VeryLow' -GpuPriority 'Idle')
+                    -AssistControls (New-PresetAssistControls -Preset MaxForeground)
             }
         }
     }
@@ -1698,10 +1897,12 @@ function Summarize-Method {
 
 $assistCoverage = [pscustomobject][ordered]@{
     process_priority = 'applied to generated background workers'
-    foreground_process_priority = 'applied to the benchmark process'
+    measured_tier_process_priority = 'applied to the benchmark process from the selected Focus, Visible Window, or Background tier'
+    background_efficiency = 'EcoQoS applied to the preset-selected generated background workers'
     affinity = 'applied as hard affinity for Max Foreground, and for adaptive presets on standard/all-P CPUs to approximate runtime CPU Sets (Soft)'
     foreground_priority_boost = 'applied to the benchmark process when preset enables it'
     foreground_thread_priority = 'applied to the benchmark thread when preset enables it'
+    foreground_memory_priority = 'applied to the benchmark process when preset enables it'
     foreground_io_priority = 'applied to the benchmark process when preset enables it; CPU loop has minimal I/O'
     foreground_gpu_priority = 'attempted on the benchmark process when preset enables it; CPU loop may report no GPU context'
     background_priority_boost = 'applied to generated background workers when preset enables it'
@@ -1709,7 +1910,7 @@ $assistCoverage = [pscustomobject][ordered]@{
     memory_priority = 'applied to generated background workers when preset enables it'
     io_priority = 'applied to generated background workers when preset enables it; CPU loop has minimal I/O'
     gpu_priority = 'attempted on generated workers when preset enables it; CPU workers may report no GPU context'
-    foreground_detection = 'modeled by treating the benchmark process as foreground; the app automation loop is not launched'
+    process_tier_detection = 'modeled by treating the benchmark process as the selected tier; the app automation loop is not launched'
 }
 
 if ($env:WINDERUST_BENCHMARK_IMPORT_ONLY -eq '1') {
@@ -1731,12 +1932,14 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     passes = $Passes
     rounds = $Rounds
     foreground_scenario = $ForegroundScenario
+    process_tier = $ProcessTier
     score_benchmark_enabled = -not $SkipScoreBenchmark
     score_iterations = $ScoreIterations
     score_data_kb = $ScoreDataKb
     score_rounds = $ScoreRounds
     topology_class = if ($hasHybridTopology) { 'hybrid_or_asymmetric' } else { 'standard_all_p' }
     low_impact_affinity_limited_processors = $lowImpactCoreCount
+    low_impact_max_targeted_processes = $lowImpactTargetCount
     foreground_iterations_per_round = $Iterations
     foreground_io_operations_per_round = $IoOperations * 2
     foreground_message_loop_ticks_per_round = $MessageLoopTicks
@@ -1744,7 +1947,9 @@ for ($pass = 1; $pass -le $Passes; $pass++) {
     power_counter_path = $script:resolvedPowerCounterPath
     power_counter_watts_scale = $script:powerWattsScale
     foreground_first_affinity_limited_processors = $foregroundFirstCoreCount
+    foreground_first_max_targeted_processes = $foregroundFirstTargetCount
     max_foreground_affinity_limited_processors = $maxForegroundCoreCount
+    max_foreground_max_targeted_processes = $maxForegroundTargetCount
     assist_coverage = $assistCoverage
     methodology_gate = 'Trust a local tuning direction only when median and p95 both improve by at least 3% in at least two of three passes.'
     runs = $runs

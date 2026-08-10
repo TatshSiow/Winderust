@@ -215,6 +215,7 @@ pub(in crate::ui::app) fn apply_workload_engine_preset(
     settings.workload_engine_background_efficiency_enabled =
         values.workload_engine_background_efficiency_enabled;
     settings.workload_engine_background_priority = values.background_priority;
+    settings.workload_engine_visible_window_priority = values.visible_window_priority;
     settings.lower_background_io_priority_enabled = values.lower_background_io_priority_enabled;
     settings.lower_background_io_priority = values.lower_background_io_priority;
     settings.workload_engine_io_priority = workload_engine_io_priority_preset_values(values);
@@ -227,6 +228,8 @@ pub(in crate::ui::app) fn apply_workload_engine_preset(
         values.workload_engine_memory_priority_enabled;
     settings.workload_engine_foreground_memory_priority =
         values.workload_engine_foreground_memory_priority;
+    settings.workload_engine_visible_window_memory_priority =
+        values.workload_engine_visible_window_memory_priority;
     settings.workload_engine_memory_priority = values.workload_engine_memory_priority;
     settings.workload_engine_affinity_escalation_enabled =
         values.workload_engine_affinity_escalation_enabled;
@@ -266,6 +269,7 @@ pub(in crate::ui::app) fn workload_engine_matches_preset(
         && settings.workload_engine_background_efficiency_enabled
             == values.workload_engine_background_efficiency_enabled
         && settings.workload_engine_background_priority == values.background_priority
+        && settings.workload_engine_visible_window_priority == values.visible_window_priority
         && settings.lower_background_io_priority_enabled
             == values.lower_background_io_priority_enabled
         && settings.lower_background_io_priority == values.lower_background_io_priority
@@ -278,6 +282,8 @@ pub(in crate::ui::app) fn workload_engine_matches_preset(
             == values.workload_engine_memory_priority_enabled
         && settings.workload_engine_foreground_memory_priority
             == values.workload_engine_foreground_memory_priority
+        && settings.workload_engine_visible_window_memory_priority
+            == values.workload_engine_visible_window_memory_priority
         && settings.workload_engine_memory_priority == values.workload_engine_memory_priority
         && settings.workload_engine_affinity_escalation_enabled
             == values.workload_engine_affinity_escalation_enabled
@@ -299,11 +305,15 @@ pub(in crate::ui::app) struct WorkloadEnginePresetValues {
     pub(in crate::ui::app) lower_background_apps: bool,
     pub(in crate::ui::app) workload_engine_background_efficiency_enabled: bool,
     pub(in crate::ui::app) background_priority: ProcessPriority,
+    pub(in crate::ui::app) visible_window_priority: ProcessPriority,
     pub(in crate::ui::app) foreground_io_priority: ProcessIoPrioritySetting,
+    pub(in crate::ui::app) visible_window_io_priority: ProcessIoPrioritySetting,
     pub(in crate::ui::app) lower_background_io_priority_enabled: bool,
     pub(in crate::ui::app) lower_background_io_priority: ProcessIoPriority,
     pub(in crate::ui::app) workload_engine_memory_priority_enabled: bool,
     pub(in crate::ui::app) workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting,
+    pub(in crate::ui::app) workload_engine_visible_window_memory_priority:
+        ProcessMemoryPrioritySetting,
     pub(in crate::ui::app) workload_engine_memory_priority: ProcessMemoryPriority,
     pub(in crate::ui::app) workload_engine_affinity_escalation_enabled: bool,
     pub(in crate::ui::app) boost_foreground_app: bool,
@@ -326,64 +336,74 @@ pub(in crate::ui::app) fn workload_engine_preset_values(
         WorkloadEnginePreset::LowImpact => WorkloadEnginePresetValues {
             lower_background_apps: true,
             workload_engine_background_efficiency_enabled: true,
-            background_priority: ProcessPriority::Idle,
+            background_priority: ProcessPriority::BelowNormal,
+            visible_window_priority: ProcessPriority::Normal,
             foreground_io_priority: ProcessIoPrioritySetting::Normal,
-            lower_background_io_priority_enabled: true,
+            visible_window_io_priority: ProcessIoPrioritySetting::Low,
+            lower_background_io_priority_enabled: false,
             lower_background_io_priority: ProcessIoPriority::Low,
-            workload_engine_memory_priority_enabled: true,
+            workload_engine_memory_priority_enabled: false,
             workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Default,
+            workload_engine_visible_window_memory_priority: ProcessMemoryPrioritySetting::Default,
             workload_engine_memory_priority: ProcessMemoryPriority::Low,
-            workload_engine_affinity_escalation_enabled: true,
+            workload_engine_affinity_escalation_enabled: false,
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
             lower_background_auto_cpu_percent: true,
             manual_cpu_percent: 60,
-            total_threshold: 70,
-            process_threshold: 8,
-            restore_threshold: 4,
-            sustain_seconds: 2,
+            total_threshold: 75,
+            process_threshold: 10,
+            restore_threshold: 5,
+            sustain_seconds: 3,
             minimum_restraint_seconds: 2,
-            cooldown_seconds: 5,
-            max_targeted_processes: 12,
+            cooldown_seconds: 4,
+            max_targeted_processes: 6,
         },
         WorkloadEnginePreset::ForegroundFirst => WorkloadEnginePresetValues {
             lower_background_apps: true,
             workload_engine_background_efficiency_enabled: true,
-            background_priority: ProcessPriority::Idle,
+            background_priority: ProcessPriority::BelowNormal,
+            visible_window_priority: ProcessPriority::Normal,
             foreground_io_priority: ProcessIoPrioritySetting::Normal,
+            visible_window_io_priority: ProcessIoPrioritySetting::Low,
             lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             workload_engine_memory_priority_enabled: true,
             workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
-            workload_engine_memory_priority: ProcessMemoryPriority::Low,
+            workload_engine_visible_window_memory_priority:
+                ProcessMemoryPrioritySetting::BelowNormal,
+            workload_engine_memory_priority: ProcessMemoryPriority::VeryLow,
             workload_engine_affinity_escalation_enabled: true,
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::Auto,
             lower_background_auto_cpu_percent: true,
             manual_cpu_percent: 16,
-            total_threshold: 45,
-            process_threshold: 6,
-            restore_threshold: 3,
+            total_threshold: 60,
+            process_threshold: 8,
+            restore_threshold: 4,
             sustain_seconds: 1,
-            minimum_restraint_seconds: 4,
-            cooldown_seconds: 6,
-            max_targeted_processes: 12,
+            minimum_restraint_seconds: 3,
+            cooldown_seconds: 5,
+            max_targeted_processes: 8,
         },
         WorkloadEnginePreset::MaxForeground => WorkloadEnginePresetValues {
             lower_background_apps: true,
             workload_engine_background_efficiency_enabled: true,
             background_priority: ProcessPriority::Idle,
+            visible_window_priority: ProcessPriority::BelowNormal,
             foreground_io_priority: ProcessIoPrioritySetting::High,
+            visible_window_io_priority: ProcessIoPrioritySetting::Normal,
             lower_background_io_priority_enabled: true,
             lower_background_io_priority: ProcessIoPriority::VeryLow,
             workload_engine_memory_priority_enabled: true,
             workload_engine_foreground_memory_priority: ProcessMemoryPrioritySetting::Normal,
+            workload_engine_visible_window_memory_priority: ProcessMemoryPrioritySetting::Medium,
             workload_engine_memory_priority: ProcessMemoryPriority::VeryLow,
             workload_engine_affinity_escalation_enabled: true,
             boost_foreground_app: true,
             foreground_boost: ForegroundBoostPriority::AboveNormal,
             lower_background_auto_cpu_percent: false,
-            manual_cpu_percent: 6,
+            manual_cpu_percent: 10,
             total_threshold: 35,
             process_threshold: 4,
             restore_threshold: 2,
@@ -403,7 +423,7 @@ pub(in crate::ui::app) fn workload_engine_io_priority_preset_values(
         foreground_detection_enabled: true,
         foreground_priority: values.foreground_io_priority,
         visible_window_detection_enabled: true,
-        visible_window_priority: values.lower_background_io_priority.into(),
+        visible_window_priority: values.visible_window_io_priority,
         background_priority: values.lower_background_io_priority.into(),
         preserve_foreground_priority: true,
         preserve_visible_window_priority: true,
@@ -416,7 +436,7 @@ pub(in crate::ui::app) fn workload_engine_thread_priority_preset_values(
     preset: WorkloadEnginePreset,
 ) -> ThreadPrioritySettings {
     ThreadPrioritySettings {
-        enabled: true,
+        enabled: preset != WorkloadEnginePreset::LowImpact,
         foreground_detection_enabled: true,
         foreground_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessThreadPrioritySetting::Highest
@@ -425,9 +445,9 @@ pub(in crate::ui::app) fn workload_engine_thread_priority_preset_values(
         },
         visible_window_detection_enabled: true,
         visible_window_priority: if preset == WorkloadEnginePreset::MaxForeground {
-            ProcessThreadPrioritySetting::Idle
+            ProcessThreadPrioritySetting::Normal
         } else {
-            ProcessThreadPrioritySetting::BelowNormal
+            ProcessThreadPrioritySetting::Default
         },
         background_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessThreadPrioritySetting::Idle
@@ -442,14 +462,14 @@ pub(in crate::ui::app) fn workload_engine_thread_priority_preset_values(
 }
 
 pub(in crate::ui::app) fn workload_engine_dynamic_priority_boost_preset_values(
-    _preset: WorkloadEnginePreset,
+    preset: WorkloadEnginePreset,
 ) -> DynamicPriorityBoostSettings {
     DynamicPriorityBoostSettings {
-        enabled: true,
+        enabled: preset != WorkloadEnginePreset::LowImpact,
         foreground_detection_enabled: true,
         foreground_boost: ProcessDynamicPriorityBoostSetting::Enabled,
         visible_window_detection_enabled: true,
-        visible_window_boost: ProcessDynamicPriorityBoostSetting::Disabled,
+        visible_window_boost: ProcessDynamicPriorityBoostSetting::Default,
         background_boost: ProcessDynamicPriorityBoostSetting::Disabled,
         exclusions: Vec::new(),
     }
@@ -459,7 +479,7 @@ pub(in crate::ui::app) fn workload_engine_gpu_priority_preset_values(
     preset: WorkloadEnginePreset,
 ) -> GpuPrioritySettings {
     GpuPrioritySettings {
-        enabled: true,
+        enabled: preset != WorkloadEnginePreset::LowImpact,
         foreground_detection_enabled: true,
         foreground_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessGpuPrioritySetting::High
@@ -468,9 +488,9 @@ pub(in crate::ui::app) fn workload_engine_gpu_priority_preset_values(
         },
         visible_window_detection_enabled: true,
         visible_window_priority: if preset == WorkloadEnginePreset::MaxForeground {
-            ProcessGpuPrioritySetting::Idle
+            ProcessGpuPrioritySetting::Normal
         } else {
-            ProcessGpuPrioritySetting::BelowNormal
+            ProcessGpuPrioritySetting::Default
         },
         background_priority: if preset == WorkloadEnginePreset::MaxForeground {
             ProcessGpuPrioritySetting::Idle

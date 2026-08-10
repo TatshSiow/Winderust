@@ -31,7 +31,10 @@ use crate::{
         CpuAllocationSettings, CpuRestrictionMode, ForegroundBoostPriority, PriorityRule,
         ProcessPriority, WorkloadEngineSettings,
     },
-    cpu::{process_cpu_usage_percent, PerProcessorUsageMonitor, ProcessCpuSample},
+    cpu::{
+        process_cpu_demand_percent, process_cpu_usage_percent, PerProcessorUsageMonitor,
+        ProcessCpuSample,
+    },
     cpu_allocation::{
         self, CpuAllocationManager, CpuAllocationMode, CpuAllocationTarget, LogicalProcessorInfo,
         LogicalProcessorKind,
@@ -152,6 +155,7 @@ struct AdjustedProcess {
     applied_dynamic_priority_boost_disabled: bool,
     previous_efficiency_state: Option<PROCESS_POWER_THROTTLING_STATE>,
     applied_background_efficiency: bool,
+    background_efficiency_unavailable: bool,
     applied_ignore_timer_resolution: bool,
 }
 
@@ -223,6 +227,26 @@ enum PriorityTargetSource {
     BackgroundPolicy,
     VisibleWindow,
     Rule,
+}
+
+type PriorityTarget = (
+    String,
+    String,
+    ProcessPriority,
+    PriorityTargetSource,
+    bool,
+    bool,
+);
+
+fn insert_background_target(
+    targets: &mut BTreeMap<u32, PriorityTarget>,
+    settings: &WorkloadEngineSettings,
+    process_id: u32,
+    target: PriorityTarget,
+) {
+    if !settings.workload_engine_exclusion_enabled_for(&target.1) {
+        targets.insert(process_id, target);
+    }
 }
 
 fn unprotected_efficiency_process_ids(
@@ -581,7 +605,9 @@ impl WorkloadEngineManager {
                 else {
                     continue;
                 };
-                target_processes.insert(
+                insert_background_target(
+                    &mut target_processes,
+                    settings,
                     *process_id,
                     (
                         process_name.clone(),
@@ -757,6 +783,7 @@ impl WorkloadEngineManager {
                 }
                 target_processes
                     .entry(candidate.process_id)
+                    .and_modify(|target| target.4 = true)
                     .or_insert_with(|| {
                         (
                             candidate.process_name.clone(),
@@ -1288,6 +1315,13 @@ impl WorkloadEngineManager {
         }
 
         if self.workload_engine_pressure_active
+            && foreground_cpu_usage_percent.is_none()
+            && total_cpu_usage_percent.is_none()
+        {
+            return true;
+        }
+
+        if self.workload_engine_pressure_active
             && cpu_pressure_above_restore_threshold(
                 settings,
                 foreground_cpu_usage_percent,
@@ -1660,7 +1694,7 @@ impl WorkloadEngineManager {
 
         let usage = state
             .previous_cpu_time
-            .and_then(|previous| process_cpu_usage_percent(previous, current));
+            .and_then(|previous| process_cpu_demand_percent(previous, current));
         state.previous_cpu_time = Some(current);
 
         let usage = usage?;
@@ -1683,7 +1717,21 @@ impl WorkloadEngineManager {
             return None;
         }
 
-        state.high_since = None;
+        if !state.active {
+            if usage <= restore_threshold {
+                let below_since = *state.below_since.get_or_insert(now);
+                if workload_engine_hot_streak_should_reset(
+                    usage,
+                    restore_threshold,
+                    now.duration_since(below_since),
+                    priority_sustain,
+                ) {
+                    state.high_since = None;
+                }
+            } else {
+                state.below_since = None;
+            }
+        }
         if state.active && !state.selected {
             state.active = false;
             state.below_since = None;

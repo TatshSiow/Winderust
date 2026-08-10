@@ -1428,16 +1428,28 @@ mod tests {
         let foreground_first = workload_engine_preset_values(WorkloadEnginePreset::ForegroundFirst);
         let max_foreground = workload_engine_preset_values(WorkloadEnginePreset::MaxForeground);
 
-        assert_eq!(low_impact.background_priority, ProcessPriority::Idle);
-        assert_eq!(foreground_first.background_priority, ProcessPriority::Idle);
+        assert_eq!(low_impact.background_priority, ProcessPriority::BelowNormal);
+        assert_eq!(low_impact.visible_window_priority, ProcessPriority::Normal);
+        assert_eq!(
+            foreground_first.background_priority,
+            ProcessPriority::BelowNormal
+        );
+        assert_eq!(
+            foreground_first.visible_window_priority,
+            ProcessPriority::Normal
+        );
         assert_eq!(max_foreground.background_priority, ProcessPriority::Idle);
+        assert_eq!(
+            max_foreground.visible_window_priority,
+            ProcessPriority::BelowNormal
+        );
         assert!(low_impact.workload_engine_background_efficiency_enabled);
         assert!(foreground_first.workload_engine_background_efficiency_enabled);
         assert!(max_foreground.workload_engine_background_efficiency_enabled);
-        assert!(low_impact.lower_background_io_priority_enabled);
+        assert!(!low_impact.lower_background_io_priority_enabled);
         assert!(foreground_first.lower_background_io_priority_enabled);
         assert!(max_foreground.lower_background_io_priority_enabled);
-        assert!(low_impact.workload_engine_memory_priority_enabled);
+        assert!(!low_impact.workload_engine_memory_priority_enabled);
         assert!(foreground_first.workload_engine_memory_priority_enabled);
         assert!(max_foreground.workload_engine_memory_priority_enabled);
         assert_eq!(
@@ -1456,10 +1468,18 @@ mod tests {
             foreground_first.workload_engine_foreground_memory_priority,
             ProcessMemoryPrioritySetting::Normal
         );
-        assert_eq!(low_impact.max_targeted_processes, 12);
-        assert_eq!(foreground_first.max_targeted_processes, 12);
+        assert_eq!(
+            foreground_first.workload_engine_visible_window_memory_priority,
+            ProcessMemoryPrioritySetting::BelowNormal
+        );
+        assert_eq!(
+            max_foreground.workload_engine_visible_window_memory_priority,
+            ProcessMemoryPrioritySetting::Medium
+        );
+        assert_eq!(low_impact.max_targeted_processes, 6);
+        assert_eq!(foreground_first.max_targeted_processes, 8);
         assert_eq!(max_foreground.max_targeted_processes, 12);
-        assert!(low_impact.workload_engine_affinity_escalation_enabled);
+        assert!(!low_impact.workload_engine_affinity_escalation_enabled);
         assert!(foreground_first.workload_engine_affinity_escalation_enabled);
         assert!(max_foreground.workload_engine_affinity_escalation_enabled);
         assert!(low_impact.lower_background_apps);
@@ -1484,18 +1504,36 @@ mod tests {
         assert!(foreground_first.total_threshold > max_foreground.total_threshold);
         assert!(low_impact.process_threshold > foreground_first.process_threshold);
         assert!(foreground_first.process_threshold > max_foreground.process_threshold);
+        for (values, expected) in [
+            (&low_impact, (75, 10, 5, 3, 2, 4, 6)),
+            (&foreground_first, (60, 8, 4, 1, 3, 5, 8)),
+            (&max_foreground, (35, 4, 2, 1, 5, 8, 12)),
+        ] {
+            assert_eq!(
+                (
+                    values.total_threshold,
+                    values.process_threshold,
+                    values.restore_threshold,
+                    values.sustain_seconds,
+                    values.minimum_restraint_seconds,
+                    values.cooldown_seconds,
+                    values.max_targeted_processes,
+                ),
+                expected
+            );
+        }
         assert_eq!(low_impact.manual_cpu_percent, 60);
         assert_eq!(foreground_first.manual_cpu_percent, 16);
-        assert_eq!(max_foreground.manual_cpu_percent, 6);
+        assert_eq!(max_foreground.manual_cpu_percent, 10);
         assert!(
-            workload_engine_thread_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
+            !workload_engine_thread_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
         );
         assert!(
-            workload_engine_dynamic_priority_boost_preset_values(WorkloadEnginePreset::LowImpact)
+            !workload_engine_dynamic_priority_boost_preset_values(WorkloadEnginePreset::LowImpact)
                 .enabled
         );
         assert!(
-            workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
+            !workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact).enabled
         );
         assert_eq!(
             workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::LowImpact)
@@ -1507,19 +1545,52 @@ mod tests {
             ProcessIoPrioritySetting::High
         );
         assert_eq!(
+            workload_engine_io_priority_preset_values(max_foreground).visible_window_priority,
+            ProcessIoPrioritySetting::Normal
+        );
+        assert_eq!(
+            workload_engine_io_priority_preset_values(max_foreground).background_priority,
+            ProcessIoPrioritySetting::VeryLow
+        );
+        assert_eq!(
             workload_engine_thread_priority_preset_values(WorkloadEnginePreset::MaxForeground)
                 .foreground_priority,
             ProcessThreadPrioritySetting::Highest
         );
         assert_eq!(
             workload_engine_thread_priority_preset_values(WorkloadEnginePreset::MaxForeground)
+                .visible_window_priority,
+            ProcessThreadPrioritySetting::Normal
+        );
+        assert_eq!(
+            workload_engine_thread_priority_preset_values(WorkloadEnginePreset::MaxForeground)
                 .background_priority,
             ProcessThreadPrioritySetting::Idle
+        );
+        let max_dynamic = workload_engine_dynamic_priority_boost_preset_values(
+            WorkloadEnginePreset::MaxForeground,
+        );
+        assert_eq!(
+            (
+                max_dynamic.foreground_boost,
+                max_dynamic.visible_window_boost,
+                max_dynamic.background_boost,
+            ),
+            (
+                ProcessDynamicPriorityBoostSetting::Enabled,
+                ProcessDynamicPriorityBoostSetting::Default,
+                ProcessDynamicPriorityBoostSetting::Disabled,
+            )
         );
         assert_eq!(
             workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::MaxForeground)
                 .foreground_priority,
             ProcessGpuPrioritySetting::High
+        );
+        assert_eq!(
+            workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::MaxForeground)
+                .visible_window_priority,
+            ProcessGpuPrioritySetting::Normal
         );
         assert_eq!(
             workload_engine_gpu_priority_preset_values(WorkloadEnginePreset::MaxForeground)

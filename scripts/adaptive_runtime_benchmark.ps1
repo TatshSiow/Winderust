@@ -1,15 +1,25 @@
 param(
-    [int]$Passes = 3,
+    [int]$Passes = 4,
     [int]$Rounds = 5,
     [int]$Iterations = 1000000,
-    [int]$WorkerSeconds = 45,
-    [int]$CooldownSeconds = 10,
+    [int]$WorkerSeconds = 180,
+    [int]$CooldownSeconds = 30,
+    [ValidateRange(5, 600)]
+    [int]$WarmupSeconds = 100,
+    [ValidateSet('CpuLoop', 'IoLoop', 'MessageLoop')]
+    [string]$ForegroundScenario = 'CpuLoop',
     [string]$WinderustExePath = '.\target\release\winderust.exe',
     [switch]$SkipPower,
     [string]$OutputPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Passes -lt 4 -or ($Passes % 2) -ne 0) {
+    throw 'Passes must be an even number of at least 4 so Stock-first and Adaptive-first orders are balanced.'
+}
+if ($WorkerSeconds -le ($WarmupSeconds + 30)) {
+    throw 'WorkerSeconds must exceed WarmupSeconds by more than 30 seconds so workers survive measurement.'
+}
 $benchmarkScript = Join-Path $PSScriptRoot 'workload_engine_benchmark.ps1'
 $env:WINDERUST_BENCHMARK_IMPORT_ONLY = '1'
 try {
@@ -18,6 +28,8 @@ try {
         -Rounds $Rounds `
         -Iterations $Iterations `
         -WorkerSeconds $WorkerSeconds `
+        -BackgroundWorkers ([Math]::Min([Math]::Ceiling([Environment]::ProcessorCount * 0.9), 24)) `
+        -ForegroundScenario $ForegroundScenario `
         -WinderustExePath $WinderustExePath `
         -SkipPower:$SkipPower
 } finally {
@@ -38,7 +50,7 @@ enabled = true
 startup_with_windows = false
 start_minimized = true
 hide_to_tray = false
-check_interval_ms = 250
+check_interval_ms = 500
 
 [adaptive_engine]
 enabled = true
@@ -50,6 +62,31 @@ performance_min = 5
 performance_max = 95
 boost_policy = 60
 boost_mode = "efficient_enabled"
+
+[background_efficiency]
+enabled = false
+
+[workload_engine]
+enabled = true
+lower_background_apps = true
+workload_engine_background_efficiency_enabled = true
+workload_engine_background_priority = "below_normal"
+workload_engine_visible_window_priority = "normal"
+lower_background_io_priority_enabled = false
+workload_engine_memory_priority_enabled = false
+lower_background_auto_cpu_percent = true
+workload_engine_enabled = true
+workload_engine_affinity_escalation_enabled = false
+workload_engine_total_threshold_percent = 75
+workload_engine_threshold_percent = 10
+workload_engine_restore_threshold_percent = 5
+workload_engine_sustain_seconds = 3
+workload_engine_minimum_restraint_seconds = 2
+workload_engine_cooldown_seconds = 4
+workload_engine_max_targeted_processes = 6
+boost_foreground_app = true
+foreground_boost = "auto"
+workload_engine_exclusions = [{ enabled = true, executable_path = "__BENCHMARK_HOST_PATH__" }]
 
 [by_activity]
 enabled = false
@@ -64,11 +101,34 @@ rules = []
 enabled = false
 rules = []
 '@
+$benchmarkHostPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+$escapedBenchmarkHostPath = $benchmarkHostPath.Replace('\', '\\')
+$settingsToml = $settingsToml.Replace(
+    '__BENCHMARK_HOST_PATH__',
+    $escapedBenchmarkHostPath
+)
 
 function Write-IsolatedSettings {
     [IO.Directory]::CreateDirectory($configDir) | Out-Null
     Copy-Item -LiteralPath $sourceExePath -Destination $exePath
     [IO.File]::WriteAllText($configPath, $settingsToml, [Text.UTF8Encoding]::new($false))
+}
+
+function Remove-IsolatedConfig {
+    if (-not [IO.Directory]::Exists($configDir)) {
+        return
+    }
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -eq 39) {
+                throw
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    }
 }
 
 function Start-AdaptiveRuntime {
@@ -110,7 +170,10 @@ function Stop-AdaptiveRuntime {
         }
     } finally {
         powercfg /setactive $balancedGuid | Out-Null
-        powercfg /delete $Runtime.plan_guid 2>$null
+        $managedPlanExists = powercfg /list | Where-Object { $_ -match [regex]::Escape($Runtime.plan_guid) }
+        if ($managedPlanExists) {
+            powercfg /delete $Runtime.plan_guid | Out-Null
+        }
     }
 }
 
@@ -124,16 +187,29 @@ function Read-ActiveProcessorPolicy {
     [pscustomobject]@{ scheme = $scheme; values = [pscustomobject]$values }
 }
 
+function Assert-ValidCase {
+    param([pscustomobject]$Result, [string]$Name)
+    if ($Result.workers_alive_after_measurement -ne $workerCount) {
+        throw ('Invalid {0} benchmark: only {1} of {2} workers survived measurement.' -f $Name, $Result.workers_alive_after_measurement, $workerCount)
+    }
+    if ($Result.foreground_priority_after_measurement -ne 'Normal') {
+        throw ('Invalid {0} benchmark: foreground host priority changed to {1}.' -f $Name, $Result.foreground_priority_after_measurement)
+    }
+}
+
 function Run-StockCase {
     powercfg /setactive $balancedGuid | Out-Null
-    Run-Case `
+    $result = Run-Case `
         -Name 'stock_balanced' `
         -Model 'Windows Balanced with no Winderust runtime.' `
         -ForegroundPriority 'Normal' `
         -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal') `
         -AffinitySelectedCount 0 `
         -AffinityMask 0 `
-        -AssistControls (New-AssistControls)
+        -AssistControls (New-AssistControls) `
+        -WarmupSeconds $WarmupSeconds
+    Assert-ValidCase -Result $result -Name 'Stock'
+    return $result
 }
 
 function Run-AdaptiveCase {
@@ -146,7 +222,13 @@ function Run-AdaptiveCase {
             -Priorities (New-Priorities -DefaultPriority 'Normal' -RestrainedCount 0 -RestrainedPriority 'Normal') `
             -AffinitySelectedCount 0 `
             -AffinityMask 0 `
-            -AssistControls (New-AssistControls)
+            -AssistControls (New-AssistControls) `
+            -WarmupSeconds $WarmupSeconds
+        Assert-ValidCase -Result $result -Name 'Adaptive'
+        if (@($result.observed_worker_priorities | Where-Object { $_ -ne 'Normal' }).Count -eq 0) {
+            throw "Invalid runtime benchmark: Workload Engine did not change any generated worker priority."
+        }
+        $result | Add-Member -NotePropertyName runtime_control_observed -NotePropertyValue $true
         $result | Add-Member -NotePropertyName adaptive_policy_after_load -NotePropertyValue (Read-ActiveProcessorPolicy)
         return $result
     } finally {
@@ -183,7 +265,7 @@ try {
 } finally {
     Stop-AdaptiveRuntime -Runtime $runtime
     powercfg /setactive $originalGuid | Out-Null
-    Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-IsolatedConfig
 }
 
 $comparisons = @($runs | ForEach-Object { $_.comparison_vs_stock })
@@ -192,18 +274,49 @@ $adaptiveRows = @($runs | ForEach-Object { $_.adaptive })
 $repeatWins = @($comparisons | Where-Object {
     $_.median_improvement_percent_vs_off -ge 3.0 -and $_.p95_improvement_percent_vs_off -ge 3.0
 }).Count
+$medianImprovement = Get-AverageProperty -Items $comparisons -Name 'median_improvement_percent_vs_off'
+$p95Improvement = Get-AverageProperty -Items $comparisons -Name 'p95_improvement_percent_vs_off'
+$backgroundRetained = Get-AverageProperty -Items $comparisons -Name 'background_throughput_retained_percent_vs_off'
+$powerSaving = Get-AverageProperty -Items $comparisons -Name 'package_power_saving_percent_vs_off'
+$activationPasses = @($adaptiveRows | Where-Object { $_.runtime_control_observed }).Count
+$powerGatePassed = $SkipPower -or ($null -ne $powerSaving -and $powerSaving -ge -2.0)
+$validationPassed = $activationPasses -eq $Passes `
+    -and $medianImprovement -ge 3.0 `
+    -and $p95Improvement -ge 3.0 `
+    -and $backgroundRetained -ge 85.0 `
+    -and $powerGatePassed
 
 $report = [pscustomobject]@{
-    note = 'Real release-binary A/B. Stock is Windows Balanced; Adaptive runs the isolated Winderust automation loop.'
+    note = 'Counterbalanced release-binary A/B. Stock is Windows Balanced; Adaptive runs the isolated Winderust automation loop with the current Balanced and Low Impact presets.'
     cpu_name = Get-CpuName
     logical_processors = $logicalProcessors
     worker_count = $workerCount
     passes = $Passes
     rounds = $Rounds
+    foreground_scenario = $ForegroundScenario
     foreground_iterations_per_round = $Iterations
+    benchmark_foreground_host = $benchmarkHostPath
+    warmup_seconds_per_case = $WarmupSeconds
     cooldown_seconds = $CooldownSeconds
     original_power_scheme = $originalGuid
     stock_power_scheme = $balancedGuid
+    validation = [pscustomobject]@{
+        passed = $validationPassed
+        stock_first_passes = @($runs | Where-Object { $_.order[0] -eq 'stock' }).Count
+        adaptive_first_passes = @($runs | Where-Object { $_.order[0] -eq 'adaptive' }).Count
+        activation_passes = $activationPasses
+        median_improvement_percent = $medianImprovement
+        p95_improvement_percent = $p95Improvement
+        background_throughput_retained_percent = $backgroundRetained
+        package_power_saving_percent = $powerSaving
+        gates = [pscustomobject]@{
+            activation_all_passes = $activationPasses -eq $Passes
+            median_at_least_3_percent = $medianImprovement -ge 3.0
+            p95_at_least_3_percent = $p95Improvement -ge 3.0
+            background_retained_at_least_85_percent = $backgroundRetained -ge 85.0
+            package_power_regression_within_2_percent = $powerGatePassed
+        }
+    }
     summary = @(
         [pscustomobject]@{
             name = 'stock_balanced'
@@ -220,10 +333,10 @@ $report = [pscustomobject]@{
             p95_ms = Get-AverageProperty -Items $adaptiveRows -Name 'p95_ms'
             foreground_iterations_per_sec = Get-AverageProperty -Items $adaptiveRows -Name 'iterations_per_sec'
             package_power_median_w = Get-AverageProperty -Items $adaptiveRows -Name 'package_power_median_w'
-            median_improvement_percent = Get-AverageProperty -Items $comparisons -Name 'median_improvement_percent_vs_off'
-            p95_improvement_percent = Get-AverageProperty -Items $comparisons -Name 'p95_improvement_percent_vs_off'
+            median_improvement_percent = $medianImprovement
+            p95_improvement_percent = $p95Improvement
             background_suppression_percent = Get-AverageProperty -Items $comparisons -Name 'background_suppression_percent_vs_off'
-            package_power_saving_percent = Get-AverageProperty -Items $comparisons -Name 'package_power_saving_percent_vs_off'
+            package_power_saving_percent = $powerSaving
             repeat_passes_won = "$repeatWins/$Passes"
         }
     )

@@ -1,13 +1,19 @@
 # Adaptive Engine Benchmark Guide
 
-This guide documents the synthetic benchmark used to tune Adaptive Engine
-operating profiles and its internal Workload Engine scheduling presets.
+This guide documents the real-runtime and synthetic benchmarks used to tune
+Adaptive Engine operating profiles and Workload Engine scheduling presets.
+Synthetic results isolate mechanisms; release-binary runtime A/B results are
+the primary acceptance evidence.
 
 ## What This Measures
 
 The default benchmark measures foreground CPU work completion time while
 temporary background CPU workers compete for scheduler time. Lower milliseconds
 are better.
+
+Benchmark workers use a temporary `cscript.exe` workload distinct from the
+visible benchmark shell. Runtime results are rejected unless Windows reports an
+actual priority change on one of those workers.
 
 The optional `IoLoop` foreground scenario measures foreground temp-file
 read/write completion time and reports foreground IOPS under the same generated
@@ -45,7 +51,7 @@ microbenchmarks are not included because Windows PowerShell/.NET Framework does
 not expose those as dependency-free benchmark APIs. Use an external native
 runner if those exact formats or instruction sets need certification.
 
-It is not a full Winderust automation benchmark. It does not launch the app or
+The synthetic runner is not a full Winderust automation benchmark. It does not launch the app or
 exercise the real automation loop. It models the preset scheduler effects with:
 
 - process priority,
@@ -101,17 +107,64 @@ If only one hardware class is available, document that limitation and avoid
 changing global preset constants unless the result is clearly supported by code
 reasoning and topology-specific unit tests.
 
+## Scheduling principles used for tuning
+
+Winderust cannot reproduce Linux scheduling on Windows, but the upstream Linux
+design provides useful policy constraints:
+
+- [EEVDF](https://docs.kernel.org/scheduler/sched-eevdf.html) uses eligibility,
+  virtual deadlines, and decaying lag to balance fairness with latency. Winderust
+  therefore must not let an unbounded lifetime history permanently dominate
+  current CPU demand.
+- [Utilization clamping](https://docs.kernel.org/scheduler/sched-util-clamp.html)
+  treats minimum and maximum performance as hints in a feedback loop and warns
+  that static values are not portable. Winderust should adapt CPU Sets to
+  measured pressure rather than treat a preset percentage as a universal cap.
+- [Energy Aware Scheduling](https://docs.kernel.org/scheduler/sched-energy.html)
+  uses energy-aware placement below its overutilization point, then falls back
+  to normal load balancing when capacity is saturated. Winderust similarly
+  releases CPU-set placement at foreground saturation, but keeps relative
+  priority and EcoQoS hints active.
+- [cgroup v2 CPU control](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+  distinguishes work-conserving weights from hard bandwidth limits. Winderust
+  applies priority and QoS first; restrictive CPU placement is an escalation,
+  not the first response.
+- Keep total pressure as whole-machine utilization, but measure a hot process
+  against one logical processor's capacity. Otherwise the same single-threaded
+  offender appears colder merely because the PC has more logical processors.
+
+The Windows mapping follows Microsoft's own guidance: [Quality of Service](https://learn.microsoft.com/en-us/windows/win32/procthread/quality-of-service)
+already distinguishes focused, visible, and background work; [CPU Sets](https://learn.microsoft.com/en-us/windows/win32/procthread/cpu-sets)
+provide soft affinity; and Microsoft advises that [hard affinity should generally
+be avoided](https://learn.microsoft.com/en-us/windows/win32/procthread/multiple-processors)
+because it can interfere with scheduler placement.
+
+## Validation hierarchy
+
+| Stage | Purpose | Acceptance rule |
+| --- | --- | --- |
+| Policy unit tests | Prove pressure, saturation, restoration, bounded history, and topology decisions. | All deterministic state transitions pass. |
+| Synthetic mechanism matrix | Isolate priority, QoS, CPU Sets, affinity, and processor-policy effects. | Median and P95 improve in at least 2/3 paired passes; absolute values are used for direct preset ranking. |
+| Release-runtime A/B | Exercise the real automation loop and current serialized preset. | Required before accepting a global preset change. Run CPU, I/O, and message-loop scenarios; the runner fails unless it directly observes a generated worker priority change. |
+| Hardware matrix | Check topology portability. | At least Intel hybrid plus AMD/all-P evidence before claiming a universal default. |
+
+Do not rank presets as a linear slow-to-fast ladder. Compare foreground latency,
+background retained throughput, package power, and action stability as a Pareto
+trade-off. A higher paired percentage does not mean one preset beats another
+when each percentage has a different adjacent Stock denominator.
+
 ## Current Adaptive Engine Preset Model
 
-Keep this in sync with the Adaptive Engine preset values in `src/ui/app.rs`.
+Keep this in sync with the Adaptive Engine preset values in
+`src/ui/app/shared/presets.rs`.
 
 | Preset | Benchmark model |
 | --- | --- |
 | Off | 12 background workers at `Normal`; foreground benchmark process at `Normal`. |
-| Powersave | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, background efficiency, Idle process priority, Low IO/memory priority, and BelowNormal GPU/thread priority. |
-| Balanced | Moderate processor policy (`max 95`, efficient boost) plus the same Low Impact scheduling/priority assists with a higher processor ceiling than Powersave. |
-| Performance | High processor policy (`min 25`, `max 100`, efficient aggressive boost) plus active Foreground First CPU-pressure scheduling, background efficiency, Idle process priority, VeryLow background IO, Low memory priority, and BelowNormal GPU/thread priority. |
-| Speed | Aggressive processor policy (`parking 100`, `min 25`, `max 100`, aggressive boost) plus active Max Foreground CPU-pressure scheduling, a stricter 6% background CPU target, foreground AboveNormal/High assists, and VeryLow/Idle background IO/memory/GPU/thread priority. |
+| Powersave | Strict processor Saver policy (`max 45`, boost disabled) plus Low Impact scheduling, EcoQoS, Below Normal background process priority, and at most 6 restrained workers. Priority assists are disabled. |
+| Balanced | Moderate processor policy (`max 95`, efficient boost) plus the same Low Impact scheduling with a higher processor ceiling than Powersave. |
+| Performance | High processor policy (`min 25`, `max 100`, efficient aggressive boost) plus Foreground First scheduling, EcoQoS, Below Normal background process priority, Very Low background I/O and memory priority, Below Normal background thread/GPU priority, and at most 8 restrained workers. |
+| Speed | Aggressive processor policy (`parking 100`, `min 25`, `max 100`, aggressive boost) plus Maximum Foreground scheduling, a 10% background CPU target, foreground Above Normal/High assists, Very Low/Idle background assists, and at most 12 restrained workers. |
 
 For launch foreground scenarios, preset cases intentionally use launch grace:
 foreground launch priority is raised to `AboveNormal`, while background
@@ -140,11 +193,45 @@ and kills the workers during cleanup.
 
 ## Benchmark Command
 
-Preferred repeat-loop command:
+Primary real-runtime Balanced/Low Impact A/B matrix:
+
+```powershell
+.\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario CpuLoop -Passes 4 -Rounds 5
+.\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario IoLoop -Passes 4 -Rounds 5
+.\scripts\adaptive_runtime_benchmark.ps1 -ForegroundScenario MessageLoop -Passes 4 -Rounds 5
+```
+
+The runtime benchmark uses an isolated portable configuration with the current
+500 ms cadence and explicitly enables the current Balanced processor policy and
+Low Impact Workload Engine preset. Use an even pass count of at least four so
+Stock-first and Adaptive-first orders are equally represented. Stock and
+Adaptive cases receive the same 100-second background-load warmup and 30-second
+cooldown before measurement. The JSON validation gate requires observed
+Workload Engine priority control, at least 3% aggregate median and P95
+improvement, at least 85% retained background throughput, and no package-power
+regression beyond 2%. A run that only creates the adaptive power plan without
+changing a generated worker priority is invalid for scheduler tuning.
+
+The runner adds the exact PowerShell benchmark-host path to Workload Engine
+exclusions. Every case is rejected if that host leaves Normal priority or if any
+generated worker exits before measurement completes. These are benchmark
+integrity requirements: without them, Winderust can restrain the workload being
+treated as foreground or a dead worker can create a false latency win.
+
+Synthetic mechanism-isolation command:
 
 ```powershell
 .\scripts\workload_engine_benchmark.ps1 -Passes 3 -Rounds 5 -Iterations 1000000
 ```
+
+Use `-ProcessTier Focus`, `-ProcessTier VisibleWindow`, or
+`-ProcessTier Background` to benchmark the corresponding current preset tier.
+The default is `Focus`.
+
+For pressure-transition validation, include moderate load, foreground
+saturation at 85% or more of whole-machine CPU, and recovery below the restore
+band. At saturation, priority and EcoQoS must remain active while automatic CPU
+Sets relax to 100%; recovery must not oscillate before the cooldown expires.
 
 The score suite runs by default. Use `-ScoreIterations`, `-ScoreDataKb`, and
 `-ScoreRounds` to scale it, or `-SkipScoreBenchmark` when validating only the

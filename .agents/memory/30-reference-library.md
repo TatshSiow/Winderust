@@ -145,6 +145,10 @@ User-facing behavior:
 - If `Exclude foreground app` is enabled, it also skips the focused app and same-name foreground app processes.
 - It reads the process's existing power throttling state and, when it owns
   priority management, the existing priority class.
+- If `GetProcessInformation(ProcessPowerThrottling)` cannot capture a reversible
+  EcoQoS baseline, Winderust skips and remembers only that unavailable control;
+  an independent Workload Engine priority change may still proceed and remains
+  separately journaled and restorable.
 - It enables EcoQoS by setting `PROCESS_POWER_THROTTLING_EXECUTION_SPEED` through `SetProcessInformation`.
 - The Process List and manual context-menu action use Task Manager semantics: Efficiency mode requires both EcoQoS and `IDLE_PRIORITY_CLASS`; manual changes verify both and restore the previous priority when disabled.
 - It sets the process priority class to `IDLE_PRIORITY_CLASS` while the target
