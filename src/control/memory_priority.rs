@@ -446,7 +446,7 @@ impl<P: MemoryPriorityPlatform> MemoryPriorityController<P> {
             .iter()
             .map(|(identity, managed)| (managed.apply_sequence, identity.clone()))
             .collect::<Vec<_>>();
-        identities.sort_by(|left, right| right.0.cmp(&left.0));
+        identities.sort_by_key(|identity| std::cmp::Reverse(identity.0));
         let mut summary = MemoryPriorityReleaseSummary::default();
         for (_, identity) in identities {
             match self.release_identity(&identity) {

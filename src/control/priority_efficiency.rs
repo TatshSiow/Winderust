@@ -1427,7 +1427,7 @@ impl<P: PriorityEfficiencyPlatform> PriorityEfficiencyController<P> {
                 )
             }))
             .collect::<Vec<_>>();
-        releases.sort_by(|left, right| right.0.cmp(&left.0));
+        releases.sort_by_key(|release| std::cmp::Reverse(release.0));
         let mut failures = Vec::new();
         for (_, property, identity) in releases {
             let result = match property {

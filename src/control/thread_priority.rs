@@ -588,7 +588,7 @@ impl<P: ThreadPriorityPlatform> ThreadPriorityController<P> {
         &mut self,
         mut identities: Vec<(u64, ThreadIdentity)>,
     ) -> ThreadPriorityReleaseSummary {
-        identities.sort_by(|left, right| right.0.cmp(&left.0));
+        identities.sort_by_key(|identity| std::cmp::Reverse(identity.0));
         let mut summary = ThreadPriorityReleaseSummary::default();
         for (_, identity) in identities {
             match self.release_identity(&identity) {

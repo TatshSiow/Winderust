@@ -346,7 +346,7 @@ impl<P: GpuPriorityPlatform> GpuPriorityController<P> {
         &mut self,
         mut identities: Vec<(u64, ProcessIdentity)>,
     ) -> GpuPriorityReleaseSummary {
-        identities.sort_by(|left, right| right.0.cmp(&left.0));
+        identities.sort_by_key(|identity| std::cmp::Reverse(identity.0));
         let mut summary = GpuPriorityReleaseSummary::default();
         for (_, identity) in identities {
             match self.release_identity(&identity) {
